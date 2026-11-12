@@ -1,7 +1,7 @@
-//! The constants and the declared shapes of the mk engine.
+//! The constants and the declared shapes of the Qwen3.8 engine.
 //!
-//! The numbers come from mk's `src/ops/model.h` and `src/engine/engine.h`. The engine has one device group and one
-//! context pool in this binding (docs/engine-abi.md, "v0 mk binding choices").
+//! The numbers come from the reference's `src/ops/model.h` and `src/engine/engine.h`. The engine has one device group and one
+//! context pool in this binding (docs/engine-abi.md, "v0 binding choices").
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -11,19 +11,19 @@ use nagaya_abi::{
     Kind, Lifetime, Limits, MandatoryTerm, MemoryLimits, PartKind, PartLimits, SlotLimit, Stage, Tier,
 };
 
-/// The vocabulary size (mk `kVocab`).
+/// The vocabulary size (the reference `kVocab`).
 pub const VOCAB: u32 = 248_320;
 
-/// The most tokens in one context (mk `kMaxContext`).
+/// The most tokens in one context (the reference `kMaxContext`).
 pub const MAX_CONTEXT: u32 = 32_768;
 
-/// The most tokens in one pass (mk `kMaxPassTokens`).
+/// The most tokens in one pass (the reference `kMaxPassTokens`).
 pub const MAX_PASS_TOKENS: u32 = 256;
 /// The checkpoint grain in tokens (spec 6.13). On gfx1151, a copy at 512 tokens restored and replayed to the bits of
 /// the live context, and splits across 256 and 512 gave equal bits (`tests/hip.rs`).
 pub const CHECKPOINT_GRAIN: u64 = 256;
 
-/// A context capacity is a multiple of this many tokens (mk `check_capacity`).
+/// A context capacity is a multiple of this many tokens (the reference `check_capacity`).
 pub const CAPACITY_STEP: u32 = 256;
 
 /// One class of contexts in the pool: the number of contexts and the capacity of each, in tokens.
@@ -52,7 +52,7 @@ pub const CONTEXT_CLASSES: [ContextClass; 2] = [
 ];
 
 /// The capacity of the context that the pass scratch probe uses, in tokens. The probe runs 256 tokens in two passes.
-/// The pool does not grow with a context's capacity (mk sizes each buffer at `kMaxPassTokens`).
+/// The pool does not grow with a context's capacity (the engine sizes each buffer at `kMaxPassTokens`).
 pub const PROBE_CAPACITY: u32 = CAPACITY_STEP;
 
 /// The device bytes that the allocator adds to each context, over the state bytes of `context_bytes`.
@@ -82,20 +82,20 @@ pub fn class_problem(class: ContextClass, measured: u64) -> Result<(), String> {
     if measured > declared {
         return Err(format!(
             "{} contexts of {} tokens took {measured} bytes of device memory; this binding declares {declared}. \
-             Use the mk commit that the pool was measured on, or measure again and raise the constant",
+             Use the build of the engine that the pool was measured on, or measure again and raise the constant",
             class.count, class.capacity
         ));
     }
     Ok(())
 }
 
-/// The longest quantum that mk declares, in milliseconds. mk's watchdog aborts a pass at 10 s (`engine.h:302-306`).
+/// The longest quantum that the engine declares, in milliseconds. The watchdog of the engine aborts a pass at 10 s (`engine.h:302-306`).
 pub const MAX_QUANTUM_MS: u32 = 10_000;
 
-/// The most segments in one pass (mk `kMaxSegments`).
+/// The most segments in one pass (the reference `kMaxSegments`).
 pub const MAX_SEGMENTS: u32 = 16;
 
-/// The number of layers (mk `kLayers`).
+/// The number of layers (the reference `kLayers`).
 pub const LAYERS: u32 = 48;
 
 /// The bytes of the recurrent state, part 0.
@@ -116,7 +116,7 @@ pub const IDX_ROW_BYTES: u64 = 4 * 12 * 128;
 /// The bytes of the PLE history, part 5.
 pub const PLE_HIST_BYTES: u64 = 8;
 
-/// The context bytes that mk allocates for one capacity (`harness/engine.py` `context_bytes`).
+/// The context bytes that the reference allocates for one capacity (`harness/engine.py` `context_bytes`).
 pub fn context_bytes(capacity: u32) -> u64 {
     // The fixed state and history, then K/V, index keys and the derived pooled keys, for each token of capacity.
     let fixed = 36 * 48 * 128 * 128 + 36 * 3 * 10_240 + 9 * 10_240;
@@ -124,7 +124,7 @@ pub fn context_bytes(capacity: u32) -> u64 {
     4 * (fixed + per_token * capacity as u64)
 }
 
-/// The parts of one mk state, in mk's part order.
+/// The parts of one engine state, in the order of the engine.
 pub fn parts() -> Vec<PartLimits> {
     vec![
         PartLimits {
@@ -186,13 +186,13 @@ pub fn parts() -> Vec<PartLimits> {
     ]
 }
 
-/// The part index, when mk stores that part. mk's `state_bytes` dies on part 6 (derived) and on any part past 5.
+/// The part index, when the engine stores that part. The `state_bytes` call of the engine dies on part 6 (derived) and on any part past 5.
 pub fn stored_part(part: u32) -> Result<u32, String> {
     if part < 6 {
         Ok(part)
     } else {
         Err(format!(
-            "mk has no stored part {part}; parts 0-5 are stored and part 6 is derived"
+            "the Qwen3.8 engine has no stored part {part}; parts 0-5 are stored and part 6 is derived; use a part from 0 to 5"
         ))
     }
 }
@@ -218,7 +218,7 @@ pub fn row_bytes(part: usize) -> Option<u64> {
     }
 }
 
-/// The positions that `len` bytes of one part hold. mk holds the rows of a cells part from position 0.
+/// The positions that `len` bytes of one part hold. The engine holds the rows of a cells part from position 0.
 ///
 /// A fixed or derived part holds no position. Bytes that are not whole rows are a defect of the caller, so this
 /// panics (spec 8.5).
@@ -238,7 +238,7 @@ pub fn coverage_of(part: usize, len: usize) -> CoverageSpan {
     }
 }
 
-/// Ok when a slot can hold the span: mk writes the rows of a cells part from position 0, up to the capacity.
+/// Ok when a slot can hold the span: the engine writes the rows of a cells part from position 0, up to the capacity.
 pub fn fits(span: &CoverageSpan, slot: u32) -> Result<(), String> {
     if row_bytes(span.part).is_none() {
         return Err(format!(
@@ -249,7 +249,7 @@ pub fn fits(span: &CoverageSpan, slot: u32) -> Result<(), String> {
     let capacity = slot_capacity(slot).ok_or_else(|| format!("slot {slot} is not in the context pool"))?;
     if span.start != 0 {
         return Err(format!(
-            "the span of part {} starts at position {}; mk writes rows from position 0",
+            "the span of part {} starts at position {}, but the Qwen3.8 engine writes rows from position 0; start the span at 0",
             span.part, span.start
         ));
     }
@@ -262,13 +262,13 @@ pub fn fits(span: &CoverageSpan, slot: u32) -> Result<(), String> {
     Ok(())
 }
 
-/// Ok when a cells read asks for a whole cells part. mk reads a part whole, so a read from 0 of all rows is the only
+/// Ok when a cells read asks for a whole cells part. The engine reads a part whole, so a read from 0 of all rows is the only
 /// range that it gives. The worker checks that `n` is the context's token count.
 pub fn whole_read_problem(part: usize, from: u64, n: u64, len: usize) -> Result<(), String> {
     let row = row_bytes(part).ok_or_else(|| format!("part {part} is not a cells part; read it with part_read"))?;
     if from != 0 {
         return Err(format!(
-            "mk has no range read: a cells read starts from 0, and this one starts at {from}"
+            "the Qwen3.8 engine has no range read: a cells read starts from 0, and this one starts at {from}; read from 0"
         ));
     }
     if n.checked_mul(row) != Some(len as u64) {
@@ -280,10 +280,10 @@ pub fn whole_read_problem(part: usize, from: u64, n: u64, len: usize) -> Result<
     Ok(())
 }
 
-/// The floats of one mk scratch buffer for each token of a pass. The names are mk's `scratch()` names.
+/// The floats of one scratch buffer for each token of a pass. The names are the `scratch()` names of the reference.
 ///
-/// mk sizes each buffer at `kMaxPassTokens`, whatever the pass's token count, so this table is the pool at its
-/// largest. The sizes come from mk's `src/engine/blocks.hip` and `src/engine/engine.hip` at 555a2a3.
+/// The engine sizes each buffer at `kMaxPassTokens`, whatever the pass's token count, so this table is the pool at its
+/// largest. The sizes come from the reference's `src/engine/blocks.hip` and `src/engine/engine.hip` at 555a2a3.
 #[cfg(test)]
 const SCRATCH_PER_TOKEN: [(&str, u64); 48] = [
     // The gated DeltaNet block (blocks.hip:34-39).
@@ -341,7 +341,7 @@ const SCRATCH_PER_TOKEN: [(&str, u64); 48] = [
     ("ple_y", 10_240),
 ];
 
-/// The mk scratch buffers that do not grow with the token count, in floats.
+/// The scratch buffers that do not grow with the token count, in floats.
 #[cfg(test)]
 const SCRATCH_FIXED: [(&str, u64); 8] = [
     ("moe_cnt", 512), // kExperts
@@ -356,7 +356,7 @@ const SCRATCH_FIXED: [(&str, u64); 8] = [
     ("qmm_part2", 16 * 256 * 640),
 ];
 
-/// The floats that mk's pass scratch asks for, one entry for each named buffer at its largest ask.
+/// The floats that the pass scratch asks for, one entry for each named buffer at its largest ask.
 #[cfg(test)]
 pub fn scratch_buffers() -> Vec<(&'static str, u64)> {
     let tokens = u64::from(MAX_PASS_TOKENS);
@@ -367,13 +367,13 @@ pub fn scratch_buffers() -> Vec<(&'static str, u64)> {
         .collect()
 }
 
-/// The bytes of mk's pass scratch pool at its largest: every named buffer, sized for `kMaxPassTokens`.
+/// The bytes of the pass scratch pool at its largest: every named buffer, sized for `kMaxPassTokens`.
 #[cfg(test)]
 pub fn pass_scratch_bytes() -> u64 {
     scratch_buffers().iter().map(|(_, floats)| floats).sum::<u64>() * 4
 }
 
-/// The pass scratch that this binding declares for mk on gfx1151, in bytes.
+/// The pass scratch that this binding declares for the engine on gfx1151, in bytes.
 ///
 /// The source is the measured device cost, not the pool's ask. The pool asks for 263 934 988 bytes: the sum of
 /// `scratch_buffers` at `MAX_PASS_TOKENS`. The rest is the HIP allocator's granularity and the runtime's one-time
@@ -391,8 +391,8 @@ pub const PASS_SCRATCH_BYTES: u64 = 324_009_984;
 pub fn scratch_problem(measured: u64) -> Result<(), String> {
     if measured > PASS_SCRATCH_BYTES {
         return Err(format!(
-            "the mk pass scratch measures {measured} bytes of device memory; this binding declares \
-             {PASS_SCRATCH_BYTES}. Use the mk commit that milestone 9c measured, or measure again and raise the constant"
+            "the pass scratch of the Qwen3.8 engine measures {measured} bytes of device memory; this binding declares \
+             {PASS_SCRATCH_BYTES}. Use the build of the engine that milestone 9c measured, or measure again and raise the constant"
         ));
     }
     Ok(())
@@ -446,7 +446,7 @@ pub fn limits(arena_bytes: u64) -> Limits {
                     lifetime: Lifetime::Engine,
                     kinds: vec![Kind::Prefill, Kind::Decode],
                 },
-                // mk makes the whole pool at open, so the term holds every context and lives as long as the engine.
+                // The engine makes the whole pool at open, so the term holds every context and lives as long as the engine.
                 MandatoryTerm {
                     name: "context".to_owned(),
                     tier: Tier::Device(0),
@@ -477,10 +477,13 @@ fn declared_bytes(part: &PartLimits) -> u64 {
     part.shape.iter().product::<u64>() * part.dtype.element_bytes()
 }
 
-/// The reason that mk's part byte counts do not match the declared shapes, or `None` when they agree.
+/// The reason that the part byte counts of the engine do not match the declared shapes, or `None` when they agree.
 ///
 /// A library with a larger part would write past the Rust buffer, so open must refuse it.
-pub fn parts_problem(state_bytes: impl Fn(u32) -> u64, part_bytes: impl Fn(u32, u32) -> u64) -> Option<String> {
+pub fn parts_problem(
+    engine_state_bytes: impl Fn(u32) -> u64,
+    engine_part_bytes: impl Fn(u32, u32) -> u64,
+) -> Option<String> {
     for (index, part) in parts().iter().enumerate() {
         if !part.is_stored() {
             continue;
@@ -488,13 +491,13 @@ pub fn parts_problem(state_bytes: impl Fn(u32) -> u64, part_bytes: impl Fn(u32, 
         let index = index as u32;
         let declared = declared_bytes(part);
         let actual = if part.is_row() {
-            part_bytes(index, 1)
+            engine_part_bytes(index, 1)
         } else {
-            state_bytes(index)
+            engine_state_bytes(index)
         };
         if actual != declared {
             return Some(format!(
-                "mk says part {index} ({}) holds {actual} bytes; this binding declares {declared}",
+                "the Qwen3.8 engine says part {index} ({}) holds {actual} bytes, but this binding declares {declared}; build the engine and the binding from one source",
                 part.name
             ));
         }
@@ -583,11 +586,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_part_bytes_ask_refuses_a_part_that_mk_does_not_store() {
+    fn a_part_bytes_ask_refuses_a_part_that_the_engine_does_not_store() {
         for part in 0..=5 {
             assert_eq!(stored_part(part), Ok(part), "part {part}");
         }
-        // mk's state_bytes dies on part 6, which is derived, and on a part past 5. The binding must not call it.
+        // The `state_bytes` call of the engine dies on part 6, which is derived, and on a part past 5. The binding must not call it.
         assert!(stored_part(6).is_err());
         assert!(stored_part(99).is_err());
     }
@@ -616,7 +619,7 @@ mod tests {
     }
 
     #[test]
-    fn mk_declares_a_grain_of_256_and_segments_exact() {
+    fn the_engine_declares_a_grain_of_256_and_segments_exact() {
         // Spec 6.13: a grain needs `segments_exact`. The GPU tests `an_interval_copy_restores_and_replays_to_the_bits_of_
         // the_live_context` and `a_split_across_256_does_not_change_the_bits_in_either_class` measured both.
         let limits = limits(0);
@@ -629,8 +632,8 @@ mod tests {
     }
 
     #[test]
-    fn the_declared_part_shapes_use_the_mk_sizes() {
-        // The GPU test pins these constants to mk's own mk_ctx_part_bytes.
+    fn the_declared_part_shapes_use_the_sizes_of_the_engine() {
+        // The GPU test pins these constants to the part byte counts that the engine library reports.
         let parts = parts();
         let size = |index: usize| parts[index].shape.iter().product::<u64>() * 4;
         assert_eq!(size(0), GDN_STATE_BYTES);
@@ -667,7 +670,7 @@ mod tests {
     }
 
     #[test]
-    fn the_limits_declare_two_context_sizes_and_mk_parts() {
+    fn the_limits_declare_two_context_sizes_and_the_engine_parts() {
         let limits = limits(94);
         let names: Vec<&str> = limits.parts.iter().map(|part| part.name.as_str()).collect();
         assert_eq!(
@@ -719,7 +722,7 @@ mod tests {
 
     #[test]
     fn the_context_term_holds_the_whole_pool() {
-        // mk makes every context of the pool at open, and the ledger adds the bytes of each term once.
+        // The engine makes every context of the pool at open, and the ledger adds the bytes of each term once.
         // The state bytes are 12 * 350 822 400 + 4 * 1 980 309 504 = 4 209 868 800 + 7 921 238 016. Each of the 16
         // contexts adds 4 MiB for the allocator: 16 * 4 194 304 = 67 108 864.
         let limits = limits(0);
@@ -761,9 +764,9 @@ mod tests {
 
     #[test]
     fn the_limits_declare_only_the_reachable_capabilities() {
-        // The ABI takes a capability from its accessor. mk has parts(), coverage(), seal() and slots(), and no
+        // The ABI takes a capability from its accessor. The engine has parts(), coverage(), seal() and slots(), and no
         // accessor for contexts, poison or the pass check, so the limits must not declare those. The drop of the last
-        // handle frees the weights, so mk declares close.
+        // handle frees the weights, so the engine declares close.
         let limits = limits(0);
         assert_eq!(
             limits.capabilities,
@@ -951,10 +954,10 @@ mod tests {
     }
 
     #[test]
-    fn the_declared_scratch_holds_the_sum_of_the_mk_scratch_buffers() {
-        // The names and the sizes come from mk's src/engine/blocks.hip and src/engine/engine.hip at 555a2a3.
+    fn the_declared_scratch_holds_the_sum_of_the_scratch_buffers() {
+        // The names and the sizes come from the reference's src/engine/blocks.hip and src/engine/engine.hip at 555a2a3.
         let buffers = scratch_buffers();
-        assert_eq!(buffers.len(), 56, "one entry for each named mk scratch buffer");
+        assert_eq!(buffers.len(), 56, "one entry for each named scratch buffer");
         let asked = pass_scratch_bytes();
         assert_eq!(asked, 263_934_988, "the pool's ask at kMaxPassTokens");
         // The declared constant is the measured device cost, which is the ask plus the allocator's granularity.

@@ -1,5 +1,5 @@
 //! The byte-size checks and the device traps of the op ABIs. It ports `test_abi_sizes.py`, `abi_cases.py` and
-//! `test_traps.py` of mk.
+//! `test_traps.py` of the reference.
 //!
 //! An op ABI takes the byte size of each layout-sized buffer beside the buffer, and it refuses a call whose size is not
 //! what the layout needs. It refuses on the host, before the first HIP call. The refusal aborts the process, so each
@@ -737,7 +737,7 @@ fn plain_dequant_case() -> Case {
     }
 }
 
-/// Every case, by name, in the order of mk's `abi_cases.py`.
+/// Every case, by name, in the order of the reference's `abi_cases.py`.
 fn cases() -> BTreeMap<String, Case> {
     let mut map = BTreeMap::new();
     let same = |qtype: Qtype| -> TiledBytes {
@@ -941,7 +941,7 @@ fn every_case_names_its_buffers() {
         assert!(!names.is_empty(), "{name} names no buffer");
         total += names.len();
     }
-    // The cases and the buffers of mk's `abi_cases.py` at mk commit 555a2a3. A case that goes missing is a check that goes.
+    // The cases and the buffers of the reference's `abi_cases.py` at reference commit 555a2a3. A case that goes missing is a check that goes.
     assert_eq!((all.len(), total), (29, 110));
 }
 
@@ -1213,7 +1213,7 @@ fn child_trap_without_sink() {
 }
 
 /// Each library links its own copy of the rails, because mkrt is static, so a library that first loads with no sink must
-/// get the sink when the program asks for it later. This is the check of mk's kaibo job 3, goal 03: the sink was installed
+/// get the sink when the program asks for it later. This check came from a review: the sink was installed
 /// only at the first load, and a library first loaded without it never reported its traps in that process.
 #[test]
 fn a_library_first_loaded_without_the_sink_gets_it_when_asked_later() {

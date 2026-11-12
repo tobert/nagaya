@@ -1,6 +1,6 @@
 //! The PLE rows of a pass: the n-gram embedding that layer 1 reads (`Qwen4ExpTextNGramEmbedding.forward`).
 //!
-//! mk's `engine.hip` `ple_rows` gathered them in C++ (mk 555a2a3). The host gathers them here, bit for bit, from the PLE
+//! The reference's `engine.hip` `ple_rows` gathered them in C++ (reference commit 555a2a3). The host gathers them here, bit for bit, from the PLE
 //! table in the GGUF map. The table stays in the map: its rows are scattered over about 29 GB, and a pass reads 16 rows
 //! for each token (milestone 15 step 6).
 
@@ -189,7 +189,7 @@ mod tests {
         }
     }
 
-    // The expected rows come from a Python port of mk's `engine.hip` `ple_rows` (C division semantics).
+    // The expected rows come from a Python port of the reference's `engine.hip` `ple_rows` (C division semantics).
     #[test]
     fn the_rows_of_a_token_after_an_empty_history_hash_with_eos() {
         let eos = PLE_EOS as i32;

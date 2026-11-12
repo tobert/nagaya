@@ -1,7 +1,7 @@
 //! Split-K, fused staging, and the hyper-connection ops. It ports `test_qmmh_split.py`, `test_qmmh_xin.py`,
-//! `test_qmmh_hcmix.py`, `test_hc.py` and `test_hc_fused.py` of mk.
+//! `test_qmmh_hcmix.py`, `test_hc.py` and `test_hc_fused.py` of the reference.
 //!
-//! mk used real rows of the Qwen3.8 GGUF. These tests use rows that `inputs::raw_rows` makes, with the same types and
+//! The reference used real rows of the Qwen3.8 GGUF. These tests use rows that `inputs::raw_rows` makes, with the same types and
 //! shapes. The tests of `test_hc.py` that compared with the HF module use synthetic weights: see `hc_pre`.
 
 use crate::fixture::Fixture;
@@ -23,7 +23,7 @@ fn x_of(seed: u64, ntok: usize, k: usize) -> Vec<f32> {
 
 // ---- test_qmmh_split.py ----
 
-/// One narrow matrix of the engine that the split-K path takes. The label is the tensor of mk's test.
+/// One narrow matrix of the engine that the split-K path takes. The label is the tensor of the reference's test.
 #[derive(Clone, Copy)]
 struct Narrow {
     label: &'static str,
@@ -664,8 +664,8 @@ fn fixed_d(mut raw: Vec<u8>, bits: u16) -> Vec<u8> {
 
 /// The hyper-connection pre stage against the HF module `Qwen4ExpTextGatedResidual` (`mixed` and `inject`).
 ///
-/// mk used the real weights of layer 0 and the embeddings of random tokens. This test uses synthetic weights at the real
-/// shapes, which the generator makes, and the fixture holds the output of the HF module for them. The tolerance is mk's:
+/// The reference used the real weights of layer 0 and the embeddings of random tokens. This test uses synthetic weights at the real
+/// shapes, which the generator makes, and the fixture holds the output of the HF module for them. The tolerance is the reference's:
 /// f32 accumulation has a typical error of `sqrt(K) 2^-24` (about 6e-6 at K = 10240), four stages with Lipschitz 1 or less
 /// stay under 3e-5, and 1e-4 allows for that. A wrong stream, gamma or weight is an error of order 1.
 #[test]

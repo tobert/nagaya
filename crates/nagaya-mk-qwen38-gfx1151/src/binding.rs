@@ -1,7 +1,7 @@
-//! The C ABI of mk's engine, linked statically from `hip/` (spec 12.1, AGENTS.md milestone 15).
+//! The C ABI of the Qwen3.8 engine, linked statically from `hip/` (spec 12.1, AGENTS.md milestone 15).
 //!
-//! `build.rs` compiles the engine into `libmkengine.a` under the feature `hip`. A build without `hip` links no mk
-//! code, and `linked` returns an error. The engine is never closed: mk's HIP teardown segfaults in the process (spec
+//! `build.rs` compiles the engine into `libmkengine.a` under the feature `hip`. A build without `hip` links no engine
+//! code, and `linked` returns an error. The engine is never closed: the HIP teardown of the engine segfaults in the process (spec
 //! 3.3).
 //!
 //! The C++ side is the runtime layer: the launches of `hip/src/engine/extern.hip` and the runtime calls `mk_rt_*` of
@@ -149,9 +149,9 @@ pub(crate) struct Binding {
 /// Why a pass did not finish.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PassStop {
-    /// The binding or mk's segment check refused the pass before it ran. Nothing changed.
+    /// The binding or the segment check of the engine refused the pass before it ran. Nothing changed.
     Refused(String),
-    /// The pass ran and stopped on a spin-timeout. mk poisoned each of its contexts.
+    /// The pass ran and stopped on a spin-timeout. The engine poisoned each of its contexts.
     Stopped(String),
 }
 
@@ -296,9 +296,9 @@ pub(crate) fn linked() -> Result<(Binding, Build), String> {
 /// The error of `linked` in a build without the feature `hip`.
 #[cfg(not(feature = "hip"))]
 pub(crate) const NOT_LINKED: &str =
-    "this build links no mk engine; build nagaya-mk-qwen38-gfx1151 with the feature hip";
+    "this build links no Qwen3.8 engine; build nagaya-mk-qwen38-gfx1151 with the feature hip";
 
-/// A binding to stub calls and a stub context, for tests that need a poisoned context. mk poisons a context only
+/// A binding to stub calls and a stub context, for tests that need a poisoned context. The engine poisons a context only
 /// on a spin timeout, and no test can force that.
 #[cfg(test)]
 pub(crate) mod stub {
@@ -311,13 +311,13 @@ pub(crate) mod stub {
         StateBytes, StateRead, StatusName,
     };
 
-    /// What the stub calls know about one context. A test passes a pointer to this in place of mk's context.
+    /// What the stub calls know about one context. A test passes a pointer to this in place of a context of the engine.
     pub(crate) struct StubContext {
         pub poisoned: AtomicBool,
         pub n: AtomicU32,
-        /// The count of calls that would change the context in mk.
+        /// The count of calls that would change the context of the engine.
         pub changes: AtomicUsize,
-        /// When true, a state write poisons the context, as an mk write that fails would.
+        /// When true, a state write poisons the context, as a failed write of the engine would.
         pub write_poisons: bool,
     }
 

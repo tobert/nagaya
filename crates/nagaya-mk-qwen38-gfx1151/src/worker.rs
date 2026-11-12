@@ -1,6 +1,6 @@
-//! The one thread that makes every mk call.
+//! The one thread that makes every engine call.
 //!
-//! mk's HIP device is the device that is current on the calling thread. One worker thread owns the engine, and every
+//! The HIP device is the device that is current on the calling thread. One worker thread owns the engine, and every
 //! call goes to it over a channel (spec 3.2). The engine is never closed: HIP teardown segfaults in the process (spec
 //! 3.3).
 
@@ -21,7 +21,7 @@ use crate::pass::{self, Knobs, Weights};
 use crate::ple::{self, PleTable};
 use crate::spec;
 
-/// An error from the mk binding. The message says what failed.
+/// An error from the engine binding. The message says what failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Qwen38Error {
     message: String,
@@ -70,7 +70,7 @@ fn parse_shards(raw: &[u8]) -> Result<Vec<PathBuf>, Qwen38Error> {
         .collect();
     if shards.len() != 3 || shards.iter().any(|path| path.as_os_str().is_empty()) {
         return Err(Qwen38Error::new(format!(
-            "QWEN38_SHARDS has {} paths; mk needs three, with : between them",
+            "QWEN38_SHARDS has {} paths, but the Qwen3.8 engine needs three; write three paths with : between them",
             shards.len()
         )));
     }
@@ -108,8 +108,8 @@ pub(crate) struct Spec {
     pub pass_scratch: u64,
 }
 
-/// Why a write or a seal refuses a context that was poisoned before the call. The call changed nothing (ABI "How mk
-/// maps", part writes).
+/// Why a write or a seal refuses a context that was poisoned before the call. The call changed nothing (ABI, "How
+/// the Qwen3.8 engine maps", part writes).
 const POISONED: &str = "the context is poisoned; free it";
 
 /// The result of a write or a seal.
@@ -128,7 +128,7 @@ pub(crate) enum Call {
 pub(crate) struct PassProblem {
     /// Why the pass did not finish.
     pub message: String,
-    /// True when mk ran the pass and poisoned its contexts.
+    /// True when the engine ran the pass and poisoned its contexts.
     pub poison: bool,
 }
 
@@ -191,7 +191,7 @@ struct Context {
     restored_ple: bool,
 }
 
-/// What one class of contexts took when mk made it. The host readings are `None` when `/proc/meminfo` fails.
+/// What one class of contexts took when the engine made it. The host readings are `None` when `/proc/meminfo` fails.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClassReading {
     /// The class.
@@ -323,10 +323,10 @@ impl Worker {
 
     /// Count one more user of the weights. The first user after an unload loads them again.
     pub fn acquire(&self) -> Result<(), Qwen38Error> {
-        let mut handles = self.handles.lock().expect("the lock of the mk handles is poisoned");
+        let mut handles = self.handles.lock().expect("the lock of the engine handles is poisoned");
         if *handles == 0 {
             self.ask(|reply| Command::Load { reply })
-                .unwrap_or_else(|| Err("the mk worker stopped".to_owned()))
+                .unwrap_or_else(|| Err("the engine worker stopped; restart the process".to_owned()))
                 .map_err(Qwen38Error::from)?;
         }
         *handles += 1;
@@ -334,14 +334,14 @@ impl Worker {
     }
 
     /// Count one user less. The last user unloads the weights (engine-abi "close"). An unload that fails is a defect:
-    /// the ledger would count memory as free that mk still holds, so the program stops.
+    /// the ledger would count memory as free that the engine still holds, so the program stops.
     pub fn release(&self) {
-        let mut handles = self.handles.lock().expect("the lock of the mk handles is poisoned");
-        *handles = handles.checked_sub(1).expect("an mk release without an acquire");
+        let mut handles = self.handles.lock().expect("the lock of the engine handles is poisoned");
+        *handles = handles.checked_sub(1).expect("an engine release without an acquire");
         if *handles == 0
             && let Some(Err(error)) = self.ask(|reply| Command::Unload { reply })
         {
-            panic!("mk could not free its weights: {error}");
+            panic!("the Qwen3.8 engine could not free its weights: {error}");
         }
     }
 
@@ -349,7 +349,7 @@ impl Worker {
     pub fn open_states(&self, classes: &[spec::ContextClass]) -> Result<Pool, Qwen38Error> {
         let classes = classes.to_vec();
         self.ask(|reply| Command::Open { classes, reply })
-            .unwrap_or_else(|| Err("the mk worker stopped".to_owned()))
+            .unwrap_or_else(|| Err("the engine worker stopped; restart the process".to_owned()))
             .map_err(Qwen38Error::from)
     }
 
@@ -364,28 +364,28 @@ impl Worker {
     /// The context's token count.
     pub fn n(&self, id: u64) -> Result<u32, Qwen38Error> {
         self.ask(|reply| Command::N { id, reply })
-            .unwrap_or_else(|| Err("the mk worker stopped".to_owned()))
+            .unwrap_or_else(|| Err("the engine worker stopped; restart the process".to_owned()))
             .map_err(Qwen38Error::from)
     }
 
     /// The context's capacity.
     pub fn max(&self, id: u64) -> Result<u32, Qwen38Error> {
         self.ask(|reply| Command::Max { id, reply })
-            .unwrap_or_else(|| Err("the mk worker stopped".to_owned()))
+            .unwrap_or_else(|| Err("the engine worker stopped; restart the process".to_owned()))
             .map_err(Qwen38Error::from)
     }
 
     /// True when the context owns its K/V.
     pub fn owns_kv(&self, id: u64) -> Result<bool, Qwen38Error> {
         self.ask(|reply| Command::OwnsKv { id, reply })
-            .unwrap_or_else(|| Err("the mk worker stopped".to_owned()))
+            .unwrap_or_else(|| Err("the engine worker stopped; restart the process".to_owned()))
             .map_err(Qwen38Error::from)
     }
 
     /// True when the context is poisoned.
     pub fn poisoned(&self, id: u64) -> Result<bool, Qwen38Error> {
         self.ask(|reply| Command::Poisoned { id, reply })
-            .unwrap_or_else(|| Err("the mk worker stopped".to_owned()))
+            .unwrap_or_else(|| Err("the engine worker stopped; restart the process".to_owned()))
             .map_err(Qwen38Error::from)
     }
 
@@ -393,7 +393,11 @@ impl Worker {
     pub fn read(&self, id: u64, part: usize, len: usize) -> Result<Vec<u8>, Call> {
         let part = part_id(part)?;
         self.ask(|reply| Command::Read { id, part, len, reply })
-            .unwrap_or_else(|| Err(Call::Failed("the mk worker stopped".to_owned())))
+            .unwrap_or_else(|| {
+                Err(Call::Failed(
+                    "the engine worker stopped; restart the process".to_owned(),
+                ))
+            })
     }
 
     /// Write one fixed part.
@@ -403,7 +407,7 @@ impl Worker {
             Err(call) => return call,
         };
         self.ask(|reply| Command::Write { id, part, bytes, reply })
-            .unwrap_or_else(|| Call::Failed("the mk worker stopped".to_owned()))
+            .unwrap_or_else(|| Call::Failed("the engine worker stopped; restart the process".to_owned()))
     }
 
     /// Write `n` rows of a cells part.
@@ -419,46 +423,47 @@ impl Worker {
             bytes,
             reply,
         })
-        .unwrap_or_else(|| Call::Failed("the mk worker stopped".to_owned()))
+        .unwrap_or_else(|| Call::Failed("the engine worker stopped; restart the process".to_owned()))
     }
 
     /// Set the context's token count.
     pub fn set_n(&self, id: u64, n: u32) -> Call {
         self.ask(|reply| Command::SetN { id, n, reply })
-            .unwrap_or_else(|| Call::Failed("the mk worker stopped".to_owned()))
+            .unwrap_or_else(|| Call::Failed("the engine worker stopped; restart the process".to_owned()))
     }
 
-    /// Run mk's boundary rule.
+    /// Run the boundary rule of the engine.
     pub fn seal(&self, id: u64) -> Call {
         self.ask(|reply| Command::Seal { id, reply })
-            .unwrap_or_else(|| Call::Failed("the mk worker stopped".to_owned()))
+            .unwrap_or_else(|| Call::Failed("the engine worker stopped; restart the process".to_owned()))
     }
 
     /// Empty the context: free it and make a new one of the same capacity under the same id.
     pub fn clear(&self, id: u64) -> Call {
         self.ask(|reply| Command::Clear { id, reply })
-            .unwrap_or_else(|| Call::Failed("the mk worker stopped".to_owned()))
+            .unwrap_or_else(|| Call::Failed("the engine worker stopped; restart the process".to_owned()))
     }
 
     /// Run one pass.
     pub fn pass(&self, request: PassRequest) -> Result<PassReply, PassProblem> {
         self.ask(|reply| Command::Pass { request, reply }).unwrap_or_else(|| {
             Err(PassProblem {
-                message: "the mk worker stopped".to_owned(),
+                message: "the engine worker stopped; restart the process".to_owned(),
                 poison: false,
             })
         })
     }
 
-    /// mk's byte count for one part and token count, or `None` when the worker stopped.
+    /// The engine's byte count for one part and token count, or `None` when the worker stopped.
     pub fn part_bytes(&self, part: u32, n: u32) -> Option<u64> {
         self.ask(|reply| Command::PartBytes { part, n, reply })
     }
 }
 
-/// The 32-bit part id that mk takes, or a refusal. A cast would read part 2^32 + 3 as part 3.
+/// The 32-bit part id that the engine takes, or a refusal. A cast would read part 2^32 + 3 as part 3.
 fn part_id(part: usize) -> Result<u32, Call> {
-    u32::try_from(part).map_err(|_| Call::Refused(format!("mk has no part {part}")))
+    u32::try_from(part)
+        .map_err(|_| Call::Refused(format!("the Qwen3.8 engine has no part {part}; use a part from 0 to 5")))
 }
 
 /// Start the worker thread and open the engine on it.
@@ -482,11 +487,11 @@ pub(crate) fn start(paths: Qwen38Paths) -> Result<Arc<Worker>, Qwen38Error> {
                 let _ = ready.send(Err(error));
             }
         })
-        .map_err(|error| Qwen38Error::new(format!("start the mk worker: {error}")))?;
+        .map_err(|error| Qwen38Error::new(format!("start the engine worker: {error}")))?;
 
     let spec = first
         .recv()
-        .map_err(|error| Qwen38Error::new(format!("the mk worker did not answer: {error}")))??;
+        .map_err(|error| Qwen38Error::new(format!("the engine worker did not answer: {error}")))??;
     Ok(Arc::new(Worker {
         sender: Mutex::new(sender),
         spec,
@@ -539,7 +544,7 @@ fn load_weights(
     Ok((model, ple, arena, weights))
 }
 
-/// Read `MK_FAST_QMM` as mk reads it: unset or 1 is fast, 0 is exact, and any other value stops mk.
+/// Read `MK_FAST_QMM` as the engine reads it: unset or 1 is fast, 0 is exact, and any other value stops the engine.
 fn fast_qmm() -> Result<bool, Qwen38Error> {
     match std::env::var("MK_FAST_QMM") {
         Ok(value) => fast_qmm_from(Some(&value)),
@@ -548,7 +553,7 @@ fn fast_qmm() -> Result<bool, Qwen38Error> {
     }
 }
 
-/// Read `MK_TILES` as mk reads it: unset or 1 is tiled, 0 is the GGUF layout, and any other value stops mk.
+/// Read `MK_TILES` as the engine reads it: unset or 1 is tiled, 0 is the GGUF layout, and any other value stops the engine.
 fn tiles() -> Result<bool, Qwen38Error> {
     match std::env::var("MK_TILES") {
         Ok(value) => tiles_from(Some(&value)),
@@ -583,7 +588,7 @@ fn env_text(name: &str) -> Option<String> {
 }
 
 /// The watchdog's deadline for each launch sequence: 10 s, or `QWEN38_WATCHDOG_DEADLINE_S` (a test knob) in (0, 3600].
-/// The longest pass is a bit over a second (mk PLAN.md).
+/// The longest pass is a bit over a second (reference `PLAN.md`).
 fn watchdog_deadline(value: Option<&str>) -> Result<f64, Qwen38Error> {
     let Some(value) = value else {
         return Ok(10.0);
@@ -596,15 +601,15 @@ fn watchdog_deadline(value: Option<&str>) -> Result<f64, Qwen38Error> {
     }
 }
 
-/// The host safety floor. mk keeps 12 GiB of MemAvailable free (spec 4.7; mk `service/contexts.py`, `FLOOR_BYTES`).
+/// The host safety floor. The engine keeps 12 GiB of MemAvailable free (spec 4.7; reference `service/contexts.py`, `FLOOR_BYTES`).
 const MEMORY_FLOOR: u64 = 12 << 30;
 
 /// Refuse an allocation of `needed` bytes that leaves less than the floor free. `what` names the allocation.
 fn memory_problem(what: &str, available: u64, needed: u64) -> Result<(), String> {
     if available < needed.saturating_add(MEMORY_FLOOR) {
         return Err(format!(
-            "{what} takes {needed} bytes and mk puts them in memory; \
-             {available} bytes are available and the floor is {MEMORY_FLOOR}"
+            "{what} takes {needed} bytes in memory, but only {available} bytes are available and the floor is {MEMORY_FLOOR}; \
+             free memory or load a smaller model"
         ));
     }
     Ok(())
@@ -622,7 +627,7 @@ fn mem_available() -> Result<u64, Qwen38Error> {
         .ok_or_else(|| Qwen38Error::new("/proc/meminfo has no MemAvailable"))
 }
 
-/// Refuse a load that cannot fit in the free memory. mk allocates the weight arena in full, and the floor stays free.
+/// Refuse a load that cannot fit in the free memory. The engine allocates the weight arena in full, and the floor stays free.
 fn check_memory(needed: u64) -> Result<(), Qwen38Error> {
     memory_problem("the shards", mem_available()?, needed).map_err(Qwen38Error::new)
 }
@@ -634,10 +639,10 @@ fn check_memory(needed: u64) -> Result<(), Qwen38Error> {
 fn taken_bytes(before: u64, after: u64, what: &str) -> Result<u64, String> {
     before
         .checked_sub(after)
-        .ok_or_else(|| format!("the free device memory grew from {before} to {after} bytes while mk made {what}"))
+        .ok_or_else(|| format!("the free device memory grew from {before} to {after} bytes while the engine made {what}; stop the other GPU client"))
 }
 
-/// Free one context, then make a new one of `capacity` tokens. mk has no call that empties a context.
+/// Free one context, then make a new one of `capacity` tokens. The engine has no call that empties a context.
 ///
 /// The free comes first, because the pool term holds the bytes of one context and not two (spec 4.2). When the new
 /// context fails, the old one is already gone, and the error says so.
@@ -690,7 +695,7 @@ fn open_contexts(
 
 /// The two pass shapes of the scratch probe: the token count and whether the pass asks for logits.
 ///
-/// The first shape has 1 token, so mk asks for `qmm_part2` too. The second shape asks for every other buffer at
+/// The first shape has 1 token, so the engine asks for `qmm_part2` too. The second shape asks for every other buffer at
 /// `kMaxPassTokens`. The token counts add to the probe context's capacity, so one context serves both.
 fn probe_shapes(capacity: u32) -> [(u32, bool); 2] {
     let rest = capacity
@@ -724,7 +729,7 @@ impl ThreadState {
         if engine.is_null() {
             return Err(Qwen38Error::new("mk_engine_open returned no engine"));
         }
-        // The fixed buffers of a pass, as mk's wire made them at load: before the scratch probe.
+        // The fixed buffers of a pass, as the engine made them at load: before the scratch probe.
         let host = unsafe { Host::new(&binding) };
 
         let mut state = Self {
@@ -745,7 +750,7 @@ impl ThreadState {
                 arena_bytes,
             }),
         };
-        // mk has no call for the pool's size. Measure it here, before a caller's pass, so a larger pool is an open
+        // The engine has no call for the pool's size. Measure it here, before a caller's pass, so a larger pool is an open
         // error and the ledger's term is what the engine holds.
         let pass_scratch = state.measure_pass_scratch().map_err(Qwen38Error::new)?;
         spec::scratch_problem(pass_scratch).map_err(Qwen38Error::new)?;
@@ -825,9 +830,9 @@ impl ThreadState {
 
     /// The pass scratch in bytes: the device free memory that the pool's first asks take.
     ///
-    /// A pass of 1 token asks for `qmm_part2`, and a pass of 17 or more tokens does not (mk `engine.hip:1187`). The
+    /// A pass of 1 token asks for `qmm_part2`, and a pass of 17 or more tokens does not (reference `engine.hip:1187`). The
     /// second pass has the 255 tokens that remain, with logits, so it asks for every other buffer at `kMaxPassTokens`.
-    /// mk keeps the pool for the engine's life. The probe context is freed before the second reading.
+    /// The engine keeps the pool for its life. The probe context is freed before the second reading.
     fn measure_pass_scratch(&mut self) -> Result<u64, String> {
         let before = self.free_device_bytes()?;
         let context = unsafe { (self.binding.ctx_new)(self.engine, spec::PROBE_CAPACITY) };
@@ -947,7 +952,7 @@ impl ThreadState {
     ///
     /// A later class that fails frees the contexts of the earlier ones. The pool is whole or not made.
     fn open_pool(&mut self, classes: &[spec::ContextClass]) -> Result<Pool, String> {
-        // Admit the whole pool before mk makes any of it (spec 4.3, 4.7).
+        // Admit the whole pool before the engine makes any of it (spec 4.3, 4.7).
         let needed: u64 = classes
             .iter()
             .map(|class| u64::from(class.count) * spec::context_declared_bytes(class.capacity))
@@ -1072,7 +1077,11 @@ impl ThreadState {
             3 => u64::from(n) * spec::KV_ROW_BYTES,
             4 => u64::from(n) * spec::IDX_ROW_BYTES,
             5 => spec::PLE_HIST_BYTES,
-            other => return Err(Call::Refused(format!("mk has no part {other}"))),
+            other => {
+                return Err(Call::Refused(format!(
+                    "the Qwen3.8 engine has no part {other}; use a part from 0 to 5"
+                )));
+            }
         };
         if len as u64 != expected {
             return Err(Call::Refused(format!(
@@ -1093,7 +1102,7 @@ impl ThreadState {
         let poisoned = unsafe { (self.binding.ctx_poisoned)(ptr) };
         let n = unsafe { (self.binding.ctx_n)(ptr) };
         let owns_kv = unsafe { (self.binding.ctx_owns_kv)(ptr) };
-        // mk reads the part as f32 values, so the source must be aligned for them.
+        // The engine reads the part as f32 values, so the source must be aligned for them.
         let bytes = Aligned::copy(bytes);
         match part {
             0..=2 => {
@@ -1154,7 +1163,9 @@ impl ThreadState {
                 }
                 Call::Ok
             }
-            other => Call::Refused(format!("mk has no part {other}")),
+            other => Call::Refused(format!(
+                "the Qwen3.8 engine has no part {other}; use a part from 0 to 5"
+            )),
         }
     }
 
@@ -1171,12 +1182,16 @@ impl ThreadState {
         if poisoned {
             return Call::Refused(POISONED.to_owned());
         }
-        // mk reads the rows as f32 values, so the source must be aligned for them.
+        // The engine reads the rows as f32 values, so the source must be aligned for them.
         let bytes = Aligned::copy(bytes);
         let row = match part {
             3 => spec::KV_ROW_BYTES,
             4 => spec::IDX_ROW_BYTES,
-            other => return Call::Refused(format!("mk has cells only in parts 3 and 4, not {other}")),
+            other => {
+                return Call::Refused(format!(
+                    "the Qwen3.8 engine has cells only in parts 3 and 4, not {other}; use part 3 or 4"
+                ));
+            }
         };
         if current != 0 || !owns_kv {
             return Call::Refused(format!(
@@ -1241,7 +1256,7 @@ impl ThreadState {
             let context = unsafe { &*(ptr as *const crate::context::Qwen38Context) };
             unsafe { host::pool_context(&self.binding, self.engine, host, weights, context) };
         }
-        // mk returns nothing here. A call that left the context poisoned is a failure (spec 6.8), so check first.
+        // The engine returns nothing here. A call that left the context poisoned is a failure (spec 6.8), so check first.
         if unsafe { (self.binding.ctx_poisoned)(ptr) } {
             return Call::Failed("set_n poisoned the context".to_owned());
         }
@@ -1305,7 +1320,7 @@ impl ThreadState {
         for (index, value) in state.f32_values().enumerate() {
             if !value.is_finite() || !rounds_to_finite(value) {
                 return Call::Refused(format!(
-                    "gdn_state[{index}] = {value} is not finite after a bf16 round; mk stops on it"
+                    "gdn_state[{index}] = {value} is not finite after a bf16 round, and the Qwen3.8 engine stops on it; write finite values only"
                 ));
             }
         }
@@ -1318,7 +1333,7 @@ impl ThreadState {
 
     fn pass(&mut self, request: PassRequest) -> Result<PassReply, PassProblem> {
         let problem = |message: String| PassProblem { message, poison: false };
-        // mk reads MK_FAST_QMM at each pass build. A change after open would change the bits, and the identity
+        // The engine reads MK_FAST_QMM at each pass build. A change after open would change the bits, and the identity
         // would be wrong, so refuse the pass.
         match fast_qmm() {
             Ok(value) if value == self.fast_qmm => {}
@@ -1331,7 +1346,7 @@ impl ThreadState {
             }
             Err(error) => return Err(problem(error.to_string())),
         }
-        // mk reads MK_TILES once, at load. A change after open makes the environment disagree with the identity,
+        // The engine reads MK_TILES once, at load. A change after open makes the environment disagree with the identity,
         // so refuse the pass, as for MK_FAST_QMM.
         match tiles() {
             Ok(value) if value == self.tiles => {}
@@ -1360,7 +1375,7 @@ impl ThreadState {
         }
         if total > spec::MAX_PASS_TOKENS {
             return Err(problem(format!(
-                "{total} tokens are past mk's {}-token pass",
+                "{total} tokens are past the {}-token limit of a pass of the Qwen3.8 engine; split the pass",
                 spec::MAX_PASS_TOKENS
             )));
         }
@@ -1376,7 +1391,7 @@ impl ThreadState {
             pointers.push(context.ptr);
         }
 
-        // The binding runs mk's segment check first, because mk stops the program on a bad segment.
+        // The binding runs the segment check of the engine first, because the engine stops the program on a bad segment.
         let segments = binding::segments(&pointers, &request.lens, &request.tokens);
         let rows = if request.want_logits { count } else { 0 };
         let mut logits = vec![0f32; rows * spec::VOCAB as usize];
@@ -1440,7 +1455,7 @@ impl ThreadState {
 
     /// The PLE rows of a pass, segment after segment: each segment's tokens after its context's PLE history.
     ///
-    /// mk stops the program on a read of a poisoned context, so a poisoned one is an error here.
+    /// The engine stops the program on a read of a poisoned context, so a poisoned one is an error here.
     fn ple_rows(&self, segments: &[Qwen38Segment]) -> Result<Vec<f32>, String> {
         let (Some(model), Some(table)) = (&self.model, &self.ple) else {
             return Err("this engine has no PLE table".to_owned());
@@ -1474,7 +1489,7 @@ impl ThreadState {
     }
 }
 
-/// A byte buffer that is aligned for mk's f32 stores. mk reads and writes a part as f32 values in host memory.
+/// A byte buffer that is aligned for the f32 stores of the engine. The engine reads and writes a part as f32 values in host memory.
 ///
 /// A `Vec<u8>` holds no alignment promise. This buffer holds its bytes in 8-byte words, so the pointer is 8-byte
 /// aligned. It copies bytes into the words and out again, so it makes no assumption about the host byte order.
@@ -1525,12 +1540,12 @@ impl Aligned {
         })
     }
 
-    /// The pointer for mk to read.
+    /// The pointer for the engine to read.
     fn as_ptr(&self) -> *const c_void {
         self.words.as_ptr().cast()
     }
 
-    /// The pointer for mk to write.
+    /// The pointer for the engine to write.
     fn as_mut_ptr(&mut self) -> *mut c_void {
         self.words.as_mut_ptr().cast()
     }
@@ -1624,7 +1639,11 @@ mod tests {
         for call in &calls {
             assert!(is_refused(call), "{call:?}");
         }
-        assert_eq!(context.changes.load(Ordering::SeqCst), 0, "a refused call reached mk");
+        assert_eq!(
+            context.changes.load(Ordering::SeqCst),
+            0,
+            "a refused call reached the engine"
+        );
     }
 
     #[test]
@@ -1650,7 +1669,7 @@ mod tests {
 
     #[test]
     fn the_probe_asks_for_the_small_pass_and_then_the_logits_row() {
-        // A pass of 1 token asks for qmm_part2 (mk engine.hip:1187). The second pass asks for the rest, with logits.
+        // A pass of 1 token asks for qmm_part2 (reference engine.hip:1187). The second pass asks for the rest, with logits.
         assert_eq!(probe_shapes(256), [(1, false), (255, true)]);
         let total: u32 = probe_shapes(256).iter().map(|(tokens, _)| tokens).sum();
         assert_eq!(total, crate::spec::PROBE_CAPACITY);
@@ -1781,7 +1800,7 @@ mod tests {
 
     #[test]
     fn a_load_that_leaves_less_than_the_floor_is_refused() {
-        // spec 4.7: mk keeps 12 GiB of MemAvailable free (mk service/contexts.py, FLOOR_BYTES).
+        // spec 4.7: the engine keeps 12 GiB of MemAvailable free (reference service/contexts.py, FLOOR_BYTES).
         let floor: u64 = 12 << 30;
         assert_eq!(memory_problem("the shards", floor, 0), Ok(()));
         assert!(memory_problem("the shards", floor - 1, 0).is_err());

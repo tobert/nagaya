@@ -1,8 +1,8 @@
-//! Build the op libraries of mk for the op tests: one shared library `libqwen38_<op>.so` for each `hip/src/ops/<op>.hip`.
+//! Build the op libraries of the engine for the op tests: one shared library `libqwen38_<op>.so` for each `hip/src/ops/<op>.hip`.
 //!
-//! The commands are the commands of mk's CMake build at mk commit `555a2a3` (`src/ops/CMakeLists.txt`). The compiles use
+//! The commands are the commands of the reference CMake build at commit `555a2a3` (`src/ops/CMakeLists.txt`). The compiles use
 //! the flags of `build.rs` for the engine, and add `-O3` for the op target. The op tests load these libraries at run
-//! time. Each library holds its own copy of the runtime `rt.cpp`, as mk's `libmkrt.a` is static. Thus each library has its
+//! time. Each library holds its own copy of the runtime `rt.cpp`, as the static runtime library of the reference does. Thus each library has its
 //! own trap record.
 //!
 //! `build.rs` calls `build_ops` under the feature `hip`. Cargo has no way to build a script only for tests, so a build of
@@ -12,7 +12,7 @@ use super::{COMMON, HIP_DEFINES, OFFLOAD_ARCH, ROCM, WARNINGS_AND_FLOATS, compil
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The flags of the link of a HIP shared library in mk's CMake build (`LANGUAGE_COMPILE_FLAGS`, then `LINK_FLAGS`).
+/// The flags of the link of a HIP shared library in the reference CMake build (`LANGUAGE_COMPILE_FLAGS`, then `LINK_FLAGS`).
 const LINK_FLAGS: &[&str] = &[
     "-fPIC",
     "-O2",
@@ -48,7 +48,7 @@ pub(crate) fn op_names(src: &Path) -> Vec<String> {
     names
 }
 
-/// The compile of `ops/<name>.hip`, as mk's `compile_commands.json` gives it for the target `mk_<name>`.
+/// The compile of `ops/<name>.hip`, as the reference `compile_commands.json` gives it for the target of that op.
 pub(crate) fn op_compile(src: &Path, name: &str, object: &Path) -> Vec<String> {
     let mut arguments = strings(HIP_DEFINES);
     arguments.push(format!("-Dqwen38_{name}_EXPORTS"));
@@ -57,13 +57,13 @@ pub(crate) fn op_compile(src: &Path, name: &str, object: &Path) -> Vec<String> {
     arguments.extend(strings(COMMON));
     arguments.push(OFFLOAD_ARCH.to_owned());
     arguments.extend(strings(WARNINGS_AND_FLOATS));
-    // The op target adds -O3 after the build type's -O2 (mk `src/ops/CMakeLists.txt`). The last -O wins.
+    // The op target adds -O3 after the build type's -O2 (reference `src/ops/CMakeLists.txt`). The last -O wins.
     arguments.push("-O3".to_owned());
     tail(&mut arguments, object, &src.join("ops").join(format!("{name}.hip")));
     arguments
 }
 
-/// The compile of the runtime `rt.cpp` for the op libraries, as mk's `compile_commands.json` gives it for the target `mkrt`.
+/// The compile of the runtime `rt.cpp` for the op libraries, as the reference `compile_commands.json` gives it for its runtime target.
 pub(crate) fn rt_compile(src: &Path, object: &Path) -> Vec<String> {
     let mut arguments = strings(HIP_DEFINES);
     arguments.push(include(&src.join("rt")));
@@ -81,7 +81,7 @@ fn tail(arguments: &mut Vec<String>, object: &Path, source: &Path) {
     arguments.push(source.display().to_string());
 }
 
-/// The link of `libqwen38_<name>.so`, as mk's `build.ninja` gives it: the object of the op, the object of the runtime, the HIP
+/// The link of `libqwen38_<name>.so`, as the reference `build.ninja` gives it: the object of the op, the object of the runtime, the HIP
 /// runtime and the compiler runtime.
 pub(crate) fn op_link(
     name: &str,
@@ -140,7 +140,7 @@ pub(crate) fn build_ops(src: &Path, out: &Path) {
     );
     let hip_runtime: PathBuf = Path::new(ROCM).join("lib").join("libamdhip64.so");
 
-    // The runtime of mk compiles once, and every library links its object. All compiles run first, one thread each.
+    // The runtime compiles once, and every library links its object. All compiles run first, one thread each.
     let rt_object = directory.join("rt.o");
     let names = op_names(src);
     std::thread::scope(|scope| {

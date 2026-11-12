@@ -1,8 +1,8 @@
-//! The Rust reader and dequantizer against mk's C++ copy, on the real Qwen3.8 shards (milestone 15, step 3).
+//! The Rust reader and dequantizer against the reference's C++ copy, on the real Qwen3.8 shards (milestone 15, step 3).
 //!
-//! `tests/fixtures/dequant/shards.txt` holds what mk's C++ reader found in the three shards: each tensor's record
-//! and the SHA-256 of its dequant. `tools/mk_dequant_digests.cpp` wrote it, with mk's `gguf.cpp` and `dequant.cpp` as
-//! milestone 15 step 1 copied them from mk `555a2a3`. The tool and the C++ copy are in commit `7d474c2`. A machine
+//! `tests/fixtures/dequant/shards.txt` holds what the reference's C++ reader found in the three shards: each tensor's record
+//! and the SHA-256 of its dequant. `tools/mk_dequant_digests.cpp` wrote it, with the reference's `gguf.cpp` and `dequant.cpp` as
+//! milestone 15 step 1 copied them from reference commit `555a2a3`. The tool and the C++ copy are in commit `7d474c2`. A machine
 //! with no copy of the shards skips these tests (`nagaya-text-qwen38/tests/common/model.rs`).
 
 use std::path::PathBuf;
@@ -17,7 +17,7 @@ compile_error!("the fixture hashes little-endian f32 bytes");
 #[path = "../../nagaya-text-qwen38/tests/common/model.rs"]
 mod model_file;
 
-/// The fixture that mk's C++ copy wrote.
+/// The fixture that the reference's C++ copy wrote.
 const SHARDS: &str = include_str!("../tests/fixtures/dequant/shards.txt");
 
 /// The part of the first shard's name that names its place in the split.
@@ -178,7 +178,7 @@ fn each_tensor_dequantizes_to_the_bits_of_the_cpp_copy_on_three_rows() {
         .collect();
     assert!(
         wrong.is_empty(),
-        "{} tensors differ from mk's C++ dequant: {wrong:?}",
+        "{} tensors differ from the reference's C++ dequant: {wrong:?}",
         wrong.len()
     );
 }
@@ -228,7 +228,7 @@ fn each_tensor_dequantizes_to_the_bits_of_the_cpp_copy_on_every_row() {
     });
     assert!(
         wrong.is_empty(),
-        "{} tensors differ from mk's C++ dequant: {wrong:?}",
+        "{} tensors differ from the reference's C++ dequant: {wrong:?}",
         wrong.len()
     );
 }
