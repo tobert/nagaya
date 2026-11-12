@@ -82,8 +82,10 @@ write the name of the thing in the nagaya:
   meaning of `mk` in the nagaya.
 - Each identifier that carries the name of an old project gets a new name, in the C++ and HIP code too. Decided
   2026-11-11: the repository is private and all the code is here, so make the names as good as they can be.
-  Examples are `QWEN38_SHARDS`, `MK_CHECK`, `mk_engine_close`, and the served model `mk` on gfx1151host.
-- Until milestone 31 step 2 changes an identifier, use it as it is, and do not copy the pattern.
+  The Qwen3.8 engine has its new names since 2026-11-12: `QWEN38_SHARDS`, `HIP_CHECK`, `namespace qwen38`, and the
+  engine name `qwen38` on gfx1151host.
+- The names of the old Gemma 4 project are still in the code. Until milestone 31 step 2 changes such an identifier,
+  use it as it is, and do not copy the pattern.
 - `docs/history.md` can keep the old names. It is the record of how the code came here.
 
 ## Code
@@ -124,7 +126,7 @@ The crates live in directories under `crates/`. Use these crates:
 | `nagaya-store` | canonical safetensors, content ids, recipes, entries, lookup, eviction | 6, D3, D10 |
 | `nagaya-ledger` | budgets, terms, admission, shares, reclaim order | 4, D9 |
 | `nagaya-sched` | jobs, quanta, classes, the order of ready quanta | 5 |
-| `nagaya-mk-qwen38-gfx1151` | the Qwen3.8 engine: its HIP code in `hip/`, the FFI binding, and the `Engine` trait on top | ABI "How mk maps" |
+| `nagaya-mk-qwen38-gfx1151` | the Qwen3.8 engine: its HIP code in `hip/`, the FFI binding, and the `Engine` trait on top | ABI "How the Qwen3.8 engine maps" |
 | `nagaya-mk-hip` | the shared HIP ops of gfx1151: hipBLASLt with the plan table, the kernels of Qwen-Image | 12.1 |
 | `nagaya-mk-qwenimage21-gfx1151` | the Qwen-Image 2.1 engine on gfx1151: the encoder, the transformer, the VAE | 11.9c |
 | `nagaya-mk-bmg` | the megakernel interpreter of the B70 cards: Level Zero, the task protocol, the kernel source, one binary per engine | ABI "How mkviolet maps" |
@@ -203,9 +205,9 @@ An agent may also stop and start the web app on b70host (`python3 tools/nagaya_w
   defect. The extern layer `extern.hip` checks nothing, so the worker checks each rule first.
   `host::segments_problem` runs before each pass.
 - The HIP device is the device that is current on the calling thread. Make every engine call from one thread.
-- Do not call `mk_engine_close` or free the engine in tests. HIP teardown in a process segfaults (spec 3.3).
-- The drop of the last engine handle frees the weights (engine-abi "The close of mk"). A test binary that opens
-  many handles keeps a `hold()`, as `tests/hip.rs` does. `tests/hip_close.rs` tests the close.
+- Do not free the engine in tests. HIP teardown in a process segfaults (spec 3.3).
+- The drop of the last engine handle frees the weights (engine-abi "The close of the Qwen3.8 engine"). A test
+  binary that opens many handles keeps a `hold()`, as `tests/hip.rs` does. `tests/hip_close.rs` tests the close.
 - GPU tests are behind the cargo feature `hip`, so `cargo test` with no features needs no GPU.
 
 #### The engines on the B70 cards
@@ -346,13 +348,12 @@ Milestones 1 to 30 are in `docs/history.md`, with their rules, their steps and t
 Amy, 2026-11-11: "go ahead and rework milestones in whatever order makes sense now." This is the order (Claude
 Fable 5.2, 2026-11-11):
 
-1. Milestone 31 step 1, the inventory and the table of names. It needs no GPU.
-2. Milestone 31 step 2, the code names. The Qwen3.8 engine comes first, on gfx1151host, because milestone 30 waits for
-   it.
-3. Milestone 30 steps 7 to 11, the tap hook and latent steps of Qwen3.8, on gfx1151host. They use the new names from
-   their first line. They can run beside the next item.
-4. Milestone 31 steps 3 to 7: the docs, the machines, the build, the license and the review.
-5. Milestone 31 step 8, the publication, when Amy says so.
+1. Milestone 31 steps 1 and 2 for the Qwen3.8 engine: done on 2026-11-12, and deployed on gfx1151host.
+2. Milestone 34, Qwen3.8 catches up, on gfx1151host. It holds milestone 30 steps 7 to 11. It can run beside the next
+   item.
+3. Milestone 31 steps 1 and 2 for the other engines, on b70host. Then steps 3 to 7: the docs, the machines,
+   the build, the license and the review.
+4. Milestone 31 step 8, the publication, when Amy says so.
 
 Milestone 32, context records, starts in gogi and runs beside these. It changes the contract, so it must be done
 before the publication.
@@ -388,8 +389,8 @@ Two things from steps 5 and 6 are open too:
 
 - A bound of the barrier wait that counts polls, not time. It waits for a diagnostic that faulted the GPU in 5 of
   5 stress runs. The patch is on gfx1151host, outside the repository.
-- 8 contexts give no more tokens each second than 4 (46.6 against 47.3), and 16 give 65.0. No record shows the
-  segments of each pass, so the cause is not known.
+- 8 contexts give no more tokens each second than 4 (46.6 against 47.3), and 16 give 65.0. Decided 2026-11-12: this
+  is not a defect. Each row reads 10 of 512 experts in each layer, so more rows read more weights.
 
 ### Milestone 31: the scrub for a public repository
 
@@ -404,7 +405,10 @@ Make the repository fit for a public post on GitHub. Amy started it on 2026-11-1
 - **New names of the Qwen3.8 identifiers:** a variable of the engine takes `QWEN38_`, as in `QWEN38_SHARDS`. A
   variable of the whole process takes `NAGAYA_`, as in `NAGAYA_REQUIRE_MODELS`. Decided 2026-11-12: only the engine
   reads `FAST_QMM` and `TILES`, so they are `QWEN38_FAST_QMM` and `QWEN38_TILES`. A macro of the HIP runtime takes
-  `HIP_`, as in `HIP_CHECK`. The served model `mk` becomes `qwen38`. The table of step 1 follows these patterns.
+  `HIP_`, as in `HIP_CHECK`. The engine of the gfx1151host profile has the name `qwen38`. The served model name is the
+  file stem of the shards, and it did not change.
+- **No old name beside a new one.** Decided 2026-11-12: remove old code and old names. Add no guard and no second
+  name. A deploy changes the binary, the unit file and the profile in one window.
 - **The merge came first.** The Qwen work of gfx1151host is on `main` since 2026-11-11, so a rename can start.
 
 The rules of the work:
@@ -504,10 +508,11 @@ decoded head). Live on `lfm3`:
 - The card gate `xe_lfm3_head` compares a turn from a decoded head with a build of the text. The next-token log
   probabilities differ by 7.2e-6 at most.
 
+Step 8 is done on gfx1151host too. The build of `9d71d2c` ran there from 2026-11-11, and the gogi suite on Qwen3.8 gave
+490 ok, 0 FAIL and 12 skip. Clippy with `hip` runs in the checks of each commit since 2026-11-12.
+
 Open:
 
-- Step 8 on gfx1151host. Amy does it (2026-11-11: "I'll take care of gfx1151host later"). Until then, a pin with `contexts` is
-  a 400 from gfx1151host, and the gogi suite fails one check here. Clippy with `hip` did not run on this code.
 - A reply whose decode row shared a pass holds no head, so forks and chats that decode at once get a null head.
 - A reply that `max_tokens` cut, and that the next turn closes, has no head for that turn.
 - A build that marks an earlier message of a held context can be a 500 (`Service::starts`). It is older than this
@@ -546,6 +551,47 @@ checks green.
    card. Then the chat page reads them, and it holds no values of LFM3.
 6. **The response as an object.** A response holds its counts, its stats and its seed under an id. Then a client
    reads them later, as it reads a reply by its record.
+
+### Milestone 34: Qwen3.8 catches up
+
+The Qwen3.8 engine on gfx1151host gets what the LFM3 engine has for the lab: a tap, control vectors and latent steps.
+Amy started it on 2026-11-12. The order is by Claude Fable 5.2. She decided these rules on 2026-11-12:
+
+- **The names came first.** Milestone 31 steps 1 and 2 are done for this engine (`d1d02af`). The table of names is
+  in `docs/history.md`, "Milestone 31".
+- **The residual.** The state between two layers of Qwen3.8 is 4 streams of 2,560 values. `residual` is the 4
+  streams, 10,240 values, for a tap and for a control vector. The output fold of the streams serves the tap `lens`.
+- **The canary.** The build hash leaves the identity digest, as spec 12.1 says. A canary of the Qwen3.8 engine
+  takes its place (spec 8.1). Measure the time that the canary adds to a load, and report it.
+- **The scope of the canary** is the Qwen3.8 engine. The other engines get theirs later.
+- **The J-Lens waits.** A fit of Qwen3.8 needs more memory than gfx1151host has. Amy looks for the hardware.
+
+A fact that the steps use: the engine build hash depends on the path of the checkout. Two worktrees with the same
+engine source gave two hashes. The canary removes the hash from the digest, so this needs no other repair.
+
+Each new op of the device code gets the stress run as a gate: `hip_joined` beside a loop of release builds. A
+small change of the device code faulted the GPU in 5 of 5 such runs on 2026-11-10, and its defect is not known.
+
+Do the steps in this order. Each step ends with the checks green.
+
+1. **Repairs.** The load route refuses a load that does not fit; on 2026-11-11 it started the load, and the
+   process stopped. Measure the tokens that a second chat turn feeds on Qwen3.8.
+2. **The canary.** Fixed inputs and their exact outputs: a short prompt, a long prompt and a greedy decode. Its
+   hash is in the identity. The process runs it before the engine is ready, with no tolerance. Then the build
+   facts go into the member `build`, outside the digest.
+3. **Docs.** Milestone 30 step 7, with the residual of 4 streams as a rule. The control vectors of Qwen3.8.
+4. **Oracle fixture.** Milestone 30 step 8, and one run with an `add`.
+5. **The tap hook.** Milestone 30 step 9. A tap in a joined pass gives the rows of the pass alone.
+6. **Control vectors.** The table at `open`, `control_write`, and the op after each layer. `pass` checks
+   `segment.control`. Card gates: a strength of 0 gives the bits of no item, and an `add` matches the oracle. Two
+   lists in one pass each give the bits of the pass alone.
+7. **The lab routes.** A route chooses a model by what its engine declares, not by its kind. `project` and `trace`
+   read the GGUF head and the output fold.
+8. **Latent steps.** Milestone 30 steps 10 and 11.
+9. **Deploy and trial.** The gogi suite, a trial with Amy, and a kaibo review round.
+10. **The J-Lens.** Last, when the hardware is there.
+
+Each stop and start of `nagaya.service` goes into `signoff.md`.
 
 ## Working notes
 
