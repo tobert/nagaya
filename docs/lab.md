@@ -450,7 +450,7 @@ The trials of these rules are in `docs/cv.md`, "The stream of thought". The pape
   it, and each token goes into the reply as if the sampler had picked it.
 - **The score** is `stats` of the response, as gogi gives it for a generation. Each token gives its untempered
   probability in the logit row before it. Thus a generation and the force of its own text give the same `stats`.
-- **The response** of `ensemble` gives `stats` for each request now, with `force` or without it.
+- **The response** of `ensemble` gives `stats` and `reasoning` for each request now, with `force` or without it.
 - **The end.** The reply ends after the last token of the text, or before it when the parser ends the reply.
 - **Errors.** An empty text is a 400 that names `force`. `force` with `max_tokens` is a 400 that names
   `max_tokens`, because the text gives the count. `force` with `soft` is a 400 that names `force`, because the score

@@ -541,7 +541,7 @@ async fn trace(State(council): Shared, Extension(id): Id, body: Body) -> Respons
 }
 
 /// The members of an ensemble request (`docs/lab.md`, "`ensemble`").
-const ENSEMBLE_MEMBERS: [&str; 9] = [
+const ENSEMBLE_MEMBERS: [&str; 10] = [
     "model",
     "contexts",
     "combine",
@@ -551,11 +551,12 @@ const ENSEMBLE_MEMBERS: [&str; 9] = [
     "sample",
     "latent",
     "soft",
+    "force",
 ];
 
 /// The member `latent` of an ensemble request (docs/lab.md, "Latent steps in a request"): the steps and the read. A
 /// member of another type, or another member, is a 400 that names it.
-fn latent_member(value: &Value) -> Result<(usize, bool), Failure> {
+fn latent_member(value: &Value) -> Result<(usize, bool, bool), Failure> {
     let refuse = |param: &str, message: String| Failure::from(invalid(param, format!("nothing ran: {message}")));
     let Value::Object(map) = value else {
         return Err(refuse(
@@ -563,10 +564,13 @@ fn latent_member(value: &Value) -> Result<(usize, bool), Failure> {
             format!("latent is {value}; send an object with steps and read"),
         ));
     };
-    if let Some(other) = map.keys().find(|key| !["steps", "read"].contains(&key.as_str())) {
+    if let Some(other) = map
+        .keys()
+        .find(|key| !["steps", "read", "stop"].contains(&key.as_str()))
+    {
         return Err(refuse(
             &format!("latent.{other}"),
-            format!("latent has no member {other}; its members are steps and read"),
+            format!("latent has no member {other}; its members are steps, read and stop"),
         ));
     }
     let most = nagaya_council::latent::MAX_STEPS;
@@ -585,7 +589,13 @@ fn latent_member(value: &Value) -> Result<(usize, bool), Failure> {
             .as_bool()
             .ok_or_else(|| refuse("latent.read", format!("latent.read is {read}; send true or false")))?,
     };
-    Ok((steps, read))
+    let stop = match map.get("stop") {
+        None => false,
+        Some(stop) => stop
+            .as_bool()
+            .ok_or_else(|| refuse("latent.stop", format!("latent.stop is {stop}; send true or false")))?,
+    };
+    Ok((steps, read, stop))
 }
 
 /// The member `soft` of an ensemble request (docs/lab.md, "Soft inputs in a request"): the map, its value, `top` and
@@ -718,6 +728,33 @@ async fn ensemble(State(council): Shared, Extension(id): Id, body: Body) -> Resp
         let (lab_served, dir) = council.lab_model(model)?;
         let latent = map.get("latent").map(latent_member).transpose()?;
         let soft_plan = map.get("soft").map(soft_member).transpose()?;
+        // A forced text gives the reply its tokens and their count (docs/lab.md, "The score of a text").
+        let force = match map.get("force") {
+            None => None,
+            Some(Value::String(text)) if !text.is_empty() => Some(text.clone()),
+            Some(other) => {
+                return Err(refuse(
+                    "force",
+                    &format!("force is {other}; send the text of the reply as a string that is not empty"),
+                ));
+            }
+        };
+        if force.is_some() && map.contains_key("max_tokens") {
+            return Err(refuse(
+                "max_tokens",
+                "a forced text gives the count of tokens of the reply; send no max_tokens",
+            ));
+        }
+        if force.is_some() && soft_plan.is_some() {
+            return Err(refuse(
+                "force",
+                "the score of a forced text reads plain inputs; send force or soft, not both",
+            ));
+        }
+        let forced = match &force {
+            Some(text) => Some(lab_served.service.tokens_of(text)?),
+            None => None,
+        };
         let contexts = map
             .get("contexts")
             .and_then(Value::as_array)
@@ -777,19 +814,23 @@ async fn ensemble(State(council): Shared, Extension(id): Id, body: Body) -> Resp
                     request[member] = value.clone();
                 }
             }
+            if let Some(tokens) = &forced {
+                request["max_tokens"] = tokens.len().into();
+            }
             let body = serde_json::to_vec(&request).expect("a JSON value encodes");
             requests.push(parse::<GenerationRequest>(&body, "ensemble")?);
         }
         let refs: Vec<&gogi_proto::Context> = requests.iter().map(|request| &request.context).collect();
         // The latent steps read the final norm and the table of the checkpoint. Their checks read no engine.
         let plan = match latent {
-            Some((steps, read)) if steps > 0 => {
+            Some((steps, read, stop)) if steps > 0 => {
                 lab_served.service.takes_latent(1)?;
                 let (latent_served, latent_dir) = (Arc::clone(&lab_served), dir.clone());
                 let map = council.call(move || latent_map(&latent_served, &latent_dir)).await?;
                 Some(Latent {
                     steps,
                     read,
+                    stop,
                     map: Arc::new(map),
                 })
             }
@@ -820,18 +861,27 @@ async fn ensemble(State(council): Shared, Extension(id): Id, body: Body) -> Resp
         };
         let served = council.route_contexts(model, &refs, true)?;
         let ensembled = council
-            .call(move || served.service.ensemble(&requests, rule, weights, plan, soft))
+            .call(move || served.service.ensemble(&requests, rule, weights, plan, soft, forced))
             .await?;
         let out = serde_json::to_value(&ensembled.done).expect("a generation response encodes");
         let mut body = serde_json::json!({"model": out["model"], "content": out["content"], "finish": out["finish"],
                                           "usage": out["usage"]});
+        // The stats score the reply, and the reasoning shows what the model thought (docs/lab.md).
+        for member in ["stats", "reasoning"] {
+            if out.get(member).is_some_and(|value| !value.is_null()) {
+                body[member] = out[member].clone();
+            }
+        }
         if let (Some(plan), Some((mixed, share))) = (soft_plan, ensembled.soft) {
             body["soft"] = soft_echo(&plan);
             body["soft"]["mixed"] = mixed.into();
             body["soft"]["mean_share"] = share.into();
         }
-        if let Some((steps, read)) = latent {
+        if let Some((steps, read, stop)) = latent {
             body["latent"] = serde_json::json!({"steps": steps});
+            if stop {
+                body["latent"]["ran"] = ensembled.ran.unwrap_or(0).into();
+            }
             if read {
                 let tokens: Vec<Value> = ensembled
                     .read

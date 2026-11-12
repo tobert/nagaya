@@ -372,9 +372,11 @@ impl Service {
         weights: Vec<f64>,
         latent: Option<Latent>,
         soft: Option<Soft>,
+        forced: Option<Vec<u32>>,
     ) -> Result<Ensembled, ServiceError> {
-        if let Some(soft) = soft {
-            return self.soft_generation(requests, &weights, latent, soft);
+        let stop = latent.as_ref().is_some_and(|plan| plan.stop);
+        if soft.is_some() || stop {
+            return self.single_generation(requests, &weights, latent, soft, forced);
         }
         let count = requests.len();
         let limits = &self.shared.limits;
@@ -415,6 +417,10 @@ impl Service {
                 ..plan
             });
             let mut prepared = self.prepare(request, None, None, plan)?;
+            // The lead takes the forced text: the other contexts feed the tokens that it takes.
+            if let (0, Some(tokens)) = (index, &forced) {
+                prepared.then.force(tokens.clone());
+            }
             facts.get_or_insert(prepared.facts.clone());
             // The contexts of an ensemble share each pass of a step, so the lead holds no decoded head (spec 6.14).
             prepared.then.shared_pass();
@@ -476,23 +482,30 @@ impl Service {
             done: self.answer(finished, &facts).0,
             read,
             soft: None,
+            ran: None,
         })
     }
 
-    /// An ensemble with soft inputs: one context with the weight 1, which runs as a generation (docs/lab.md, "Soft
-    /// inputs in a request"). Its rows share no pass, so it needs none of the steps of the ensemble.
-    fn soft_generation(
+    /// An ensemble with soft inputs or a stop of its latent steps: one context with the weight 1, which runs as a
+    /// generation (docs/lab.md, "Soft inputs in a request"). A soft row shares no pass, and a stop gives the context
+    /// its own count of steps, so it needs none of the steps of the ensemble.
+    fn single_generation(
         &self,
         requests: &[GenerationRequest],
         weights: &[f64],
         latent: Option<Latent>,
-        soft: Soft,
+        soft: Option<Soft>,
+        forced: Option<Vec<u32>>,
     ) -> Result<Ensembled, ServiceError> {
+        let (param, what) = match &soft {
+            Some(_) => ("soft", "soft inputs take"),
+            None => ("latent.stop", "a stop of latent steps takes"),
+        };
         let [request] = requests else {
             return Err(Invalid::param(
-                "soft",
+                param,
                 format!(
-                    "nothing ran: soft inputs take one context, and the request has {}; send one context",
+                    "nothing ran: {what} one context, and the request has {}; send one context",
                     requests.len()
                 ),
             )
@@ -501,12 +514,15 @@ impl Service {
         if weights != [1.0] {
             return Err(Invalid::param(
                 "weights",
-                "nothing ran: soft inputs take one context with the weight 1; send no weights",
+                format!("nothing ran: {what} one context with the weight 1; send no weights"),
             )
             .into());
         }
-        self.takes_soft(soft.width)?;
-        let (finished, facts) = self.run_soft(request, latent, soft)?;
+        if let Some(soft) = &soft {
+            self.takes_soft(soft.width)?;
+        }
+        let (finished, facts) = self.run_single(request, latent, soft, forced)?;
+        let ran = finished.then.latent_ran();
         let read = match finished.then.latent_read() {
             Some(ids) => Some(ids.iter().copied().zip(self.family.pieces(ids)?).collect()),
             None => None,
@@ -519,6 +535,7 @@ impl Service {
             done: self.answer(finished, &facts).0,
             read,
             soft,
+            ran,
         })
     }
 }
@@ -530,4 +547,6 @@ pub(crate) struct Ensembled {
     pub(crate) read: Option<Vec<(u32, String)>>,
     /// The count of soft rows and their mean share, when the request asked for soft inputs.
     pub(crate) soft: Option<(usize, f64)>,
+    /// The latent steps that ran, when the request sent a stop.
+    pub(crate) ran: Option<usize>,
 }
