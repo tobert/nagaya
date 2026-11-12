@@ -124,7 +124,7 @@
  "header": {
   "author": "written by Claude Sonnet 5.5 for this tool, 2026-10-22",
   "generator": "tools/op_fixtures.py",
-  "mk_rev": "555a2a3b01457eafbc64f3b9d14931df09ea0e02",
+  "reference_rev": "555a2a3b01457eafbc64f3b9d14931df09ea0e02",
   "numpy": "2.5.3",
   "python": "3.14.8"
  },
@@ -171,7 +171,7 @@
    17,
    47
   ],
-  "mk_files": [
+  "source_files": [
    "tests/ops/test_gdn.py"
   ],
   "state_rows": 16

@@ -47,7 +47,7 @@ fn the_ops_are_the_targets_of_mk() {
 #[test]
 fn each_op_compile_is_the_compile_of_mk_cmake_build() {
     let fixture = fixture();
-    let reference_src = fixture["mk_src"].as_str().unwrap().to_owned();
+    let reference_src = fixture["reference_src"].as_str().unwrap().to_owned();
     let src = Path::new("/nagaya/hip/src");
     let entries = fixture["compiles"].as_array().unwrap();
     assert_eq!(entries.len(), 11);

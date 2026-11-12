@@ -269,8 +269,8 @@ def main() -> None:
         cases.append(case)
 
     header = {
-        "mk_rev": git(mk, "rev-parse", "HEAD"),
-        "mk_files": ["service/chatfmt.py", "service/generate.py", "harness/tokenizer.py"],
+        "reference_rev": git(mk, "rev-parse", "HEAD"),
+        "source_files": ["service/chatfmt.py", "service/generate.py", "harness/tokenizer.py"],
         "gguf": args.gguf.name,
         "python": platform.python_version(),
         "generator": "tools/reply_fixture.py",

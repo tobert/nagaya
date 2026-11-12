@@ -114,5 +114,5 @@
    "soname": "libmk_tiles_nolook.so"
   }
  ],
- "mk_src": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src"
+ "reference_src": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src"
 }

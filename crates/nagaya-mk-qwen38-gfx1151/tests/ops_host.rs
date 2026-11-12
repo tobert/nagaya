@@ -92,10 +92,10 @@ fn all_fixtures_come_from_one_run_of_one_revision_of_mk() {
     let names = groups();
     let first = Fixture::load(&names[0]);
     let header = &first.json["header"];
-    let rev = header["mk_rev"].as_str().expect("mk_rev");
+    let rev = header["reference_rev"].as_str().expect("reference_rev");
     assert!(
         rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit()),
-        "mk_rev {rev:?} is not a git revision"
+        "reference_rev {rev:?} is not a git revision"
     );
     for name in &names {
         assert_eq!(&Fixture::load(name).json["header"], header, "the header of {name}");
@@ -158,12 +158,12 @@ fn no_bare_builtin_trap_outside_the_trap_header() {
 
 /// Each group but `gen` names the files of mk that it ports, as paths in mk's `tests/ops`.
 #[test]
-fn each_group_names_the_mk_files_it_reads() {
+fn each_group_names_the_source_files_it_reads() {
     for name in groups() {
         let files = Fixture::load(&name)
-            .meta("mk_files")
+            .meta("source_files")
             .as_array()
-            .expect("mk_files")
+            .expect("source_files")
             .clone();
         if name == "gen" {
             assert!(files.is_empty(), "gen reads no file of mk");

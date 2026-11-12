@@ -162,7 +162,7 @@ def main() -> None:
         if name not in groups:
             sys.exit(f"no group {name}; the groups are {', '.join(groups)}")
     header = {
-        "mk_rev": git(MK, "rev-parse", "HEAD"),
+        "reference_rev": git(MK, "rev-parse", "HEAD"),
         "python": platform.python_version(),
         "numpy": np.__version__,
         "generator": "tools/op_fixtures.py",
@@ -171,7 +171,7 @@ def main() -> None:
     me = sys.modules[__name__]
     for name in names:
         g = Group(name)
-        g.meta["mk_files"] = groups[name].SOURCE_FILES
+        g.meta["source_files"] = groups[name].SOURCE_FILES
         groups[name].make(g, me)
         g.write(args.out, header)
 

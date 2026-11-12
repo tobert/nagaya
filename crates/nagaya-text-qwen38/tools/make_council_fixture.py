@@ -216,8 +216,8 @@ def main() -> None:
     header = {
         "author": "written by Claude Sonnet 5.5 for this tool, 2026-10-20",
         "generator": "crates/nagaya-text-qwen38/tools/make_council_fixture.py",
-        "mk_rev": git(mk, "rev-parse", "HEAD"),
-        "mk_files": ["service/common.py", "service/template.py", "harness/tokenizer.py"],
+        "reference_rev": git(mk, "rev-parse", "HEAD"),
+        "source_files": ["service/common.py", "service/template.py", "harness/tokenizer.py"],
         "gguf": args.gguf.name,
         "effort": EFFORT,
     }

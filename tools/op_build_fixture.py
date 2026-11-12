@@ -33,7 +33,7 @@ def main() -> None:
                       "link_flags": fields["LINK_FLAGS"], "soname": fields["SONAME"]})
     rules = (build / "CMakeFiles/rules.ninja").read_text()
     rule = re.search(r"^rule HIP_SHARED_LIBRARY_LINKER__mk_qmm_RelWithDebInfo\n  command = (.*)\n", rules, re.M).group(1)
-    data = {"mk_src": root, "compiles": sorted(compiles, key=lambda c: c["file"]), "links": sorted(links, key=lambda l: l["library"]),
+    data = {"reference_src": root, "compiles": sorted(compiles, key=lambda c: c["file"]), "links": sorted(links, key=lambda l: l["library"]),
             "link_rule": rule}
     assert len(data["compiles"]) == len(data["links"]) and data["compiles"], "one compile and one link for each op"
     args.out.parent.mkdir(parents=True, exist_ok=True)

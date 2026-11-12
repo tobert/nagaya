@@ -364,8 +364,8 @@ def main() -> None:
     template_src = gguf_template(str(args.gguf))
 
     header = {
-        "mk_rev": git(mk, "rev-parse", "HEAD"),
-        "mk_files": ["harness/tokenizer.py", "service/template.py", "service/common.py", "service/chatfmt.py"],
+        "reference_rev": git(mk, "rev-parse", "HEAD"),
+        "source_files": ["harness/tokenizer.py", "service/template.py", "service/common.py", "service/chatfmt.py"],
         "gguf": args.gguf.name,
         "n_tokens": len(tok.id_to_token),
         "n_merges": len(tok.merge_rank),
