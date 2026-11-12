@@ -5,7 +5,7 @@ from the first two ports: Qwen3.8 on gfx1151host (milestones 8 to 14) and Gemma 
 engines came after them, in milestones 17 to 22: Qwen3-TTS, SDXL, EmbeddingGemma 2 and Qwen-Image 2.1. The
 rules are in `docs/spec.md`, `docs/engine-abi.md` and `AGENTS.md`. This doc points at them and does not repeat them.
 
-This doc names mk, mkviolet, gogi and kaijutsu. `docs/ontology.md`, "The other projects", defines each one.
+This doc names mkviolet, gogi and kaijutsu. `docs/ontology.md`, "The other projects", defines each one.
 
 Read `AGENTS.md` first. Its rules apply to every step here: a test first, a falsified test, no silent fallback, and
 no edit in another repository.
@@ -31,8 +31,8 @@ no edit in another repository.
 - A crate is `nagaya-<kind>-<model>-<target>`. The kind `mk` is a megakernel engine. The model is the family and
   version with no dot. The target is the compiler's device target: `gfx1151`, `bmg` (`AGENTS.md`, "Layout").
 - The engine kind in a profile is the crate name: `mk-qwen38-gfx1151`, `mk-gemma4-bmg`
-  (`crates/nagaya/src/mk.rs:13`, `crates/nagaya-mk-gemma4-bmg/src/spec.rs:24`). The engine name in the profile is
-  short: `mk`, `gemma`.
+  (`crates/nagaya/src/qwen38.rs:12`, `crates/nagaya-mk-gemma4-bmg/src/spec.rs:24`). The engine name in the profile is
+  short: `qwen38`, `gemma`.
 - A family library is `nagaya-text-<family>`. Its name in the identity is the family: `qwen38`, `gemma4`, `toy`
   (`crates/nagaya-mk-gemma4-bmg/src/spec.rs:30`).
 - One engine crate for each vendor and device. Amy, 2026-10-20: "we generate a megakernel per vendor/device and they
@@ -44,7 +44,7 @@ A port adds these things:
 |---|---|
 | the engine crate | `crates/nagaya-<kind>-<model>-<target>/` |
 | the family library, when the family is new | `crates/nagaya-text-<family>/` |
-| the factory module and the family opener | `crates/nagaya/src/<engine>.rs`, as `mk.rs` and `gemma4.rs`, named in `crates/nagaya/src/lib.rs:11` |
+| the factory module and the family opener | `crates/nagaya/src/<engine>.rs`, as `qwen38.rs` and `gemma4.rs`, named in `crates/nagaya/src/lib.rs` |
 | the kind in the engine registry | `crates/nagaya/src/admission.rs:191` (`Registry::compiled_in`) |
 | the family in the family registry | `crates/nagaya/src/serving.rs:53` (`FamilyRegistry::compiled_in`) |
 | the cargo feature that registers both | `crates/nagaya/Cargo.toml`, as `hip` and `xe` |
@@ -113,8 +113,8 @@ fixture holds five prompts with the top-64 logits and the logsumexp of the last 
 
 - Measure the gap first, with a spike. The reference does not give the bits of a GPU, so the oracle has a tolerance.
   The Qwen3.8 gap is 1e-3 on the exact path. The Gemma 4 gap is 1e-2 (spec 8.3).
-- Keep the prompts under the length where the gap is explained. Past about 640 tokens, mk and its reference differ
-  by 0.29, and the cause is not known (spec 15 item 8). The fixtures stop at 596 and 586 tokens.
+- Keep the prompts under the length where the gap is explained. Past about 640 tokens, the Qwen3.8 engine and its
+  reference differ by 0.29, and the cause is not known (spec 15 item 8). The fixtures stop at 596 and 586 tokens.
 - Test that the ids of the fixture are the ids of the library (`crates/nagaya-text-gemma4/tests/oracle.rs`). Then a
   tokenizer change shows in the fixture test, not in the engine gate.
 - The engine's bench compares the engine with the fixture and exits 1 when a gate breaks
@@ -134,17 +134,17 @@ that holds the model.
 
 **The shape.** The engine is a Rust type that implements `Engine` (engine-abi "Rust shape"). The core calls are
 `identity`, `limits`, `pass` and `last_error`. Each capability is its own trait with one accessor, so an engine has
-no stub method. An engine in another language exports a C ABI, and a thin wrapper implements the trait on it (mk). An
-engine in Rust implements the trait directly (Gemma 4).
+no stub method. An engine in another language exports a C ABI, and a thin wrapper implements the trait on it (the
+Qwen3.8 engine). An engine in Rust implements the trait directly (Gemma 4).
 
 **The factory.** The factory lives in the `nagaya` crate (`crates/nagaya/src/admission.rs`). It has `plan`, `open`,
 `arena_parts` and `attach`, and each one gets the group's devices with their PCI addresses (engine-abi "The factory
 gets its devices").
 
 - `plan` reads no weights. It reads the config and the tensor headers (`crates/nagaya-mk-gemma4-bmg/src/spec.rs:259`).
-  What the code cannot compute goes in the config as a measured value: mk's `weights_bytes` (engine-abi "The factory
-  plans from `weights_bytes`"). `open` compares the real size with the plan, and a difference exits 3 with the real
-  size in the message.
+  What the code cannot compute goes in the config as a measured value: the Qwen3.8 engine's `weights_bytes` (engine-abi
+  "The factory plans from `weights_bytes`"). `open` compares the real size with the plan, and a difference exits 3 with
+  the real size in the message.
 - The config refuses a key that it does not know (`crates/nagaya/src/gemma4.rs:46-54`).
 - The engine finds each card by its PCI address, and it refuses a count that is not its own. It never sees a machine
   device id. `limits().devices` holds group indexes 0 to n - 1 (spec 2.4, "One name for each device"). A Level Zero
@@ -152,10 +152,10 @@ gets its devices").
   Reason: the runtime's device order can differ from the PCI order.
 - `limits()` after `open` equals the result of `plan` (engine-abi "Core").
 
-**How the two engines map.** Read engine-abi "How mk maps" and "How mkviolet maps" before you map the next one. The
-two engines took different capabilities for the same rule:
+**How the two engines map.** Read engine-abi "How the Qwen3.8 engine maps" and "How mkviolet maps" before you map the
+next one. The two engines took different capabilities for the same rule:
 
-| Rule | mk (Qwen3.8) | Gemma 4 |
+| Rule | Qwen3.8 engine | Gemma 4 |
 |---|---|---|
 | a live state | a context in a slot; `contexts` not bound | a slot; no contexts |
 | segments in a pass | 16, `segments_exact: true` | 1, `segments_exact: false` |
@@ -165,18 +165,18 @@ two engines took different capabilities for the same rule:
 | coverage | rows 0 to n | per part; a ring holds the last 4,096 positions |
 | stages | one | two, one card each; the residual through host memory |
 | arena | one fd, full check | 31 DMA-BUF slabs, spot check |
-| `max_quantum_ms` | 10,000, mk's own watchdog | 2,000, measured on the longest stage quantum |
+| `max_quantum_ms` | 10,000, its own watchdog | 2,000, measured on the longest stage quantum |
 | checkpoint digest | `spot-sha256:` of the shard headers | `blake3:` over the canonical config and each tensor |
 
 - **Determinism.** The engine declares `always` or `pinned` (D3). When the bits depend on the token count of a
   pass, declare a feed rule, `segments_exact: false`, and no grain (D11 rule 4). When the split does not change the
-  bits, declare `segments_exact: true` and a measured grain (spec 6.13). Measure each claim on the card: mk's grain
-  has two GPU tests, and mkviolet's feed rule has a measurement of three splits (D11).
+  bits, declare `segments_exact: true` and a measured grain (spec 6.13). Measure each claim on the card.
+  The Qwen3.8 engine's grain has two GPU tests. mkviolet's feed rule has a measurement of three splits (D11).
 - **Terms.** Declare every byte in `limits().memory`: the weights, the slots, the scratch, the pinned host buffers
-  and the residual (spec 4.2). A pass never allocates. Measure a term that the code cannot sum: mk's context pool
-  (`examples/context_pool.rs`) and pass scratch (`examples/pass_scratch.rs`). `open` refuses a pool that takes more
-  than it declares. Leave room in the budget: card 1 of b70host had about 2.3 GB left beside `gemma` on 2026-10-21
-  (`docs/deploy.md`).
+  and the residual (spec 4.2). A pass never allocates. Measure a term that the code cannot sum: the Qwen3.8 engine's
+  context pool (`examples/context_pool.rs`) and pass scratch (`examples/pass_scratch.rs`). `open` refuses a pool that
+  takes more than it declares. Leave room in the budget: card 1 of b70host had about 2.3 GB left beside `gemma` on
+  2026-10-21 (`docs/deploy.md`).
 - **Identity.** Fill the fields of spec 12.1: `model`, `checkpoint_digest`, `tokenizer_hash`, `template`, `family`,
   `numbers`, the plan table lineage, the bit settings with their class, and `canary_hash`. Today `numbers` holds the
   kernel's SHA-256, the compiler versions and the driver version. The plan table names the PCI ids of the card
@@ -204,9 +204,9 @@ two engines took different capabilities for the same rule:
   (spec 3.2). Call the runtime's init on that thread. A thread that a runtime starts keeps the mask of the thread
   that starts it (spec 3.2b).
 - **Refuse, do not abort.** A pass that the wrapper refuses returns `PassError`, not `Ok` (engine-abi "A refused
-  pass returns an error"). Check every precondition before a C call that aborts the process: mk's worker runs
-  `host::segments_problem` before `qwen38_launch_fused` (`AGENTS.md`, "mk on gfx1151host"). A bad write returns `Refused`
-  and changes nothing, and a failure after a change poisons the state (D6).
+  pass returns an error"). Check every precondition before a C call that aborts the process: the Qwen3.8 engine's worker
+  runs `host::segments_problem` before `qwen38_launch_fused` (`AGENTS.md`, "The Qwen3.8 engine on gfx1151"). A bad write
+  returns `Refused` and changes nothing, and a failure after a change poisons the state (D6).
 - **Close.** An engine whose runtime teardown segfaults declares no `close`, and its `Drop` frees nothing
   (engine-abi "Capabilities"). The binary ends through one exit path with `_exit` (spec 10.4, "One exit path").
 - **The wake call.** A card that idles between the quanta of a job loses speed at its next command. The call and
@@ -232,11 +232,11 @@ each with the gates green (`AGENTS.md`, milestone 15).
   environment variables for the identity: `GEMMA4_OCLOC_VERSION`, `GEMMA4_IGC_REVISION`. It names the source in
   `rerun-if-changed`. A compiler that is missing stops the build with a message that names the feature.
 - **Keep the reference's float flags.** The gates compare bits, so the kernels keep the flags of the reference. For
-  mk, they are `-ffp-contract=off -fno-fast-math` (`AGENTS.md`, milestone 15). For Gemma 4, they are mkviolet's
-  `ocloc` options (`crates/nagaya-mk-gemma4-bmg/build.rs`).
+  the Qwen3.8 engine, they are `-ffp-contract=off -fno-fast-math` (`AGENTS.md`, milestone 15). For Gemma 4, they are
+  mkviolet's `ocloc` options (`crates/nagaya-mk-gemma4-bmg/build.rs`).
 - **No CMake.** `build.rs` calls the compiler itself (`AGENTS.md`, milestone 15).
-- **A static link.** Both engines link at build time. The Gemma 4 engine links Level Zero. The mk engine links its
-  own HIP code statically, with mk's flags, and a test checks the flags (`crates/nagaya-mk-qwen38-gfx1151/build.rs`,
+- **A static link.** Both engines link at build time. The Gemma 4 engine links Level Zero. The Qwen3.8 engine links its
+  own HIP code statically, with its own flags, and a test checks the flags (`crates/nagaya-mk-qwen38-gfx1151/build.rs`,
   `tests/build_flags.rs`). Build objects to stdout from the crate directory, so the archive digest does not take in
   the build directory.
 - **`serde_json` features.** Cargo joins the features of one build, so a workspace build has `preserve_order` and
@@ -272,8 +272,8 @@ gate that an engine's limits do not reach gives "not applicable".
 
 **GPU tests.** They sit behind the feature, and they run with `--test-threads=1`, because the tests share one engine
 and the weights fill the card (`crates/nagaya-mk-gemma4-bmg/tests/xe.rs:4`). Before a run, check that the old
-service and the nagaya are inactive, and never stop a service yourself (`AGENTS.md`, "mk on gfx1151host", "mkviolet on
-b70host"). Do not close the engine in a test when the runtime's teardown segfaults (spec 3.3).
+service and the nagaya are inactive, and never stop a service yourself (`AGENTS.md`, "The Qwen3.8 engine on gfx1151",
+"The engines on the B70 cards"). Do not close the engine in a test when the runtime's teardown segfaults (spec 3.3).
 
 **Process tests.** A process test starts the binary with the profile of the machine on a free loopback port. It
 serves a decision and a generation, and it runs gogi's conformance suite (`crates/nagaya/tests/xe_process.rs`). A
@@ -324,8 +324,8 @@ ids), `config`, `share` and `pin_identity`. Each `[[budgets]]` entry has the tie
 
 A machine with unified memory pools `device(0)` and `host` in one budget. A machine with discrete cards has one
 budget for each card and one for host memory (`deploy/b70host/profile.toml`). The host safety floor of spec 4.7
-is a runtime check of `MemAvailable`, 12 GiB in mk. It sets no size, and the ledger does not check it yet
-(`docs/spec.md:578`).
+is a runtime check of `MemAvailable`, 12 GiB in the Qwen3.8 engine. It sets no size, and the ledger does not check it
+yet (`docs/spec.md:578`).
 
 The two profiles keep a margin of their own, and each says why in a comment. gfx1151host's pool is 112 GiB of 125.1 GiB
 (`deploy/gfx1151host/profile.toml:22-24`). b70host's host budget is 96 GiB of 123.5 GiB
@@ -360,9 +360,9 @@ Senpai does the cutover with Amy. Do not start, stop or enable a service yoursel
 - Add the crate rows to the table under "Layout", with the spec sections of each.
 - Add the clippy check with the new feature under "Checks", and say where it runs. Add the GPU test command with
   `--test-threads=1`.
-- Add a machine section, as "mk on gfx1151host" and "mkviolet on b70host". It names the reference repository as
-  read-only, the two services to check, and the display device to leave alone. It names the model variable, the
-  feature and the reference venv.
+- Add a machine section, as "The Qwen3.8 engine on gfx1151" and "The engines on the B70 cards". It names the reference
+  repository as read-only, the two services to check, and the display device to leave alone. It names the model
+  variable, the feature and the reference venv.
 - Add the model to "Tests that need a model file": which machine holds it, the variable, and its default or the lack
   of one.
 - Add the milestone with its steps in order, and the rule that the cutover is senpai's with Amy.
