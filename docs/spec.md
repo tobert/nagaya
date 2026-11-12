@@ -524,8 +524,8 @@ isolation.
 - A start with no CPU sets pins no thread. Only a test starts that way. The binary always makes the sets (below).
 - An engine's own threads keep the mask of the group thread that starts them. Linux gives a new thread the mask of the
   thread that starts it. mk starts its worker thread (`qwen38-engine`) in `open`, on the group thread, so the worker
-  runs on the pool set. Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02. Reason: the process crate makes the
-  sets, and the group thread is pinned before it opens an engine. Thus the factory needs no CPU argument.
+  runs on the pool set. Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02. Reason: the process crate
+  makes the sets, and the group thread is pinned before it opens an engine. Thus the factory needs no CPU argument.
 
 The binary reads the online CPUs through the file probe (2.1) and makes the sets before it starts gossip. A probe
 error or a split error is a refusal to start: exit 3 (10.4).
