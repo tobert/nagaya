@@ -722,7 +722,7 @@ impl ThreadState {
         let deadline = watchdog_deadline(env_text("QWEN38_WATCHDOG_DEADLINE_S").as_deref())?;
         let engine = unsafe { (binding.engine_open)(deadline) };
         if engine.is_null() {
-            return Err(Qwen38Error::new("mk_engine_open returned no engine"));
+            return Err(Qwen38Error::new("qwen38_engine_open returned no engine"));
         }
         // The fixed buffers of a pass, as mk's wire made them at load: before the scratch probe.
         let host = unsafe { Host::new(&binding) };
@@ -1299,7 +1299,7 @@ impl ThreadState {
         if unsafe { (self.binding.ctx_poisoned)(ptr) } {
             return Call::Refused(POISONED.to_owned());
         }
-        // mk_ctx_round_gdn_bf16 stops the program on a non-finite value, or one that rounds to infinity. Check first.
+        // qwen38_ctx_round_gdn_bf16 stops the program on a non-finite value, or one that rounds to infinity. Check first.
         let mut state = Aligned::zeroed(spec::GDN_STATE_BYTES as usize);
         unsafe { (self.binding.state_read)(self.engine, ptr, 0, state.as_mut_ptr()) };
         for (index, value) in state.f32_values().enumerate() {

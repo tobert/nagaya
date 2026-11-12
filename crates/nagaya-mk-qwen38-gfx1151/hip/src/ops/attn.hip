@@ -6,7 +6,7 @@
 
 #include "rt.h"
 
-namespace mk {
+namespace qwen38 {
 
 __global__ void __launch_bounds__(kBlockThreads) k_attn_prep(AttnPrepArgs a) { op_attn_prep(a, blockIdx.x, gridDim.x); }
 __global__ void __launch_bounds__(kBlockThreads) k_attn_select(AttnSelectArgs a) {
@@ -28,9 +28,9 @@ static T *up(const T *h, size_t n) {
   return d;
 }
 
-}  // namespace mk
+}  // namespace qwen38
 
-using namespace mk;
+using namespace qwen38;
 
 // Test C ABI: host pointers in (including the prior cache contents and p0) and out. `grid`
 // overrides every stage's launch grid (0 = one workgroup per item), for grid-independence tests.
@@ -112,11 +112,11 @@ extern "C" int qwen38_attn(uint32_t t, uint32_t p0, const float *q_raw, const fl
 // Test C ABI for the selection alone (tests/ops/test_attn_select.py): token t's block scores in, its sel/sel_count
 // out, the same shapes as qwen38_attn (max_nb = (p0 + t) / ratio, max_sel = budget + ratio - 1). Same signature as the
 // serial oracle's qwen38_attn_select_serial. Unwritten sel cells come back as 0x5a5a5a5a.
-namespace mk {
+namespace qwen38 {
 __global__ void __launch_bounds__(kBlockThreads) k_attn_select_emit(AttnSelectArgs a) {
   for (uint32_t t = blockIdx.x; t < a.t; t += gridDim.x) attn_select_emit(a, t);
 }
-}  // namespace mk
+}  // namespace qwen38
 
 extern "C" int qwen38_attn_select_emit(uint32_t t, uint32_t p0, uint32_t budget, uint32_t ratio, const float *scores,
                                    int32_t *sel_out, uint32_t *sel_count_out, uint32_t grid) {

@@ -20,7 +20,7 @@
 #include "common.h"
 #include "quant.h"
 
-namespace mk {
+namespace qwen38 {
 
 constexpr uint32_t kIq3sTile = 1792;
 constexpr uint32_t kIq3sTileRowBytes = kIq3sTile / 16;  // 112 per row per superblock
@@ -40,7 +40,7 @@ struct RelayoutArgs {
 __device__ inline void op_relayout_iq3s(const RelayoutArgs &a, uint32_t wg, uint32_t nwg) {
   const uint32_t nsb = a.k / 256, tiles = (a.n / 16) * nsb;
   for (uint32_t i = wg; i < tiles; i += nwg) {
-    const uint32_t g = i / nsb, sb = i % nsb, l = mk_tid();
+    const uint32_t g = i / nsb, sb = i % nsb, l = thread_id();
     if (l >= 32) continue;
     const uint32_t r = l % 16, h = l / 16;
     const uint8_t *b = a.src + uint64_t(g * 16 + r) * nsb * 110 + sb * 110;
@@ -156,7 +156,7 @@ __host__ __device__ inline const uint8_t *q8_tile(const uint8_t *w, uint32_t k, 
 __device__ inline void op_relayout_q8(const RelayoutArgs &a, uint32_t wg, uint32_t nwg) {
   const uint32_t pairs = a.k / 64, tiles = (a.n / 16) * pairs;
   for (uint32_t i = wg; i < tiles; i += nwg) {
-    const uint32_t g = i / pairs, pr = i % pairs, s = mk_tid();
+    const uint32_t g = i / pairs, pr = i % pairs, s = thread_id();
     if (s >= 32) continue;
     const uint32_t r = s % 16, u = 2 * pr + s / 16;
     const uint8_t *b = a.src + uint64_t(g * 16 + r) * (a.k / 32) * 34 + uint64_t(u) * 34;
@@ -201,7 +201,7 @@ __host__ __device__ inline const uint8_t *q6_tile(const uint8_t *w, uint32_t k, 
 __device__ inline void op_relayout_q6(const RelayoutArgs &a, uint32_t wg, uint32_t nwg) {
   const uint32_t nsb = a.k / 256, tiles = (a.n / 16) * nsb;
   for (uint32_t i = wg; i < tiles; i += nwg) {
-    const uint32_t g = i / nsb, sb = i % nsb, s = mk_tid();
+    const uint32_t g = i / nsb, sb = i % nsb, s = thread_id();
     if (s >= 32) continue;
     const uint32_t r = s % 16, h = s / 16;
     const uint8_t *b = a.src + uint64_t(g * 16 + r) * nsb * 210 + uint64_t(sb) * 210;
@@ -269,7 +269,7 @@ __host__ __device__ constexpr uint64_t iq4_tiled_bytes(uint32_t n, uint32_t k) {
 __device__ inline void op_relayout_iq4nl(const RelayoutArgs &a, uint32_t wg, uint32_t nwg) {
   const uint32_t ntl = a.k / 128, tiles = (a.n / 16) * ntl;
   for (uint32_t i = wg; i < tiles; i += nwg) {
-    const uint32_t g = i / ntl, ti = i % ntl, s = mk_tid();
+    const uint32_t g = i / ntl, ti = i % ntl, s = thread_id();
     if (s >= 32) continue;
     const uint32_t r = s % 16, h = s / 16;
     const uint8_t *b = a.src + uint64_t(g * 16 + r) * (a.k / 32) * 18 + uint64_t(ti) * 4 * 18;
@@ -303,4 +303,4 @@ __device__ inline void iq4_tile_dequant32(const uint8_t *tile, uint32_t r, uint3
   }
 }
 
-}  // namespace mk
+}  // namespace qwen38

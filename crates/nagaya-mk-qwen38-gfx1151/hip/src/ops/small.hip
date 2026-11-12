@@ -6,7 +6,7 @@
 #include "qmm.h"
 #include "rt.h"
 
-namespace mk {
+namespace qwen38 {
 __global__ void __launch_bounds__(kBlockThreads) k_rms(RmsArgs a) { op_rms(a, blockIdx.x, gridDim.x); }
 __global__ void __launch_bounds__(kBlockThreads) k_silu_scale(SiluScaleArgs a) { op_silu_scale(a, blockIdx.x, gridDim.x); }
 __global__ void __launch_bounds__(kBlockThreads) k_hc_mix(HcMixArgs a) { op_hc_mix(a, blockIdx.x, gridDim.x); }
@@ -22,9 +22,9 @@ static T *up(const T *h, size_t n) {
   else HIP_CHECK(hipMemset(d, 0xff, sizeof(T) * n));
   return d;
 }
-}  // namespace mk
+}  // namespace qwen38
 
-using namespace mk;
+using namespace qwen38;
 
 // The hyper-connection "pre" half (Qwen4ExpTextGatedResidual.forward), for tests:
 // h [T, 4E] -> mixed [T, E], inject [T, 4] (if w_inject), xn [T, 4E].

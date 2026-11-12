@@ -368,19 +368,19 @@ Reason: the fake engine must serve a family with a vocabulary, and the output ro
 
 | ABI | mk (`extern.hip`) | Notes |
 |---|---|---|
-| open / attach | `mk_engine_open(watchdog_deadline_s)`; no attach | no device argument: the HIP device is the calling thread's current one, so the wrapper sets it on the group's thread; the Rust reader parses the three GGUF shards, and the Rust host fills the arena (Proposed notes below); the C++ engine is the runtime layer only: the launches under the control block and the watchdog |
+| open / attach | `qwen38_engine_open(watchdog_deadline_s)`; no attach | no device argument: the HIP device is the calling thread's current one, so the wrapper sets it on the group's thread; the Rust reader parses the three GGUF shards, and the Rust host fills the arena (Proposed notes below); the C++ engine is the runtime layer only: the launches under the control block and the watchdog |
 | plan | none yet | the wrapper computes the terms from the config and mk's fixed shapes |
 | arena | `arena::plan` and `arena::create` in Rust (`arena.rs`) | one sealed memfd in mk's `arena.h` layout; no check of another process's arena yet: milestone 15 step 6 removed the C++ check, which had no call |
 | identity | built in the Python service | moves into the engine; must include `fused` and `MK_FAST_QMM` |
-| contexts | `context::ctx_new`, `ctx_free`, `ctx_n` in Rust (`context.rs`) | over the runtime calls `mk_rt_malloc`, `mk_rt_free` and `mk_rt_memset` of `rt.cpp`; no fork and no copy |
-| parts | `context::state_read`, `state_write`, `cells_write`, `set_n` in Rust | over `mk_rt_memcpy` and `mk_rt_memcpy_2d`; after `set_n` the worker pools the index keys (`host.rs` `pool_context`, through `mk_launch_each`). Parts 0-2 and 5 fixed, 3-4 cells; `idx_pooled` derived. `cells_read` takes only rows 0 to n, the whole part: snapshots are stored whole (about 316 MB at n = 3584, ontology "Part") |
+| contexts | `context::ctx_new`, `ctx_free`, `ctx_n` in Rust (`context.rs`) | over the runtime calls `hip_rt_malloc`, `hip_rt_free` and `hip_rt_memset` of `rt.cpp`; no fork and no copy |
+| parts | `context::state_read`, `state_write`, `cells_write`, `set_n` in Rust | over `hip_rt_memcpy` and `hip_rt_memcpy_2d`; after `set_n` the worker pools the index keys (`host.rs` `pool_context`, through `qwen38_launch_each`). Parts 0-2 and 5 fixed, 3-4 cells; `idx_pooled` derived. `cells_read` takes only rows 0 to n, the whole part: snapshots are stored whole (about 316 MB at n = 3584, ontology "Part") |
 | slots | `ctx_n`, `ctx_free` then `ctx_new` | `slot_high` is the token count; `slot_clear` makes a new context of the same capacity |
 | coverage | none | rows 0 to n of each cells part; `fits` compares the rows with the slot's capacity |
-| seal | `mk_ctx_round_gdn_bf16` | changes bits in place |
+| seal | `qwen38_ctx_round_gdn_bf16` | changes bits in place |
 | poison / last_error | `MkContext::poisoned`, `mk_last_error` | |
 | part writes | `context::state_write`, `cells_write`, `set_n` | return nothing and stop the program on input they refuse; the wrapper checks every precondition first (part index, bytes, an empty context for parts 3-5, n within `max`, not poisoned) and returns refused; a write to a context that is already poisoned is refused, because this call changes nothing; after the call, the poison flag gives failed (decided 2026-10-18) |
 | close | the drop of the last handle or `Hold` (`engine.rs`) | frees the contexts, then the weights: the arena, the shard maps, the PLE table, the weight table (`worker.rs` `unload`); the next `open` loads them again from the same shards; the HIP runtime, the C++ engine and the pass host stay (see below) |
-| pass_check / pass | `host::segments_problem`, `host::run_pass` in Rust; `mk_launch_fused` | tokens only (PLE needs token ids); the worker refuses a segment count outside 1 to 16, then a problem of `segments_problem`, then a poisoned context, then a bad knob; the host gathers the PLE rows (`ple.rs`), builds the stages (`pass.rs`), and launches them; outputs are logits per segment |
+| pass_check / pass | `host::segments_problem`, `host::run_pass` in Rust; `qwen38_launch_fused` | tokens only (PLE needs token ids); the worker refuses a segment count outside 1 to 16, then a problem of `segments_problem`, then a poisoned context, then a bad knob; the host gathers the PLE rows (`ple.rs`), builds the stages (`pass.rs`), and launches them; outputs are logits per segment |
 | taps | none | milestone 15 step 6 removed the taps (layers, routes, gates), which had no call |
 | telemetry | none | milestone 15 step 6 removed the op times and the event ring of a pass, which had no call |
 | determinism | `always` | `stage.h`: "every op's output bits depend only on its work items"; top-k ties break by index; bit settings in the identity |
@@ -409,7 +409,7 @@ the ABI.
   - `cells_read` takes `from` 0 and `n` equal to the token count. Then it is a whole read. It refuses every other
     range, because mk has no range read.
 
-  **Open:** `context::ctx_new` stops the program when `hipMalloc` fails (`mk_rt_malloc` in `rt.cpp`). Thus a clear
+  **Open:** `context::ctx_new` stops the program when `hipMalloc` fails (`hip_rt_malloc` in `rt.cpp`). Thus a clear
   that cannot allocate ends the process, and the binding never sees a null context. The free comes first, so the
   allocator holds the bytes. mk needs a reset call that keeps the buffers, so that a clear does not allocate.
   - The factory of the process crate gives `plan(config)` (next rule), and this binding fixes the pool.
@@ -447,7 +447,7 @@ the ABI.
   segment whose first position is not n, or whose positions are not contiguous. mk reads no per-token metadata, so
   `meta` must be empty.
 - **A pass is fused.** Milestone 15 step 6 removed the unfused pass, which no call used. The restore's pool stages
-  still run one launch each (`mk_launch_each`). This binding declares no taps.
+  still run one launch each (`qwen38_launch_each`). This binding declares no taps.
 - **The checkpoint digest is a spot check.** The binding hashes each shard's size and its GGUF header, as mk's
   `weight_hash` does. The digest starts with `spot-sha256:`.
 - **`tokenizer_hash` is a hash of the GGUF tokenizer.** mk loads no tokenizer file. The binding hashes the
@@ -518,7 +518,7 @@ compare the build with itself.
 reader (`gguf.rs`), and step 5 moved the stage schedule (`schedule.rs`). Step 6 moved the arena plan, the PLE gather
 and the stage build (`arena.rs`, `ple.rs` and `pass.rs`):
 
-- `mk_engine_open` takes a `mk_weight_table` (`weight_table.h`): each tensor of the arena by name, in its final
+- `qwen38_engine_open` takes a `mk_weight_table` (`weight_table.h`): each tensor of the arena by name, in its final
   layout. The export of the arena (spec 10.2) builds the attach in Rust, from `arena.rs`.
 - Rust mirrors `Stage` and the argument type of each op as `#[repr(C)]` types (`src/stage.rs`). One file holds each
   size, offset and constant of that mirror (`hip/src/engine/stage_layout.def`). Both the C++ build and the Rust build

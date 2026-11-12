@@ -12,7 +12,7 @@
 #include "rt.h"
 #include "stage.h"
 
-namespace mk {
+namespace qwen38 {
 
 // A context: everything a pass continues from. The Rust host makes, reads, writes, builds and advances it
 // (src/context.rs, which mirrors this layout as MkContext; extern.hip states it). round_gdn_bf16 reads it here.
@@ -80,4 +80,4 @@ class Engine {
   hipEvent_t launched_ev_ = nullptr;  // recorded after each launch (the watchdog's "kernel still runs" query)
 };
 
-}  // namespace mk
+}  // namespace qwen38

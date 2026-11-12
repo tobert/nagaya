@@ -6,7 +6,7 @@
 
 #include "stage.h"
 
-namespace mk {
+namespace qwen38 {
 namespace stage_layout {
 
 #define STAGE_SIZE(T, bytes) static_assert(sizeof(T) == (bytes), "stage_layout.def: the size of " #T " changed");
@@ -20,4 +20,4 @@ namespace stage_layout {
 #undef STAGE_CONST
 
 }  // namespace stage_layout
-}  // namespace mk
+}  // namespace qwen38

@@ -6,11 +6,11 @@
 #include "qmm_host.h"
 #include "rt.h"
 
-namespace mk {
+namespace qwen38 {
 __global__ void __launch_bounds__(kBlockThreads) k_qmm_oracle(QmmArgs a) { oracle::op_qmm(a, blockIdx.x, gridDim.x); }
-}  // namespace mk
+}  // namespace qwen38
 
-using namespace mk;
+using namespace qwen38;
 
 static void launch_oracle(const QmmArgs &a, uint32_t grid) { k_qmm_oracle<<<grid, kBlockThreads>>>(a); }
 

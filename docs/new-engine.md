@@ -160,7 +160,7 @@ two engines took different capabilities for the same rule:
 | a live state | a context in a slot; `contexts` not bound | a slot; no contexts |
 | segments in a pass | 16, `segments_exact: true` | 1, `segments_exact: false` |
 | bits and the split of a pass | the same for any split; a checkpoint grain of 256 | depend on the token count; a feed rule, `block` 512 (D11) |
-| seal | `mk_ctx_round_gdn_bf16` changes bits | none |
+| seal | `qwen38_ctx_round_gdn_bf16` changes bits | none |
 | parts | 4 fixed, 2 cells, 1 derived; snapshots whole | `k.<ll>`, `v.<ll>` for 30 layers; cells on global layers, rings on sliding layers |
 | coverage | rows 0 to n | per part; a ring holds the last 4,096 positions |
 | stages | one | two, one card each; the residual through host memory |
@@ -205,7 +205,7 @@ two engines took different capabilities for the same rule:
   that starts it (spec 3.2b).
 - **Refuse, do not abort.** A pass that the wrapper refuses returns `PassError`, not `Ok` (engine-abi "A refused
   pass returns an error"). Check every precondition before a C call that aborts the process: mk's worker runs
-  `host::segments_problem` before `mk_launch_fused` (`AGENTS.md`, "mk on gfx1151host"). A bad write returns `Refused`
+  `host::segments_problem` before `qwen38_launch_fused` (`AGENTS.md`, "mk on gfx1151host"). A bad write returns `Refused`
   and changes nothing, and a failure after a change poisons the state (D6).
 - **Close.** An engine whose runtime teardown segfaults declares no `close`, and its `Drop` frees nothing
   (engine-abi "Capabilities"). The binary ends through one exit path with `_exit` (spec 10.4, "One exit path").

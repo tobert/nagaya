@@ -5,7 +5,7 @@
 
 #include "rt.h"
 
-namespace mk {
+namespace qwen38 {
 // Every matmul of the block goes through this one dispatcher kernel, the only kernel in this TU that reaches
 // the LDS arena (qmmh): LDS-using ops stay inlined into a single kernel per TU (DESIGN.md "The megakernel").
 enum MoeMm : uint32_t { kMmQmm, kMmQmmh, kMmGu, kMmDown };
@@ -36,10 +36,10 @@ static T *dev(const void *h, size_t bytes) {
   else HIP_CHECK(hipMemset(d, 0xff, bytes));
   return d;
 }
-}  // namespace mk
+}  // namespace qwen38
 
-using namespace mk;
-using namespace mk::model;
+using namespace qwen38;
+using namespace qwen38::model;
 
 // The whole MoE block for tests: x [T, 2560] -> out [T, 2560], plus the router's choices.
 // Weights as stored in the GGUF (raw bytes of the full 512-expert tensors). fast = 1: the quantized matmuls
@@ -157,9 +157,9 @@ extern "C" int qwen38_moe_route(const float *logits_host, uint32_t t, uint32_t f
 }
 
 // ---- the expert down stage alone: tests/ops/test_tiles.py (bit identity of the tiled layouts), tools/qmm_bench.py ----
-namespace mk {
+namespace qwen38 {
 __global__ void __launch_bounds__(kBlockThreads) k_moe_relayout_iq4(RelayoutArgs a) { op_relayout_iq4nl(a, blockIdx.x, gridDim.x); }
-}  // namespace mk
+}  // namespace qwen38
 
 // op_moe_down over raw = all 512 experts' down matrices as stored in the GGUF (type IQ4_NL or Q8_0, [512][2560][row
 // bytes]; only IQ4_NL has tiles). counts[e] rows of h ([sum counts][640], grouped by expert in expert order) go to expert e, and expert
@@ -284,9 +284,9 @@ extern "C" double qwen38_moe_down_bench(uint32_t type, const void *raw, uint64_t
 }
 
 // ---- the expert gate/up stage alone, for the prefetch bench (tools/moe_gu_bench.py) and tests ----
-namespace mk {
+namespace qwen38 {
 __global__ void __launch_bounds__(kBlockThreads) k_moe_relayout_iq3s(RelayoutArgs a) { op_relayout_iq3s(a, blockIdx.x, gridDim.x); }
-}  // namespace mk
+}  // namespace qwen38
 
 // op_moe_gu over raw = 512 experts' IQ3_S matrices as stored in the GGUF ([512][640][row bytes]); experts 0..255 are the
 // gate, 256..511 the up matrices (a bench reads both through one pool). counts[e] tokens go to expert e (e < 256; the

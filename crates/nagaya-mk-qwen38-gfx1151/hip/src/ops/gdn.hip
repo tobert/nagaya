@@ -5,7 +5,7 @@
 
 #include "rt.h"
 
-namespace mk {
+namespace qwen38 {
 
 __global__ void __launch_bounds__(kBlockThreads) k_gdn_conv(GdnConvArgs a) { op_gdn_conv(a, blockIdx.x, gridDim.x); }
 __global__ void __launch_bounds__(kBlockThreads) k_gdn_core(GdnCoreArgs a) { op_gdn_core(a, blockIdx.x, gridDim.x); }
@@ -26,9 +26,9 @@ static T *upv(size_t n) {  // uninitialized output buffer, NaN-filled so unwritt
   return d;
 }
 
-}  // namespace mk
+}  // namespace qwen38
 
-using namespace mk;
+using namespace qwen38;
 
 // The gated DeltaNet core for one layer's T tokens: causal conv + silu (op_gdn_conv), then the
 // gated delta rule and gated RMSNorm per value head (op_gdn_core). Host pointers in and out,

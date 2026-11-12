@@ -1,6 +1,6 @@
 //! The compiles of `build.rs` are mk's compiles, flag for flag.
 //!
-//! The fixture holds the nine entries of mk's `build/compile_commands.json` for the units of `libmkengine.so`, from
+//! The fixture holds the nine entries of mk's `build/compile_commands.json` for the units of `libqwen38engine.so`, from
 //! mk's CMake build at mk commit `555a2a3`. The float flags are part of the model's definition, and the conformance
 //! gates compare bits. Thus a flag that differs fails here, before a GPU run.
 //!

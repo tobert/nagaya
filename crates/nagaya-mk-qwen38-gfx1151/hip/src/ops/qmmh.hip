@@ -7,7 +7,7 @@
 #include "qmm_host.h"
 #include "rt.h"
 
-namespace mk {
+namespace qwen38 {
 
 // One dispatcher kernel in this TU (the LDS rule): which = 0 the matmul, 1 the split-K sum.
 __global__ void __launch_bounds__(kBlockThreads) k_qmmh(QmmArgs a, uint32_t which) {
@@ -28,9 +28,9 @@ __global__ void __launch_bounds__(kBlockThreads) k_xin_probe(QmmArgs a, float *x
   }
 }
 
-}  // namespace mk
+}  // namespace qwen38
 
-using namespace mk;
+using namespace qwen38;
 
 static void launch_qmmh(const QmmArgs &a, uint32_t grid) { k_qmmh<<<grid, kBlockThreads>>>(a, 0); }
 

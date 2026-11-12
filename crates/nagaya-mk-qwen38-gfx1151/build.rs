@@ -1,4 +1,4 @@
-//! Build mk's engine from `hip/` into the static library `libmkengine.a`, under the feature `hip`.
+//! Build mk's engine from `hip/` into the static library `libqwen38engine.a`, under the feature `hip`.
 //!
 //! The commands are the commands of mk's CMake build at mk commit `555a2a3`, from mk's `build/compile_commands.json`.
 //! The flags are part of the model's definition: the conformance gates compare bits. Thus this script calls the
@@ -83,7 +83,7 @@ fn include(directory: &Path) -> String {
 /// The compile of one engine unit, as mk's `compile_commands.json` gives it for `src/engine/engine.hip`.
 fn engine_unit(src: &Path, out: &Path, name: &str) -> Unit {
     let mut arguments = strings(HIP_DEFINES);
-    arguments.push("-Dmkengine_EXPORTS".to_owned());
+    arguments.push("-Dqwen38engine_EXPORTS".to_owned());
     for directory in ["engine", "ops", "rt", "gguf"] {
         arguments.push(include(&src.join(directory)));
     }
@@ -194,14 +194,14 @@ fn main() {
         }
     });
 
-    let library = out.join("libmkengine.a");
+    let library = out.join("libqwen38engine.a");
     if library.exists() {
         std::fs::remove_file(&library).unwrap_or_else(|error| panic!("remove {}: {error}", library.display()));
     }
     // llvm-ar writes a deterministic archive by default: no time stamps, owners or modes.
     let mut arguments = vec!["crs".to_owned(), library.display().to_string()];
     arguments.extend(units.iter().map(|unit| unit.object.display().to_string()));
-    run(&archiver, &arguments, &out, "the archive of libmkengine.a");
+    run(&archiver, &arguments, &out, "the archive of libqwen38engine.a");
 
     let bytes = std::fs::read(&library).unwrap_or_else(|error| panic!("read {}: {error}", library.display()));
     let sha256: String = sha2_hex(&bytes);
@@ -214,15 +214,15 @@ fn main() {
         &run(&hipconfig, &["--version".to_owned()], &out, "hipconfig --version"),
         "hipconfig",
     );
-    println!("cargo:rustc-env=MK_ENGINE_BUILD_SHA256={sha256}");
-    println!("cargo:rustc-env=MK_ENGINE_BUILD_COMPILER={compiler_version}");
-    println!("cargo:rustc-env=MK_ENGINE_BUILD_HIP={hip_version}");
+    println!("cargo:rustc-env=QWEN38_BUILD_SHA256={sha256}");
+    println!("cargo:rustc-env=QWEN38_BUILD_COMPILER={compiler_version}");
+    println!("cargo:rustc-env=QWEN38_BUILD_HIP={hip_version}");
 
     // Every object of the archive goes into the binary. Each HIP object registers its kernels from a constructor, and
     // the linker drops an object that no symbol names.
     println!("cargo:rustc-link-search=native={}", out.display());
-    println!("cargo:rustc-link-lib=static:+whole-archive=mkengine");
-    // The HIP runtime and the C++ library stay shared, as for mk's libmkengine.so.
+    println!("cargo:rustc-link-lib=static:+whole-archive=qwen38engine");
+    // The HIP runtime and the C++ library stay shared, as for mk's libqwen38engine.so.
     println!("cargo:rustc-link-search=native={}", rocm.join("lib").display());
     println!("cargo:rustc-link-lib=dylib=amdhip64");
     println!("cargo:rustc-link-lib=dylib=stdc++");

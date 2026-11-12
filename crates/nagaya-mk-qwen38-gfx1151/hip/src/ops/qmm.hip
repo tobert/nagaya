@@ -5,7 +5,7 @@
 #include "qmm_host.h"
 #include "rt.h"
 
-namespace mk {
+namespace qwen38 {
 
 __global__ void __launch_bounds__(kBlockThreads) k_qmm(QmmArgs a) { op_qmm(a, blockIdx.x, gridDim.x); }
 
@@ -25,9 +25,9 @@ __global__ void __launch_bounds__(kBlockThreads) k_dequant(const uint8_t *w, uin
   }
 }
 
-}  // namespace mk
+}  // namespace qwen38
 
-using namespace mk;
+using namespace qwen38;
 
 extern "C" int qwen38_dequant(uint32_t type, const void *w_host, uint64_t w_bytes, uint32_t rows, uint32_t k, float *out_host,
                           uint64_t out_bytes) {

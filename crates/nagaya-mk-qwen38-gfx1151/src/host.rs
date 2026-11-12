@@ -46,7 +46,7 @@ impl Scratch for PoolScratch<'_> {
         }
         let bytes = 4 * floats as u64;
         let p = unsafe { (self.binding.rt_malloc)(bytes) } as *mut f32;
-        assert!(!p.is_null(), "mk_rt_malloc({bytes}) gave no buffer for scratch {name}");
+        assert!(!p.is_null(), "hip_rt_malloc({bytes}) gave no buffer for scratch {name}");
         unsafe { (self.binding.rt_memset)(p.cast(), 0, bytes) };
         self.pool.bufs.insert(name.to_owned(), (p, floats));
         p
@@ -78,7 +78,7 @@ impl Host {
         let head_rows = unsafe { (binding.rt_malloc)(4 * u64::from(pass::MAX_SEGMENTS)) } as *mut u32;
         assert!(
             !tokens.is_null() && !head_rows.is_null(),
-            "mk_rt_malloc gave no pass buffer"
+            "hip_rt_malloc gave no pass buffer"
         );
         Host {
             pool: Pool::default(),
@@ -96,7 +96,7 @@ impl Host {
             let table = pass::inv_freq();
             let bytes = std::mem::size_of_val(&table) as u64;
             let p = unsafe { (binding.rt_malloc)(bytes) } as *mut f32;
-            assert!(!p.is_null(), "mk_rt_malloc gave no rope table");
+            assert!(!p.is_null(), "hip_rt_malloc gave no rope table");
             unsafe { (binding.rt_memcpy)(p.cast(), table.as_ptr().cast(), bytes, Copy::HostToDevice as u32) };
             self.inv_freq = p;
         }
@@ -112,7 +112,7 @@ impl Host {
             self.stage_cap = stages.len();
             let bytes = (std::mem::size_of::<Stage>() * self.stage_cap) as u64;
             self.stages = unsafe { (binding.rt_host_malloc)(bytes) } as *mut Stage;
-            assert!(!self.stages.is_null(), "mk_rt_host_malloc gave no stage list");
+            assert!(!self.stages.is_null(), "hip_rt_host_malloc gave no stage list");
         }
         let bytes = std::mem::size_of_val(stages) as u64;
         unsafe {

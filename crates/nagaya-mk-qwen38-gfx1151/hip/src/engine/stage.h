@@ -18,7 +18,7 @@
 #include "attn.h"
 #include "attn_mask.h"
 
-namespace mk {
+namespace qwen38 {
 
 // Stage::sched: no grid barrier after this stage (only a workgroup one, for the LDS the ops share), and the rotation.
 constexpr uint32_t kSchedNoBarrier = 1u << 31;
@@ -145,4 +145,4 @@ __device__ __attribute__((always_inline)) inline void run_stage(const Stage &s, 
 // path, else kStQmm (exact f32). Host side, at pass build.
 inline uint32_t qmm_op(uint32_t type, bool fast) { return fast && qmmh_type(type) ? kStQmmH : kStQmm; }
 
-}  // namespace mk
+}  // namespace qwen38

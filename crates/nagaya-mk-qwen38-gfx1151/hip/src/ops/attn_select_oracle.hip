@@ -5,13 +5,13 @@
 
 #include "rt.h"
 
-namespace mk {
+namespace qwen38 {
 __global__ void __launch_bounds__(kBlockThreads) k_attn_select_serial(AttnSelectArgs a) {
   for (uint32_t t = blockIdx.x; t < a.t; t += gridDim.x) oracle::attn_select_emit_serial(a, t);
 }
-}  // namespace mk
+}  // namespace qwen38
 
-using namespace mk;
+using namespace qwen38;
 
 // scores [t][max_nb] with max_nb = (p0 + t) / ratio; sel_out [t][budget + ratio - 1]; grid 0 = t.
 extern "C" int qwen38_attn_select_serial(uint32_t t, uint32_t p0, uint32_t budget, uint32_t ratio, const float *scores,

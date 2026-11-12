@@ -50,7 +50,7 @@ const Q8_0_TILE: u64 = 1088;
 const Q6_K_TILE: u64 = 3360;
 const IQ4_NL_TILE: u64 = 1152;
 
-/// A tensor's read-once tile layout (`tiles.h`), or none. The value is the id that `mk_relayout` takes.
+/// A tensor's read-once tile layout (`tiles.h`), or none. The value is the id that `qwen38_relayout` takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 pub(crate) enum Tile {

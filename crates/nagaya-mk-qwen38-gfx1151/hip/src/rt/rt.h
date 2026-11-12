@@ -41,7 +41,7 @@
              (unsigned long long)hip_need_);                                                            \
   } while (0)
 
-namespace mk {
+namespace qwen38 {
 
 // Why a kernel stopped early. The first nonzero status wins (atomicCAS from 0).
 enum Status : uint32_t {
@@ -260,4 +260,4 @@ class Watchdog {
 // MemAvailable from /proc/meminfo, in bytes. Dies if it can't be read.
 uint64_t mem_available_bytes();
 
-}  // namespace mk
+}  // namespace qwen38

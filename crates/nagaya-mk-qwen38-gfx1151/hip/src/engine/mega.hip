@@ -4,7 +4,7 @@
 #include "device.h"
 #include "stage.h"
 
-namespace mk {
+namespace qwen38 {
 
 // skip_barrier: the mutation test's knob (M4 check) — the barrier after that stage is left out,
 // which must show up as a bit difference. UINT32_MAX in every real pass. With its top bit set it is the stall knob
@@ -78,4 +78,4 @@ __global__ void __launch_bounds__(kBlockThreads) __attribute__((amdgpu_waves_per
 
 const void *mega_kernel() { return reinterpret_cast<const void *>(&k_mega); }
 
-}  // namespace mk
+}  // namespace qwen38

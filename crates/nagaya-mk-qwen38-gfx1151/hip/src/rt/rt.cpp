@@ -13,7 +13,7 @@
 #include <map>
 #include <tuple>
 
-namespace mk {
+namespace qwen38 {
 
 const char *status_name(uint32_t s) {
   switch (s) {
@@ -195,13 +195,13 @@ void ControlBlock::end_pass() { clean_ = status() == kOk; }
 bool trap_sink_installed() { return g_trap_record.load(std::memory_order_acquire) != nullptr; }
 
 // For ctypes (tests/ops/mkops.py lib()): every op-test library installs the sink once it is loaded.
-extern "C" int mk_trap_sink_install() {
+extern "C" int hip_trap_sink_install() {
   trap_sink_install();
   return 0;
 }
 
 // For tests/ops/test_traps.py: the report line for a record (status, site, wg); returns its length, 0 if not a trap.
-extern "C" size_t mk_trap_format(uint32_t status, uint32_t site, uint32_t wg, char *buf, size_t cap) {
+extern "C" size_t hip_trap_format(uint32_t status, uint32_t site, uint32_t wg, char *buf, size_t cap) {
   Control c{0, status, wg, site};
   return trap_report_format(c, buf, cap);
 }
@@ -341,7 +341,7 @@ void Watchdog::watch(std::unique_lock<std::mutex> &lk) {
   }
 }
 
-}  // namespace mk
+}  // namespace qwen38
 
 // The thin runtime calls of the Rust host (src/binding.rs, milestone 15 step 6). Each call makes one HIP call and stops
 // the program when it fails, as HIP_CHECK does. The host makes every call on its one worker thread.
@@ -349,30 +349,30 @@ extern "C" {
 // Registers n bytes of host memory at p with the device, coarse-grained: weights never change while a kernel runs.
 // HIP registers host memory fine-grained by default (hip_runtime_api.h). Measured 2026-09-30, 51-token fused read p50:
 // fine-grained arena 452-456 ms, coarse-grained 448 ms, hipMalloc baseline 454 ms: no difference that decides it.
-void mk_rt_host_register(void *p, uint64_t n) { HIP_CHECK(hipHostRegister(p, n, hipExtHostRegisterCoarseGrained)); }
-// Removes the registration of mk_rt_host_register, so the host memory can be unmapped (the close of the weights).
-void mk_rt_host_unregister(void *p) { HIP_CHECK(hipHostUnregister(p)); }
+void hip_rt_host_register(void *p, uint64_t n) { HIP_CHECK(hipHostRegister(p, n, hipExtHostRegisterCoarseGrained)); }
+// Removes the registration of hip_rt_host_register, so the host memory can be unmapped (the close of the weights).
+void hip_rt_host_unregister(void *p) { HIP_CHECK(hipHostUnregister(p)); }
 // n bytes of pinned host memory.
-void *mk_rt_host_malloc(uint64_t n) {
+void *hip_rt_host_malloc(uint64_t n) {
   void *p = nullptr;
   HIP_CHECK(hipHostMalloc(&p, n, hipHostMallocDefault));
   return p;
 }
-void mk_rt_host_free(void *p) { HIP_CHECK(hipHostFree(p)); }
+void hip_rt_host_free(void *p) { HIP_CHECK(hipHostFree(p)); }
 // n bytes of device memory.
-void *mk_rt_malloc(uint64_t n) {
+void *hip_rt_malloc(uint64_t n) {
   void *p = nullptr;
   HIP_CHECK(hipMalloc(&p, n));
   return p;
 }
-void mk_rt_free(void *p) { HIP_CHECK(hipFree(p)); }
+void hip_rt_free(void *p) { HIP_CHECK(hipFree(p)); }
 // Sets n bytes of device memory at p to the byte value.
-void mk_rt_memset(void *p, int value, uint64_t n) { HIP_CHECK(hipMemset(p, value, n)); }
+void hip_rt_memset(void *p, int value, uint64_t n) { HIP_CHECK(hipMemset(p, value, n)); }
 // kind: 1 host to device, 2 device to host (hipMemcpyKind). The copies wait for the device.
-void mk_rt_memcpy(void *dst, const void *src, uint64_t n, uint32_t kind) {
+void hip_rt_memcpy(void *dst, const void *src, uint64_t n, uint32_t kind) {
   HIP_CHECK(hipMemcpy(dst, src, n, hipMemcpyKind(kind)));
 }
-void mk_rt_memcpy_2d(void *dst, uint64_t dpitch, const void *src, uint64_t spitch, uint64_t width, uint64_t height,
+void hip_rt_memcpy_2d(void *dst, uint64_t dpitch, const void *src, uint64_t spitch, uint64_t width, uint64_t height,
                      uint32_t kind) {
   HIP_CHECK(hipMemcpy2D(dst, dpitch, src, spitch, width, height, hipMemcpyKind(kind)));
 }

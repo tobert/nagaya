@@ -44,7 +44,7 @@ pub fn lib_with(op: &str, trap_sink: bool) -> &'static Library {
     });
     if trap_sink && !entry.sunk {
         let install: libloading::Symbol<unsafe extern "C" fn() -> i32> =
-            unsafe { entry.library.get(b"mk_trap_sink_install\0") }.expect("mk_trap_sink_install");
+            unsafe { entry.library.get(b"hip_trap_sink_install\0") }.expect("hip_trap_sink_install");
         assert_eq!(unsafe { install() }, 0, "the trap sink of {op} did not install");
         entry.sunk = true;
     }

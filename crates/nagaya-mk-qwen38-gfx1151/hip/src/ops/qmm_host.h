@@ -6,7 +6,7 @@
 #include "qmm.h"
 #include "rt.h"
 
-namespace mk {
+namespace qwen38 {
 
 inline void check_shape(uint32_t type, uint32_t k) {
   const uint32_t bv = q::block_values(type);
@@ -133,4 +133,4 @@ double bench_qmm(Launch launch, const char *op, uint32_t type, const void *w_hos
   return double(ms) / reps;
 }
 
-}  // namespace mk
+}  // namespace qwen38

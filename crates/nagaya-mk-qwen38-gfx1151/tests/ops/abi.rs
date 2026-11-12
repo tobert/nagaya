@@ -969,11 +969,11 @@ const FILES: [(u32, &str); 8] = [
     (8, "stage.h"),
 ];
 
-/// The report line of `mk_trap_format` for a status, a site and a workgroup.
+/// The report line of `hip_trap_format` for a status, a site and a workgroup.
 fn format_trap(status: u32, site: u32, wg: u32) -> String {
     let f = sym!(
         lib_with("qmm", false),
-        "mk_trap_format",
+        "hip_trap_format",
         fn(u32, u32, u32, *mut u8, usize) -> usize
     );
     let mut buffer = [0u8; 256];

@@ -9,7 +9,7 @@
 #pragma once
 #include "qmm.h"
 
-namespace mk::oracle {
+namespace qwen38::oracle {
 
 constexpr uint32_t kQmmRows = kBlockThreads / kWave;  // 8, its own: the engine's tile may differ
 constexpr uint32_t kQmmToks = 8;
@@ -18,8 +18,8 @@ template <uint32_t T>
 __device__ inline void qmm_item(const QmmArgs &a, uint32_t item) {
   const uint32_t n_rg = (a.n + kQmmRows - 1) / kQmmRows;
   const uint32_t rg = item % n_rg, tt = item / n_rg;
-  const uint32_t n = rg * kQmmRows + mk_tid() / kWave;
-  const uint32_t lane = mk_tid() % kWave;
+  const uint32_t n = rg * kQmmRows + thread_id() / kWave;
+  const uint32_t lane = thread_id() % kWave;
   const uint32_t t0 = tt * kQmmToks;
   const uint32_t nt = min(kQmmToks, a.t - t0);
   if (n >= a.n) return;
@@ -76,4 +76,4 @@ __device__ inline void op_qmm(const QmmArgs &a, uint32_t wg, uint32_t nwg) {
   }
 }
 
-}  // namespace mk::oracle
+}  // namespace qwen38::oracle

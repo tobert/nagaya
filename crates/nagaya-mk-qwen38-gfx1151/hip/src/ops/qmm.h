@@ -17,7 +17,7 @@
 #include "quant.h"
 #include "tiles.h"
 
-namespace mk {
+namespace qwen38 {
 
 struct QmmArgs {
   uint32_t type;
@@ -135,8 +135,8 @@ template <uint32_t T>
 __device__ inline void qmm_item(const QmmArgs &a, uint32_t item) {
   const uint32_t n_rg = (a.n + kQmmRows - 1) / kQmmRows;
   const uint32_t rg = item % n_rg, tt = item / n_rg;
-  const uint32_t n = rg * kQmmRows + mk_tid() / kWave;
-  const uint32_t lane = mk_tid() % kWave;
+  const uint32_t n = rg * kQmmRows + thread_id() / kWave;
+  const uint32_t lane = thread_id() % kWave;
   const uint32_t t0 = tt * kQmmToks;
   const uint32_t nt = min(kQmmToks, a.t - t0);
   if (a.xin != kXinPlain) HIP_TRAP(kTrapBadArgs, kTrapFileQmm);  // fused staging is the f16 path's (the engine fuses only there)
@@ -234,4 +234,4 @@ __device__ inline void op_qmm(const QmmArgs &a, uint32_t wg, uint32_t nwg) {
   }
 }
 
-}  // namespace mk
+}  // namespace qwen38

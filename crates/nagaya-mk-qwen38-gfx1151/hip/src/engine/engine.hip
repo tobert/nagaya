@@ -2,7 +2,7 @@
 // k_stage's register budget (tests/engine/test_mega_resources.py: grid >= 80 and no scratch, for k_mega and k_stage
 // alike) has no room for the expert item's one-step lookahead (qmmh.h: 16 VGPRs of prefetched activations), so this TU,
 // the one that compiles k_stage, runs the ops without it. Both paths give the same bits. Before any ops include.
-#define MK_EXPERT_LOOKAHEAD 0
+#define QWEN38_EXPERT_LOOKAHEAD 0
 #include "engine.h"
 #include "stage_layout.h"
 #include "device.h"
@@ -22,7 +22,7 @@
 
 
 
-namespace mk {
+namespace qwen38 {
 
 using namespace model;
 
@@ -36,7 +36,7 @@ using namespace model;
 // long or runaway sequence of stages BETWEEN stages; a stage that hangs inside an op can't be stopped (ops have no polls).
 __global__ void __launch_bounds__(kBlockThreads) k_stage(const Stage *__restrict__ s, Control *ctl, uint32_t site) {
   __shared__ uint32_t stop;
-  if (mk_tid() == 0) {
+  if (thread_id() == 0) {
     uint32_t v = 0;
     if (ld_acquire_sys(&ctl->abort) != 0) {
       set_status(ctl, kAborted, site);
@@ -124,4 +124,4 @@ LaunchResult Engine::launch_each(const Stage *ds, uint32_t n) {
   return result();
 }
 
-}  // namespace mk
+}  // namespace qwen38

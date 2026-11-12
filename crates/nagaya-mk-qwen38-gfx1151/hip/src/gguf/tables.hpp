@@ -27,7 +27,7 @@
 #pragma once
 #include <cstdint>
 
-namespace mkgguf::tables {
+namespace gguf::tables {
 
 // 512-entry grid for IQ3_S, indexed by a 9-bit code (8 bits from qs, 1 bit from qh).
 // Each entry packs 4 signed-magnitude nibbles (one per byte) used as |value| grids.
@@ -106,4 +106,4 @@ inline constexpr int8_t kValuesIq4nl[16] = {
     -127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113,
 };
 
-} // namespace mkgguf::tables
+} // namespace gguf::tables

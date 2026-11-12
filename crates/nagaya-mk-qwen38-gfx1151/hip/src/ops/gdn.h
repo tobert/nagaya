@@ -37,7 +37,7 @@
 #include "model.h"
 #include "small.h"  // sigmoidf_, siluf_
 
-namespace mk {
+namespace qwen38 {
 
 static_assert(model::kGdnKDim == 128 && model::kGdnVDim == 128, "gdn.h assumes 128-wide K/V heads");
 static_assert(model::kGdnKHeads == 16 && model::kGdnVHeads == 48, "gdn.h assumes 16 K-heads / 48 V-heads");
@@ -73,7 +73,7 @@ __device__ inline void gdn_conv_item(const GdnConvArgs &a, uint32_t c) {
 }
 
 __device__ inline void op_gdn_conv(const GdnConvArgs &a, uint32_t wg, uint32_t nwg) {
-  for (uint32_t c = wg * kBlockThreads + mk_tid(); c < model::kGdnConvDim; c += nwg * kBlockThreads) gdn_conv_item(a, c);
+  for (uint32_t c = wg * kBlockThreads + thread_id(); c < model::kGdnConvDim; c += nwg * kBlockThreads) gdn_conv_item(a, c);
 }
 
 // ---- stage 2/3/4: l2norm + the gated delta rule + the gated RMSNorm, fused per value head ----
@@ -113,7 +113,7 @@ __device__ inline void gdn_core_item(const GdnCoreArgs &a, uint32_t p) {
   __shared__ float red_qk[kBlockThreads / kWave];  // per-wave sums of squares: waves 0..3 q, 4..7 k
   __shared__ float red_o[kBlockThreads / kWave];   // per-wave sums of o^2
 
-  const uint32_t tid = mk_tid(), w = tid / kWave;
+  const uint32_t tid = thread_id(), w = tid / kWave;
   const uint32_t j = tid % kGdnQuad, c = tid / kGdnQuad;
   const uint32_t half = tid / model::kGdnKDim, comp = tid % model::kGdnKDim;  // l2norm role
   const uint32_t col = c + (j & 1) * kGdnColHalf;  // the column this lane writes y for (lanes j = 0, 1)
@@ -208,4 +208,4 @@ __device__ inline void op_gdn_core(const GdnCoreArgs &a, uint32_t wg, uint32_t n
   }
 }
 
-}  // namespace mk
+}  // namespace qwen38

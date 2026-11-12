@@ -15,7 +15,7 @@
 #include "../gguf/tables.hpp"
 #include "../gguf/types.hpp"
 
-namespace mk::q {
+namespace qwen38::q {
 
 enum Type : uint32_t {  // ggml type ids
   F32 = 0,
@@ -71,9 +71,9 @@ constexpr std::array<T, N> copy_table(const T (&src)[N], std::index_sequence<I..
 }  // namespace detail
 
 __constant__ constexpr std::array<uint32_t, 512> kIq3sGridDev =
-    detail::copy_table(mkgguf::tables::kIq3sGrid, std::make_index_sequence<512>{});
+    detail::copy_table(gguf::tables::kIq3sGrid, std::make_index_sequence<512>{});
 __constant__ constexpr std::array<int8_t, 16> kIq4nlDev =
-    detail::copy_table(mkgguf::tables::kValuesIq4nl, std::make_index_sequence<16>{});
+    detail::copy_table(gguf::tables::kValuesIq4nl, std::make_index_sequence<16>{});
 
 __device__ inline float h2f(uint16_t h) { return float(__builtin_bit_cast(_Float16, h)); }  // exact
 
@@ -291,4 +291,4 @@ struct Unit<BF16> {
   }
 };
 
-}  // namespace mk::q
+}  // namespace qwen38::q

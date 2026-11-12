@@ -4,7 +4,7 @@
 #include "engine.h"
 #include "tiles.h"
 
-namespace mk {
+namespace qwen38 {
 
 __global__ void __launch_bounds__(kBlockThreads) k_convert_iq3s(RelayoutArgs a) { op_relayout_iq3s(a, blockIdx.x, gridDim.x); }
 __global__ void __launch_bounds__(kBlockThreads) k_convert_q8(RelayoutArgs a) { op_relayout_q8(a, blockIdx.x, gridDim.x); }
@@ -39,4 +39,4 @@ void relayout_iq3s_tiles(const uint8_t *src, uint8_t *dst, uint32_t rows, uint32
   HIP_CHECK(hipDeviceSynchronize());
 }
 
-}  // namespace mk
+}  // namespace qwen38

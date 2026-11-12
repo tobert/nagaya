@@ -26,7 +26,7 @@
 #include "qmmh.h"
 #include "small.h"
 
-namespace mk {
+namespace qwen38 {
 
 using model::kExperts;
 using model::kTopK;
@@ -47,10 +47,10 @@ __device__ inline void op_moe_router(const MoeRouterArgs &a, uint32_t wg, uint32
     const float *x = a.logits + uint64_t(t) * kExperts;
     // max: exact regardless of order
     float m = -INFINITY;
-    for (uint32_t e = mk_tid(); e < kExperts; e += kBlockThreads) m = fmaxf(m, x[e]);
+    for (uint32_t e = thread_id(); e < kExperts; e += kBlockThreads) m = fmaxf(m, x[e]);
     __syncthreads();
     {
-      const uint32_t w = mk_tid() / kWave, l = mk_tid() % kWave;
+      const uint32_t w = thread_id() / kWave, l = thread_id() % kWave;
 #pragma unroll
       for (int off = 16; off > 0; off >>= 1) m = fmaxf(m, __shfl_xor(m, off, kWave));
       if (l == 0) scratch[w] = m;
@@ -60,18 +60,18 @@ __device__ inline void op_moe_router(const MoeRouterArgs &a, uint32_t wg, uint32
       __syncthreads();
     }
     float s = 0.f;
-    for (uint32_t e = mk_tid(); e < kExperts; e += kBlockThreads) {
+    for (uint32_t e = thread_id(); e < kExperts; e += kBlockThreads) {
       const float v = expf(x[e] - m);
       p[e] = v;
       s += v;
     }
     s = block_sum(s, scratch);
-    for (uint32_t e = mk_tid(); e < kExperts; e += kBlockThreads) p[e] = p[e] / s;
+    for (uint32_t e = thread_id(); e < kExperts; e += kBlockThreads) p[e] = p[e] / s;
     __syncthreads();
-    if (mk_tid() < kWave) {
+    if (thread_id() < kWave) {
       // Lane l owns experts l + 32 j (j = 0..15), scanned in increasing index, so a strict > keeps the lower index
       // of a tie; the xor butterfly under the same order leaves every lane holding the round's winner.
-      const int32_t l = int32_t(mk_tid());
+      const int32_t l = int32_t(thread_id());
       uint32_t taken = 0;  // bit j: expert l + 32 j already chosen
       float my_v = 0.f;    // lane k < 10 keeps slot k
       int32_t my_i = -1;
@@ -146,7 +146,7 @@ __device__ inline void op_moe_group(const MoeGroupArgs &a, uint32_t wg, uint32_t
   uint16_t *ids = reinterpret_cast<uint16_t *>(lds_arena());                     // [T*10] expert per assignment
   uint32_t *per = reinterpret_cast<uint32_t *>(lds_arena() + kMaxA * 2);         // [512] counts, then offsets
   uint32_t *wtot = per + kExperts;                                               // [3][8] wave totals
-  const uint32_t na = a.t * kTopK, tid = mk_tid(), w = tid / kWave, l = tid % kWave;
+  const uint32_t na = a.t * kTopK, tid = thread_id(), w = tid / kWave, l = tid % kWave;
   if (na > kMaxA) HIP_TRAP(kTrapMoeGroup, kTrapFileMoe);
   for (uint32_t i = tid; i < na; i += kBlockThreads) {
     const int32_t e = a.topk_idx[i];
@@ -331,7 +331,7 @@ struct SwigluArgs {
 };
 __device__ inline void op_swiglu(const SwigluArgs &a, uint32_t wg, uint32_t nwg) {
   const uint32_t n = a.rows * a.cols;
-  for (uint32_t i = wg * kBlockThreads + mk_tid(); i < n; i += nwg * kBlockThreads) {
+  for (uint32_t i = wg * kBlockThreads + thread_id(); i < n; i += nwg * kBlockThreads) {
     const uint32_t r = i / a.cols, c = i % a.cols;
     const float g = a.g[uint64_t(r) * a.ldg + c];
     a.out[uint64_t(r) * a.ldo + c] = (g * sigmoidf_(g)) * a.u[uint64_t(r) * a.ldu + c];
@@ -349,7 +349,7 @@ struct MoeCombineArgs {
 };
 __device__ inline void op_moe_combine(const MoeCombineArgs &a, uint32_t wg, uint32_t nwg) {
   const uint32_t E = model::kEmbd, n = a.t * E;
-  for (uint32_t i = wg * kBlockThreads + mk_tid(); i < n; i += nwg * kBlockThreads) {
+  for (uint32_t i = wg * kBlockThreads + thread_id(); i < n; i += nwg * kBlockThreads) {
     const uint32_t t = i / E, c = i % E;
     uint32_t order[kTopK];
     for (uint32_t k = 0; k < kTopK; ++k) order[k] = k;
@@ -368,4 +368,4 @@ __device__ inline void op_moe_combine(const MoeCombineArgs &a, uint32_t wg, uint
   }
 }
 
-}  // namespace mk
+}  // namespace qwen38

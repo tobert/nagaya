@@ -6,7 +6,7 @@
 // written once, about a millisecond.
 #include "engine.h"
 
-namespace mk {
+namespace qwen38 {
 
 using namespace model;
 
@@ -62,4 +62,4 @@ void Engine::round_gdn_bf16(Context *c) {
          (u & 0x7f800000u) == 0x7f800000u ? "not finite" : "rounds to infinity in bf16", got[1], c->n);
 }
 
-}  // namespace mk
+}  // namespace qwen38

@@ -39,7 +39,7 @@ __device__ __attribute__((always_inline)) inline void lds_sync() {
   __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "workgroup", "local");
 }
 
-__device__ __attribute__((always_inline)) inline uint32_t mk_tid() {
+__device__ __attribute__((always_inline)) inline uint32_t thread_id() {
   uint32_t t = threadIdx.x;
   asm volatile("" : "+v"(t));
   return t;

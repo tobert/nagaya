@@ -8,7 +8,7 @@
 #include "quant.h"
 #include "small.h"
 
-namespace mk {
+namespace qwen38 {
 
 // out[t, :] = dequant(W row ids[t]) for a Q8_0 table with K columns. Item = one 32-value unit.
 struct EmbedArgs {
@@ -21,7 +21,7 @@ struct EmbedArgs {
 };
 __device__ inline void op_embed(const EmbedArgs &a, uint32_t wg, uint32_t nwg) {
   const uint32_t units = a.k / 32, n = a.t * units;
-  for (uint32_t i = wg * kBlockThreads + mk_tid(); i < n; i += nwg * kBlockThreads) {
+  for (uint32_t i = wg * kBlockThreads + thread_id(); i < n; i += nwg * kBlockThreads) {
     const uint32_t t = i / units, u = i % units;
     float v[32];
     q::dequant32<q::Q8_0>(a.w + uint64_t(a.ids[t]) * a.ldw, u, v);
@@ -39,7 +39,7 @@ struct Repeat4Args {
 };
 __device__ inline void op_repeat4(const Repeat4Args &a, uint32_t wg, uint32_t nwg) {
   const uint32_t n = a.t * 4 * a.d;
-  for (uint32_t i = wg * kBlockThreads + mk_tid(); i < n; i += nwg * kBlockThreads) {
+  for (uint32_t i = wg * kBlockThreads + thread_id(); i < n; i += nwg * kBlockThreads) {
     const uint32_t t = i / (4 * a.d), c = i % a.d;
     a.h[i] = a.e[uint64_t(t) * a.d + c];
   }
@@ -59,12 +59,12 @@ __device__ inline void op_ple_gate(const PleGateArgs &a, uint32_t wg, uint32_t n
     const uint32_t t = it / 4, s = it % 4;
     const uint64_t base = uint64_t(t) * 4 * a.e + uint64_t(s) * a.e;
     float acc = 0.f;
-    for (uint32_t c = mk_tid(); c < a.e; c += kBlockThreads) acc = fmaf(a.kn[base + c], a.qn[base + c], acc);
+    for (uint32_t c = thread_id(); c < a.e; c += kBlockThreads) acc = fmaf(a.kn[base + c], a.qn[base + c], acc);
     float g = block_sum(acc, scratch) / sqrtf(float(a.e));
     const float sg = g > 0.f ? 1.f : (g < 0.f ? -1.f : 0.f);
     g = sqrtf(fmaxf(fabsf(g), 1e-6f)) * sg;
     const float gate = sigmoidf_(g);
-    for (uint32_t c = mk_tid(); c < a.e; c += kBlockThreads) a.gv[base + c] = gate * a.pv[uint64_t(t) * a.e + c];
+    for (uint32_t c = thread_id(); c < a.e; c += kBlockThreads) a.gv[base + c] = gate * a.pv[uint64_t(t) * a.e + c];
   }
 }
 
@@ -80,7 +80,7 @@ struct PleConvArgs {
 };
 __device__ inline void op_ple_conv(const PleConvArgs &a, uint32_t wg, uint32_t nwg) {
   constexpr uint32_t S = 9;
-  for (uint32_t c = wg * kBlockThreads + mk_tid(); c < a.c; c += nwg * kBlockThreads) {
+  for (uint32_t c = wg * kBlockThreads + thread_id(); c < a.c; c += nwg * kBlockThreads) {
     auto xp = [&](uint32_t i) -> float {  // padded index: 0..8 state, 9.. new rows
       return i < S ? a.state[uint64_t(i) * a.c + c] : a.x[uint64_t(i - S) * a.c + c];
     };
@@ -105,7 +105,7 @@ struct AddArgs {
   uint32_t n;
 };
 __device__ inline void op_add(const AddArgs &a, uint32_t wg, uint32_t nwg) {
-  for (uint32_t i = wg * kBlockThreads + mk_tid(); i < a.n; i += nwg * kBlockThreads) a.h[i] = a.h[i] + (a.a[i] + a.b[i]);
+  for (uint32_t i = wg * kBlockThreads + thread_id(); i < a.n; i += nwg * kBlockThreads) a.h[i] = a.h[i] + (a.a[i] + a.b[i]);
 }
 
-}  // namespace mk
+}  // namespace qwen38

@@ -32,7 +32,7 @@
 
 #include "attn.h"
 
-namespace mk {
+namespace qwen38 {
 
 constexpr uint32_t kAttnMaskMax = 4;
 // The selection's row stride for a masked pass (see the count bound above); model::kIdxBudget + kIdxRatio - 1 unmasked.
@@ -75,7 +75,7 @@ __device__ __attribute__((always_inline)) inline void attn_select_masked_emit(co
   constexpr uint32_t kBitWords = model::kMaxContext / model::kIdxRatio / 32;
   static_assert(kBitWords <= kBlockThreads, "one selection word per thread to clear");
   static_assert((256 + kWavesPerBlock + 8 + kBitWords) * 4 <= kLdsArenaBytes, "the masked selection's LDS must fit the arena");
-  const uint32_t tid = mk_tid();
+  const uint32_t tid = thread_id();
   const uint32_t n_vis = a.p0 + t + 1;
   const uint32_t nb = n_vis / a.ratio;
   const float *scores = a.block_scores + uint64_t(t) * a.max_nb;
@@ -169,7 +169,7 @@ __device__ __attribute__((always_inline)) inline void attn_select_masked_emit(co
 // scored (its raw keys are never read) and gets -inf in the inspection copy.
 __device__ __attribute__((always_inline)) inline void attn_select_masked_item(const AttnSelectArgs &a, const AttnCellMask &m,
                                                                               uint32_t t) {
-  const uint32_t w = mk_tid() / kWave, lane = mk_tid() % kWave;
+  const uint32_t w = thread_id() / kWave, lane = thread_id() % kWave;
   const uint32_t n_vis = a.p0 + t + 1;
   const uint32_t nb = n_vis / a.ratio;
   float *scores = a.block_scores + uint64_t(t) * a.max_nb;
@@ -214,7 +214,7 @@ __device__ __attribute__((always_inline)) inline void attn_select_masked_item(co
   __syncthreads();
   if (a.block_scores_out) {
     float *out = a.block_scores_out + uint64_t(t) * a.max_nb;
-    for (uint32_t b = mk_tid(); b < nb; b += kBlockThreads) out[b] = scores[b];
+    for (uint32_t b = thread_id(); b < nb; b += kBlockThreads) out[b] = scores[b];
   }
   __syncthreads();
   attn_select_masked_emit(a, m, t);
@@ -225,4 +225,4 @@ __device__ __attribute__((always_inline)) inline void op_attn_select_masked(cons
   for (uint32_t t = wg; t < a.s.t; t += nwg) attn_select_masked_item(a.s, a.m, t);
 }
 
-}  // namespace mk
+}  // namespace qwen38

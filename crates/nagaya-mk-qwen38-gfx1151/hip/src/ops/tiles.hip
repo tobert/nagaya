@@ -6,7 +6,7 @@
 
 #include "rt.h"
 
-namespace mk {
+namespace qwen38 {
 
 __global__ void __launch_bounds__(kBlockThreads) k_relayout_iq3s(RelayoutArgs a) { op_relayout_iq3s(a, blockIdx.x, gridDim.x); }
 __global__ void __launch_bounds__(kBlockThreads) k_relayout_q8(RelayoutArgs a) { op_relayout_q8(a, blockIdx.x, gridDim.x); }
@@ -88,9 +88,9 @@ __global__ void __launch_bounds__(kBlockThreads) k_tile_qmm(QmmArgs a, uint32_t 
   }
 }
 
-}  // namespace mk
+}  // namespace qwen38
 
-using namespace mk;
+using namespace qwen38;
 
 static void check_iq3s_shape(uint32_t n, uint32_t k) {
   if (n == 0 || n % 16 || k == 0 || k % 256) HIP_DIE("IQ3_S tiles: %u x %u is not 16-row groups of 256-value superblocks", n, k);

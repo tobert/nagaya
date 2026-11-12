@@ -190,7 +190,7 @@ fn plan_refuses_a_config_without_a_usable_weights_size_or_with_an_unknown_key() 
 #[test]
 fn an_open_error_of_the_mk_binding_is_a_crash() {
     // The engine is linked into the binary, so no library pin can refuse the start (AGENTS.md milestone 15).
-    let other = qwen38::open_error(Qwen38Error::new("mk_engine_open returned no engine"));
+    let other = qwen38::open_error(Qwen38Error::new("qwen38_engine_open returned no engine"));
     assert_eq!(other.kind, OpenErrorKind::Other);
     assert!(!other.kind.refuses_start());
 }

@@ -3,7 +3,7 @@
 #pragma once
 #include <cstdint>
 
-namespace mk::model {
+namespace qwen38::model {
 constexpr uint32_t kLayers = 48;
 constexpr uint32_t kEmbd = 2560;
 constexpr uint32_t kHc = 4;                    // hyper-connection streams
@@ -29,4 +29,4 @@ constexpr uint32_t kMaxPassTokens = 256;
 // A context holds at most this many tokens (the kaiseki app's n_ctx; DESIGN.md "Service"), in multiples of a pass.
 constexpr uint32_t kMaxContext = 32768;
 inline constexpr bool is_attn_layer(uint32_t il) { return il % 4 == 3; }
-}  // namespace mk::model
+}  // namespace qwen38::model
