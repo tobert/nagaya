@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// qmm's fast path (PLAN.md "Speed" S2): y[t, n] = sum_k W[n, k] * x[t, k] for the quantized types, on
+// qmm's fast path: y[t, n] = sum_k W[n, k] * x[t, k] for the quantized types, on
 // f16 WMMA (v_wmma_f32_16x16x16_f16) with f32 accumulation.
 //
 // Numerics (the op's definition; test_qmm's tolerance comes from it):
@@ -335,7 +335,7 @@ __device__ __attribute__((always_inline)) inline float4 qmmh_x4(const QmmArgs &a
                      (g.w * sigmoidf_(g.w)) * u.w);
 }
 
-// Split-K (PLAN.md Speed S5). A matrix with few 64-row groups (hc down: 5; the shared expert: 10; attention k/v: 8)
+// Split-K. A matrix with few 64-row groups (hc down: 5; the shared expert: 10; attention k/v: 8)
 // left most of the megakernel's 80 workgroups idle while a few walked all of K. With ksplit > 1, item i covers K
 // slice i % ksplit: units [s * us, min((s + 1) * us, units)), us = the units over ksplit rounded up to whole chunks,
 // accumulated in K order as always, and the item writes that partial to part[s][t][n]; op_qmm_ksum then adds the
@@ -409,7 +409,7 @@ __device__ __attribute__((always_inline)) inline void qmmh_hcmix_store(const Qmm
   if (a.mix_z != nullptr && rg == 0 && r < 4) a.mix_inject[tok * 4 + r] = hc_inject_elem(a.mix_z[tok * 4 + r]);
 }
 
-// Decode (PLAN.md Speed, "Decode: the dense f16 path"): Q8_0 tiles on the dense shape when an item has one block of
+// Decode, the dense f16 path: Q8_0 tiles on the dense shape when an item has one block of
 // <= 16 tokens. The general loop's 2-unit chunk is one serialized trip per 4 KB of weights (loads issued after the
 // barrier, waited on before the WMMAs): latency-bound at T = 1. Here a chunk is 8 units (the 16 staged tokens x 256
 // values fit the arena), and each lane issues its 8 half-unit loads (one 16-byte load each) before the barriers that
@@ -850,7 +850,7 @@ __device__ __attribute__((always_inline)) inline void qmmh_item_iq3s_tiles(const
 #else
   // Without the lookahead (k_stage's TU: its register budget has no room for the prefetched activations): this
   // superblock's tile bytes are loaded before the barriers that stage its activations, so the fetch overlaps the
-  // staging (PLAN.md Speed D1). Same bits as the lookahead.
+  // staging (decode, D1). Same bits as the lookahead.
     Iq3sLane L;
     L.load(tiles + uint64_t(sb) * kIq3sTile, lane);
     lds_sync();  // every wave is done reading the previous superblock's activations
@@ -921,7 +921,7 @@ struct MoeTileLoads;
 
 // IQ4_NL: 2 tiles of 4 units a chunk; per lane 2 x (two 16-byte qs loads + one 8-byte d load). (The Q8_0 expert down
 // matrices, 5 layers, stay in the GGUF layout: its 32-byte contiguous runs already read at ~180 GB/s in the microbench and
-// the dense Q8_0 tiles here measured 195 at one token and 157 at sixteen, PLAN.md.)
+// the dense Q8_0 tiles here measured 195 at one token and 157 at sixteen.)
 // The IQ4_NL table in registers: its bytes (code + 128, so 1..241 and unsigned), four per word, at compile time from the
 // table itself.
 __host__ __device__ constexpr uint32_t iq4_biased_word(uint32_t w) {

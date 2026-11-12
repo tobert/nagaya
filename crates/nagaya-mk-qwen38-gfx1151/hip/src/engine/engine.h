@@ -55,7 +55,7 @@ struct LaunchResult {
 
 class Engine {
  public:
-  // The watchdog's deadline for each launch sequence, in seconds (the Rust host reads MK_WATCHDOG_DEADLINE_S).
+  // The watchdog's deadline for each launch sequence, in seconds (the Rust host sets it).
   explicit Engine(double watchdog_deadline_s);
   ~Engine();
   // One cooperative launch of the megakernel over the n stages at ds (host memory the device reads), with grid

@@ -31,7 +31,7 @@
   } while (0)
 
 // A C ABI that takes a buffer takes its byte size too, and dies unless it is exactly what the layout needs (A6;
-// PLAN.md Problems 2026-09-29: a tile pool sized at 110 B a row-superblock instead of 112 was written past). Checked on
+// a tile pool sized at 110 B a row-superblock instead of 112 was written past). Checked on
 // the host before the first HIP call of the entry point. `op` is the entry point's symbol, `buf` the parameter's name.
 #define HIP_CHECK_BYTES(op, buf, given, need)                                                         \
   do {                                                                                              \
@@ -92,14 +92,14 @@ struct Barrier {
 
 // Default bound for a spin: a pass never waits this long at one barrier. 100 MHz ticks.
 // Kept at 1 s, well under the gfx ring timeout: on this driver MES can't preempt a spinning
-// queue, and run 1's 20 s spin starved the desktop's ring into a MODE2 reset (PLAN.md Problems).
+// queue, and run 1's 20 s spin starved the desktop's ring into a MODE2 reset (a MODE2 reset).
 constexpr uint64_t kWallHz = 100'000'000;
 constexpr uint64_t kDefaultSpinTicks = kWallHz;  // 1 s
 constexpr uint64_t kMaxSpinTicks = kWallHz;      // no spin anywhere may be bounded above this
 
 // ---- host cost counters ----
-// What the host does per pass, counted so tests can assert it (tests/engine/test_host_stats.py, exposed by the C ABI's
-// mk_host_stats): a cost that is paid once must stay once, and a counter that moves per pass is a regression.
+// What the host does per pass, counted so tests can assert it: a cost that is paid once must stay once,
+// and a counter that moves per pass is a regression.
 struct HostStats {
   std::atomic<uint64_t> watchdog_threads{0};   // std::threads spawned by Watchdog
   std::atomic<uint64_t> occupancy_queries{0};  // hipOccupancyMaxActiveBlocksPerMultiprocessor calls

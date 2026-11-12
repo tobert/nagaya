@@ -194,7 +194,7 @@ void ControlBlock::end_pass() { clean_ = status() == kOk; }
 
 bool trap_sink_installed() { return g_trap_record.load(std::memory_order_acquire) != nullptr; }
 
-// For ctypes (tests/ops/mkops.py lib()): every op-test library installs the sink once it is loaded.
+// For ctypes (the op tests load each library): every op-test library installs the sink once it is loaded.
 extern "C" int hip_trap_sink_install() {
   trap_sink_install();
   return 0;

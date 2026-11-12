@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// qmm's f16 WMMA path (qmmh.h, PLAN.md "Speed" S2), for the op tests and tools/qmm_bench.py. Its own
+// qmm's f16 WMMA path (qmmh.h), for the op tests and tools/qmm_bench.py. Its own
 // translation unit: one LDS-using kernel per TU (DESIGN.md "The megakernel").
 #include "qmmh.h"
 #include "moe.h"

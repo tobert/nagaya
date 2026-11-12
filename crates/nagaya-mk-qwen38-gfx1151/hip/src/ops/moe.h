@@ -12,7 +12,7 @@
 //                  prefixes by an integer block scan (exact in any order), and the assignment list
 //                  (a = t * 10 + slot) per expert in increasing a. No atomics.
 //   op_moe_gu      expert gate and up projections over each expert's gathered tokens: the exact f32
-//                  qmm, or with `fast` the f16 WMMA one (qmmh.h, QmmhMoe tiles; PLAN.md Speed S2).
+//                  qmm, or with `fast` the f16 WMMA one (qmmh.h, QmmhMoe tiles).
 //   op_swiglu      h = silu(gate) * up.
 //   op_moe_down    expert down projections, scattered to their assignment rows.
 //   op_moe_combine out[t] = (sum over the token's slots in ascending expert order of y * w)

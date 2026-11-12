@@ -20,7 +20,7 @@
 // [128 (k), 128 (v)] recurrent state lives in registers, 64 floats per thread: thread t owns columns
 // c = t / 4 and c + 64, and within them the k-slice k = 4i + j (i = 0..31, j = t % 4), so the 4 lanes of a
 // quad together hold two whole columns. (Run 2's kernel gave each thread a whole column, 128 floats; that
-// op alone set the megakernel's registers to 256 with 1.3 KiB/lane of spills, PLAN.md Speed.)
+// op alone set the megakernel's registers to 256 with 1.3 KiB/lane of spills.)
 // Per token, in the op's fixed order: l2norm q,k (over the whole 128-dim head vector: threads 0..127
 // square q's components, 128..255 k's, each a wave xor-butterfly, then the half's 4 waves added in order,
 // eps 1e-6, exactly like the reference's l2norm) and scale q by 1/sqrt(128); beta = sigmoid(b);

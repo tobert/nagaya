@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Read-once weight tiles (PLAN.md Speed, "Read-once weight fetch"). The GGUF stores a matrix row-major, and a
+// Read-once weight tiles (read-once weight fetch). The GGUF stores a matrix row-major, and a
 // decoder that follows it makes each lane read scattered 1-4 byte pieces of 16 different rows, so every cache
 // line is fetched many times (probes/fetch.hip: 110 GB/s for IQ3_S experts). Here each matrix is re-laid out
 // once, at load, into tiles stored in the order the lanes of a wave consume them: each lane's bytes are
@@ -136,7 +136,7 @@ __device__ __attribute__((always_inline)) inline void iq3s_codes_f16w(const Iq3s
   }
 }
 
-// ---- Q8_0 (the dense projections; PLAN.md Speed, "Decode: the dense f16 path") ----
+// ---- Q8_0 (the dense projections: the dense f16 path) ----
 // One tile per 16 rows x one unit pair (64 values), 1088 B. Lane slot s = r + 16 u (row r of the group, unit u of the
 // pair; in the f16 path, the slot lane s decodes a half of): bytes 32 s .. 32 s + 31 are the unit's codes (raw
 // qs[0..31]), bytes 1024 + 2 s .. + 1 its scale d (f16). 1088 = 16 x 2 x 34: no bytes added. Tiles are ordered by
@@ -167,7 +167,7 @@ __device__ inline void op_relayout_q8(const RelayoutArgs &a, uint32_t wg, uint32
   }
 }
 
-// ---- Q6_K (the output head; PLAN.md Speed, "Decode: the Q6_K output head") ----
+// ---- Q6_K (the output head: the Q6_K output head) ----
 // One tile per 16 rows x one 256-value superblock, 3360 B = 16 x 210: the GGUF's bytes, reordered, none added. The
 // shape follows D1's Q8_0 reasoning, worked for this type:
 //  - 16 rows because a wave's WMMA takes 16 weight rows (B = W^T, N = 16), and lane = r + 16 h (row r, half h of a
@@ -234,7 +234,7 @@ __device__ inline void q6_tile_dequant32(const uint8_t *tile, uint32_t r, uint32
   }
 }
 
-// ---- IQ4_NL (the expert down matrices; PLAN.md Speed, "Decode: the expert down matrices") ----
+// ---- IQ4_NL (the expert down matrices: the expert down matrices) ----
 // 43 of the 48 layers' ffn_down_exps ([512 experts][2560 rows][K = 640], per expert contiguous) are IQ4_NL: 32-value
 // blocks of 18 bytes, an f16 d and 16 bytes of qs, where value j < 16 is table[qs[j] & 15] and value 16 + j is
 // table[qs[j] >> 4]. A T = 1 step reads ~10 experts x 0.92 MB per layer; the GGUF layout has each lane read 16

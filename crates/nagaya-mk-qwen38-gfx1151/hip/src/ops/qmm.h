@@ -9,7 +9,7 @@
 // A work item is 8 rows x 8 tokens: wave w of the workgroup takes row 8 * rg + w. Optional row
 // maps gather x rows (x_row[t]) and scatter y rows (y_row[t]) for the MoE.
 //
-// This is run 2's kernel, same as qmm_oracle.h (PLAN.md "Speed" S1). Attempt 2 (commit 6ee7d17: 32 rows x 8
+// This is run 2's kernel, same as qmm_oracle.h . Attempt 2 (commit 6ee7d17: 32 rows x 8
 // tokens, activations staged in LDS) made the unfused read 1.5x faster but the megakernel read 22% slower, so
 // the engine keeps this one until attempt 3 (double-buffered staging) wins in the megakernel.
 #pragma once

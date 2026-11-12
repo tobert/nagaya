@@ -9,7 +9,7 @@
 //   reductions, reduction order fixed by the op's definition. So any grid size gives the same
 //   bits, and a single launch (grid = work items) equals the megakernel (grid = co-resident WGs).
 // - Every op has a wrapper kernel `k_<name>` (<<<grid, kBlockThreads>>> calling op_<name>(args,
-//   blockIdx.x, gridDim.x)) and a C ABI entry `mk_<name>(...)` for tests (host pointers in and
+//   blockIdx.x, gridDim.x)) and a C ABI entry `qwen38_<name>(...)` for tests (host pointers in and
 //   out; allocates, copies, launches, synchronizes, frees; returns 0 or dies with a message).
 // - Shapes are compile-time constants of this model (model.h); a runtime shape that disagrees
 //   stops the program (HIP_DIE), it never falls back.
@@ -19,7 +19,7 @@
 #include <hip/hip_runtime.h>
 #include <cstdint>
 
-#include "trap.h"  // HIP_TRAP: the ops' traps name themselves (PLAN.md Problems 2026-09-29)
+#include "trap.h"  // HIP_TRAP: the ops' traps name themselves
 
 constexpr uint32_t kBlockThreads = 256;  // threads per workgroup: 8 wave32s
 constexpr uint32_t kWave = 32;
@@ -47,7 +47,7 @@ __device__ __attribute__((always_inline)) inline uint32_t thread_id() {
 
 // The kernel-wide LDS arena. Each __shared__ array an op declares gets its own space, so a kernel's static
 // LDS is the *sum* over every op it can run, and in the megakernel that sum sets the co-resident grid
-// (PLAN.md Speed: 41 KiB halved the grid to 20; a WGP has 64 KiB, so grid 80 = 4 workgroups per WGP allows
+// (41 KiB halved the grid to 20; a WGP has 64 KiB, so grid 80 = 4 workgroups per WGP allows
 // 16 KiB each, arena included; tests/engine/test_mega_resources.py). Ops whose tiles are
 // large take them from this one arena instead, so those cost the *max*. The arena is only valid inside one
 // op: stages are separated by a grid barrier (every thread of the workgroup passes a __syncthreads) or by a

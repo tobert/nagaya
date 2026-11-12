@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Device traps that say which one fired (PLAN.md Problems 2026-09-29 00:11: "HSA_STATUS_ERROR_EXCEPTION ... which trap
+// Device traps that say which one fired ("HSA_STATUS_ERROR_EXCEPTION ... which trap
 // unknown"). A trap site calls HIP_TRAP(status, file): the lane first records a distinct Status and a site id (the file's
 // TrapFile and the source line) in the process's trap record, then traps as before (never skipped, never recoverable).
 // The trap kills the queue and the HIP runtime aborts the process; the SIGABRT handler installed by trap_sink_install()
@@ -7,9 +7,9 @@
 //
 // How the ops reach the record: one `static __device__` pointer per translation unit (g_trap_ctl below), pointing at a
 // Control in coherent host memory (a Control like the engine's, with its own lifetime: never freed, so no Engine or
-// op-test library can leave a dangling pointer behind). One per shared object, not per process: mkrt is a static
+// op-test library can leave a dangling pointer behind). One per shared object, not per process: the runtime library is a static
 // library linked into the engine and into each op library, so each carries its own record, binders and SIGABRT handler
-// (chained), and each must call trap_sink_install() itself (the Engine constructor; tests/ops/mkops.py lib()). Every
+// (chained), and each must call trap_sink_install() itself (the Engine constructor; the op tests do so when they load a library). Every
 // TU that includes this header registers a binder at static-init time (host pass only); trap_sink_install() runs the
 // binders, which copy the record's address into that TU's g_trap_ctl (hipMemcpyToSymbol). Without an installed sink
 // g_trap_ctl is null and a trap just traps. Kernel arguments are untouched, so k_mega's budget is (nearly) unchanged:

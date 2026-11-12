@@ -184,7 +184,7 @@ struct AttnSelectArgs {
   const float *inv_freq;   // [32]
   uint32_t t, p0;
   uint32_t budget, ratio;  // runtime indexer params (engine uses model::kIdxBudget/kIdxRatio);
-                           // pooling and expansion assume ratio == 4: callers check (mk_attn dies)
+                           // pooling and expansion assume ratio == 4: callers check
   float *block_scores;      // scratch [T][max_nb], max_nb = (p0+T)/ratio
   float *block_scores_out;  // out [T][max_nb], the untouched scores (for near-tie inspection)
   int32_t *picked;          // scratch [T][block_topk_max] for the serial oracle (attn_select_oracle.h); unused by the op
