@@ -70,15 +70,9 @@ __host__ __device__ constexpr bool qmmh_type(uint32_t t) {
          t == q::IQ3_S_TILES || t == q::Q6_K_TILES || t == q::IQ4_NL_TILES;
 }
 
-// Cache-policy experiment on bulky weight loads (PLAN.md Speed, "Non-temporal weight loads"). Compile-time:
-// -1 (the default) = plain loads, as always; 0 = the same bytes through buffer loads with no policy (the
-// control); 2 = slc (L2 streaming), 4 = dlc (GL1 streaming), 6 = both. Only matrices the host marks bulky
-// (QmmArgs::wbulk) take the buffer path. A policy is a hint: values, and so every output bit, are unchanged.
-#ifndef MK_WEIGHT_POLICY
-#define MK_WEIGHT_POLICY -1
-#endif
-static_assert(MK_WEIGHT_POLICY == -1 || MK_WEIGHT_POLICY == 0 || MK_WEIGHT_POLICY == 2 || MK_WEIGHT_POLICY == 4 ||
-                  MK_WEIGHT_POLICY == 6, "MK_WEIGHT_POLICY: -1, 0, 2 (slc), 4 (dlc) or 6 (slc dlc)");
+// Cache policy of bulky weight loads, as a template parameter P. The engine uses P = -1: plain loads.
+// P = 0 is buffer loads with no policy; 2 = slc (L2 streaming), 4 = dlc (GL1 streaming), 6 = both.
+// A policy is a hint: values, and so every output bit, are unchanged.
 
 // Weight bytes of one matrix (base = the matrix's first byte, wave-uniform). P < 0: plain loads. P >= 0: buffer
 // loads with cache policy P, in 16-bit pairs (every multi-byte run the decoders read is 2-byte aligned).
@@ -1078,25 +1072,15 @@ __device__ __attribute__((always_inline)) inline void qmmh_item_moe_tiles(const 
   }
 }
 
-// The item with the build's weight policy on bulky matrices (a.wbulk), plain loads otherwise.
+// The item with plain weight loads.
 template <uint32_t T>
 __device__ __attribute__((always_inline)) inline void qmmh_item_moe_tiles_w(const QmmArgs &a, uint32_t item) {
-  if constexpr (MK_WEIGHT_POLICY < 0) {
-    qmmh_item_moe_tiles<T, -1>(a, item);
-  } else {
-    if (a.wbulk) qmmh_item_moe_tiles<T, MK_WEIGHT_POLICY>(a, item);
-    else qmmh_item_moe_tiles<T, -1>(a, item);
-  }
+  qmmh_item_moe_tiles<T, -1>(a, item);
 }
 
 template <uint32_t T, class Sh>
 __device__ __attribute__((always_inline)) inline void qmmh_item_w(const QmmArgs &a, uint32_t item) {
-  if constexpr (MK_WEIGHT_POLICY < 0) {
-    qmmh_item<T, Sh, -1>(a, item);
-  } else {
-    if (a.wbulk) qmmh_item<T, Sh, MK_WEIGHT_POLICY>(a, item);
-    else qmmh_item<T, Sh, -1>(a, item);
-  }
+  qmmh_item<T, Sh, -1>(a, item);
 }
 
 template <class Sh = QmmhDense>

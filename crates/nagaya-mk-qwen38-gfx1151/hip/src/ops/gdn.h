@@ -201,21 +201,10 @@ __device__ inline void gdn_core_item(const GdnCoreArgs &a, uint32_t p) {
   }
 }
 
-// Timing experiment only (PLAN.md "Speed", GDN register pressure): MK_GDN_CORE_EXPERIMENT 1 skips the
-// core and writes y = 0; 2 runs the core and then overwrites y with 0. Both give the same bits downstream
-// (the state feeds only y), so the pair isolates what the core's code costs the rest of the kernel.
-// Never set in a real build: the output is wrong on purpose.
-#ifndef MK_GDN_CORE_EXPERIMENT
-#define MK_GDN_CORE_EXPERIMENT 0
-#endif
-
 // Item = one value head.
 __device__ inline void op_gdn_core(const GdnCoreArgs &a, uint32_t wg, uint32_t nwg) {
   for (uint32_t p = wg; p < model::kGdnVHeads; p += nwg) {
-    if (MK_GDN_CORE_EXPERIMENT != 1) gdn_core_item(a, p);
-    if (MK_GDN_CORE_EXPERIMENT != 0 && mk_tid() < model::kGdnVDim)
-      for (uint32_t t = 0; t < a.t; ++t)
-        a.y[uint64_t(t) * model::kGdnValDim + uint64_t(p) * model::kGdnVDim + mk_tid()] = 0.f;
+    gdn_core_item(a, p);
   }
 }
 
