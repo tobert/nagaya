@@ -9,6 +9,7 @@
 
 mod arena;
 mod binding;
+pub mod canary;
 mod context;
 mod dequant;
 mod engine;
@@ -25,9 +26,10 @@ mod spec;
 mod stage;
 mod worker;
 
-pub use engine::{Hold, Qwen38Engine, describe, hold, open};
+pub use canary::CanaryCheck;
+pub use engine::{Hold, Qwen38Engine, describe, describe_with, hold, open, open_with};
 pub use spec::{CONTEXT_CLASSES, ContextClass, MAX_CONTEXT};
-pub use worker::{ClassReading, Qwen38Error, Qwen38Paths};
+pub use worker::{ClassReading, Qwen38Error, Qwen38ErrorKind, Qwen38Paths};
 
 /// The problem that an open of the engine would meet now, or `None` (spec 3.3b, "The memory check of an open").
 ///

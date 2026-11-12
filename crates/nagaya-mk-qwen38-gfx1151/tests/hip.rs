@@ -174,11 +174,16 @@ fn the_binding_opens_the_engine_and_declares_its_parts() {
     assert_eq!(identity.model, "Qwen3.8-Flash-Next-UD-IQ4_XS");
     // The facts of the static build take the place of the library path and its pin (spec 12.1).
     let build = identity
-        .numbers
+        .build
         .get("engine_build_sha256")
         .expect("the identity names the build");
     assert_eq!(build.len(), 64, "{build}");
-    assert!(!identity.numbers.contains_key("engine_lib"), "{:?}", identity.numbers);
+    assert!(!identity.build.contains_key("engine_lib"), "{:?}", identity.build);
+    assert!(
+        identity.numbers.keys().all(|key| !key.starts_with("engine_")),
+        "{:?}",
+        identity.numbers
+    );
     assert!(
         identity.checkpoint_digest.starts_with("spot-sha256:"),
         "{}",
@@ -204,7 +209,9 @@ fn the_binding_opens_the_engine_and_declares_its_parts() {
         }
         other => panic!("the first shard has no string chat template: {other:?}"),
     }
-    assert_eq!(identity.canary_hash, "");
+    // The canary hash comes from the table of records (spec 8.1), and the open has checked the load against it.
+    assert_eq!(identity.canary_hash.len(), 64, "{}", identity.canary_hash);
+    assert!(!identity.numbers.contains_key("canary"), "{:?}", identity.numbers);
     assert_eq!(identity.numbers.get("fused").map(String::as_str), Some("1"));
     assert_eq!(identity.numbers.get("fast_qmm").map(String::as_str), Some("1"));
 
@@ -891,4 +898,85 @@ fn describe_gives_the_identity_and_the_limits_of_the_open() {
     let engine = open().expect("open the engine");
     assert_eq!(identity, engine.identity());
     assert_eq!(limits, engine.limits());
+}
+
+/// The GTT bytes in use on the amdgpu devices. On this machine the device memory is the unified memory.
+fn gtt_used() -> u64 {
+    std::fs::read_dir("/sys/class/drm")
+        .expect("read /sys/class/drm")
+        .filter_map(|entry| std::fs::read_to_string(entry.ok()?.path().join("device/mem_info_gtt_used")).ok())
+        .map(|text| text.trim().parse::<u64>().expect("a GTT count"))
+        .sum()
+}
+
+/// The canary gives the same row hashes and the same canary hash each time (spec 8.1). Nothing records them yet.
+#[test]
+fn the_canary_gives_the_same_hashes_each_time() {
+    use nagaya_mk_qwen38_gfx1151::canary;
+    let engine = open().expect("open the engine");
+    let first = engine.canary().expect("run the canary");
+    let second = engine.canary().expect("run the canary again");
+    assert_eq!(first.row_hashes.len(), canary::ROWS);
+    for (index, (left, right)) in first.row_hashes.iter().zip(&second.row_hashes).enumerate() {
+        assert_eq!(
+            canary::hex(left),
+            canary::hex(right),
+            "row {index} differs between two runs"
+        );
+    }
+    assert_eq!(canary::hex(&first.canary_hash), canary::hex(&second.canary_hash));
+    assert_eq!(first.sampled_short, second.sampled_short);
+    assert_eq!(first.sampled_long, second.sampled_long);
+    eprintln!(
+        "canary: {} ms and {} ms; hash {}",
+        first.total_ms,
+        second.total_ms,
+        canary::hex(&first.canary_hash)
+    );
+}
+
+/// The canary leaves the engine as it found it: a filled slot keeps its bytes, every other slot stays empty, and the
+/// device memory does not change. It makes its own contexts, so it must not touch the pool.
+#[test]
+fn the_canary_leaves_the_pool_and_the_device_memory_as_it_found_them() {
+    let mut engine = open().expect("open the engine");
+    let ids = synthetic_ids(20);
+    feed(&mut engine, 0, &ids, 256);
+    let before = stored_parts(&mut engine, 0);
+    // The first run may take memory that the engine then keeps. The measured run is the second.
+    engine.canary().expect("run the canary");
+    let (gtt_before, high_before) = (gtt_used(), engine.slots().unwrap().slot_high(0));
+    engine.canary().expect("run the canary again");
+    let (gtt_after, high_after) = (gtt_used(), engine.slots().unwrap().slot_high(0));
+    assert_eq!(high_before, 20);
+    assert_eq!(high_after, 20, "the canary changed the token count of slot 0");
+    assert_parts_equal("slot 0 after the canary", &before, &stored_parts(&mut engine, 0));
+    let slots: u32 = engine.limits().slots.iter().map(|class| class.count).sum();
+    for slot in 1..slots {
+        assert_eq!(
+            engine.slots().unwrap().slot_high(slot),
+            0,
+            "the canary filled slot {slot}"
+        );
+    }
+    assert_eq!(
+        gtt_before, gtt_after,
+        "the canary changed the GTT use from {gtt_before} to {gtt_after} bytes"
+    );
+}
+
+/// An open succeeds only when the canary of its load equals the record. So the canary of the open, and a canary that
+/// runs again now, both give the hash that the identity holds (spec 8.1).
+#[test]
+fn an_open_gives_the_canary_hash_of_the_identity() {
+    use nagaya_mk_qwen38_gfx1151::canary;
+    let engine = open().expect("open the engine");
+    let recorded = engine.identity().canary_hash;
+    assert_eq!(
+        canary::hex(&engine.load_canary().canary_hash),
+        recorded,
+        "the canary of the load"
+    );
+    let again = engine.canary().expect("run the canary again");
+    assert_eq!(canary::hex(&again.canary_hash), recorded, "the canary of a run now");
 }

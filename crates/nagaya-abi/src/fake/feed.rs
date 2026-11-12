@@ -222,6 +222,7 @@ impl FakeFeed {
                 class: BitClass::ReferenceDefining,
             }],
             canary_hash: "fake:0".to_owned(),
+            build: std::collections::BTreeMap::new(),
         };
         Self {
             limits,

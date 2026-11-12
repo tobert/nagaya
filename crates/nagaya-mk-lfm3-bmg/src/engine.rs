@@ -382,6 +382,7 @@ impl Lfm3Engine {
                 class: BitClass::ReferenceDefining,
             }],
             canary_hash: String::new(),
+            build: std::collections::BTreeMap::new(),
         };
         let mut held = Held::new(&b, &config.seqs());
         if let Some((_, _, rules)) = vision {

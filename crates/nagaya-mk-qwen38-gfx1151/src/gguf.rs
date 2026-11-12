@@ -896,7 +896,7 @@ mod tests {
             hip: "hip",
         };
         let identity_of = |path: &std::path::Path| {
-            crate::spec::identity(&shards, &build, true, true, "spot", &text_keys(path).unwrap())
+            crate::spec::identity(&shards, &build, true, true, "spot", &text_keys(path).unwrap(), "")
         };
         let (one, two) = (identity_of(&first), identity_of(&second));
         assert_eq!(one.tokenizer_hash, two.tokenizer_hash);

@@ -62,6 +62,10 @@ pub struct Identity {
     pub bit_settings: Vec<BitSetting>,
     /// The canary hash.
     pub canary_hash: String,
+    /// The facts of the build: the hash of the engine library, the compiler and the runtime version. The identity
+    /// digest does not cover them (spec 12.1), so a new build with the same canary bits keeps its digest. An engine
+    /// with no canary yet gives an empty map and keeps its build facts in `numbers`.
+    pub build: BTreeMap<String, String>,
 }
 
 /// What a part is.

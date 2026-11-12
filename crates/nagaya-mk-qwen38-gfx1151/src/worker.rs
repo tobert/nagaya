@@ -15,16 +15,27 @@ use nagaya_abi::{Identity, Limits};
 
 use crate::arena::{self, Arena};
 use crate::binding::{self, Binding, PassStop, Qwen38Segment};
+use crate::canary;
 use crate::gguf;
 use crate::host::{self, Host, LaunchKnobs, PassIn};
 use crate::pass::{self, Knobs, Weights};
 use crate::ple::{self, PleTable};
 use crate::spec;
 
+/// What kind of failure a `Qwen38Error` is. The process reads the kind to choose its exit code (spec 10.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Qwen38ErrorKind {
+    /// Any failure that a restart can change.
+    Other,
+    /// The canary of the build does not match its record, or the record is missing (spec 8.1). A restart cannot change it.
+    Canary,
+}
+
 /// An error from the engine binding. The message says what failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Qwen38Error {
     message: String,
+    kind: Qwen38ErrorKind,
 }
 
 impl Qwen38Error {
@@ -32,12 +43,26 @@ impl Qwen38Error {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            kind: Qwen38ErrorKind::Other,
+        }
+    }
+
+    /// Make an error of the canary: a mismatch with the record, or no record (spec 8.1).
+    pub fn canary(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: Qwen38ErrorKind::Canary,
         }
     }
 
     /// The message.
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    /// The kind of the failure.
+    pub fn kind(&self) -> Qwen38ErrorKind {
+        self.kind
     }
 }
 
@@ -106,6 +131,8 @@ pub(crate) struct Spec {
     pub limits: Limits,
     /// The pass scratch that the probe measured at open, in bytes.
     pub pass_scratch: u64,
+    /// The key of the canary record: the checkpoint and the two settings.
+    pub canary_key: canary::Key,
 }
 
 /// Why a write or a seal refuses a context that was poisoned before the call. The call changed nothing (ABI, "How
@@ -173,6 +200,8 @@ struct ThreadState {
     /// What a load after a close needs (engine-abi "close"): the shards, the spot digest and the arena size of the
     /// first load. A load whose shards differ is refused, because the identity names the first ones. A stub has none.
     reload: Option<Reload>,
+    /// What the canary of the last load gave: the report, or why it did not run. Each load sets it (spec 8.1).
+    load_canary: Option<Result<canary::Report, String>>,
 }
 
 /// The facts of the first load, which a later load must give again.
@@ -290,6 +319,14 @@ enum Command {
     Unload {
         reply: mpsc::Sender<Result<(), String>>,
     },
+    /// Give the result of the canary of the last load.
+    LoadCanary {
+        reply: mpsc::Sender<Result<canary::Report, String>>,
+    },
+    /// Run the canary (spec 8.1) in two contexts of its own, and free them.
+    Canary {
+        reply: mpsc::Sender<Result<canary::Report, String>>,
+    },
 }
 
 /// The handle's side of the worker: a channel and the engine's declared facts.
@@ -331,6 +368,24 @@ impl Worker {
         }
         *handles += 1;
         Ok(())
+    }
+
+    /// Count one user more, as `acquire` does, and decide the open from the canary of the load (spec 8.1).
+    ///
+    /// The canary runs at each load of the weights, after the weights load. A handle that joins loaded weights is
+    /// decided by the canary of that load. A refused open leaves no user counted. It gives the report of the load.
+    pub fn acquire_checked(&self, check: canary::CanaryCheck) -> Result<canary::Report, Qwen38Error> {
+        self.acquire()?;
+        let run = self
+            .ask(|reply| Command::LoadCanary { reply })
+            .unwrap_or_else(|| Err("the engine worker stopped; restart the process".to_owned()));
+        match canary::verify(check, &self.spec.canary_key, &run) {
+            Ok(()) => Ok(run.expect("a verified canary has a report")),
+            Err(error) => {
+                self.release();
+                Err(error)
+            }
+        }
     }
 
     /// Count one user less. The last user unloads the weights (engine-abi "close"). An unload that fails is a defect:
@@ -454,6 +509,13 @@ impl Worker {
         })
     }
 
+    /// Run the canary on the worker thread (spec 8.1). It uses two contexts of its own and touches no pool context.
+    pub fn canary(&self) -> Result<canary::Report, Qwen38Error> {
+        self.ask(|reply| Command::Canary { reply })
+            .unwrap_or_else(|| Err("the engine worker stopped; restart the process".to_owned()))
+            .map_err(Qwen38Error::from)
+    }
+
     /// The engine's byte count for one part and token count, or `None` when the worker stopped.
     pub fn part_bytes(&self, part: u32, n: u32) -> Option<u64> {
         self.ask(|reply| Command::PartBytes { part, n, reply })
@@ -502,7 +564,7 @@ pub(crate) fn start(paths: Qwen38Paths) -> Result<Arc<Worker>, Qwen38Error> {
 
 /// The identity and the limits of the engine on `paths`, with no GPU and no weights in memory: the facts that `open`
 /// gives after the load. The process serves an engine on demand from them before it loads (spec 11.1).
-pub(crate) fn describe(paths: &Qwen38Paths) -> Result<(Identity, Limits), Qwen38Error> {
+pub(crate) fn describe(paths: &Qwen38Paths, check: canary::CanaryCheck) -> Result<(Identity, Limits), Qwen38Error> {
     paths.validate()?;
     let digest = gguf::spot_digest(&paths.shards)?;
     let fast_qmm = fast_qmm()?;
@@ -511,8 +573,14 @@ pub(crate) fn describe(paths: &Qwen38Paths) -> Result<(Identity, Limits), Qwen38
     let text = gguf::text_keys(&paths.shards[0])?;
     let model = gguf::Model::open(&paths.shards)?;
     let (_, arena_bytes) = arena::plan(model.tensors(), tiles)?;
+    let key = canary::Key {
+        checkpoint: format!("spot-sha256:{digest}"),
+        fast_qmm,
+        tiles,
+    };
+    let canary_hash = canary::identity_hash(check, &key)?;
     Ok((
-        spec::identity(&paths.shards, &build, fast_qmm, tiles, &digest, &text),
+        spec::identity(&paths.shards, &build, fast_qmm, tiles, &digest, &text, &canary_hash),
         spec::limits(arena_bytes),
     ))
 }
@@ -780,13 +848,23 @@ impl ThreadState {
                 digest: digest.clone(),
                 arena_bytes,
             }),
+            load_canary: None,
         };
         // The engine has no call for the pool's size. Measure it here, before a caller's pass, so a larger pool is an
         // open error and the ledger's term is what the engine holds.
         let pass_scratch = state.measure_pass_scratch().map_err(Qwen38Error::new)?;
         spec::scratch_problem(pass_scratch).map_err(Qwen38Error::new)?;
+        // The canary runs after the scratch probe, so that it does not change what the probe measures. The open
+        // decides from its result (`acquire_checked`), so a mismatch does not poison the one worker of the process.
+        state.run_load_canary();
 
-        let identity = spec::identity(&paths.shards, &build, fast_qmm, tiles, &digest, &text);
+        let canary_key = canary::Key {
+            checkpoint: format!("spot-sha256:{digest}"),
+            fast_qmm,
+            tiles,
+        };
+        let canary_hash = canary::record(&canary_key).unwrap_or_default();
+        let identity = spec::identity(&paths.shards, &build, fast_qmm, tiles, &digest, &text, canary_hash);
         let limits = spec::limits(arena_bytes);
         Ok((
             state,
@@ -794,6 +872,7 @@ impl ThreadState {
                 identity,
                 limits,
                 pass_scratch,
+                canary_key,
             },
         ))
     }
@@ -828,7 +907,14 @@ impl ThreadState {
         self.ple = Some(ple);
         self._arena = Some(arena);
         self.weights = Some(weights);
+        self.run_load_canary();
         Ok(())
+    }
+
+    /// Run the canary of a load and keep its result. The open decides from it (spec 8.1).
+    fn run_load_canary(&mut self) {
+        canary::count_load_run();
+        self.load_canary = Some(self.run_canary());
     }
 
     /// Free the weights (engine-abi "close"). The weight table and the PLE table point into the arena and the shard
@@ -976,6 +1062,16 @@ impl ThreadState {
             Command::Unload { reply } => {
                 let _ = reply.send(self.unload());
             }
+            Command::LoadCanary { reply } => {
+                let _ = reply.send(
+                    self.load_canary
+                        .clone()
+                        .unwrap_or_else(|| Err("no load ran a canary; this is a defect of the engine".to_owned())),
+                );
+            }
+            Command::Canary { reply } => {
+                let _ = reply.send(self.run_canary());
+            }
         }
     }
 
@@ -1037,6 +1133,73 @@ impl ThreadState {
             });
         }
         Ok(Pool { ids, readings })
+    }
+
+    /// Run the canary (spec 8.1) in two contexts that this call makes and frees.
+    ///
+    /// The contexts are not in any handle's pool, so the pool contexts keep their state. Each pass goes through
+    /// `pass`, the call that a client pass takes: the same checks, the same fast or exact path, and the same join of
+    /// segments. The contexts are freed on success and on every error. The run reports only: it checks no record.
+    fn run_canary(&mut self) -> Result<canary::Report, String> {
+        if self.weights.is_none() {
+            return Err("the canary needs the weights, and they are not loaded; open a handle first".to_owned());
+        }
+        let capacity = |which: canary::Which| {
+            which.tokens_needed().div_ceil(spec::CAPACITY_STEP as usize) as u32 * spec::CAPACITY_STEP
+        };
+        let classes = [canary::Which::Short, canary::Which::Long].map(|which| spec::ContextClass {
+            count: 1,
+            capacity: capacity(which),
+        });
+        let needed: u64 = classes
+            .iter()
+            .map(|class| spec::context_declared_bytes(class.capacity))
+            .sum();
+        memory_problem(
+            "the canary contexts",
+            mem_available().map_err(|error| error.to_string())?,
+            needed,
+        )?;
+        let mut ids = Vec::with_capacity(classes.len());
+        for class in classes {
+            match self.open_states(class) {
+                Ok(made) => ids.extend(made),
+                Err(error) => {
+                    self.free_ids(&ids);
+                    return Err(error);
+                }
+            }
+        }
+        let result = canary::run(|call| {
+            let request = PassRequest {
+                contexts: call.contexts.iter().map(|which| ids[*which as usize]).collect(),
+                lens: call.lens.clone(),
+                tokens: call.tokens.clone(),
+                want_logits: true,
+            };
+            let reply = self.pass(request).map_err(|problem| {
+                format!(
+                    "a canary pass failed: {}{}",
+                    problem.message,
+                    if problem.poison {
+                        " (the pass poisoned its contexts)"
+                    } else {
+                        ""
+                    }
+                )
+            })?;
+            let bytes = reply.logits.ok_or_else(|| {
+                "a canary pass gave no logits; the engine must give one row for each segment".to_owned()
+            })?;
+            Ok(bytes
+                .as_chunks::<4>()
+                .0
+                .chunks(spec::VOCAB as usize)
+                .map(|row| row.iter().map(|chunk| f32::from_le_bytes(*chunk)).collect())
+                .collect())
+        });
+        self.free_ids(&ids);
+        result
     }
 
     /// Free the contexts with these ids.
@@ -1635,6 +1798,7 @@ mod tests {
             fast_qmm: true,
             tiles: false,
             reload: None,
+            load_canary: None,
         }
     }
 

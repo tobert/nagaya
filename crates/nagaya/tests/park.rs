@@ -482,6 +482,29 @@ fn the_identity_digest_uses_the_recipe_key_context() {
 }
 
 #[test]
+fn two_identities_that_differ_only_in_build_have_one_digest() {
+    // The canary decides if a build changed the bits, so the digest does not cover `build` (spec 12.1).
+    let first = seeded().identity();
+    let mut second = first.clone();
+    second
+        .build
+        .insert("engine_build_sha256".to_owned(), "another build".to_owned());
+    second
+        .build
+        .insert("engine_hip".to_owned(), "another runtime".to_owned());
+    assert_ne!(first, second);
+    assert_eq!(identity_digest(&first), identity_digest(&second));
+}
+
+#[test]
+fn two_identities_that_differ_in_the_canary_hash_have_two_digests() {
+    let first = seeded().identity();
+    let mut second = first.clone();
+    second.canary_hash = format!("{}x", first.canary_hash);
+    assert_ne!(identity_digest(&first), identity_digest(&second));
+}
+
+#[test]
 fn a_park_keeps_the_block_format_of_each_part() {
     struct BlockEngine(FakeAlways);
     impl Engine for BlockEngine {

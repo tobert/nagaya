@@ -1709,8 +1709,8 @@ sealed state with a recipe. Thus the rules of 6.2 to 6.11 give its key, its look
   approximation tags and no lab state. Reason: the park recipe of 6.2 uses a fixed key in this way.
 - The **encoder digest** takes the place of the identity digest. It is the tagged hash of the encoder's part of the
   identity (12.1). That part is the checkpoint digest of the text tower, the tokenizer hash, the template and the
-  cut. It also holds the numbers of the encoder and the lineage of the plan table. Until the canary runs (12.1), the
-  digest also covers `build`.
+  cut. It also holds the numbers of the encoder and the lineage of the plan table. Until the canary of that
+  engine runs (12.1), the digest also covers `build`.
 - The transformer and its LoRA are not in the encoder digest. A LoRA never changes the encoder (11.9c, "The LoRA
   fold"). Thus two variants with the same encoder, tokenizer, template and build share each conditioning.
 - The engine gives the encoder digest in its `conditioning` capability (engine-abi "Image").
@@ -1848,8 +1848,69 @@ The nagaya runs the canary again before the engine is ready, with no tolerance. 
 nagaya exit with code 3, "do not restart" (10.4). After start, a mismatch marks the engine fatal (8.2), and the
 process continues with its other engines.
 
-Not built. The process runs no canary, and the Qwen3.8 binding gives an empty `canary_hash` (engine-abi "v0 binding
-choices"). A start checks no canary.
+Built for the Qwen3.8 engine only, and the notes below are **Proposed**. The engine runs its canary at each load and
+compares it with a table of records. Any other engine gives an empty `canary_hash` and runs no canary. The process
+runs no canary through the `Engine` trait.
+
+The canary adds time to each load. The measure of 2026-11-12 used 5 processes for each path. The canary took about
+1.9 s on the fast path and about 4.2 s on the exact path. A load took about 28 s.
+
+**Proposed** (Claude Fable 5.2, 2026-11-12): the Qwen3.8 engine runs its canary itself. It runs on the engine's worker
+thread, in two contexts that it makes and frees, and it uses the same pass path as a client. The host takes the argmax
+of each row. Reason: the engine crate holds the worker thread, the passes and the fixed token ids, and it needs no
+tokenizer. The form through the `Engine` trait comes with the canary of the other engines.
+
+
+**Proposed** (Claude Fable 5.2, 2026-11-12): the content of the canary of the Qwen3.8 engine is fixed.
+
+- Context A takes 5 tokens in one pass. Context B takes 300 tokens in two passes of 256 and 44 tokens.
+- Then 8 greedy steps follow. Each step is one joined pass of 2 segments, A then B, with 1 token each.
+- Each pass gives the logits row of each segment. That makes 19 rows: 1, then 2, then 16.
+- A row hash is the SHA-256 of the row's f32 values as little-endian bytes, with no change to a value.
+- The canary hash covers a text tag, the input ids and the 19 row hashes (`canary.rs` gives the byte layout).
+- The canary does not reach the indexer path. That path starts past 2051 cells, and it needs about 2,300 tokens.
+
+Reason: this content covers a short prefill, a long prefill in two passes and a joined decode, in about 3 s. The card
+gates keep the cases that it does not cover.
+
+**Proposed** (Claude Fable 5.2, 2026-11-12): the record of a canary is a table in the crate of the Qwen3.8 engine.
+
+- The key of an entry is the checkpoint digest, `fast_qmm` and `tiles`. The value is the canary hash.
+- The identity takes `canary_hash` from the table. Thus a description gives it with no GPU and no load.
+- A set of key values with no entry does not open. The error names the three key values and what to do.
+
+Reason: the council takes the digest and the root recipe of an engine on demand from its description, before any
+load (11.1). A canary hash that only an open measures would come too late for that.
+
+**Proposed** (Claude Fable 5.2, 2026-11-12): a mismatch of the canary refuses the open, with no tolerance.
+
+- The engine runs the canary at each load of its weights, after the scratch probe. It compares the canary hash with
+  the table.
+- A build with other bits does not open until a commit records its hash. The commit says that the bits moved. Then
+  the engine has a new digest.
+- At start, a mismatch makes the nagaya exit with code 3. A mismatch at a later load stops the process today, as
+  each failed open of a swap does.
+- The message of the error gives the table entry, the measured canary hash and the 19 measured row hashes.
+- A canary pass that fails for another reason, such as a stop on the spin bound, is an ordinary open error. It is
+  not a mismatch.
+- Not built: the fatal state and the run after a pass failure of 8.2.
+- Built: the table, the check at each load, the exit code 3 at start, and the second form of the open.
+
+Reason: a build that gives other bits must not serve under the old digest. The owner said that a load is rare, so a
+check at each load can cost its time.
+
+**Proposed** (Claude Fable 5.2, 2026-11-12): a checkpoint that the table does not hold.
+
+- A set of key values with no entry is an error in the description and in the open. The start refuses with exit 3, as
+  each other error of a description does.
+- The service cannot measure the hash then, because it does not start. The crate gives the open a second form that runs
+  the canary, reports it and compares nothing. The test `hip_canary` uses that form and prints the measured hash.
+- The person adds one line to the table, in a commit that records the bits of that checkpoint.
+- The process always uses the checked form. A card test of a deploy opens the engine in the checked form too.
+- Another choice for later: the start goes on without that engine, and its first load fails with the measured hash.
+- A key of the profile that gives the hash is also a later choice of the owner.
+
+Reason: the table is the simplest record that needs no new file. A stranger needs one line for each checkpoint.
 
 **8.2 Pass failures.** A pass returns ok, poison (D6), or timeout. The nagaya treats outputs that are not finite as
 poison. After a poison or a timeout, the nagaya does these steps:
@@ -2394,7 +2455,8 @@ When `<store_dir>/profile.toml` does not exist, the process starts with an empty
 because a machine with no engine can serve as a coordinator or hold a store tier (2.1). A process with an empty
 profile sends `READY=1` when admission passes. Decided 2026-10-20 (reading).
 
-Not built: the canary and the wake of pinned state (8.1, 6.11). `READY=1` follows the open of every resident engine
+Not built: the canary of the other engines, and the wake of pinned state (8.1, 6.11). The Qwen3.8 engine runs its
+canary inside its open, so `READY=1` follows it. `READY=1` follows the open of every resident engine
 and the attach of the council routes. An engine on demand does not open at start (3.3a,
 `crates/nagaya/src/process.rs:1149-1154`).
 
@@ -2634,7 +2696,8 @@ required param.").
 
 Pooling and the decision numbers come from `gogi_proto::math`, which all engines share. The council
 `identity.engine` covers two things: the engine identity, and the nagaya code that turns logits into decisions.
-(The Qwen3.8 engine puts the SHA-256 of `libqwen38engine.a` in `numbers`, as `engine_build_sha256`.)
+(The Qwen3.8 engine puts the SHA-256 of `libqwen38engine.a` in `build`, as `engine_build_sha256`. The digest does
+not cover it.)
 
 **A text engine on demand.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-11-01. Reason: Amy made the
 Qwen3.8 engine on demand on gfx1151host (`docs/deploy.md`, "The layout of gfx1151host"), and the council served only the engines
@@ -5040,19 +5103,29 @@ different most of the time."
 - The identity digest does not cover `build`. It covers the other fields of 12.1, also the canary hash.
 - `numbers` keeps the values that change bits by choice, such as the `fast_qmm` and `tiles` of the Qwen3.8 engine. A
   file path is not a number. The `engine_lib` path is gone, because the binary links the Qwen3.8 engine (Amy,
-  2026-10-22, AGENTS.md milestone 15). Until `build` exists, `numbers` holds the Qwen3.8 engine's build facts:
-  `engine_build_sha256`, `engine_compiler` and `engine_hip` (`crates/nagaya-mk-qwen38-gfx1151/src/spec.rs:515-517`).
+  2026-10-22, AGENTS.md milestone 15). The Qwen3.8 engine keeps its build facts in `build`: `engine_build_sha256`,
+  `engine_compiler` and `engine_hip` (`crates/nagaya-mk-qwen38-gfx1151/src/spec.rs`, `identity`). Another engine
+  keeps them in `numbers`, and in the digest, until it has a canary.
 - Thus a new build with the same canary bits has the same digest. Its held entries stay usable, and the gate
   thresholds still fit. A new build with other canary bits has a new digest, as now.
-- Each entry records the `build` that made it. A context with rows of two builds is then visible.
+- Each entry records the `build` that made it. A context with rows of two builds is then visible. Not built.
 - A Level Zero engine reads the driver version with `zeDriverGetProperties`. A HIP engine reads the HIP runtime
   version. A kernel that compiles at load is hashed after the compile.
 - The canary covers the shapes of the oracle fixture (8.3): a short prompt, a long prompt and a greedy decode. A
   staged engine runs each stage, and a ring part wraps.
-- Order: build the canary (8.1) first. Until it runs at each start, `build` stays in the digest, as now.
+- Order: build the canary (8.1) first. The Qwen3.8 engine is done: `build` is out of its digest. Another engine keeps
+  `build` in its digest until its own canary runs.
 
 Reason: the bits decide if a build changed the numbers, not the facts of the build. A canary covers only the paths
 that it runs, so its inputs must run each path that the limits allow.
+
+**Proposed** (Claude Fable 5.2, 2026-11-12): not built yet, when the canary of the Qwen3.8 engine is.
+
+- The expected identity in the index of the store, and the compare of it at start.
+- The check of `pin_identity` of the profile. The profile parses the key, and no code compares it.
+- The `build` of an entry. An entry does not yet record the build that made it.
+
+Reason: the canary needs none of the three. Each one is a larger change, so it is a later step.
 
 **The plan table of a HIP engine.** Amy decided on 2026-10-31 that hipBLASLt does the large bf16 matrix multiplies of
 Qwen-Image (11.9c). Amy: "hipBLASLt for GEMMs but we let it ride with changes over time, ok with some change in behavior

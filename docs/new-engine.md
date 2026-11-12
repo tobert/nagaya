@@ -178,11 +178,13 @@ next one. The two engines took different capabilities for the same rule:
   takes more than it declares. Leave room in the budget: card 1 of b70host had about 2.3 GB left beside `gemma` on
   2026-10-21 (`docs/deploy.md`).
 - **Identity.** Fill the fields of spec 12.1: `model`, `checkpoint_digest`, `tokenizer_hash`, `template`, `family`,
-  `numbers`, the plan table lineage, the bit settings with their class, and `canary_hash`. Today `numbers` holds the
-  kernel's SHA-256, the compiler versions and the driver version. The plan table names the PCI ids of the card
-  (engine-abi "The first Gemma 4 binding"). The digest does not cover `family`. Decided by senpai 2026-10-22, accepted
-  by Amy 2026-11-02: the canary decides for a new build, and the digest will not cover a `build` member. Until the
-  canary runs at each start, the build facts stay in the digest (spec 12.1).
+  `numbers`, the plan table lineage, the bit settings with their class, `canary_hash` and `build`. Today `numbers`
+  holds the kernel's SHA-256, the compiler versions and the driver version. The plan table names the PCI ids of the card
+  (engine-abi "The first Gemma 4 binding"). The digest does not cover `family`.
+- **Build facts.** Decided by senpai 2026-10-22, accepted by Amy 2026-11-02: the canary decides for a new build, and
+  the digest does not cover the member `build`. The Qwen3.8
+  engine has its canary, so it keeps its build facts in `build`. Another engine gives an empty `build` until it has a
+  canary. Its build facts stay in `numbers`, and thus in the digest (spec 12.1).
 - **The family crate.** The engine crate depends on its family crate. The identity's `template` is the family's
   template text, and the engine hashes the tokenizer file with the family's function
   (`crates/nagaya-mk-gemma4-bmg/Cargo.toml:17-18`, `crates/nagaya-mk-gemma4-bmg/src/engine.rs:93`). Reason: one
