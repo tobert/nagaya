@@ -21,7 +21,7 @@ use crate::stage::*;
 pub(crate) const LAYERS: u32 = 48;
 pub(crate) const EMBD: u32 = 2560;
 const HC: u32 = 4;
-const HC_DIM: u32 = HC * EMBD;
+pub(crate) const HC_DIM: u32 = HC * EMBD;
 const HC_RANK: u32 = 320;
 pub(crate) const VOCAB: u32 = 248_320;
 const RMS_EPS: f32 = 1e-6;
@@ -420,6 +420,10 @@ fn rms_stage(
 /// The stages of a pass, in the order of the schedule.
 pub(crate) struct Built {
     pub stages: Vec<Stage>,
+    /// For each layer built, the index in `stages` of the stage after its last stage: the stage at which the next layer
+    /// starts. The schedule orders the stages inside the windows between these indices, so they hold for the final list
+    /// (`schedule.rs`, "windows").
+    pub layer_ends: Vec<u32>,
 }
 
 /// The builder of one pass.
@@ -477,7 +481,10 @@ impl Builder<'_> {
             stage.sched = plan.sched[k];
             out.push(stage);
         }
-        Built { stages: out }
+        Built {
+            stages: out,
+            layer_ends: ends,
+        }
     }
 
     /// `engine.hip` `build_stages`.
@@ -1336,6 +1343,234 @@ fn fuse_hc_mix(s: &mut Vec<Stage>, ends: &mut [u32]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fake;
+
+    /// The build of a pass of one segment of `t` tokens over the fake weights and fake buffers.
+    fn built(t: u32, want_logits: bool, knobs: Knobs) -> Built {
+        let weights = fake::weights();
+        let mut scratch = fake::BumpScratch::default();
+        let context = fake::context(5, 4096, 0);
+        let seg = [Seg {
+            c: Box::into_raw(context),
+            t,
+        }];
+        let buffers = PassBuffers {
+            tokens: 0x1000 as *const i32,
+            head_rows: 0x2000 as *const u32,
+            inv_freq: 0x3000 as *const f32,
+        };
+        let built = Builder {
+            w: &weights,
+            scratch: &mut scratch,
+            buffers,
+            knobs,
+        }
+        .build(&seg, t, want_logits);
+        // SAFETY: the pointer came from `Box::into_raw` above, and the builder keeps none.
+        drop(unsafe { Box::from_raw(seg[0].c) });
+        built
+    }
+
+    const FAST: Knobs = Knobs {
+        fast_qmm: true,
+        fuse: true,
+        fuse_hc: true,
+        fuse_hcmix: true,
+        elide: true,
+        tail: true,
+        debug_layers: 0,
+    };
+
+    fn count(built: &Built, op: u32) -> usize {
+        built.stages.iter().filter(|stage| stage.op == op).count()
+    }
+
+    /// The knobs of each path that the engine runs: the fast path, and the exact path (`QWEN38_FAST_QMM=0`).
+    fn paths() -> [(&'static str, Knobs); 2] {
+        [
+            ("fast", FAST),
+            (
+                "exact",
+                Knobs {
+                    fast_qmm: false,
+                    ..FAST
+                },
+            ),
+        ]
+    }
+
+    #[test]
+    fn a_built_pass_keeps_the_end_of_each_layer_in_the_final_list() {
+        for (path, knobs) in paths() {
+            for t in [1, 2, 17, 256] {
+                let built = built(t, true, knobs);
+                let ends = &built.layer_ends;
+                assert_eq!(ends.len(), LAYERS as usize, "{path} t={t}: one end for each layer");
+                assert!(
+                    ends.windows(2).all(|pair| pair[0] < pair[1]),
+                    "{path} t={t}: the ends rise: {ends:?}"
+                );
+                let n = built.stages.len();
+                assert!(
+                    (ends[47] as usize) < n,
+                    "{path} t={t}: the head follows the last layer, so its end is before the list end"
+                );
+                // The stage before the end of layer l ends layer l, and the stage at the end starts layer l + 1. The
+                // head's stages carry the layer number 48.
+                for (layer, end) in ends.iter().enumerate() {
+                    let end = *end as usize;
+                    assert_eq!(
+                        built.stages[end - 1].layer,
+                        layer as u32,
+                        "{path} t={t}: the stage before the end of layer {layer}"
+                    );
+                    assert_eq!(
+                        built.stages[end].layer,
+                        layer as u32 + 1,
+                        "{path} t={t}: the stage at the end of layer {layer}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_launch_can_end_at_each_layer_end() {
+        // The megakernel ends a launch after any stage (`mega.hip`). The stage that ends a range must hold a grid
+        // barrier, which the schedule gives to the last stage of each window. The stage that starts the next range
+        // must not be a barrier tail: a tail stage at the start of a launch runs as any stage, and the plan of this
+        // pass has no such case.
+        for (path, knobs) in paths() {
+            for t in [1, 17, 256] {
+                let built = built(t, true, knobs);
+                for (layer, end) in built.layer_ends.iter().enumerate() {
+                    let end = *end as usize;
+                    let last = built.stages[end - 1].sched;
+                    assert_eq!(
+                        last & SCHED_NO_BARRIER,
+                        0,
+                        "{path} t={t}: the last stage of layer {layer} has no grid barrier"
+                    );
+                    let first = built.stages[end].sched;
+                    assert_eq!(
+                        first & SCHED_TAIL,
+                        0,
+                        "{path} t={t}: the first stage after layer {layer} is a barrier tail"
+                    );
+                }
+            }
+        }
+        let plain = built(1, true, Knobs { elide: false, ..FAST });
+        for end in &plain.layer_ends {
+            assert_eq!(
+                plain.stages[*end as usize - 1].sched & SCHED_NO_BARRIER,
+                0,
+                "a pass with no schedule has a barrier after each stage"
+            );
+        }
+    }
+
+    #[test]
+    fn the_fused_combine_is_in_a_decode_list_and_not_in_a_list_with_it_off() {
+        let on = built(1, true, FAST);
+        let off = built(1, true, Knobs { fuse_hc: false, ..FAST });
+        // 96 combines: all but the one before the PLE stages of layer 1 join the norm that follows.
+        assert_eq!(count(&on, ST_HC_COMBINE_RMS), 95);
+        assert_eq!(count(&off, ST_HC_COMBINE_RMS), 0);
+        assert!(count(&off, ST_HC_COMBINE) > count(&on, ST_HC_COMBINE));
+        // A prefill of more than 16 tokens never fuses the combine, so the knob changes nothing there.
+        let long_on = built(17, true, FAST);
+        let long_off = built(17, true, Knobs { fuse_hc: false, ..FAST });
+        assert_eq!(count(&long_on, ST_HC_COMBINE_RMS), 0);
+        assert_eq!(long_on.stages.len(), long_off.stages.len());
+    }
+
+    #[test]
+    fn the_head_reads_the_fold_that_the_pass_keeps_in_mixed() {
+        // The tap `fold` reads `mixed` at the head rows after the last launch. The head's qmm reads its x from `mixed`
+        // too, so `mixed` holds the fold. On the fast path, the f16 matmul of the head's `up` writes `mixed` in its
+        // epilogue; on the exact path, the stage ST_HC_MIX writes it.
+        for (path, knobs) in paths() {
+            for (t, segments) in [(1u32, 1usize), (17, 1), (256, 1)] {
+                let _ = segments;
+                let built = built(t, true, knobs);
+                let after = &built.stages[built.layer_ends[47] as usize..];
+                let head = after.last().expect("the head");
+                assert!(
+                    head.op == ST_QMM || head.op == ST_QMM_H,
+                    "{path}: the last stage is the head's matmul"
+                );
+                assert_eq!(head.qmm().n, VOCAB, "{path}: the last stage is the head");
+                let x = head.qmm().x;
+                let writes_mixed = |stage: &Stage| match stage.op {
+                    ST_HC_MIX => stage.mix().mixed as *const f32,
+                    ST_QMM_H if stage.qmm().yout == YOUT_HC_MIX => stage.qmm().mix_out as *const f32,
+                    _ => std::ptr::null(),
+                };
+                let writers: Vec<*const f32> = after.iter().map(writes_mixed).filter(|p| !p.is_null()).collect();
+                assert_eq!(writers.len(), 1, "{path} t={t}: one stage writes mixed after layer 47");
+                // A one-token pass reads the row t - 1 of mixed; the head's x is that row.
+                let row = (t as usize - 1) * EMBD as usize;
+                assert_eq!(
+                    x,
+                    writers[0].wrapping_add(row),
+                    "{path} t={t}: the head reads the last row of the fold"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_head_of_several_segments_reads_mixed_by_row_map() {
+        let weights = fake::weights();
+        let mut scratch = fake::BumpScratch::default();
+        let contexts = [fake::context(5, 4096, 0), fake::context(9, 4096, 1)];
+        let seg = [
+            Seg {
+                c: &*contexts[0] as *const Qwen38Context as *mut Qwen38Context,
+                t: 3,
+            },
+            Seg {
+                c: &*contexts[1] as *const Qwen38Context as *mut Qwen38Context,
+                t: 2,
+            },
+        ];
+        let buffers = PassBuffers {
+            tokens: 0x1000 as *const i32,
+            head_rows: 0x2000 as *const u32,
+            inv_freq: 0x3000 as *const f32,
+        };
+        let built = Builder {
+            w: &weights,
+            scratch: &mut scratch,
+            buffers,
+            knobs: FAST,
+        }
+        .build(&seg, 5, true);
+        let head = built.stages.last().expect("the head");
+        assert_eq!(head.qmm().n, VOCAB);
+        assert_eq!(
+            head.qmm().x_row,
+            0x2000 as *const u32,
+            "the head reads rows by the head_rows map"
+        );
+        assert_eq!(head.qmm().t, 2, "one head row for each segment");
+    }
+
+    #[test]
+    fn the_residual_row_is_the_four_streams_of_h() {
+        // The first stage that writes `h` is the repeat of the embedding over 4 streams. Its row holds 4 streams of EMBD
+        // values, and that is the width of a control vector and of a residual row.
+        let built = built(3, false, FAST);
+        let repeat = built
+            .stages
+            .iter()
+            .find(|stage| stage.op == ST_REPEAT4)
+            .expect("the pass repeats the embedding");
+        assert_eq!(4 * repeat.rep().d as usize, crate::control::WIDTH);
+        assert_eq!(HC_DIM as usize, crate::control::WIDTH);
+        assert_eq!(repeat.rep().t, 3);
+    }
 
     #[test]
     fn the_split_depends_on_the_matrix_shape() {

@@ -1483,6 +1483,7 @@ impl ThreadState {
             ple: &ple,
             knobs,
             launch,
+            cuts: None,
         };
         unsafe { host::run_pass(&self.binding, self.engine, host, weights, input, logits) }
     }
