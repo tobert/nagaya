@@ -23,12 +23,14 @@ fn worker() -> Result<Arc<Worker>, Qwen38Error> {
         Err(error) => return Err(error.clone()),
     };
     if worker.paths() != &paths {
-        return Err(Qwen38Error::new("MK_SHARDS changed after the engine opened".to_owned()));
+        return Err(Qwen38Error::new(
+            "QWEN38_SHARDS changed after the engine opened".to_owned(),
+        ));
     }
     Ok(worker)
 }
 
-/// The identity and the limits of the engine on the shards of `MK_SHARDS`, with no GPU and no load. An open gives the
+/// The identity and the limits of the engine on the shards of `QWEN38_SHARDS`, with no GPU and no load. An open gives the
 /// same facts.
 pub fn describe() -> Result<(Identity, Limits), Qwen38Error> {
     crate::worker::describe(&Qwen38Paths::from_env()?)

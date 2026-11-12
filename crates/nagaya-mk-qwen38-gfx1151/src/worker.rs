@@ -58,11 +58,11 @@ impl From<String> for Qwen38Error {
 /// Where the three weight shards are.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Qwen38Paths {
-    /// The three shard paths (`MK_SHARDS`, with `:` between them).
+    /// The three shard paths (`QWEN38_SHARDS`, with `:` between them).
     pub shards: Vec<PathBuf>,
 }
 
-/// Split `MK_SHARDS` on `:` as raw bytes, so a path that is not UTF-8 stays the same path.
+/// Split `QWEN38_SHARDS` on `:` as raw bytes, so a path that is not UTF-8 stays the same path.
 fn parse_shards(raw: &[u8]) -> Result<Vec<PathBuf>, Qwen38Error> {
     let shards: Vec<PathBuf> = raw
         .split(|byte| *byte == b':')
@@ -70,7 +70,7 @@ fn parse_shards(raw: &[u8]) -> Result<Vec<PathBuf>, Qwen38Error> {
         .collect();
     if shards.len() != 3 || shards.iter().any(|path| path.as_os_str().is_empty()) {
         return Err(Qwen38Error::new(format!(
-            "MK_SHARDS has {} paths; mk needs three, with : between them",
+            "QWEN38_SHARDS has {} paths; mk needs three, with : between them",
             shards.len()
         )));
     }
@@ -78,10 +78,10 @@ fn parse_shards(raw: &[u8]) -> Result<Vec<PathBuf>, Qwen38Error> {
 }
 
 impl Qwen38Paths {
-    /// Read the paths from `MK_SHARDS`.
+    /// Read the paths from `QWEN38_SHARDS`.
     pub fn from_env() -> Result<Self, Qwen38Error> {
-        let shards = std::env::var_os("MK_SHARDS")
-            .ok_or_else(|| Qwen38Error::new("MK_SHARDS is not set; give three GGUF paths with : between them"))?;
+        let shards = std::env::var_os("QWEN38_SHARDS")
+            .ok_or_else(|| Qwen38Error::new("QWEN38_SHARDS is not set; give three GGUF paths with : between them"))?;
         let shards = parse_shards(shards.as_os_str().as_bytes())?;
         Ok(Self { shards })
     }
@@ -498,7 +498,6 @@ pub(crate) fn start(paths: Qwen38Paths) -> Result<Arc<Worker>, Qwen38Error> {
 /// The identity and the limits of the engine on `paths`, with no GPU and no weights in memory: the facts that `open`
 /// gives after the load. The process serves an engine on demand from them before it loads (spec 11.1).
 pub(crate) fn describe(paths: &Qwen38Paths) -> Result<(Identity, Limits), Qwen38Error> {
-    removed_knob_problem(|knob| std::env::var_os(knob).is_some())?;
     paths.validate()?;
     let digest = gguf::spot_digest(&paths.shards)?;
     let fast_qmm = fast_qmm()?;
@@ -578,34 +577,12 @@ fn fast_qmm_from(value: Option<&str>) -> Result<bool, Qwen38Error> {
     }
 }
 
-/// The knobs of mk that milestone 15 removed with the code that read them (step 6). Each one changed only a
-/// diagnostic or an experiment. Open refuses a set one, so a knob that now does nothing is not a silent change.
-const REMOVED_KNOBS: [&str; 7] = [
-    "MK_ATTACH_WAIT_S",
-    "MK_MEGA_EVENTS",
-    "MK_MEGA_PER_STAGE",
-    "MK_SCRATCH_WARMUP",
-    "MK_STAGE_TIMING",
-    "MK_STAGE_TIMING_PRINT",
-    "MK_UNFUSED_GRID",
-];
-
-/// Refuse a removed knob that `is_set` finds in the environment.
-fn removed_knob_problem(is_set: impl Fn(&str) -> bool) -> Result<(), Qwen38Error> {
-    match REMOVED_KNOBS.iter().find(|knob| is_set(knob)) {
-        Some(knob) => Err(Qwen38Error::new(format!(
-            "{knob} is set, and this engine has no such knob since milestone 15; unset it"
-        ))),
-        None => Ok(()),
-    }
-}
-
 /// The value of an environment variable as text. A value that is not UTF-8 stays visible, so a knob refuses it.
 fn env_text(name: &str) -> Option<String> {
     std::env::var_os(name).map(|value| value.into_string().unwrap_or_else(|_| "<not UTF-8>".to_owned()))
 }
 
-/// The watchdog's deadline for each launch sequence: 10 s, or `MK_WATCHDOG_DEADLINE_S` (a test knob) in (0, 3600].
+/// The watchdog's deadline for each launch sequence: 10 s, or `QWEN38_WATCHDOG_DEADLINE_S` (a test knob) in (0, 3600].
 /// The longest pass is a bit over a second (mk PLAN.md).
 fn watchdog_deadline(value: Option<&str>) -> Result<f64, Qwen38Error> {
     let Some(value) = value else {
@@ -614,7 +591,7 @@ fn watchdog_deadline(value: Option<&str>) -> Result<f64, Qwen38Error> {
     match value.parse::<f64>() {
         Ok(seconds) if seconds > 0.0 && seconds <= 3600.0 => Ok(seconds),
         _ => Err(Qwen38Error::new(format!(
-            "MK_WATCHDOG_DEADLINE_S={value}: want seconds in (0, 3600]"
+            "QWEN38_WATCHDOG_DEADLINE_S={value}: want seconds in (0, 3600]"
         ))),
     }
 }
@@ -725,7 +702,6 @@ fn probe_shapes(capacity: u32) -> [(u32, bool); 2] {
 impl ThreadState {
     /// Bind the linked engine and open it. This runs on the worker thread.
     fn open(paths: &Qwen38Paths) -> Result<(Self, Spec), Qwen38Error> {
-        removed_knob_problem(|knob| std::env::var_os(knob).is_some())?;
         let digest = gguf::spot_digest(&paths.shards)?;
         let fast_qmm = fast_qmm()?;
         let tiles = tiles()?;
@@ -743,7 +719,7 @@ impl ThreadState {
 
         let (model, ple, arena, weights) = load_weights(&binding, paths, tiles)?;
         let arena_bytes = arena.bytes;
-        let deadline = watchdog_deadline(env_text("MK_WATCHDOG_DEADLINE_S").as_deref())?;
+        let deadline = watchdog_deadline(env_text("QWEN38_WATCHDOG_DEADLINE_S").as_deref())?;
         let engine = unsafe { (binding.engine_open)(deadline) };
         if engine.is_null() {
             return Err(Qwen38Error::new("mk_engine_open returned no engine"));
@@ -1422,7 +1398,7 @@ impl ThreadState {
     fn knobs(&self, want_logits: bool) -> Result<Knobs, String> {
         let knobs = Knobs::from(self.fast_qmm, env_text)?;
         if knobs.debug_layers > 0 && want_logits {
-            return Err("MK_DEBUG_LAYERS builds no head; ask for no logits".to_owned());
+            return Err("QWEN38_DEBUG_LAYERS builds no head; ask for no logits".to_owned());
         }
         Ok(knobs)
     }
@@ -1850,20 +1826,6 @@ mod tests {
         // A path that is not UTF-8 stays the same bytes.
         let paths = parse_shards(&[0xff, b':', b'/', b'b', b':', b'/', b'c']).unwrap();
         assert_eq!(paths[0].as_os_str().as_bytes(), &[0xff]);
-    }
-
-    #[test]
-    fn a_removed_knob_is_refused_at_open_and_the_error_names_it() {
-        assert!(super::removed_knob_problem(|_| false).is_ok());
-        for knob in super::REMOVED_KNOBS {
-            let error = super::removed_knob_problem(|name| name == knob).expect_err(knob);
-            assert!(error.message().starts_with(knob), "{error}");
-        }
-        assert_eq!(super::REMOVED_KNOBS.len(), 7);
-        // The knobs that the engine still reads are not refused.
-        for kept in ["MK_FAST_QMM", "MK_TILES", "MK_ELIDE", "MK_WATCHDOG_DEADLINE_S"] {
-            assert!(super::removed_knob_problem(|name| name == kept).is_ok(), "{kept}");
-        }
     }
 
     #[test]

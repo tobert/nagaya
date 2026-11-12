@@ -1,7 +1,7 @@
 //! The mk engine as a factory kind (spec 2.4; `docs/engine-abi.md`, "v0 mk binding choices").
 //!
 //! This module exists in a build with the feature `hip`, which links mk's engine statically. The factory reads
-//! `MK_SHARDS` from the environment, as the unit sets it. It opens no device until `open`.
+//! `QWEN38_SHARDS` from the environment, as the unit sets it. It opens no device until `open`.
 
 use nagaya_abi::{Engine, Identity, Limits};
 use nagaya_mk_qwen38_gfx1151::{Qwen38Error, Qwen38Paths};
@@ -116,7 +116,7 @@ fn check_install() -> Result<(), PlanError> {
         if !shard.is_file() {
             return Err(PlanError {
                 message: format!(
-                    "MK_SHARDS names `{}`, which is not a file; give the three GGUF shards of the model",
+                    "QWEN38_SHARDS names `{}`, which is not a file; give the three GGUF shards of the model",
                     shard.display()
                 ),
             });

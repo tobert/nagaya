@@ -82,7 +82,7 @@ write the name of the thing in the nagaya:
   meaning of `mk` in the nagaya.
 - Each identifier that carries the name of an old project gets a new name, in the C++ and HIP code too. Decided
   2026-11-11: the repository is private and all the code is here, so make the names as good as they can be.
-  Examples are `MK_SHARDS`, `MK_CHECK`, `mk_engine_close`, and the served model `mk` on gfx1151host.
+  Examples are `QWEN38_SHARDS`, `MK_CHECK`, `mk_engine_close`, and the served model `mk` on gfx1151host.
 - Until milestone 31 step 2 changes an identifier, use it as it is, and do not copy the pattern.
 - `docs/history.md` can keep the old names. It is the record of how the code came here.
 
@@ -193,7 +193,7 @@ An agent may also stop and start the web app on b70host (`python3 tools/nagaya_w
   without `hip` needs no ROCm, so a machine without ROCm builds and tests the workspace.
 - Keep the compile flags, `-ffp-contract=off -fno-fast-math`: the gates compare bits. `tests/build_flags.rs`
   compares the flags with a fixture.
-- The weights are three GGUF shards. GPU tests read them from `MK_SHARDS`, three paths with `:` between them.
+- The weights are three GGUF shards. GPU tests read them from `QWEN38_SHARDS`, three paths with `:` between them.
   Do not put the paths in code. `signoff.md` gives them.
 - The engine has no attach. The export of the arena (spec 10.2) builds it in Rust, from `arena.rs`. For an fd from
   systemd's store, give `/proc/self/fd/<n>`.
@@ -303,7 +303,7 @@ get ran sometimes, perhaps just a bump in our AGENTS.md"
   `nagaya.service` stopped. An absent oracle file skips a test, as an absent model does.
 - The report of a check names how many tests skipped for a missing model.
 
-On gfx1151host, run the oracle bench with `MK_SHARDS` set and the unit inactive:
+On gfx1151host, run the oracle bench with `QWEN38_SHARDS` set and the unit inactive:
 `cargo bench -p nagaya-mk-qwen38-gfx1151 --features hip --bench oracle`. It exits with 1 when a gate breaks.
 Set `MK_FAST_QMM=0` for the gate: the exact path must match the reference. Leave it unset to measure the fast path.
 

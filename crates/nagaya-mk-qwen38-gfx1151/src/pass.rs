@@ -215,17 +215,17 @@ impl Seg {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Knobs {
     pub fast_qmm: bool,
-    /// `MK_FUSE`: the fused staging and the fused hc_post + norm at decode.
+    /// `QWEN38_FUSE`: the fused staging and the fused hc_post + norm at decode.
     pub fuse: bool,
-    /// `MK_FUSE_HC`: the combine + rms fusion; needs `fuse`.
+    /// `QWEN38_FUSE_HC`: the combine + rms fusion; needs `fuse`.
     pub fuse_hc: bool,
-    /// `MK_FUSE_HCMIX`: the hc up + hc_mix fusion; needs `fuse`.
+    /// `QWEN38_FUSE_HCMIX`: the hc up + hc_mix fusion; needs `fuse`.
     pub fuse_hcmix: bool,
-    /// `MK_ELIDE`: the barrier schedule.
+    /// `QWEN38_ELIDE`: the barrier schedule.
     pub elide: bool,
-    /// `MK_TAIL`: the barrier tail.
+    /// `QWEN38_TAIL`: the barrier tail.
     pub tail: bool,
-    /// `MK_DEBUG_LAYERS`: build the first n layers and no head (bring-up), or 0 for all of them.
+    /// `QWEN38_DEBUG_LAYERS`: build the first n layers and no head (bring-up), or 0 for all of them.
     pub debug_layers: u32,
 }
 
@@ -242,20 +242,20 @@ impl Knobs {
     /// The knobs from `var`, one environment lookup. A bad value is an error that refuses the pass.
     pub(crate) fn from(fast_qmm: bool, var: impl Fn(&str) -> Option<String>) -> Result<Knobs, String> {
         let on = |name: &str| switch(name, var(name).as_deref());
-        let debug_layers = match var("MK_DEBUG_LAYERS") {
+        let debug_layers = match var("QWEN38_DEBUG_LAYERS") {
             None => 0,
             Some(value) => match value.parse::<u32>() {
                 Ok(n) if (1..=LAYERS).contains(&n) => n,
-                _ => return Err(format!("MK_DEBUG_LAYERS={value} out of 1..{LAYERS}")),
+                _ => return Err(format!("QWEN38_DEBUG_LAYERS={value} out of 1..{LAYERS}")),
             },
         };
         Ok(Knobs {
             fast_qmm,
-            fuse: on("MK_FUSE")?,
-            fuse_hc: on("MK_FUSE_HC")?,
-            fuse_hcmix: on("MK_FUSE_HCMIX")?,
-            elide: on("MK_ELIDE")?,
-            tail: on("MK_TAIL")?,
+            fuse: on("QWEN38_FUSE")?,
+            fuse_hc: on("QWEN38_FUSE_HC")?,
+            fuse_hcmix: on("QWEN38_FUSE_HCMIX")?,
+            elide: on("QWEN38_ELIDE")?,
+            tail: on("QWEN38_TAIL")?,
             debug_layers,
         })
     }
@@ -558,9 +558,9 @@ impl Builder<'_> {
         let n_layers = if self.knobs.debug_layers > 0 {
             assert!(
                 !want_logits,
-                "MK_DEBUG_LAYERS builds no head; ask for layers, not logits"
+                "QWEN38_DEBUG_LAYERS builds no head; ask for layers, not logits"
             );
-            eprintln!("engine: MK_DEBUG_LAYERS={} (bring-up)", self.knobs.debug_layers);
+            eprintln!("engine: QWEN38_DEBUG_LAYERS={} (bring-up)", self.knobs.debug_layers);
             self.knobs.debug_layers
         } else {
             LAYERS
@@ -1220,7 +1220,7 @@ fn fuse_hc_mix(s: &mut Vec<Stage>, ends: &mut [u32]) {
         let u = *s[j].qmm();
         assert!(
             s[j].op == ST_QMM_H,
-            "fuse_hc_mix: hc_mix stage {m}: its up matmul is an exact qmm (op {}); MK_FUSE_HCMIX=0 for that",
+            "fuse_hc_mix: hc_mix stage {m}: its up matmul is an exact qmm (op {}); QWEN38_FUSE_HCMIX=0 for that",
             s[j].op
         );
         assert!(
@@ -1348,21 +1348,21 @@ mod tests {
 
     #[test]
     fn a_knob_takes_0_or_1_and_refuses_the_rest() {
-        assert_eq!(switch("MK_FUSE", None), Ok(true));
-        assert_eq!(switch("MK_FUSE", Some("1")), Ok(true));
-        assert_eq!(switch("MK_FUSE", Some("0")), Ok(false));
+        assert_eq!(switch("QWEN38_FUSE", None), Ok(true));
+        assert_eq!(switch("QWEN38_FUSE", Some("1")), Ok(true));
+        assert_eq!(switch("QWEN38_FUSE", Some("0")), Ok(false));
         assert_eq!(
-            switch("MK_FUSE", Some("yes")),
-            Err("MK_FUSE=yes: want 0 or 1".to_owned())
+            switch("QWEN38_FUSE", Some("yes")),
+            Err("QWEN38_FUSE=yes: want 0 or 1".to_owned())
         );
-        let knobs = Knobs::from(true, |name| (name == "MK_ELIDE").then(|| "0".to_owned())).unwrap();
+        let knobs = Knobs::from(true, |name| (name == "QWEN38_ELIDE").then(|| "0".to_owned())).unwrap();
         assert!(!knobs.elide && knobs.fuse && knobs.tail && knobs.debug_layers == 0);
         for bad in ["0", "49", "3x"] {
-            let error = Knobs::from(true, |name| (name == "MK_DEBUG_LAYERS").then(|| bad.to_owned())).unwrap_err();
+            let error = Knobs::from(true, |name| (name == "QWEN38_DEBUG_LAYERS").then(|| bad.to_owned())).unwrap_err();
             assert!(error.contains("out of 1..48"), "{error}");
         }
-        let error = Knobs::from(true, |name| (name == "MK_TAIL").then(|| "2".to_owned())).unwrap_err();
-        assert_eq!(error, "MK_TAIL=2: want 0 or 1");
+        let error = Knobs::from(true, |name| (name == "QWEN38_TAIL").then(|| "2".to_owned())).unwrap_err();
+        assert_eq!(error, "QWEN38_TAIL=2: want 0 or 1");
     }
 
     #[test]

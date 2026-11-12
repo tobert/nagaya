@@ -26,7 +26,7 @@ WorkingDirectory=%h/src/nagaya
 Environment=NAGAYA_CONFIG=%h/src/nagaya/deploy/gfx1151host/nagaya.toml
 # The three GGUF shards of mk (AGENTS.md "mk on gfx1151host"). The binary links mk's engine, so no variable names a
 # library. The shards are `SHARDS` in mk's `harness/paths.py`, with : between them.
-Environment="MK_SHARDS=/tank/ml/models/llama.cpp/Qwen3.8-Flash-Next-GGUF/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf:/tank/ml/models/llama.cpp/Qwen3.8-Flash-Next-GGUF/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf:/tank/ml/models/llama.cpp/Qwen3.8-Flash-Next-GGUF/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf"
+Environment="QWEN38_SHARDS=/tank/ml/models/llama.cpp/Qwen3.8-Flash-Next-GGUF/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf:/tank/ml/models/llama.cpp/Qwen3.8-Flash-Next-GGUF/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00002-of-00003.gguf:/tank/ml/models/llama.cpp/Qwen3.8-Flash-Next-GGUF/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00003-of-00003.gguf"
 # Unset on purpose: MK_FAST_QMM (the fast path). docs/deploy.md says how to set it.
 # OpenTelemetry: OTLP over gRPC to the host collector on 4317 (spec 9.1). mk's unit uses OTLP/HTTP on 4318, which
 # a gRPC exporter cannot speak: it logged a transport error every 5 s on 2026-10-21. Without it, stderr only.

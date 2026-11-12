@@ -118,7 +118,7 @@ kaibo listed 24 findings. We corrected these in `AGENTS.md`:
 - the fake engine's parts, slots, seal and determinism class; a broken fake engine for the gates;
 - a `nagaya-conformance` crate, and milestones for store entries and conformance;
 - the scheduler as a state machine, not a pure order function;
-- mk through `libloading` and `MK_ENGINE_LIB`, its shards in `MK_SHARDS`, and no mk build by the agent;
+- mk through `libloading` and `MK_ENGINE_LIB`, its shards in `QWEN38_SHARDS`, and no mk build by the agent;
 - the ledger as an owned type with no lock;
 - a commit prefix for changes to more than one crate, and `.gitignore` for weights;
 - a rule for gaps: the agent writes a **Proposed** choice into the doc and commits it alone.

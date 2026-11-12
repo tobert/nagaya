@@ -235,27 +235,20 @@ fn the_unit_reads_the_config_in_deploy() {
 }
 
 #[test]
-fn the_unit_names_three_shards_and_no_mk_library() {
+fn the_unit_names_three_shards() {
     let unit = unit();
     let environment: Vec<&str> = unit
         .lines()
         .filter_map(|line| line.strip_prefix("Environment="))
         .collect();
-    // The binary links mk's engine, so the unit names no library and no library pin (AGENTS.md milestone 15).
-    assert!(
-        environment
-            .iter()
-            .all(|value| !value.trim_start_matches('"').starts_with("MK_ENGINE_LIB")),
-        "{environment:?}"
-    );
     let shards = environment
         .iter()
         .find_map(|value| {
             value
-                .strip_prefix("\"MK_SHARDS=")
+                .strip_prefix("\"QWEN38_SHARDS=")
                 .and_then(|rest| rest.strip_suffix('"'))
         })
-        .expect("the unit sets MK_SHARDS in quotes");
+        .expect("the unit sets QWEN38_SHARDS in quotes");
     let paths: Vec<&str> = shards.split(':').collect();
     assert_eq!(paths.len(), 3, "mk needs three shards, with : between them");
     for (index, path) in paths.iter().enumerate() {

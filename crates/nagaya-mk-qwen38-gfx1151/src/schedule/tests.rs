@@ -1001,7 +1001,7 @@ fn siblings_that_touch_the_same_bytes_stop_the_schedule() {
 
 #[test]
 fn with_no_schedule_each_stage_runs_in_build_order_with_a_barrier_after_it() {
-    // MK_ELIDE=0: a reorder and a tail stay as they were built. A (x -> y), B (y -> out), C (x -> w), E (reads out).
+    // QWEN38_ELIDE=0: a reorder and a tail stay as they were built. A (x -> y), B (y -> out), C (x -> w), E (reads out).
     let stages = vec![
         silu(a(0), a(1000), 100),
         silu(a(1000), a(200_000), 2560),

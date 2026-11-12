@@ -21,7 +21,7 @@ use nagaya_mk_qwen38_gfx1151::Qwen38Error;
 
 static ENV: Mutex<()> = Mutex::new(());
 
-const SHARDS: &str = "MK_SHARDS";
+const SHARDS: &str = "QWEN38_SHARDS";
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")

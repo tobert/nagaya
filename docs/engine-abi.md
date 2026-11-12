@@ -420,8 +420,8 @@ the ABI.
   - `plan` returns the limits of the pool with this size in the weights term.
   - `open` loads the weights and compares the real arena with the key. A difference refuses the start (exit 3,
     spec 10.4). The message gives the real size for the profile.
-  - The factory reads `MK_SHARDS` from the environment. The engine is in the binary, so no variable names a library.
-  - `plan` refuses a missing `MK_SHARDS`, or a shard that is not a file. The message names the variable.
+  - The factory reads `QWEN38_SHARDS` from the environment. The engine is in the binary, so no variable names a library.
+  - `plan` refuses a missing `QWEN38_SHARDS`, or a shard that is not a file. The message names the variable.
   - The kind in the profile is `mk-qwen38-gfx1151`. A build with the feature `hip` registers it.
 - **The pool is 12 contexts of 4,096 tokens and 4 of 32,768.** Decided by senpai 2026-10-20 night, accepted by Amy
   2026-11-02. The pool had 16 contexts of 256 tokens (Amy, 2026-10-20: "grow the pool"). A kaijutsu context needs
@@ -523,7 +523,7 @@ and the stage build (`arena.rs`, `ple.rs` and `pass.rs`):
 - Rust mirrors `Stage` and the argument type of each op as `#[repr(C)]` types (`src/stage.rs`). One file holds each
   size, offset and constant of that mirror (`hip/src/engine/stage_layout.def`). Both the C++ build and the Rust build
   check against it, so a change on one side alone stops a build.
-- `MK_ELIDE` and the other knobs of the build are read in Rust at each pass, and a bad value refuses the pass.
+- `QWEN38_ELIDE` and the other knobs of the build are read in Rust at each pass, and a bad value refuses the pass.
 - The C++ extern layer (`hip/src/engine/extern.hip`) holds only the calls that the binding uses. Each call takes C
   types and calls one `Engine` method or reads one field. The binding declares each call of the layer, and a test
   compares the two lists. Step 4 removed the calls that only mk's Python harness and lab used, and step 6
@@ -549,7 +549,7 @@ Decided 2026-10-20 (reading): these limits stay, and this section records them.
 The binding bound `mk_engine_recover_spin_timeouts` and called it with `on = 1` at open (`566446c`). Milestone 15
 step 6 moved the rule into Rust, and the flag went. A pass can stop on a spin-timeout that the watchdog did not ask
 for. Then `host.rs` `run_pass` always poisons the contexts of the pass. Any other stop ends the process. The test knob
-`MK_MUTATE_STALL_BARRIER` can force a real spin-timeout, so a test of that path is now possible; none is written yet.
+`QWEN38_MUTATE_STALL_BARRIER` can force a real spin-timeout, so a test of it is now possible; none is written.
 
 Two paths have no test. A forced spin-timeout, and the `-1` to `PassStatus::Poison` path that follows it, need GPU
 contention, so no test in this suite reaches them. The poisoned `set_n` path has no test on real mk, because mk's

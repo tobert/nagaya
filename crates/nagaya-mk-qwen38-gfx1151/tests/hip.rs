@@ -185,7 +185,7 @@ fn the_binding_opens_mk_and_declares_its_parts() {
         identity.checkpoint_digest
     );
     // The identity holds the hash of the tokenizer keys in the first shard, as the text library computes it.
-    let shards = std::env::var("MK_SHARDS").expect("MK_SHARDS");
+    let shards = std::env::var("QWEN38_SHARDS").expect("QWEN38_SHARDS");
     let first = shards.split(':').next().expect("a first shard");
     let metadata = nagaya_text_qwen38::gguf::Metadata::open(std::path::Path::new(first)).expect("the first shard");
     assert_eq!(
@@ -854,32 +854,32 @@ fn a_split_across_256_does_not_change_the_bits_in_either_class() {
 
 #[test]
 fn mk_elide_0_runs_the_stages_in_build_order_with_the_same_bits() {
-    // MK_ELIDE=0 turns the Rust schedule off (src/schedule.rs `pass_plan`): each stage in build order with a grid
+    // QWEN38_ELIDE=0 turns the Rust schedule off (src/schedule.rs `pass_plan`): each stage in build order with a grid
     // barrier after it. The schedule keeps each conflicting pair in order, so the bits and the parts do not change.
     // The passes of 1 and 16 tokens are fused (decode and the fused staging), and the pass of 23 tokens is not.
     let ids = synthetic_ids(40);
     let sizes = [23, 16, 1];
     let mut engine = open().expect("open mk");
     let mut run = |elide: Option<&str>| {
-        let original = std::env::var_os("MK_ELIDE");
+        let original = std::env::var_os("QWEN38_ELIDE");
         // SAFETY: the hip tests run with --test-threads=1, and this closure restores the value before it returns.
         match elide {
-            Some(value) => unsafe { std::env::set_var("MK_ELIDE", value) },
-            None => unsafe { std::env::remove_var("MK_ELIDE") },
+            Some(value) => unsafe { std::env::set_var("QWEN38_ELIDE", value) },
+            None => unsafe { std::env::remove_var("QWEN38_ELIDE") },
         }
         assert_eq!(engine.slots().unwrap().slot_clear(0), WriteResult::Ok);
         let logits = bits(&feed_sizes(&mut engine, 0, &ids, &sizes));
         let parts = stored_parts(&mut engine, 0);
         match original {
-            Some(value) => unsafe { std::env::set_var("MK_ELIDE", value) },
-            None => unsafe { std::env::remove_var("MK_ELIDE") },
+            Some(value) => unsafe { std::env::set_var("QWEN38_ELIDE", value) },
+            None => unsafe { std::env::remove_var("QWEN38_ELIDE") },
         }
         (logits, parts)
     };
     let (scheduled, scheduled_parts) = run(None);
     let (plain, plain_parts) = run(Some("0"));
-    assert_parts_equal("MK_ELIDE=0", &scheduled_parts, &plain_parts);
-    assert!(scheduled == plain, "MK_ELIDE=0 changed the logits");
+    assert_parts_equal("QWEN38_ELIDE=0", &scheduled_parts, &plain_parts);
+    assert!(scheduled == plain, "QWEN38_ELIDE=0 changed the logits");
 }
 
 /// The process serves mk on demand from `describe()` before a load, so the description must be the open's facts.

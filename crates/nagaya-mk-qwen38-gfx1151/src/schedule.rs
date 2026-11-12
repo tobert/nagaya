@@ -589,7 +589,7 @@ pub(crate) struct Plan {
     pub barriers: u32,
 }
 
-/// The plan with no schedule (`MK_ELIDE=0`): each stage in build order, with a grid barrier after it.
+/// The plan with no schedule (`QWEN38_ELIDE=0`): each stage in build order, with a grid barrier after it.
 pub(crate) fn plain(n: u32) -> Plan {
     Plan {
         order: (0..n).collect(),

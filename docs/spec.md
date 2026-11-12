@@ -3013,7 +3013,7 @@ The nagaya does not copy that.
 - An engine whose family has no library is not a served model, and the log says so. This is the rule of 11.7 for
   an unknown kind, now keyed by the family.
 - The key `gguf` of `[engines.family]` names the GGUF file of the `qwen38` family. With no key, the library reads the
-  first shard of `MK_SHARDS`, as before. The `toy` family needs no file and no tokenizer hash.
+  first shard of `QWEN38_SHARDS`, as before. The `toy` family needs no file and no tokenizer hash.
 - The registry of engine factories holds each kind that the build has. The feature `hip` gives `mk-qwen38-gfx1151`
   and `qwenimage21`. `xe` gives `mk-gemma4-bmg`, `qwen3tts-bmg`, `mk-sdxl-bmg` and `mk-embeddinggemma2-bmg`. `fake`
   gives the fake kinds (`crates/nagaya/src/admission.rs:196-219`). A build with no kind refuses the start (exit 3).
@@ -3582,7 +3582,7 @@ has a tailnet address in its code.)
 - The engine registry of 11.3 replaces the first two rules below. The code builds it
   (`crates/nagaya/src/serving.rs`, `FamilyRegistry`).
 - The process serves an opened engine when its kind has a family library. The kind `fake-toy` has the toy family
-  (11.3b). The kind `mk-qwen38-gfx1151` has the Qwen3.8 family, from the first shard of `MK_SHARDS`. The tokenizer
+  (11.3b). The kind `mk-qwen38-gfx1151` has the Qwen3.8 family, from the first shard of `QWEN38_SHARDS`. The tokenizer
   hash of that family must equal the `tokenizer_hash` of the engine identity. Thus the identity selects the library
   (11.3). Another kind is not a served model, and the log says so.
 - The served model is the `model` of the engine identity, as gossip publishes it (2.3). It has no alias and no

@@ -191,12 +191,12 @@ pub(crate) fn segments_problem(segments: &[Qwen38Segment]) -> Option<String> {
 /// The knobs of the launch of a pass (`engine.hip` `run_pass`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct LaunchKnobs {
-    /// `MK_MUTATE_SKIP_BARRIER`: the stage whose grid barrier the kernel skips (a test knob), or none.
+    /// `QWEN38_MUTATE_SKIP_BARRIER`: the stage whose grid barrier the kernel skips (a test knob), or none.
     pub skip: Option<u32>,
-    /// `MK_MUTATE_STALL_BARRIER`: workgroup 0 leaves at the first grid barrier at or after this stage without arriving,
+    /// `QWEN38_MUTATE_STALL_BARRIER`: workgroup 0 leaves at the first grid barrier at or after this stage without arriving,
     /// so the pass stops on a real spin-timeout (a test knob), or none.
     pub stall: Option<u32>,
-    /// `MK_MEGA_GRID`: the workgroups of the launch for an experiment, or the occupancy's.
+    /// `QWEN38_MEGA_GRID`: the workgroups of the launch for an experiment, or the occupancy's.
     pub grid: Option<i32>,
 }
 
@@ -213,18 +213,18 @@ impl LaunchKnobs {
                 .transpose()
         };
         let knobs = LaunchKnobs {
-            skip: number("MK_MUTATE_SKIP_BARRIER")?,
-            stall: number("MK_MUTATE_STALL_BARRIER")?,
-            grid: match var("MK_MEGA_GRID") {
+            skip: number("QWEN38_MUTATE_SKIP_BARRIER")?,
+            stall: number("QWEN38_MUTATE_STALL_BARRIER")?,
+            grid: match var("QWEN38_MEGA_GRID") {
                 None => None,
                 Some(value) => match value.parse::<i32>() {
                     Ok(grid) if grid > 0 => Some(grid),
-                    _ => return Err(format!("MK_MEGA_GRID={value}: want a workgroup count above 0")),
+                    _ => return Err(format!("QWEN38_MEGA_GRID={value}: want a workgroup count above 0")),
                 },
             },
         };
         if knobs.skip.is_some() && knobs.stall.is_some() {
-            return Err("MK_MUTATE_STALL_BARRIER: not with MK_MUTATE_SKIP_BARRIER".to_owned());
+            return Err("QWEN38_MUTATE_STALL_BARRIER: not with QWEN38_MUTATE_SKIP_BARRIER".to_owned());
         }
         Ok(knobs)
     }
@@ -236,7 +236,7 @@ impl LaunchKnobs {
             (Some(stage), _) => Ok(stage),
             (None, Some(stage)) if stage < n => Ok(0x8000_0000 | stage),
             (None, Some(stage)) => Err(format!(
-                "MK_MUTATE_STALL_BARRIER={stage}: want a stage in 0..{}",
+                "QWEN38_MUTATE_STALL_BARRIER={stage}: want a stage in 0..{}",
                 n.saturating_sub(1)
             )),
             (None, None) => Ok(u32::MAX),
@@ -535,14 +535,14 @@ mod tests {
     fn the_launch_knobs_take_numbers_and_refuse_the_rest() {
         let none = LaunchKnobs::from(|_| None).unwrap();
         assert_eq!(none.skip_word(100), Ok(u32::MAX));
-        let stall = LaunchKnobs::from(|name| (name == "MK_MUTATE_STALL_BARRIER").then(|| "5".to_owned())).unwrap();
+        let stall = LaunchKnobs::from(|name| (name == "QWEN38_MUTATE_STALL_BARRIER").then(|| "5".to_owned())).unwrap();
         assert_eq!(stall.skip_word(100), Ok(0x8000_0005));
         assert!(stall.skip_word(5).unwrap_err().contains("want a stage in 0..4"));
-        let both = LaunchKnobs::from(|name| name.starts_with("MK_MUTATE").then(|| "1".to_owned()));
-        assert!(both.unwrap_err().contains("not with MK_MUTATE_SKIP_BARRIER"));
-        let grid = LaunchKnobs::from(|name| (name == "MK_MEGA_GRID").then(|| "abc".to_owned()));
-        assert!(grid.unwrap_err().starts_with("MK_MEGA_GRID=abc"));
-        let grid = LaunchKnobs::from(|name| (name == "MK_MEGA_GRID").then(|| "40".to_owned())).unwrap();
+        let both = LaunchKnobs::from(|name| name.starts_with("QWEN38_MUTATE").then(|| "1".to_owned()));
+        assert!(both.unwrap_err().contains("not with QWEN38_MUTATE_SKIP_BARRIER"));
+        let grid = LaunchKnobs::from(|name| (name == "QWEN38_MEGA_GRID").then(|| "abc".to_owned()));
+        assert!(grid.unwrap_err().starts_with("QWEN38_MEGA_GRID=abc"));
+        let grid = LaunchKnobs::from(|name| (name == "QWEN38_MEGA_GRID").then(|| "40".to_owned())).unwrap();
         assert_eq!(grid.grid, Some(40));
     }
 }
