@@ -262,6 +262,62 @@ Thus the next trials are these. Use a harder task for the reasoning. Give a crea
 reasoning, then decode the reply as tokens. The raw counts are in `target/trials-2026-11-12/`, which git does not
 hold.
 
+**The second trials of 2026-11-12**, on the build of `30e4d86`. The score of a reply is the mean log probability of
+its content with no soft input (`docs/lab.md`, "The score of a text"). The force puts the content after the same
+prompt, with thinking off. Each row of these trials ran on `lfm3` or `lfm3-1`, which give the same score for a text.
+
+The score finds the broken words. The rows of thinking off above, run again with the same seeds:
+
+| Row | Owl story: score | Median of the minimum | Sea poem: score | Median of the minimum |
+|---|---|---|---|---|
+| no `soft` | -1.70 | -11.1 | -2.13 | -10.9 |
+| `moi`, `beta` 1 | -1.71 | -11.7 | -2.11 | -10.9 |
+| `moi`, `beta` 0.25 | -1.70 | -11.9 | -2.19 | -10.1 |
+| `gumbel`, `tau` 0.5 | -2.35 | -19.2 | -2.26 | -16.6 |
+| `gumbel`, `tau` 0.9 | -3.37 | -21.7 | -3.57 | -19.0 |
+
+Harder reasoning: 12 tasks with 6 seeds each, thinking on, 1500 tokens at most. The tasks are four products of two
+numbers, two-step word problems, a count of primes, and a trick question.
+
+| Row | Right of 72 | Median thinking | Share |
+|---|---|---|---|
+| no `soft` | 65 | 249.5 | 0 |
+| `moi`, `beta` 0.25, `span: "think"` | 65 | 265 | 0.0056 |
+| `gumbel`, `tau` 0.5, `span: "think"` | 51 | 262 | 0.041 |
+| 16 latent steps with `stop` | 46 | 337 | none |
+
+- `gumbel` breaks digit work. Three of the four products were right in 1 of 6, where no `soft` gave 4 or 5. A mix of
+  two digits is neither digit.
+- Latent steps lost on two of the products (0 of 6 each), the train, the primes and the trick question.
+- The stop never ended latent steps. In each request with latent steps, all 16 ran. The top tokens of the steps are
+  words such as " need" and ":". The stop works in the host tests, but `lfm3` gives no end token in its steps.
+
+Creative replies with soft inputs in their reasoning, thinking on, and the reply decoded as tokens. A run of 600
+tokens cut most owl stories inside their reasoning, so the owl story ran again with 1500.
+
+| Run | Row | Median thinking | Ended | Score |
+|---|---|---|---|---|
+| Sea poem, seeds 0 to 23, 600 tokens | no `soft` | 258 | 17 of 24 | -1.95 |
+| | `moi`, `beta` 0.25 | 145.5 | 21 of 24 | -1.83 |
+| | `moi`, `beta` 1 | 205 | 19 of 24 | -1.91 |
+| Sea poem, seeds 24 to 71, 600 tokens | no `soft` | 241.5 | 34 of 48 | -1.85 |
+| | `moi`, `beta` 0.25 | 209.5 | 42 of 48 | -1.93 |
+| | `moi`, `beta` 1 | 224.5 | 38 of 48 | -1.86 |
+| Owl story, seeds 0 to 23, 1500 tokens | no `soft` | 858.5 | 20 of 24 | -1.93 |
+| | `moi`, `beta` 0.25 | 687.5 | 23 of 24 | -1.90 |
+| | `moi`, `beta` 1 | 1025 | 20 of 24 | -1.93 |
+
+- In each of the three runs, `moi` with `beta` 0.25 gave shorter reasoning and more replies that ended. The reply
+  scored the same, within 0.1. The gain is 13% to 44% of the median reasoning, and it is smaller in the larger run.
+  This agrees with Soft Thinking, which gave 12% to 22% shorter replies.
+- `moi` with `beta` 1 is not a gain: it made the reasoning of the owl story longer.
+- With thinking on, `gumbel` in the reasoning did not break the reply. With `tau` 0.9, the sea poem reasoned for a
+  median of 419.5 tokens, and 16 of 24 replies ended.
+- Each score is of the replies that ended, and the median thinking counts a cut reply at the limit.
+
+Thus `moi` with a low `beta` in the reasoning is the first setting that gives a measured gain. It is small, and two
+prompts hold it. Trial it on more prompts before the web app gets a field for it.
+
 ## Open questions
 
 1. Does the op run before or after the norm of the next layer? Arditi et al. change the residual, so the first
