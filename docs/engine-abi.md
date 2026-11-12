@@ -587,6 +587,40 @@ Decided 2026-11-12 (the owner: "4 streams for residual and control"). The state 
 engine is 4 streams of 2,560 values each. The residual of a token is the 4 streams in stream order: 10,240 `f32`
 values. The tap `residual` and a control vector have this width.
 
+**Proposed** by Claude Fable 5.2, 2026-11-12, for milestone 34. The owner decides. Each rule below is open until then.
+
+- **The tap `residual`.** For each logit row, it gives 48 rows of 10,240 `f32` values: the residual after layers 0 to
+  47. Each row is the residual after the control items of its layer. It has no row for the head. The size is 1,966,080
+  bytes for each logit row. Reason: spec 13.1 and the process give a tap one width, and this width equals the width
+  of `limits().control`.
+- **The tap `fold`.** For each logit row, it gives the row that the head reads: 2,560 `f32` values. The 4 streams
+  fold into this row after layer 47. The name is open. Reason: the head's row is not a residual of the layers, and a
+  latent step reads it.
+- **The order of the outputs.** A pass gives one output for each tap and each logit row. The outputs follow the
+  `logits` outputs. All the `residual` outputs come first, then all the `fold` outputs. Each group follows the order
+  of the segments.
+- **The launch cuts.** A pass with a tap or a control item runs as several fused launches of the same kernel, cut at
+  layer ends. The host reads or changes the rows between two launches. A pass with neither runs as one launch. The
+  mutation knobs of the stage list refuse a pass with cuts, because they name stage indices of one launch.
+- **The reason for the cuts.** No device code changes, and a plain pass keeps its stage list and its bits. A small
+  change of the device code faulted the GPU on 2026-11-10, and the defect is not known. The cost of the launches is
+  not measured.
+- **The table.** `limits().control` is `{tables: 8, layers: 48, width: 10240}`. The term `control` is 15,728,640
+  bytes on the device, with the lifetime `engine`. Eight entries are the count that LFM3 has.
+- **The op.** The op runs on the host, on the rows that a cut reads. It has no device code. The sums of `h . v` and of
+  `v . v` add in 8 lanes by index modulo 8, and the lanes join as `((s0 + s1) + (s2 + s3)) + ((s4 + s5) + (s6 + s7))`.
+  The code never fuses a product with a sum. An item with `v . v` of 0 acts on no row.
+- **The coefficient.** Let `n` be the square root of `v . v`, and `p` be `h . v` divided by `n`. The coefficient `c` of
+  `add` is `a`. For `ablate`, it is `-a * p / n`. For `clamp`, it is `(a - p) / n`. The op sets `h[j]` to
+  `h[j] + c * v[j]`.
+- **The fused combine.** A pass with one control action or more builds with the fused combine of the next layer's
+  norm off. Without this, the norm of layer `l + 1` reads the row before the op changes it. The two forms give equal
+  bits, and a card gate checks that.
+- **The tap `lens`.** The Qwen3.8 engine does not declare `lens` yet. It needs 48 logit rows for each logit row, and
+  the scratch of the logits holds 16. The lab routes that need it come later.
+- **The latent rows.** A latent step reads the tap `fold`. The host scales the row to the mean norm of the rows of
+  `token_embd`. The pass copies the row over the embedding row of the position. The record is the kind 5 with the
+  width 2,560, as for LFM3. The placeholder token is open. Reason: the GGUF tokenizer keys name a padding token.
 ## How mkviolet maps
 
 This table maps mkviolet's code, the source of `nagaya-mk-gemma4-bmg`, onto the ABI. The file names and the lines
