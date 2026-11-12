@@ -15,7 +15,7 @@ mod build;
 use std::path::Path;
 
 /// The source root of mk's build, as the fixture names it.
-const MK_SRC: &str = "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src";
+const REFERENCE_SRC: &str = "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src";
 
 /// The name of a unit here for its name in mk: `extern.hip` for mk's `capi.hip`, and the same name for the others.
 fn rename(word: &str) -> String {
@@ -30,13 +30,13 @@ fn each_compile_is_the_compile_of_mk_cmake_build() {
     .expect("read the fixture");
     let entries: Vec<serde_json::Value> = serde_json::from_str(&text).expect("the fixture is a JSON list");
     let rust = [
-        format!("{MK_SRC}/engine/blocks.hip"),
-        format!("{MK_SRC}/gguf/gguf.cpp"),
-        format!("{MK_SRC}/gguf/dequant.cpp"),
+        format!("{REFERENCE_SRC}/engine/blocks.hip"),
+        format!("{REFERENCE_SRC}/gguf/gguf.cpp"),
+        format!("{REFERENCE_SRC}/gguf/dequant.cpp"),
     ];
     let (gone, entries): (Vec<_>, Vec<_>) = entries.into_iter().partition(|entry| {
         let file = entry["file"].as_str().expect("an entry names its file");
-        file.starts_with(&format!("{MK_SRC}/gguf/")) || file == rust[0]
+        file.starts_with(&format!("{REFERENCE_SRC}/gguf/")) || file == rust[0]
     });
     let mut gone: Vec<&str> = gone.iter().map(|entry| entry["file"].as_str().unwrap()).collect();
     gone.sort();
@@ -68,7 +68,7 @@ fn each_compile_is_the_compile_of_mk_cmake_build() {
                 continue;
             }
             after_o = word == "-o";
-            expected.push(rename(&word.replace(MK_SRC, &src.display().to_string())));
+            expected.push(rename(&word.replace(REFERENCE_SRC, &src.display().to_string())));
         }
         assert_eq!(unit.arguments, expected, "the compile of {}", unit.source.display());
         assert_eq!(
@@ -77,7 +77,7 @@ fn each_compile_is_the_compile_of_mk_cmake_build() {
                 &entry["file"]
                     .as_str()
                     .expect("an entry names its file")
-                    .replace(MK_SRC, &src.display().to_string())
+                    .replace(REFERENCE_SRC, &src.display().to_string())
             )
         );
     }

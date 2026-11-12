@@ -28,7 +28,7 @@ sys.dont_write_bytecode = True
 
 import numpy as np  # noqa: E402
 
-MK = Path(os.environ.get("MK_REPO", Path.home() / "src/megakernel-qwen38-flashnext-strixhalo"))
+MK = Path(os.environ.get("QWEN38_REFERENCE_REPO", Path.home() / "src/megakernel-qwen38-flashnext-strixhalo"))
 GGUF_PY = Path.home() / "src/wt/llama.cpp-master-0924/gguf-py"
 DEFAULT_OUT = Path(__file__).resolve().parent.parent / "crates/nagaya-mk-qwen38-gfx1151/tests/fixtures/ops"
 AUTHOR = "written by Claude Sonnet 5.5 for this tool, 2026-10-22"
@@ -139,7 +139,7 @@ def git(repo: Path, *args: str) -> str:
 
 
 def load_groups() -> dict:
-    """Every module in tools/op_groups. Its file name is the group name. It has `MK_FILES` and `make(g, lib)`, where `lib`
+    """Every module in tools/op_groups. Its file name is the group name. It has `SOURCE_FILES` and `make(g, lib)`, where `lib`
     is this module: the generator, `Group` and the paths."""
     import importlib.util
     found = {}
@@ -171,7 +171,7 @@ def main() -> None:
     me = sys.modules[__name__]
     for name in names:
         g = Group(name)
-        g.meta["mk_files"] = groups[name].MK_FILES
+        g.meta["mk_files"] = groups[name].SOURCE_FILES
         groups[name].make(g, me)
         g.write(args.out, header)
 

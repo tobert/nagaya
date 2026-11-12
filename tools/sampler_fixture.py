@@ -16,7 +16,7 @@ import os
 import sys
 from pathlib import Path
 
-MK = Path(os.environ.get("MK_REPO", Path.home() / "src/megakernel-qwen38-flashnext-strixhalo"))
+MK = Path(os.environ.get("QWEN38_REFERENCE_REPO", Path.home() / "src/megakernel-qwen38-flashnext-strixhalo"))
 sys.path.insert(0, str(MK))
 
 import numpy as np  # noqa: E402

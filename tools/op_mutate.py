@@ -3,7 +3,7 @@
 
 The tool copies `hip/src` of nagaya-mk-qwen38-gfx1151 into a work directory, replaces one exact text in one file,
 builds the op libraries from the copy with the flags of `ops_build.rs`, and runs the test target `ops` with
-`MK_OPS_LIBDIR` set to the copy. It never changes the sources of the repository, so several runs can go at the same time.
+`QWEN38_OPS_LIBDIR` set to the copy. It never changes the sources of the repository, so several runs can go at the same time.
 
     python3 tools/op_mutate.py LABEL FILE OLD NEW [--tests FILTER] [--work DIR]
 
@@ -92,7 +92,7 @@ def main():
     lock = os.environ.get("GPU_LOCK")
     if lock:
         cmd = ["flock", lock, *cmd]
-    r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, env={**os.environ, "MK_OPS_LIBDIR": str(work / "lib")})
+    r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, env={**os.environ, "QWEN38_OPS_LIBDIR": str(work / "lib")})
     text = r.stdout + r.stderr
     if "could not compile" in text:
         sys.exit("the tests did not compile:\n" + text[-2000:])

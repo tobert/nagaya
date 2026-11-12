@@ -1,7 +1,7 @@
 """The group `gen`: the first values of each generator function, so that the Rust test can check its own generator."""
 import numpy as np
 
-MK_FILES = []
+SOURCE_FILES = []
 
 
 def make(g, lib):

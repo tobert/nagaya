@@ -13,7 +13,7 @@ import sys
 
 import numpy as np
 
-MK_FILES = ["tests/ops/test_moe_route.py", "tests/ops/test_moe.py"]
+SOURCE_FILES = ["tests/ops/test_moe_route.py", "tests/ops/test_moe.py"]
 
 E, K = 512, 10
 GU_ROWS, DN_ROWS = 640, 2560

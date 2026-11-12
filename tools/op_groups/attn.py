@@ -18,7 +18,7 @@ import sys
 
 import numpy as np
 
-MK_FILES = ["tests/ops/test_attn.py", "tests/ops/test_attn_long.py"]
+SOURCE_FILES = ["tests/ops/test_attn.py", "tests/ops/test_attn_long.py"]
 
 H, KVH, HD, IH, ID = 24, 2, 256, 4, 128
 HEADS = [0, 11, 12, 23]

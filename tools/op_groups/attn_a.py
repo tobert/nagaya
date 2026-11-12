@@ -10,7 +10,7 @@ import sys
 
 import numpy as np
 
-MK_FILES = ["tests/ops/test_attn_mask.py"]
+SOURCE_FILES = ["tests/ops/test_attn_mask.py"]
 HEADS = (0, 12)
 
 

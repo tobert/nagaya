@@ -3,7 +3,7 @@ import sys
 
 import numpy as np
 
-MK_FILES = ["tests/ops/test_tiles.py"]
+SOURCE_FILES = ["tests/ops/test_tiles.py"]
 
 # (format, type, rows, k, seed). A tile needs rows % 16 == 0. mk used rows of real tensors; these shapes are small.
 CASES = [

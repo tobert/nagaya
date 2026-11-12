@@ -9,14 +9,16 @@ use std::ffi::c_void;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-/// The directory of the op libraries. `MK_OPS_LIBDIR` selects another build, for a mutation build of an op.
+/// The directory of the op libraries. `QWEN38_OPS_LIBDIR` selects another build, for a mutation build of an op.
 pub fn libdir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("MK_OPS_LIBDIR") {
+    if let Some(dir) = std::env::var_os("QWEN38_OPS_LIBDIR") {
         return PathBuf::from(dir);
     }
     match option_env!("NAGAYA_MK_OPS_DIR") {
         Some(dir) => PathBuf::from(dir),
-        None => panic!("build.rs did not build the op libraries. Build with the feature hip, or set MK_OPS_LIBDIR."),
+        None => {
+            panic!("build.rs did not build the op libraries. Build with the feature hip, or set QWEN38_OPS_LIBDIR.")
+        }
     }
 }
 

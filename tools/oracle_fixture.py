@@ -20,7 +20,7 @@ import sys
 import time
 from pathlib import Path
 
-MK = Path(os.environ.get("MK_REPO", Path.home() / "src/megakernel-qwen38-flashnext-strixhalo"))
+MK = Path(os.environ.get("QWEN38_REFERENCE_REPO", Path.home() / "src/megakernel-qwen38-flashnext-strixhalo"))
 TOP = 64
 
 # The most tokens that the mk binding takes in one context of the small class: 4096 (spec.rs CONTEXT_CLASSES). A prompt
@@ -68,7 +68,7 @@ def main() -> None:
     from harness.tokenizer import Tokenizer
     import transformers
 
-    torch.set_num_threads(int(os.environ.get("MK_REF_THREADS", "16")))
+    torch.set_num_threads(int(os.environ.get("QWEN38_REFERENCE_THREADS", "16")))
     tokenizer = Tokenizer.from_gguf(SHARDS[0])
     ids = [tokenizer.encode(text) for _, text, _ in PROMPTS]
     for (name, _, _), row in zip(PROMPTS, ids):

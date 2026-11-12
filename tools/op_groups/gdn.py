@@ -7,7 +7,7 @@ import sys
 
 import numpy as np
 
-MK_FILES = ["tests/ops/test_gdn.py"]
+SOURCE_FILES = ["tests/ops/test_gdn.py"]
 
 KH, VH, KD, VD, CONV = 16, 48, 128, 128, 4
 CDIM = 2 * KH * KD + VH * VD

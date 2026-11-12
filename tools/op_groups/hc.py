@@ -9,7 +9,7 @@ import types
 
 import numpy as np
 
-MK_FILES = ["tests/ops/test_hc.py"]
+SOURCE_FILES = ["tests/ops/test_hc.py"]
 
 E, R, T_PRE = 2560, 320, 3
 # The f16 d of the Q8_0 weights: small, so that the activations of the module do not saturate (the Rust test does the same).

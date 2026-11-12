@@ -47,7 +47,7 @@ fn the_ops_are_the_targets_of_mk() {
 #[test]
 fn each_op_compile_is_the_compile_of_mk_cmake_build() {
     let fixture = fixture();
-    let mk_src = fixture["mk_src"].as_str().unwrap().to_owned();
+    let reference_src = fixture["mk_src"].as_str().unwrap().to_owned();
     let src = Path::new("/nagaya/hip/src");
     let entries = fixture["compiles"].as_array().unwrap();
     assert_eq!(entries.len(), 11);
@@ -57,7 +57,7 @@ fn each_op_compile_is_the_compile_of_mk_cmake_build() {
         let mut words = entry["command"].as_str().unwrap().split_whitespace();
         assert_eq!(Path::new(words.next().unwrap()), build::compiler());
         let expected: Vec<String> = words
-            .map(|word| word.replace(&mk_src, &src.display().to_string()))
+            .map(|word| word.replace(&reference_src, &src.display().to_string()))
             .collect();
         // mk writes the object to its build directory. The path is the same text here.
         let object = format!("src/ops/CMakeFiles/mk_{name}.dir/{name}.hip.o");
