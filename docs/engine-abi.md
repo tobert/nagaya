@@ -585,28 +585,31 @@ check.
 
 ### The residual of the Qwen3.8 engine
 
-Decided 2026-11-12 (the owner: "4 streams for residual and control"). The state between two layers of the Qwen3.8
-engine is 4 streams of 2,560 values each. The residual of a token is the 4 streams in stream order: 10,240 `f32`
-values. The tap `residual` and a control vector have this width.
+Decided 2026-11-12. The state between two layers of the Qwen3.8 engine is 4 streams of 2,560 values each. The residual
+of a token is the 4 streams in stream order: 10,240 `f32` values. The tap `residual` and a control vector have this
+width.
 
-**Proposed** by Claude Fable 5.2, 2026-11-12, for milestone 34. The owner decides. Each rule below is open until then.
+The rules below are for milestone 34 (proposed by Claude Fable 5.2, 2026-11-12). A rule with the mark "Decided"
+is decided. Each other rule is **Proposed**, and it follows from the decided rules.
 
 - **The tap `residual`.** For each logit row, it gives 48 rows of 10,240 `f32` values: the residual after layers 0 to
   47. Each row is the residual after the control items of its layer. It has no row for the head. The size is 1,966,080
   bytes for each logit row. Reason: spec 13.1 and the process give a tap one width, and this width equals the width
   of `limits().control`.
-- **The tap `fold`.** For each logit row, it gives the row that the head reads: 2,560 `f32` values. The 4 streams
-  fold into this row after layer 47. The name is open. Reason: the head's row is not a residual of the layers, and a
-  latent step reads it.
+- **The tap `fold`.** Decided 2026-11-12. For each logit row, it gives the row that the head reads: 2,560 `f32`
+  values. The 4 streams fold into this row after layer 47. It is a tap of its own. Reason: the head's row is not a
+  residual of the layers, and a latent step reads it.
 - **The order of the outputs.** A pass gives one output for each tap and each logit row. The outputs follow the
   `logits` outputs. All the `residual` outputs come first, then all the `fold` outputs. Each group follows the order
   of the segments.
-- **The launch cuts.** A pass with a tap or a control item runs as several fused launches of the same kernel, cut at
-  layer ends. The host reads or changes the rows between two launches. A pass with neither runs as one launch. The
-  mutation knobs of the stage list refuse a pass with cuts, because they name stage indices of one launch.
+- **The launch cuts.** Decided 2026-11-12, with the op on the host as the first form. A pass with a tap or a control
+  item runs as several fused launches of the same kernel, cut at layer ends. The host reads or changes the rows
+  between two launches. A pass with neither runs as one launch. The mutation knobs of the stage list refuse a pass
+  with cuts, because they name stage indices of one launch.
 - **The reason for the cuts.** No device code changes, and a plain pass keeps its stage list and its bits. A small
-  change of the device code faulted the GPU on 2026-11-10, and the defect is not known. The cost of the launches is
-  not measured.
+  change of the device code faulted the GPU on 2026-11-10, and the defect is not known. A card run measures the cost
+  of the launches. If a steered decode step is too slow, `add` moves into the launch with an op that exists, with
+  equal bits. A new device op waits until that defect is found.
 - **The table.** `limits().control` is `{tables: 8, layers: 48, width: 10240}`. The term `control` is 15,728,640
   bytes on the device, with the lifetime `engine`. Eight entries are the count that LFM3 has.
 - **The op.** The op runs on the host, on the rows that a cut reads. It has no device code. The sums of `h . v` and of
@@ -622,7 +625,9 @@ values. The tap `residual` and a control vector have this width.
   the scratch of the logits holds 16. The lab routes that need it come later.
 - **The latent rows.** A latent step reads the tap `fold`. The host scales the row to the mean norm of the rows of
   `token_embd`. The pass copies the row over the embedding row of the position. The record is the kind 5 with the
-  width 2,560, as for LFM3. The placeholder token is open. Reason: the GGUF tokenizer keys name a padding token.
+  width 2,560, as for LFM3. Decided 2026-11-12: the placeholder of a latent position is the padding token that the
+  GGUF tokenizer keys name.
+
 ## How mkviolet maps
 
 This table maps mkviolet's code, the source of `nagaya-mk-gemma4-bmg`, onto the ABI. The file names and the lines
