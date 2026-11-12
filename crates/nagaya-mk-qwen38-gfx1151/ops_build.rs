@@ -1,4 +1,4 @@
-//! Build the op libraries of mk for the op tests: one shared library `libmk_<op>.so` for each `hip/src/ops/<op>.hip`.
+//! Build the op libraries of mk for the op tests: one shared library `libqwen38_<op>.so` for each `hip/src/ops/<op>.hip`.
 //!
 //! The commands are the commands of mk's CMake build at mk commit `555a2a3` (`src/ops/CMakeLists.txt`). The compiles use
 //! the flags of `build.rs` for the engine, and add `-O3` for the op target. The op tests load these libraries at run
@@ -51,7 +51,7 @@ pub(crate) fn op_names(src: &Path) -> Vec<String> {
 /// The compile of `ops/<name>.hip`, as mk's `compile_commands.json` gives it for the target `mk_<name>`.
 pub(crate) fn op_compile(src: &Path, name: &str, object: &Path) -> Vec<String> {
     let mut arguments = strings(HIP_DEFINES);
-    arguments.push(format!("-Dmk_{name}_EXPORTS"));
+    arguments.push(format!("-Dqwen38_{name}_EXPORTS"));
     arguments.push(include(&src.join("ops")));
     arguments.push(include(&src.join("rt")));
     arguments.extend(strings(COMMON));
@@ -81,7 +81,7 @@ fn tail(arguments: &mut Vec<String>, object: &Path, source: &Path) {
     arguments.push(source.display().to_string());
 }
 
-/// The link of `libmk_<name>.so`, as mk's `build.ninja` gives it: the object of the op, the object of the runtime, the HIP
+/// The link of `libqwen38_<name>.so`, as mk's `build.ninja` gives it: the object of the op, the object of the runtime, the HIP
 /// runtime and the compiler runtime.
 pub(crate) fn op_link(
     name: &str,
@@ -92,7 +92,7 @@ pub(crate) fn op_link(
     builtins: &str,
 ) -> Vec<String> {
     let mut arguments = strings(LINK_FLAGS);
-    arguments.push(format!("-Wl,-soname,libmk_{name}.so"));
+    arguments.push(format!("-Wl,-soname,libqwen38_{name}.so"));
     arguments.push("-o".to_owned());
     arguments.push(library.display().to_string());
     arguments.push(object.display().to_string());
@@ -163,10 +163,10 @@ pub(crate) fn build_ops(src: &Path, out: &Path) {
             let (compiler, directory, builtins, hip_runtime, rt_object) =
                 (&compiler, &directory, &builtins, &hip_runtime, &rt_object);
             scope.spawn(move || {
-                let library = directory.join(format!("libmk_{name}.so"));
+                let library = directory.join(format!("libqwen38_{name}.so"));
                 let object = directory.join(format!("{name}.o"));
                 let arguments = op_link(name, &library, &object, rt_object, hip_runtime, builtins);
-                run(compiler, &arguments, &format!("the link of libmk_{name}.so"));
+                run(compiler, &arguments, &format!("the link of libqwen38_{name}.so"));
             });
         }
     });

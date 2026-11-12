@@ -1,7 +1,7 @@
 //! GPU dequant and quantized matmul (`ops/quant.h`, `ops/qmm.h`). It ports `test_qmm.py` and `test_qmmh.py` of mk.
 //!
 //! - dequant: bit-identical to gguf-py, with the expected values in a fixture of `tools/op_fixtures.py`.
-//! - qmm: `y = x W^T` against an f64 reference. The weights of the reference come from `mk_dequant`, which the dequant
+//! - qmm: `y = x W^T` against an f64 reference. The weights of the reference come from `qwen38_dequant`, which the dequant
 //!   test holds to gguf-py. The bound is the one of mk: `K * 2^-24 * sum_k |w_k x_k|` (Higham, recursive summation).
 //! - the exact kernel equals the oracle kernel bit for bit, for every grid size and every row map.
 //!
@@ -652,7 +652,7 @@ fn qmm_fast_grid_independent_and_repeatable() {
 fn qmmh_resources() {
     let f = sym!(
         ops_lib::lib("qmmh"),
-        "mk_qmmh_resources",
+        "qwen38_qmmh_resources",
         fn(*mut i32, *mut i32, *mut i32) -> i32
     );
     let (mut regs, mut scratch, mut lds) = (0i32, 0i32, 0i32);

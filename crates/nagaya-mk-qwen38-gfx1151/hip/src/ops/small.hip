@@ -30,7 +30,7 @@ using namespace mk;
 // h [T, 4E] -> mixed [T, E], inject [T, 4] (if w_inject), xn [T, 4E].
 // Weights as stored in the GGUF: gamma F32 [4E] (1 + w), down Q8_0 [R, 4E], up Q8_0 [4E, R],
 // inject F32 [4, 4E] or null.
-extern "C" int mk_hc_pre(const float *h, uint32_t t, uint32_t e, uint32_t r, const float *gamma, const void *w_down,
+extern "C" int qwen38_hc_pre(const float *h, uint32_t t, uint32_t e, uint32_t r, const float *gamma, const void *w_down,
                          const void *w_up, const float *w_inject, float *mixed_out, float *inject_out, float *xn_out) {
   const uint32_t d4 = 4 * e;
   float *dh = up(h, size_t(t) * d4), *dg = up(gamma, d4), *dxn = up<float>(nullptr, size_t(t) * d4);
@@ -68,7 +68,7 @@ extern "C" int mk_hc_pre(const float *h, uint32_t t, uint32_t e, uint32_t r, con
 }
 
 // h += out (x) inject, for tests.
-extern "C" int mk_hc_combine(float *h, const float *out, const float *inject, uint32_t t, uint32_t e) {
+extern "C" int qwen38_hc_combine(float *h, const float *out, const float *inject, uint32_t t, uint32_t e) {
   float *dh = up(h, size_t(t) * 4 * e), *dout = up(out, size_t(t) * e), *dinj = up(inject, size_t(t) * 4);
   HcCombineArgs a{dh, dout, dinj, t, e};
   k_hc_combine<<<64, kMkBlock>>>(a);
@@ -81,7 +81,7 @@ extern "C" int mk_hc_combine(float *h, const float *out, const float *inject, ui
 
 // hc_combine then rms over h (4 groups of e, gamma [4e] per group, eps 1e-6), for tests: fused = 0 runs the two ops,
 // fused = 1 the one fused stage (op_hc_combine_rms) on `grid` workgroups. Outputs the updated h and xn.
-extern "C" int mk_hc_combine_rms(const float *h, const float *out, const float *inject, const float *gamma, uint32_t t,
+extern "C" int qwen38_hc_combine_rms(const float *h, const float *out, const float *inject, const float *gamma, uint32_t t,
                                  uint32_t e, uint32_t grid, uint32_t fused, float *h_out, float *xn_out) {
   float *dh = up(h, size_t(t) * 4 * e), *dout = up(out, size_t(t) * e), *dinj = up(inject, size_t(t) * 4);
   float *dg = up(gamma, size_t(4) * e), *dxn = up<float>(nullptr, size_t(t) * 4 * e);

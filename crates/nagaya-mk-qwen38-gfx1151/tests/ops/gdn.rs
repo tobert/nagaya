@@ -93,7 +93,7 @@ fn run_op(
     };
     let f = sym!(
         lib("gdn"),
-        "mk_gdn",
+        "qwen38_gdn",
         fn(
             *const c_void,
             *const c_void,
@@ -131,7 +131,7 @@ fn run_op(
             grid,
         )
     };
-    assert_eq!(rc, 0, "mk_gdn");
+    assert_eq!(rc, 0, "qwen38_gdn");
     out
 }
 
@@ -283,7 +283,7 @@ fn gdn_repeatable_and_grid_independent() {
 /// nothing spilled.
 #[test]
 fn gdn_core_register_budget() {
-    let f = sym!(lib("gdn"), "mk_gdn_core_resources", fn(*mut i32, *mut i32) -> i32);
+    let f = sym!(lib("gdn"), "qwen38_gdn_core_resources", fn(*mut i32, *mut i32) -> i32);
     let (mut regs, mut scratch) = (0i32, 0i32);
     assert_eq!(unsafe { f(&mut regs, &mut scratch) }, 0);
     eprintln!("k_gdn_core: {regs} VGPRs, {scratch} B/lane scratch");

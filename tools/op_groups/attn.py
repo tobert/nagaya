@@ -1,4 +1,4 @@
-"""The group `attn`: the expected values of the HF attention module for the op `mk_attn`, on generator inputs.
+"""The group `attn`: the expected values of the HF attention module for the op `qwen38_attn`, on generator inputs.
 
 mk's `test_attn.py` and `test_attn_long.py` run the HF module `Qwen4ExpTextAttention` with the real weights of layer 3 on
 real embeddings. Here the module has stand-ins for its projection layers: they return the raw projections of the

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-// The serial selection (attn_select_oracle.h) in its own library (libmk_attn_select_oracle.so), for
-// test_attn_select's bit-identity tests. Same C ABI as attn.hip's mk_attn_select_emit.
+// The serial selection (attn_select_oracle.h) in its own library (libqwen38_attn_select_oracle.so), for
+// test_attn_select's bit-identity tests. Same C ABI as attn.hip's qwen38_attn_select_emit.
 #include "attn_select_oracle.h"
 
 #include "rt.h"
@@ -14,10 +14,10 @@ __global__ void __launch_bounds__(kMkBlock) k_attn_select_serial(AttnSelectArgs 
 using namespace mk;
 
 // scores [t][max_nb] with max_nb = (p0 + t) / ratio; sel_out [t][budget + ratio - 1]; grid 0 = t.
-extern "C" int mk_attn_select_serial(uint32_t t, uint32_t p0, uint32_t budget, uint32_t ratio, const float *scores,
+extern "C" int qwen38_attn_select_serial(uint32_t t, uint32_t p0, uint32_t budget, uint32_t ratio, const float *scores,
                                      int32_t *sel_out, uint32_t *sel_count_out, uint32_t grid) {
-  if (t == 0) MK_DIE("mk_attn_select_serial: T must be >= 1");
-  if (ratio != model::kIdxRatio || budget < ratio) MK_DIE("mk_attn_select_serial: budget %u ratio %u", budget, ratio);
+  if (t == 0) MK_DIE("qwen38_attn_select_serial: T must be >= 1");
+  if (ratio != model::kIdxRatio || budget < ratio) MK_DIE("qwen38_attn_select_serial: budget %u ratio %u", budget, ratio);
   const uint32_t max_nb = (p0 + t) / ratio, max_sel = budget + ratio - 1, topk = budget / ratio;
   const size_t ns = size_t(t) * (max_nb ? max_nb : 1);
   float *dscores;

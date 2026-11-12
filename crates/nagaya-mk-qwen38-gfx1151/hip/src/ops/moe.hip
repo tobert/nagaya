@@ -44,31 +44,31 @@ using namespace mk::model;
 // The whole MoE block for tests: x [T, 2560] -> out [T, 2560], plus the router's choices.
 // Weights as stored in the GGUF (raw bytes of the full 512-expert tensors). fast = 1: the quantized matmuls
 // (experts and the shared expert) on f16 WMMA, as the engine builds them with MK_FAST_QMM=1.
-extern "C" int mk_moe(const float *x, uint64_t x_bytes, uint32_t t, const float *router, uint64_t router_bytes,
+extern "C" int qwen38_moe(const float *x, uint64_t x_bytes, uint32_t t, const float *router, uint64_t router_bytes,
                       const float *shexp_gate, uint64_t shexp_gate_bytes, uint32_t type_gate, const void *gate,
                       uint64_t gate_bytes, uint32_t type_up, const void *up, uint64_t up_bytes, uint32_t type_down,
                       const void *down, uint64_t down_bytes, const void *sh_gate, uint64_t sh_gate_bytes,
                       const void *sh_up, uint64_t sh_up_bytes, const void *sh_down, uint64_t sh_down_bytes, float *out,
                       uint64_t out_bytes, int32_t *topk_idx_out, uint64_t topk_idx_bytes, float *topk_w_out,
                       uint64_t topk_w_bytes, uint32_t grid, uint32_t fast) {
-  if (fast > 1) MK_DIE("mk_moe: fast=%u, want 0 or 1", fast);
+  if (fast > 1) MK_DIE("qwen38_moe: fast=%u, want 0 or 1", fast);
   const uint32_t A = t * kTopK;
   for (uint32_t ty : {type_gate, type_up, type_down})
-    if (q::block_bytes(ty) == 0) MK_DIE("mk_moe: unknown quant type %u", ty);
+    if (q::block_bytes(ty) == 0) MK_DIE("qwen38_moe: unknown quant type %u", ty);
   const uint64_t ldg = q::row_bytes(type_gate, kEmbd), ldu = q::row_bytes(type_up, kEmbd), ldd = q::row_bytes(type_down, kFf);
   const uint64_t ldsh = q::row_bytes(q::Q8_0, kEmbd), ldshd = q::row_bytes(q::Q8_0, kFfShared);
-  MK_CHECK_BYTES("mk_moe", "x", x_bytes, sizeof(float) * uint64_t(t) * kEmbd);
-  MK_CHECK_BYTES("mk_moe", "router", router_bytes, sizeof(float) * kExperts * kEmbd);
-  MK_CHECK_BYTES("mk_moe", "shexp_gate", shexp_gate_bytes, sizeof(float) * kEmbd);
-  MK_CHECK_BYTES("mk_moe", "gate", gate_bytes, ldg * kFf * kExperts);
-  MK_CHECK_BYTES("mk_moe", "up", up_bytes, ldu * kFf * kExperts);
-  MK_CHECK_BYTES("mk_moe", "down", down_bytes, ldd * kEmbd * kExperts);
-  MK_CHECK_BYTES("mk_moe", "sh_gate", sh_gate_bytes, ldsh * kFfShared);
-  MK_CHECK_BYTES("mk_moe", "sh_up", sh_up_bytes, ldsh * kFfShared);
-  MK_CHECK_BYTES("mk_moe", "sh_down", sh_down_bytes, ldshd * kEmbd);
-  MK_CHECK_BYTES("mk_moe", "out", out_bytes, sizeof(float) * uint64_t(t) * kEmbd);
-  MK_CHECK_BYTES("mk_moe", "topk_idx", topk_idx_bytes, sizeof(int32_t) * A);
-  MK_CHECK_BYTES("mk_moe", "topk_w", topk_w_bytes, sizeof(float) * A);
+  MK_CHECK_BYTES("qwen38_moe", "x", x_bytes, sizeof(float) * uint64_t(t) * kEmbd);
+  MK_CHECK_BYTES("qwen38_moe", "router", router_bytes, sizeof(float) * kExperts * kEmbd);
+  MK_CHECK_BYTES("qwen38_moe", "shexp_gate", shexp_gate_bytes, sizeof(float) * kEmbd);
+  MK_CHECK_BYTES("qwen38_moe", "gate", gate_bytes, ldg * kFf * kExperts);
+  MK_CHECK_BYTES("qwen38_moe", "up", up_bytes, ldu * kFf * kExperts);
+  MK_CHECK_BYTES("qwen38_moe", "down", down_bytes, ldd * kEmbd * kExperts);
+  MK_CHECK_BYTES("qwen38_moe", "sh_gate", sh_gate_bytes, ldsh * kFfShared);
+  MK_CHECK_BYTES("qwen38_moe", "sh_up", sh_up_bytes, ldsh * kFfShared);
+  MK_CHECK_BYTES("qwen38_moe", "sh_down", sh_down_bytes, ldshd * kEmbd);
+  MK_CHECK_BYTES("qwen38_moe", "out", out_bytes, sizeof(float) * uint64_t(t) * kEmbd);
+  MK_CHECK_BYTES("qwen38_moe", "topk_idx", topk_idx_bytes, sizeof(int32_t) * A);
+  MK_CHECK_BYTES("qwen38_moe", "topk_w", topk_w_bytes, sizeof(float) * A);
   float *dx = dev<float>(x, sizeof(float) * t * kEmbd);
   float *drouter = dev<float>(router, sizeof(float) * kExperts * kEmbd);
   float *dshg = dev<float>(shexp_gate, sizeof(float) * kEmbd);
@@ -128,11 +128,11 @@ extern "C" int mk_moe(const float *x, uint64_t x_bytes, uint32_t t, const float 
 
 // The router's top-10 and the grouping stage alone, for tests/ops/test_moe_route.py: logits [T, 512] in, the
 // router's choices and the group stage's bookkeeping out. fast picks the expert tile the item prefixes count.
-extern "C" int mk_moe_route(const float *logits_host, uint32_t t, uint32_t fast, uint32_t grid, int32_t *topk_idx,
+extern "C" int qwen38_moe_route(const float *logits_host, uint32_t t, uint32_t fast, uint32_t grid, int32_t *topk_idx,
                             float *topk_w, uint32_t *count, uint32_t *offset, uint32_t *assign, uint32_t *token,
                             uint32_t *item_gu, uint32_t *item_dn) {
-  if (fast > 1) MK_DIE("mk_moe_route: fast=%u, want 0 or 1", fast);
-  if (t == 0 || t > model::kMaxPassTokens) MK_DIE("mk_moe_route: T=%u out of range (1..%u)", t, model::kMaxPassTokens);
+  if (fast > 1) MK_DIE("qwen38_moe_route: fast=%u, want 0 or 1", fast);
+  if (t == 0 || t > model::kMaxPassTokens) MK_DIE("qwen38_moe_route: T=%u out of range (1..%u)", t, model::kMaxPassTokens);
   const uint32_t A = t * kTopK, G = grid ? grid : 1024;
   float *lg = dev<float>(logits_host, sizeof(float) * t * kExperts);
   int32_t *tidx = dev<int32_t>(nullptr, sizeof(int32_t) * A);
@@ -170,11 +170,11 @@ __global__ void __launch_bounds__(kMkBlock) k_moe_relayout_iq4(RelayoutArgs a) {
 static double moe_down_run(const char *op, uint32_t type, const void *raw, uint64_t raw_bytes, const uint32_t *counts,
                            uint64_t counts_bytes, const uint32_t *assign, uint64_t assign_bytes, const float *h_host,
                            uint64_t h_bytes, float *y_host, uint64_t y_bytes, uint32_t mode, uint32_t grid, uint32_t reps) {
-  if (type != q::IQ4_NL && type != q::Q8_0) MK_DIE("mk_moe_down: type %u is neither IQ4_NL nor Q8_0", type);
-  if (mode > 3) MK_DIE("mk_moe_down: mode %u", mode);
+  if (type != q::IQ4_NL && type != q::Q8_0) MK_DIE("qwen38_moe_down: type %u is neither IQ4_NL nor Q8_0", type);
+  if (mode > 3) MK_DIE("qwen38_moe_down: mode %u", mode);
   MK_CHECK_BYTES(op, "counts", counts_bytes, sizeof(uint32_t) * kExperts);  // before counts is read
   const bool tiled = mode & 1, exact = mode & 2;
-  if (tiled && type != q::IQ4_NL) MK_DIE("mk_moe_down: only IQ4_NL down matrices have tiles");
+  if (tiled && type != q::IQ4_NL) MK_DIE("qwen38_moe_down: only IQ4_NL down matrices have tiles");
   const uint32_t fast = exact ? 0 : 1;
   const MoeTile tile = moe_tile(fast);
   uint32_t off[kExperts + 1], items[kExperts + 1], maxe = 0;
@@ -185,11 +185,11 @@ static double moe_down_run(const char *op, uint32_t type, const void *raw, uint6
     if (counts[e]) maxe = e;
   }
   const uint32_t A = off[kExperts];
-  if (A == 0) MK_DIE("mk_moe_down: no assignments");
+  if (A == 0) MK_DIE("qwen38_moe_down: no assignments");
   MK_CHECK_BYTES(op, "assign", assign_bytes, sizeof(uint32_t) * A);
   MK_CHECK_BYTES(op, "h", h_bytes, sizeof(float) * uint64_t(A) * kFf);
   MK_CHECK_BYTES(op, "y", y_bytes, sizeof(float) * uint64_t(A) * kEmbd);
-  if (reps && maxe >= 10) MK_DIE("mk_moe_down bench: expert %u used, want experts below 10", maxe);
+  if (reps && maxe >= 10) MK_DIE("qwen38_moe_down bench: expert %u used, want experts below 10", maxe);
   const uint64_t ldraw = q::row_bytes(type, kFf), bytes = ldraw * kMoeDnRows * kExperts;
   MK_CHECK_BYTES(op, "raw", raw_bytes, bytes);
   uint8_t *w;
@@ -209,7 +209,7 @@ static double moe_down_run(const char *op, uint32_t type, const void *raw, uint6
     wtype = q::IQ4_NL_TILES;
   }
   const uint64_t ld = q::row_bytes(wtype, kFf);
-  if (ld != ldraw) MK_DIE("mk_moe_down: tiles take %lu bytes a row, the GGUF %lu", (unsigned long)ld, (unsigned long)ldraw);
+  if (ld != ldraw) MK_DIE("qwen38_moe_down: tiles take %lu bytes a row, the GGUF %lu", (unsigned long)ld, (unsigned long)ldraw);
   float *h, *y;
   uint32_t *cnt, *ofs, *asg, *idn;
   MK_CHECK(hipMalloc(&h, sizeof(float) * uint64_t(A) * kFf));
@@ -266,20 +266,20 @@ static double moe_down_run(const char *op, uint32_t type, const void *raw, uint6
   return ms;
 }
 
-extern "C" int mk_moe_down(uint32_t type, const void *raw, uint64_t raw_bytes, const uint32_t *counts,
+extern "C" int qwen38_moe_down(uint32_t type, const void *raw, uint64_t raw_bytes, const uint32_t *counts,
                            uint64_t counts_bytes, const uint32_t *assign, uint64_t assign_bytes, const float *h,
                            uint64_t h_bytes, float *y, uint64_t y_bytes, uint32_t mode, uint32_t grid) {
-  moe_down_run("mk_moe_down", type, raw, raw_bytes, counts, counts_bytes, assign, assign_bytes, h, h_bytes, y, y_bytes, mode,
+  moe_down_run("qwen38_moe_down", type, raw, raw_bytes, counts, counts_bytes, assign, assign_bytes, h, h_bytes, y, y_bytes, mode,
                grid, 0);
   return 0;
 }
 
-extern "C" double mk_moe_down_bench(uint32_t type, const void *raw, uint64_t raw_bytes, const uint32_t *counts,
+extern "C" double qwen38_moe_down_bench(uint32_t type, const void *raw, uint64_t raw_bytes, const uint32_t *counts,
                                     uint64_t counts_bytes, const uint32_t *assign, uint64_t assign_bytes, const float *h,
                                     uint64_t h_bytes, float *y, uint64_t y_bytes, uint32_t mode, uint32_t grid,
                                     uint32_t reps) {
-  if (reps == 0) MK_DIE("mk_moe_down_bench: reps 0");
-  return moe_down_run("mk_moe_down_bench", type, raw, raw_bytes, counts, counts_bytes, assign, assign_bytes, h, h_bytes, y,
+  if (reps == 0) MK_DIE("qwen38_moe_down_bench: reps 0");
+  return moe_down_run("qwen38_moe_down_bench", type, raw, raw_bytes, counts, counts_bytes, assign, assign_bytes, h, h_bytes, y,
                       y_bytes, mode, grid, reps);
 }
 
@@ -295,7 +295,7 @@ __global__ void __launch_bounds__(kMkBlock) k_moe_relayout_iq3s(RelayoutArgs a) 
 static double moe_gu_run(const char *op, const void *raw, uint64_t raw_bytes, const uint32_t *counts, uint64_t counts_bytes,
                          const float *x_host, uint64_t x_bytes, uint32_t nx, float *gu_host, uint64_t gu_bytes,
                          uint32_t mode, uint32_t grid, uint32_t reps) {
-  if (mode > 3) MK_DIE("mk_moe_gu: mode %u", mode);
+  if (mode > 3) MK_DIE("qwen38_moe_gu: mode %u", mode);
   MK_CHECK_BYTES(op, "counts", counts_bytes, sizeof(uint32_t) * kExperts);  // before counts is read
   const bool tiled = mode & 1, exact = mode & 2;
   const uint32_t fast = exact ? 0 : 1;
@@ -303,16 +303,16 @@ static double moe_gu_run(const char *op, const void *raw, uint64_t raw_bytes, co
   uint32_t off[kExperts + 1], items[kExperts + 1], maxe = 0;
   off[0] = items[0] = 0;
   for (uint32_t e = 0; e < kExperts; ++e) {
-    if (e >= 256 && counts[e]) MK_DIE("mk_moe_gu: expert %u is an up matrix of the pool", e);
+    if (e >= 256 && counts[e]) MK_DIE("qwen38_moe_gu: expert %u is an up matrix of the pool", e);
     off[e + 1] = off[e] + counts[e];
     items[e + 1] = items[e] + 2 * (kMoeGuRows / tile.rows) * ((counts[e] + tile.toks - 1) / tile.toks);
     if (counts[e]) maxe = e;
   }
   const uint32_t A = off[kExperts];
-  if (A == 0 || A != nx) MK_DIE("mk_moe_gu: %u assignments, %u activation rows", A, nx);
+  if (A == 0 || A != nx) MK_DIE("qwen38_moe_gu: %u assignments, %u activation rows", A, nx);
   MK_CHECK_BYTES(op, "x", x_bytes, sizeof(float) * uint64_t(nx) * kEmbd);
   MK_CHECK_BYTES(op, "gu", gu_bytes, sizeof(float) * uint64_t(A) * 2 * kMoeGuRows);
-  if (reps && maxe >= 10) MK_DIE("mk_moe_gu bench: expert %u used, want experts below 10", maxe);
+  if (reps && maxe >= 10) MK_DIE("qwen38_moe_gu bench: expert %u used, want experts below 10", maxe);
   const uint64_t ldraw = q::row_bytes(q::IQ3_S, kEmbd), bytes = ldraw * kMoeGuRows * kExperts;
   MK_CHECK_BYTES(op, "raw", raw_bytes, bytes);
   uint8_t *w;
@@ -393,15 +393,15 @@ static double moe_gu_run(const char *op, const void *raw, uint64_t raw_bytes, co
   return ms;
 }
 
-extern "C" int mk_moe_gu(const void *raw, uint64_t raw_bytes, const uint32_t *counts, uint64_t counts_bytes, const float *x,
+extern "C" int qwen38_moe_gu(const void *raw, uint64_t raw_bytes, const uint32_t *counts, uint64_t counts_bytes, const float *x,
                          uint64_t x_bytes, uint32_t nx, float *gu, uint64_t gu_bytes, uint32_t mode, uint32_t grid) {
-  moe_gu_run("mk_moe_gu", raw, raw_bytes, counts, counts_bytes, x, x_bytes, nx, gu, gu_bytes, mode, grid, 0);
+  moe_gu_run("qwen38_moe_gu", raw, raw_bytes, counts, counts_bytes, x, x_bytes, nx, gu, gu_bytes, mode, grid, 0);
   return 0;
 }
 
-extern "C" double mk_moe_gu_bench(const void *raw, uint64_t raw_bytes, const uint32_t *counts, uint64_t counts_bytes,
+extern "C" double qwen38_moe_gu_bench(const void *raw, uint64_t raw_bytes, const uint32_t *counts, uint64_t counts_bytes,
                                   const float *x, uint64_t x_bytes, uint32_t nx, float *gu, uint64_t gu_bytes, uint32_t mode,
                                   uint32_t grid, uint32_t reps) {
-  if (reps == 0) MK_DIE("mk_moe_gu_bench: reps 0");
-  return moe_gu_run("mk_moe_gu_bench", raw, raw_bytes, counts, counts_bytes, x, x_bytes, nx, gu, gu_bytes, mode, grid, reps);
+  if (reps == 0) MK_DIE("qwen38_moe_gu_bench: reps 0");
+  return moe_gu_run("qwen38_moe_gu_bench", raw, raw_bytes, counts, counts_bytes, x, x_bytes, nx, gu, gu_bytes, mode, grid, reps);
 }

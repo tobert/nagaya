@@ -34,7 +34,7 @@ fn the_ops_are_the_targets_of_mk() {
         .map(|link| {
             let library = link["library"].as_str().unwrap();
             library
-                .strip_prefix("libmk_")
+                .strip_prefix("libqwen38_")
                 .unwrap()
                 .strip_suffix(".so")
                 .unwrap()
@@ -60,7 +60,7 @@ fn each_op_compile_is_the_compile_of_mk_cmake_build() {
             .map(|word| word.replace(&reference_src, &src.display().to_string()))
             .collect();
         // mk writes the object to its build directory. The path is the same text here.
-        let object = format!("src/ops/CMakeFiles/mk_{name}.dir/{name}.hip.o");
+        let object = format!("src/ops/CMakeFiles/qwen38_{name}.dir/{name}.hip.o");
         let got = build::ops_build::op_compile(src, name, Path::new(&object));
         assert_eq!(got, expected, "the compile of {name}.hip");
     }
@@ -77,7 +77,7 @@ fn each_op_link_has_the_flags_of_mk_cmake_build() {
     );
     for link in fixture["links"].as_array().unwrap() {
         let library = link["library"].as_str().unwrap();
-        let name = library.strip_prefix("libmk_").unwrap().strip_suffix(".so").unwrap();
+        let name = library.strip_prefix("libqwen38_").unwrap().strip_suffix(".so").unwrap();
         let mut expected = vec!["-fPIC".to_owned()];
         expected.extend(
             link["language_flags"]
