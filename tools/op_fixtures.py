@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Write the fixtures of the op tests of nagaya-mk-qwen38-gfx1151 from mk's Python (milestone 15, step 2).
+"""Write the fixtures of the op tests of nagaya-mk-qwen38-gfx1151 from the reference's Python (milestone 15, step 2).
 
-The Rust tests in `crates/nagaya-mk-qwen38-gfx1151/tests/ops` port the op tests of mk (`tests/ops`). Rust remakes the
+The Rust tests in `crates/nagaya-mk-qwen38-gfx1151/tests/ops` port the op tests of the reference (`tests/ops`). Rust remakes the
 inputs with the generator below, which has no state: each value is a function of a seed and an index. This tool
-uses the same generator, runs mk's reference code on the same inputs, and writes the expected outputs. No Python runs at
-test time. The tool runs no GPU job and writes nothing into mk.
+uses the same generator, runs the reference code on the same inputs, and writes the expected outputs. No Python runs at
+test time. The tool runs no GPU job and writes nothing into the reference.
 
     PYTHONDONTWRITEBYTECODE=1 nice -n 19 ionice -c3 \
         ~/src/megakernel-qwen38-flashnext-strixhalo/.venv/bin/python -I tools/op_fixtures.py [--out DIR] [GROUP ...]
 
 A group is a module in `tools/op_groups`. It writes a pair of files, `<group>.json` and `<group>.bin`. The JSON file holds
 the header, the metadata and an index of the arrays. The BIN file holds the little-endian bytes of the arrays. With no
-group the tool writes every group. The metadata of a group names the files of mk that the group reads.
+group the tool writes every group. The metadata of a group names the files of the reference that the group reads.
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ sys.dont_write_bytecode = True
 
 import numpy as np  # noqa: E402
 
-MK = Path(os.environ.get("QWEN38_REFERENCE_REPO", Path.home() / "src/megakernel-qwen38-flashnext-strixhalo"))
+REFERENCE = Path(os.environ.get("QWEN38_REFERENCE_REPO", Path.home() / "src/megakernel-qwen38-flashnext-strixhalo"))
 GGUF_PY = Path.home() / "src/wt/llama.cpp-master-0924/gguf-py"
 DEFAULT_OUT = Path(__file__).resolve().parent.parent / "crates/nagaya-mk-qwen38-gfx1151/tests/fixtures/ops"
 AUTHOR = "written by Claude Sonnet 5.5 for this tool, 2026-10-22"
@@ -162,7 +162,7 @@ def main() -> None:
         if name not in groups:
             sys.exit(f"no group {name}; the groups are {', '.join(groups)}")
     header = {
-        "reference_rev": git(MK, "rev-parse", "HEAD"),
+        "reference_rev": git(REFERENCE, "rev-parse", "HEAD"),
         "python": platform.python_version(),
         "numpy": np.__version__,
         "generator": "tools/op_fixtures.py",

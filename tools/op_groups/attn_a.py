@@ -1,6 +1,6 @@
-"""The group `attn_a`: the expected values of the masked attention op (test_attn_mask.py of mk).
+"""The group `attn_a`: the expected values of the masked attention op (test_attn_mask.py of the reference).
 
-The inputs of a case come from the stateless generator, and mk's float64 reference runs on them. A case stores, for each
+The inputs of a case come from the stateless generator, and the float64 reference model runs on them. A case stores, for each
 token, the reference score and the score bound input `S_abs` of every block, the SHA-256 of the cells that the reference
 selects, and the reference `attn_out` of two heads only (head 0 of the first key head, head 12 of the second). Two heads
 keep the fixture small: the Rust test takes the relative L2 error over those two heads of each token.
@@ -33,7 +33,7 @@ def case_arrays(lib, idx, p0, t, m):
 
 
 def make(g, lib):
-    sys.path.insert(0, str(lib.MK))
+    sys.path.insert(0, str(lib.REFERENCE))
     import tests.ops.test_attn_mask as m
 
     g.add("inv_freq", m.inv_freq())

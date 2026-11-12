@@ -46,7 +46,7 @@ fn run(label: &str, tokens: &[u32], sizes: &[usize]) -> Run {
         tokens.len(),
         "the chunk sizes must cover the tokens"
     );
-    let mut engine = nagaya_mk_qwen38_gfx1151::open().expect("open mk");
+    let mut engine = nagaya_mk_qwen38_gfx1151::open().expect("open the engine");
     let state = State::Slot(0);
     let started = Instant::now();
     let mut start = 0usize;
@@ -113,7 +113,7 @@ fn run(label: &str, tokens: &[u32], sizes: &[usize]) -> Run {
     }
 }
 
-/// The element size in bytes. Every stored part of mk is f32 or u32.
+/// The element size in bytes. Every stored part of the engine is f32 or u32.
 fn element_size(_part: usize) -> usize {
     4
 }
@@ -170,7 +170,7 @@ fn compare(names: &[String], left: &Run, right: &Run) {
 }
 
 fn main() {
-    let probe = nagaya_mk_qwen38_gfx1151::open().expect("open mk");
+    let probe = nagaya_mk_qwen38_gfx1151::open().expect("open the engine");
     let names: Vec<String> = probe.limits().parts.iter().map(|spec| spec.name.clone()).collect();
     drop(probe);
     for (length, chunks) in [(64usize, vec![17usize, 47]), (200, vec![17, 47, 136])] {

@@ -1,11 +1,11 @@
 //! The stage list of a pass, built in Rust (milestone 15 step 6).
 //!
-//! mk's `engine.hip` `build`, `build_stages`, `split_k`, `fuse_prologues`, `fuse_hc` and `fuse_hc_mix`, and
-//! `blocks.hip` `add_gdn`, `add_attn`, `add_moe` and `pool_stages` built the stages in C++ (mk 555a2a3). This module
+//! The reference's `engine.hip` `build`, `build_stages`, `split_k`, `fuse_prologues`, `fuse_hc` and `fuse_hc_mix`, and
+//! `blocks.hip` `add_gdn`, `add_attn`, `add_moe` and `pool_stages` built the stages in C++ (reference commit 555a2a3). This module
 //! builds the same stages, field for field. The schedule (`schedule.rs`) then orders them. The stages name device
 //! buffers: the weights in the arena, the context buffers, and the named scratch buffers of the pass.
 
-// The port keeps mk's argument lists and its comparisons, so that each line reads as the C++ line it replaces.
+// The port keeps the reference's argument lists and its comparisons, so that each line reads as the C++ line it replaces.
 #![allow(clippy::too_many_arguments, clippy::int_plus_one, clippy::ptr_eq)]
 // A build without the feature hip runs no pass, so the rope table has no reader there.
 #![cfg_attr(not(feature = "hip"), allow(dead_code))]
@@ -1206,8 +1206,10 @@ fn fuse_hc_mix(s: &mut Vec<Stage>, ends: &mut [u32]) {
     let mut producer_of: Vec<Option<usize>> = vec![None; n];
     let mut dropped = vec![false; n];
     let overlaps = |alo: u64, ahi: u64, blo: u64, bhi: u64| alo < bhi && blo < ahi;
-    let footprint =
-        |stage: &Stage| schedule::stage_footprint(stage, 0).unwrap_or_else(|error| panic!("mk's pass build: {error}"));
+    let footprint = |stage: &Stage| {
+        schedule::stage_footprint(stage, 0)
+            .unwrap_or_else(|error| panic!("the schedule of the test stages failed: {error}"))
+    };
     for m in 0..n {
         if s[m].op != ST_HC_MIX {
             continue;
@@ -1366,7 +1368,7 @@ mod tests {
     }
 
     #[test]
-    fn the_rope_table_is_mk_table() {
+    fn the_rope_table_is_the_table_of_the_reference() {
         let table = inv_freq();
         assert_eq!(table[0], 1.0);
         assert_eq!(table[1], 1.0 / 1e7f32.powf(2.0 / 64.0));

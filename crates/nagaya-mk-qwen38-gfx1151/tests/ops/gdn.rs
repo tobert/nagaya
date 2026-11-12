@@ -1,13 +1,13 @@
 //! The gated DeltaNet core: causal convolution with silu, the gated delta rule, and the gated RMSNorm. It ports
-//! `test_gdn.py` of mk (`ops/gdn.h`, `ops/gdn.hip`).
+//! `test_gdn.py` of the reference (`ops/gdn.h`, `ops/gdn.hip`).
 //!
 //! Head order: every input stays in GGUF (tiled) order. Value head `p` uses the key and query head `p % 16`.
 //!
-//! The tolerance of mk stays: `REL(T) = 4 T 128 2^-24` in relative L2 error. The recurrence of the op and the chunked
+//! The tolerance of the reference stays: `REL(T) = 4 T 128 2^-24` in relative L2 error. The recurrence of the op and the chunked
 //! algorithm of the reference are the same recurrence with another f32 association. Each decay is at most 0, so the error
 //! grows about linearly in T.
 //!
-//! Changes from mk's test: the weights and the inputs come from the generator, not from layer 0 of the GGUF and numpy.
+//! Changes from the reference's test: the weights and the inputs come from the generator, not from layer 0 of the GGUF and numpy.
 //! The reference output is in a fixture. It holds `y` and a corner of the final state of three value heads only, so the
 //! relative error is over those heads. The cases with T = 64 and T = 200 are dropped: the fixture would be over its size.
 

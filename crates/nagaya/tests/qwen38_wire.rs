@@ -1,4 +1,4 @@
-//! The mk engine as a factory kind (spec 2.4, 10.4; docs/engine-abi.md "v0 mk binding choices").
+//! The Qwen3.8 engine as a factory kind (spec 2.4, 10.4; docs/engine-abi.md "v0 binding choices").
 //!
 //! No test here opens the engine or touches the GPU. `plan` reads the environment and checks that
 //! files exist. A test that sets the environment holds `ENV`, because the environment belongs to the whole process.
@@ -73,7 +73,7 @@ impl Install {
 }
 
 #[test]
-fn a_hip_build_registers_the_mk_kind() {
+fn a_hip_build_registers_the_qwen38_kind() {
     let registry = Registry::with_qwen38();
     assert!(
         registry.factory(qwen38::KIND).is_some(),
@@ -82,7 +82,7 @@ fn a_hip_build_registers_the_mk_kind() {
     );
     assert!(
         registry.factory("fake").is_none(),
-        "the mk registry holds the real kind only"
+        "the registry holds the real kind only"
     );
 }
 
@@ -188,7 +188,7 @@ fn plan_refuses_a_config_without_a_usable_weights_size_or_with_an_unknown_key() 
 }
 
 #[test]
-fn an_open_error_of_the_mk_binding_is_a_crash() {
+fn an_open_error_of_the_qwen38_binding_is_a_crash() {
     // The engine is linked into the binary, so no library pin can refuse the start (AGENTS.md milestone 15).
     let other = qwen38::open_error(Qwen38Error::new("qwen38_engine_open returned no engine"));
     assert_eq!(other.kind, OpenErrorKind::Other);
@@ -218,7 +218,7 @@ fn an_arena_that_differs_from_the_plan_refuses_the_start_and_gives_the_real_size
 }
 
 #[test]
-fn the_gfx1151host_profile_admits_on_the_probed_gfx1151host_with_the_mk_factory() {
+fn the_gfx1151host_profile_admits_on_the_probed_gfx1151host_with_the_qwen38_factory() {
     // The whole start path up to the open: the probe, the plan and the ledger. Nothing here opens the engine.
     let _env = ENV.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let install = Install::new();

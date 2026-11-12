@@ -1,7 +1,7 @@
 //! Host memory for the copies of engine state (spec 4.2).
 //!
 //! A mark and the buffer of a snapshot hold a whole state in host memory. The size is the state of one slot: up to
-//! about 1.93 GB for a 32,768-token mk context. The ledger charges these bytes before the copy runs, and the charge
+//! about 1.93 GB for a 32,768-token Qwen3.8 context. The ledger charges these bytes before the copy runs, and the charge
 //! ends when the copy drops. A [`Staging`] is the charge.
 //!
 //! The store keeps its own bytes in its own budget. A snapshot buffer is the transient copy before the store takes

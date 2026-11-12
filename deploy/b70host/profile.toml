@@ -5,7 +5,7 @@
 # The Gemma 4 engine on the two B70 cards (docs/engine-abi.md "How mkviolet maps"). Machine devices 0 and 1 are the
 # cards at 0000:03:00.0 and 0000:08:00.0; device 2 is the ignored iGPU (spec 2.1). Stage 0 runs on device 0, and
 # stage 1 on device 1. The checkpoint directory comes from the unit's environment (`GEMMA4_MODEL_DIR`), and not from
-# this table, as the shards of mk do on gfx1151host.
+# this table, as the shards of the Qwen3.8 engine do on gfx1151host.
 [[engines]]
 name = "gemma"
 kind = "mk-gemma4-bmg"

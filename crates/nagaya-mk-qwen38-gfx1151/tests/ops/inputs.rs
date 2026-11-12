@@ -3,7 +3,7 @@
 //! `tools/op_fixtures.py` has the same generator, and the test `the_generator_matches_the_python_generator` compares the
 //! two. Thus Python writes the expected outputs for inputs that Rust remakes with no fixture file. Every operation is an
 //! integer operation or an IEEE f64 operation that is exact in both languages, so the values are equal bit for bit.
-//! mk's own op tests use numpy's `default_rng`; this generator has the same shapes of input but not the same values.
+//! The reference's own op tests use numpy's `default_rng`; this generator has the same shapes of input but not the same values.
 
 #![allow(dead_code)]
 
@@ -65,7 +65,7 @@ pub fn bytes(seed: u64, n: usize) -> Vec<u8> {
     out
 }
 
-/// The quantization types of mk's GGUF files, with the numbers of `quant.h`.
+/// The quantization types of the reference's GGUF files, with the numbers of `quant.h`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Qtype {
     F32 = 0,

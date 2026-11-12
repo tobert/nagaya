@@ -1,4 +1,4 @@
-//! The layouts that cross between Rust and mk's C++ (milestone 15 step 4).
+//! The layouts that cross between Rust and the reference's C++ (milestone 15 step 4).
 //!
 //! The C++ side states each layout in `static_assert` lines, and the compiler checks them in a `hip` build. These
 //! tests read the same lines and compare each number with the Rust mirror. Thus a change on one side fails a test,

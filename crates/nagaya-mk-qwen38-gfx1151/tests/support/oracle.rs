@@ -2,8 +2,8 @@
 //!
 //! The bench `benches/oracle.rs` and the test `tests/oracle.rs` both include this file. It needs no GPU.
 //!
-//! The fixture holds, for each prompt, the token ids and the top-64 logits of the last position from mk's CPU
-//! reference. The bench runs the same ids through mk and calls `measure` and `breaches`.
+//! The fixture holds, for each prompt, the token ids and the top-64 logits of the last position from the CPU
+//! reference. The bench runs the same ids through the reference and calls `measure` and `breaches`.
 
 #![allow(dead_code)]
 

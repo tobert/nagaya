@@ -1,6 +1,6 @@
-"""The group `gdn`: the gated DeltaNet core (test_gdn.py) against the transformers code that mk uses as its reference.
+"""The group `gdn`: the gated DeltaNet core (test_gdn.py) against the transformers code that the reference uses.
 
-The weights and the inputs come from the generator, so Rust remakes them. The reference is `ref_gdn` of mk's test, run on
+The weights and the inputs come from the generator, so Rust remakes them. The reference is `ref_gdn` of the reference's test, run on
 the CPU. The fixture holds the output `y` of three value heads and a corner of the final recurrent state of the same heads.
 """
 import sys
@@ -37,7 +37,7 @@ def inputs(lib, t, scale):
 
 
 def make(g, lib):
-    sys.path.insert(0, str(lib.MK))
+    sys.path.insert(0, str(lib.REFERENCE))
     import torch
     import torch.nn.functional as F
     from harness import reference

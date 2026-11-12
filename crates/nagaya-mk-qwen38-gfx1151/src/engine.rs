@@ -1,4 +1,4 @@
-//! The `Engine` trait on top of the mk binding.
+//! The `Engine` trait on top of the binding of the Qwen3.8 engine.
 
 use std::sync::{Arc, OnceLock};
 
@@ -36,10 +36,10 @@ pub fn describe() -> Result<(Identity, Limits), Qwen38Error> {
     crate::worker::describe(&Qwen38Paths::from_env()?)
 }
 
-/// Open the mk engine, or make a new handle on the one that is open.
+/// Open the Qwen3.8 engine, or make a new handle on the one that is open.
 ///
 /// The first call loads the weights, and so does the first call after the last handle dropped. Every call creates a
-/// new context pool for the handle. Every mk call goes to one worker thread, because the HIP device is the calling
+/// new context pool for the handle. Every engine call goes to one worker thread, because the HIP device is the calling
 /// thread's current device.
 pub fn open() -> Result<Qwen38Engine, Qwen38Error> {
     let worker = worker()?;
@@ -59,7 +59,7 @@ pub fn open() -> Result<Qwen38Engine, Qwen38Error> {
     })
 }
 
-/// The mk engine: a context pool, the engine's declared facts, and the last error.
+/// The Qwen3.8 engine: a context pool, the engine's declared facts, and the last error.
 pub struct Qwen38Engine {
     worker: Arc<Worker>,
     /// The context id of each slot. A slot whose clear failed has no context.
@@ -107,12 +107,12 @@ impl Qwen38Engine {
         self.worker.owns_kv(id)
     }
 
-    /// mk's byte count for one stored part and token count.
+    /// The engine's byte count for one stored part and token count.
     pub fn part_bytes(&self, part: u32, n: u32) -> Result<u64, Qwen38Error> {
         spec::stored_part(part)?;
         self.worker
             .part_bytes(part, n)
-            .ok_or_else(|| Qwen38Error::new("the mk worker stopped"))
+            .ok_or_else(|| Qwen38Error::new("the engine worker stopped; restart the process"))
     }
 
     /// The pass scratch that the probe measured at open, in bytes (milestone 9c).
@@ -120,7 +120,7 @@ impl Qwen38Engine {
         self.worker.spec().pass_scratch
     }
 
-    /// What each class of contexts took when mk made it, in the order of `spec::CONTEXT_CLASSES`.
+    /// What each class of contexts took when the engine made it, in the order of `spec::CONTEXT_CLASSES`.
     pub fn pool_readings(&self) -> &[ClassReading] {
         &self.readings
     }
@@ -132,19 +132,19 @@ impl Qwen38Engine {
     }
 }
 
-/// The first row of a cells write. mk writes rows from 0 and cannot place them later (engine-abi, "The first row
+/// The first row of a cells write. The engine writes rows from 0 and cannot place them later (engine-abi, "The first row
 /// of a cells write").
 fn write_from(from: u64) -> Result<(), String> {
     if from == 0 {
         Ok(())
     } else {
         Err(format!(
-            "mk cannot place rows at position {from}; it writes rows from 0"
+            "the Qwen3.8 engine writes rows from 0 and cannot place rows at position {from}; write from 0"
         ))
     }
 }
 
-/// The close of mk (engine-abi "close"): the handle frees its contexts, and the last handle or hold frees the weights.
+/// The close of the engine (engine-abi "close"): the handle frees its contexts, and the last handle or hold frees the weights.
 impl Drop for Qwen38Engine {
     fn drop(&mut self) {
         let ids = std::mem::take(&mut self.states).into_iter().flatten().collect();
@@ -153,13 +153,13 @@ impl Drop for Qwen38Engine {
     }
 }
 
-/// A hold keeps mk's weights loaded with no context pool. A test binary or a bench keeps one, so that each handle it
+/// A hold keeps the engine's weights loaded with no context pool. A test binary or a bench keeps one, so that each handle it
 /// opens and drops does not load the weights again.
 pub struct Hold {
     worker: Arc<Worker>,
 }
 
-/// Hold mk's weights: load them when no handle or hold has them.
+/// Hold the engine's weights: load them when no handle or hold has them.
 pub fn hold() -> Result<Hold, Qwen38Error> {
     let worker = worker()?;
     worker.acquire()?;
@@ -172,7 +172,7 @@ impl Drop for Hold {
     }
 }
 
-/// Build the logit outputs from mk's bytes.
+/// Build the logit outputs from the engine's bytes.
 ///
 /// The pass ran before this call, so a buffer that is too short is a fault. The error says `Poison`: the state is
 /// unknown, and the nagaya must free it (D6, spec 8.2).
@@ -188,7 +188,7 @@ fn logit_outputs(bytes: &[u8], wants: &[bool], row: usize) -> Result<Vec<Output>
             return Err(PassError {
                 kind: PassErrorKind::Ran(PassStatus::Poison),
                 message: format!(
-                    "mk returned {} logits bytes; segment {index} needs bytes {start}..{end}",
+                    "the Qwen3.8 engine returned {} logits bytes, but segment {index} needs bytes {start}..{end}",
                     bytes.len()
                 ),
             });
@@ -211,7 +211,7 @@ struct SegmentContext {
     n: u64,
 }
 
-/// The mk call for one pass.
+/// The engine call for one pass.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct PassPlan {
     /// The context ids, one for each segment.
@@ -239,9 +239,9 @@ fn refused(message: String) -> PassError {
     }
 }
 
-/// Build the mk call for one pass, or say why the binding refuses it.
+/// Build the engine call for one pass, or say why the binding refuses it.
 ///
-/// Every check here runs before the binding calls mk. Thus a refused pass changes no context.
+/// Every check here runs before the binding calls the engine. Thus a refused pass changes no context.
 fn plan_pass(segments: &[Segment], contexts: &[SegmentContext]) -> Result<PassPlan, PassError> {
     assert_eq!(segments.len(), contexts.len(), "every segment needs its context");
     let mut plan = PassPlan::default();
@@ -249,10 +249,16 @@ fn plan_pass(segments: &[Segment], contexts: &[SegmentContext]) -> Result<PassPl
         let context = contexts[index];
         let segment_tokens = match &segment.inputs {
             SegmentInputs::Tokens(tokens) => tokens,
-            _ => return Err(refused(format!("segment {index}: mk takes token ids, not rows"))),
+            _ => {
+                return Err(refused(format!(
+                    "segment {index}: the Qwen3.8 engine takes token ids, not rows; send token ids"
+                )));
+            }
         };
         if segment_tokens.is_empty() {
-            return Err(refused(format!("segment {index} has no tokens; mk needs at least one")));
+            return Err(refused(format!(
+                "segment {index} has no tokens; give each segment at least one token"
+            )));
         }
         if segment.positions.len() != segment_tokens.len() {
             return Err(refused(format!(
@@ -265,21 +271,21 @@ fn plan_pass(segments: &[Segment], contexts: &[SegmentContext]) -> Result<PassPl
             let want = context.n + offset as u64;
             if *position != want {
                 return Err(refused(format!(
-                    "segment {index} has position {position} where mk appends at {want}: the context holds {} tokens",
+                    "segment {index} has position {position}, but the Qwen3.8 engine appends at {want}: the context holds {} tokens; start the segment at {want}",
                     context.n
                 )));
             }
         }
         if !segment.meta.is_empty() {
             return Err(refused(format!(
-                "segment {index} has {} metadata bytes; mk reads no per-token metadata",
+                "segment {index} has {} metadata bytes, but the Qwen3.8 engine reads no per-token metadata; send none",
                 segment.meta.len()
             )));
         }
         for token in segment_tokens {
             if *token >= spec::VOCAB {
                 return Err(refused(format!(
-                    "segment {index}: token {token} is past mk's vocabulary of {}",
+                    "segment {index}: token {token} is past the vocabulary of {}; send an id below that count",
                     spec::VOCAB
                 )));
             }
@@ -289,7 +295,7 @@ fn plan_pass(segments: &[Segment], contexts: &[SegmentContext]) -> Result<PassPl
             let last = *segment.positions.last().expect("the token count is not zero");
             if segment.outputs.logit_rows != [last] {
                 return Err(refused(format!(
-                    "segment {index} asks for logit rows {:?}; mk gives the row at its last token {last}",
+                    "segment {index} asks for logit rows {:?}, but the Qwen3.8 engine gives only the row at its last token {last}; ask for that row",
                     segment.outputs.logit_rows
                 )));
             }
@@ -302,7 +308,7 @@ fn plan_pass(segments: &[Segment], contexts: &[SegmentContext]) -> Result<PassPl
     }
     if plan.tokens.len() > spec::MAX_PASS_TOKENS as usize {
         return Err(refused(format!(
-            "the pass holds {} tokens; mk takes at most {}",
+            "the pass holds {} tokens, but the Qwen3.8 engine takes at most {}; split the pass",
             plan.tokens.len(),
             spec::MAX_PASS_TOKENS
         )));
@@ -321,14 +327,14 @@ impl Engine for Qwen38Engine {
 
     fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
         if !taps.is_empty() {
-            return Err(self.failed("mk taps need the unfused path and are not in this binding".to_owned()));
+            return Err(self.failed("the Qwen3.8 engine gives no tap in this binding, because a tap needs the unfused path; send the pass with no tap".to_owned()));
         }
         if segments.is_empty() {
             return Err(self.failed("a pass needs at least one segment".to_owned()));
         }
         if segments.len() > spec::MAX_SEGMENTS as usize {
             return Err(self.failed(format!(
-                "a pass holds {} segments; mk takes at most {}",
+                "a pass holds {} segments, but the Qwen3.8 engine takes at most {}; split the pass",
                 segments.len(),
                 spec::MAX_SEGMENTS
             )));
@@ -469,7 +475,7 @@ impl Parts for Qwen38Engine {
         self.write_result(call)
     }
 
-    /// mk has no range read. A read from 0 of all the context's rows is a whole read, and mk gives it.
+    /// The engine has no range read. A read from 0 of all the context's rows is a whole read, and the engine gives it.
     fn cells_read(&mut self, state: State, part: usize, from: u64, n: u64, out: &mut [u8]) -> Result<(), PartError> {
         if let Err(message) = spec::whole_read_problem(part, from, n, out.len()) {
             self.last_error = Some(message);
@@ -489,7 +495,9 @@ impl Parts for Qwen38Engine {
             return WriteResult::Refused;
         };
         if n > u64::from(u32::MAX) {
-            self.last_error = Some(format!("{n} rows do not fit mk's 32-bit count"));
+            self.last_error = Some(format!(
+                "{n} rows do not fit the 32-bit count of the Qwen3.8 engine; read fewer rows"
+            ));
             return WriteResult::Refused;
         }
         let call = self.worker.cells_write(id, part, n as u32, bytes.to_vec());
@@ -502,7 +510,9 @@ impl Parts for Qwen38Engine {
             return WriteResult::Refused;
         };
         if n > u64::from(u32::MAX) {
-            self.last_error = Some(format!("{n} tokens do not fit mk's 32-bit count"));
+            self.last_error = Some(format!(
+                "{n} tokens do not fit the 32-bit count of the Qwen3.8 engine; read fewer tokens"
+            ));
             return WriteResult::Refused;
         }
         let call = self.worker.set_n(id, n as u32);
@@ -510,7 +520,7 @@ impl Parts for Qwen38Engine {
     }
 }
 
-/// mk's contexts are the slots of v0 (engine-abi "v0 mk binding choices").
+/// The engine's contexts are the slots of v0 (engine-abi, "v0 binding choices").
 impl Slots for Qwen38Engine {
     /// The context's token count: the rows of each cells part. A slot with no context holds no row.
     ///
@@ -521,13 +531,13 @@ impl Slots for Qwen38Engine {
         };
         match self.worker.n(id) {
             Ok(n) => u64::from(n),
-            Err(error) => panic!("cannot read the token count of mk slot {slot}: {error}"),
+            Err(error) => panic!("cannot read the token count of the engine slot {slot}: {error}"),
         }
     }
 
-    /// Free the context and make a new one of the same capacity. mk has no call that empties a context.
+    /// Free the context and make a new one of the same capacity. The engine has no call that empties a context.
     ///
-    /// The context term holds the pool (spec 4.2), so the new context needs no new admission. When mk cannot make
+    /// The context term holds the pool (spec 4.2), so the new context needs no new admission. When the engine cannot make
     /// it, the slot has no context, and the result is `Failed`.
     fn slot_clear(&mut self, slot: SlotId) -> WriteResult {
         let Some(id) = self.context(State::Slot(slot)) else {
@@ -542,7 +552,7 @@ impl Slots for Qwen38Engine {
     }
 }
 
-/// mk holds the rows of each cells part from position 0. The bytes give the row count.
+/// The engine holds the rows of each cells part from position 0. The bytes give the row count.
 impl Coverage for Qwen38Engine {
     fn coverage(&self, _state: State, part: PartId, bytes: &[u8]) -> CoverageSpan {
         spec::coverage_of(part, bytes.len())
@@ -583,7 +593,7 @@ mod tests {
     #[test]
     fn a_write_that_is_not_at_row_zero_is_refused() {
         assert_eq!(write_from(0), Ok(()));
-        let error = write_from(2).expect_err("mk cannot place rows at 2");
+        let error = write_from(2).expect_err("the engine cannot place rows at 2");
         assert!(error.contains("rows from 0"), "{error}");
     }
 
@@ -600,8 +610,8 @@ mod tests {
     }
 
     #[test]
-    fn a_segment_that_breaks_an_mk_rule_is_refused_before_the_pass() {
-        // The context holds three tokens, so mk appends at position 3. plan_pass takes no worker, so these checks
+    fn a_segment_that_breaks_an_engine_rule_is_refused_before_the_pass() {
+        // The context holds three tokens, so the engine appends at position 3. plan_pass takes no worker, so these checks
         // need no GPU and no library.
         let contexts = [SegmentContext { id: 7, n: 3 }];
 
@@ -614,9 +624,9 @@ mod tests {
         let past = token_segment(&[spec::VOCAB], 3);
         let error = plan_pass(std::slice::from_ref(&past), &contexts).expect_err("the token is past the vocabulary");
         assert_eq!(error.kind, PassErrorKind::Refused, "a refused pass did not run");
-        assert!(error.message.contains("past mk's vocabulary"), "{}", error.message);
+        assert!(error.message.contains("past the vocabulary"), "{}", error.message);
 
-        // mk takes token ids, not rows.
+        // The engine takes token ids, not rows.
         let mut rows = token_segment(&[11], 3);
         rows.inputs = SegmentInputs::Rows(vec![0; 4]);
         let error = plan_pass(std::slice::from_ref(&rows), &contexts).expect_err("rows are not token ids");
@@ -625,10 +635,10 @@ mod tests {
     }
 
     #[test]
-    fn a_pass_that_mk_can_run_plans_its_call() {
+    fn a_pass_that_the_engine_can_run_plans_its_call() {
         let contexts = [SegmentContext { id: 7, n: 3 }];
         let segments = [token_segment(&[11, 12], 3)];
-        let plan = plan_pass(&segments, &contexts).expect("mk can run this pass");
+        let plan = plan_pass(&segments, &contexts).expect("the engine can run this pass");
         assert_eq!(plan.contexts, [7]);
         assert_eq!(plan.lens, [2]);
         assert_eq!(plan.tokens, [11, 12]);
@@ -646,7 +656,7 @@ mod tests {
         );
         assert_eq!(
             error.message,
-            "mk returned 16 logits bytes; segment 1 needs bytes 16..32"
+            "the Qwen3.8 engine returned 16 logits bytes, but segment 1 needs bytes 16..32"
         );
     }
 

@@ -1,10 +1,10 @@
-//! The MoE block and its router. It ports `test_moe.py` and `test_moe_route.py` of mk.
+//! The MoE block and its router. It ports `test_moe.py` and `test_moe_route.py` of the reference.
 //!
 //! - Route: the router's top-10 and the grouping stage (`qwen38_moe_route`) give exact answers. A fixture of
 //!   `tools/op_groups/moe.py` holds SHA-256 digests of the integer answers and the f32 weights.
-//! - Block: `qwen38_moe` against a float64 reference in the same fixture, on two synthetic layers. mk compared against the HF
+//! - Block: `qwen38_moe` against a float64 reference in the same fixture, on two synthetic layers. The reference compared against the HF
 //!   module with the real weights of layers 0 and 3. The HF module needs many GB of dense expert weights, so the
-//!   reference here is numpy with the maths of that module. The tolerances are the ones of mk.
+//!   check here is numpy with the maths of that module. The tolerances are the ones of the reference.
 //! - Block: the same bits for every grid size and over repeats, and with the expert lookahead off (`libqwen38_moe_nolook`).
 //!
 //! The synthetic pools of a layer have the byte sizes of the real tensors: 512 experts of IQ3_S gate and up (640 rows of

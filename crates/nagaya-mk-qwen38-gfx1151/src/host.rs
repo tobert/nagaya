@@ -1,8 +1,8 @@
 //! The pass in Rust: the checks of the segments, the scratch pool, the upload, the launch rules and the advance of
 //! each context (milestone 15 step 6).
 //!
-//! mk's `engine.hip` `segments_problem`, `run_pass`, `failed_pass`, `run_stages_now` and the `ScratchPool` held these in
-//! C++ (mk 555a2a3). The C++ engine keeps only the launches under the control block and the watchdog
+//! The reference's `engine.hip` `segments_problem`, `run_pass`, `failed_pass`, `run_stages_now` and the `ScratchPool` held these in
+//! C++ (reference commit 555a2a3). The C++ engine keeps only the launches under the control block and the watchdog
 //! (`Engine::launch_fused`, `Engine::launch_each`). Every call here runs on the worker thread.
 
 use std::collections::HashMap;
@@ -201,7 +201,7 @@ pub(crate) struct LaunchKnobs {
 }
 
 impl LaunchKnobs {
-    /// The knobs from `var`. A value that is not a number is an error that refuses the pass; mk's `atoi` read it as 0.
+    /// The knobs from `var`. A value that is not a number is an error that refuses the pass; the reference's `atoi` read it as 0.
     pub(crate) fn from(var: impl Fn(&str) -> Option<String>) -> Result<LaunchKnobs, String> {
         let number = |name: &str| -> Result<Option<u32>, String> {
             var(name)

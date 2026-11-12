@@ -1,6 +1,6 @@
 //! The byte-level BPE tokenizer of Qwen3.8, from the vocabulary in the GGUF metadata.
 //!
-//! This is a port of mk's `harness/tokenizer.py`. Special tokens match as whole tokens before BPE, longest text first.
+//! This is a port of the reference's `harness/tokenizer.py`. Special tokens match as whole tokens before BPE, longest text first.
 //! Content that a client sends is escaped first: each special token's text becomes one Unicode noncharacter, so that
 //! the client cannot forge a role of the chat template.
 
@@ -19,7 +19,7 @@ const TYPE_USER_DEFINED: i64 = 4;
 /// The number of noncharacters in Unicode: U+FDD0 to U+FDEF, and U+FFFE and U+FFFF of each of 17 planes.
 const RESERVED_COUNT: usize = 32 + 34;
 
-/// The noncharacter with this index. The index order is the order of mk's `RESERVED` list.
+/// The noncharacter with this index. The index order is the order of the reference's `RESERVED` list.
 fn reserved_char(index: usize) -> char {
     let cp = if index < 32 {
         0xFDD0 + index as u32
@@ -185,7 +185,7 @@ impl Tokenizer {
                     "merge {rank} is not two pieces with one space between them: {merge:?}"
                 )));
             }
-            // A repeated merge keeps its last rank, as the dict of mk does.
+            // A repeated merge keeps its last rank, as the dict of the reference does.
             merge_rank.insert(merge.to_string(), rank as u32);
         }
         let special_ids: Vec<u32> = types
@@ -210,7 +210,7 @@ impl Tokenizer {
         for (i, (text, id)) in specials_longest_first.iter().enumerate() {
             match text.as_bytes().first() {
                 Some(&b) => special_start[b as usize].push(i),
-                // mk builds an empty alternative here and splits the text at every position. We refuse the file.
+                // The reference builds an empty alternative here and splits the text at every position. We refuse the file.
                 None => {
                     return Err(Error::Vocab(format!(
                         "special token {id} has an empty text. {FAMILY_HINT}"
@@ -499,7 +499,7 @@ fn refuse_reserved(text: &str, allowed: usize) -> Result<(), Error> {
 
 // ---------------------------------------------------------------- the pre-tokenizer pattern
 
-/// Split `text` into the words that mk's `qwen35` pattern gives. The pattern is, in order:
+/// Split `text` into the words that the reference's `qwen35` pattern gives. The pattern is, in order:
 ///
 /// 1. a contraction: an apostrophe and `s`, `t`, `re`, `ve`, `m`, `ll` or `d`, in any case;
 /// 2. one character that is not CR, LF, a letter or a number, then one or more letters or marks;

@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: MIT
 """Make the sampler fixture (spec 11.2, milestone 12 step 2).
 
-The tool runs mk's `service/sampling.py` on the CPU, with no service and no GPU. For each case it records the
-row of logits, the settings, the survivors with their probabilities, the uniform value that mk drew, mk's token, p and h.
-The tool imports only `service.sampling` and `service.common` from mk's repository, and it never writes there.
-Run it with mk's venv:
+The tool runs the reference's `service/sampling.py` on the CPU, with no service and no GPU. For each case it records the
+row of logits, the settings, the survivors with their probabilities, the uniform value that the reference drew, the reference's token, p and h.
+The tool imports only `service.sampling` and `service.common` from the reference's repository, and it never writes there.
+Run it with the reference's venv:
 
     PYTHONDONTWRITEBYTECODE=1 ~/src/megakernel-qwen38-flashnext-strixhalo/.venv/bin/python -I \
         tools/sampler_fixture.py crates/nagaya-council/tests/fixtures/sampler.json
@@ -16,8 +16,8 @@ import os
 import sys
 from pathlib import Path
 
-MK = Path(os.environ.get("QWEN38_REFERENCE_REPO", Path.home() / "src/megakernel-qwen38-flashnext-strixhalo"))
-sys.path.insert(0, str(MK))
+REFERENCE = Path(os.environ.get("QWEN38_REFERENCE_REPO", Path.home() / "src/megakernel-qwen38-flashnext-strixhalo"))
+sys.path.insert(0, str(REFERENCE))
 
 import numpy as np  # noqa: E402
 
@@ -96,7 +96,7 @@ def main(out_path):
                     }
                 )
     row_table = {name: [float(x) for x in logits] for name, logits in rows()}
-    doc = {"author": AUTHOR, "source": "mk service/sampling.py", "rows": row_table, "cases": cases}
+    doc = {"author": AUTHOR, "source": "reference service/sampling.py", "rows": row_table, "cases": cases}
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     Path(out_path).write_text(json.dumps(doc, separators=(",", ":")) + "\n")
     print(f"wrote {len(cases)} cases to {out_path}")

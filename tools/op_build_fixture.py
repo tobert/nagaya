@@ -1,28 +1,28 @@
 #!/usr/bin/env python3
-"""Write the fixture of the op builds: the compiles and the links of mk's op libraries, from mk's CMake build.
+"""Write the fixture of the op builds: the compiles and the links of the reference's op libraries, from the reference's CMake build.
 
 The fixture is `tests/fixtures/build/ops_commands.json` of nagaya-mk-qwen38-gfx1151. The test `ops_build_flags` checks that
-`ops_build.rs` calls the compiler with the flags of mk's own build. The tool reads `build/compile_commands.json` and
-`build/build.ninja` of mk, and it writes nothing into mk. It needs only the standard library.
+`ops_build.rs` calls the compiler with the flags of the reference's own build. The tool reads `build/compile_commands.json` and
+`build/build.ninja` of the reference, and it writes nothing into it. It needs only the standard library.
 
-    python3 tools/op_build_fixture.py [--mk MK] [--out OUT]
+    python3 tools/op_build_fixture.py [--reference REFERENCE] [--out OUT]
 """
 import argparse
 import json
 import re
 from pathlib import Path
 
-DEFAULT_MK = Path.home() / "src/megakernel-qwen38-flashnext-strixhalo"
+DEFAULT_REFERENCE = Path.home() / "src/megakernel-qwen38-flashnext-strixhalo"
 DEFAULT_OUT = Path(__file__).resolve().parent.parent / "crates/nagaya-mk-qwen38-gfx1151/tests/fixtures/build/ops_commands.json"
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mk", type=Path, default=DEFAULT_MK)
+    parser.add_argument("--reference", type=Path, default=DEFAULT_REFERENCE)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     args = parser.parse_args()
-    build = args.mk / "build"
-    root = str(args.mk / "src")
+    build = args.reference / "build"
+    root = str(args.reference / "src")
     commands = json.loads((build / "compile_commands.json").read_text())
     compiles = [{"file": e["file"], "command": e["command"]} for e in commands if "/src/ops/" in e["file"]]
     ninja = (build / "build.ninja").read_text()

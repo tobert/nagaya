@@ -39,7 +39,7 @@ mod in_place;
 mod loads;
 mod staged;
 
-/// The default watchdog timeout. Three times the longest declared quantum bound (mk: 10 s).
+/// The default watchdog timeout. Three times the longest declared quantum bound (the Qwen3.8 engine: 10 s).
 pub const DEFAULT_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The default heartbeat. A group beats six times in the default timeout.

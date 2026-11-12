@@ -1,6 +1,6 @@
-//! The compiles and links of the op libraries in `ops_build.rs` are mk's compiles and links, flag for flag.
+//! The compiles and links of the op libraries in `ops_build.rs` are the reference's compiles and links, flag for flag.
 //!
-//! The fixture holds the compile and the link of each op of mk's CMake build at mk commit `555a2a3`
+//! The fixture holds the compile and the link of each op of the reference CMake build at commit `555a2a3`
 //! (`tools/op_build_fixture.py` writes it). The float flags are part of the model's definition, and the op tests compare
 //! bits. Thus a flag that differs fails here, before a GPU run. The runtime `rt.cpp` has its own entry in the fixture of
 //! `build_flags.rs`.
@@ -12,7 +12,7 @@ mod build;
 use serde_json::Value;
 use std::path::Path;
 
-/// The source root of mk's build, as the fixture names it.
+/// The source root of the reference's build, as the fixture names it.
 fn fixture() -> Value {
     let text =
         std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/build/ops_commands.json"))
@@ -25,7 +25,7 @@ fn hip_src() -> std::path::PathBuf {
 }
 
 #[test]
-fn the_ops_are_the_targets_of_mk() {
+fn the_ops_are_the_targets_of_the_reference() {
     let fixture = fixture();
     let expected: Vec<String> = fixture["links"]
         .as_array()
@@ -45,7 +45,7 @@ fn the_ops_are_the_targets_of_mk() {
 }
 
 #[test]
-fn each_op_compile_is_the_compile_of_mk_cmake_build() {
+fn each_op_compile_is_the_compile_of_the_reference_cmake_build() {
     let fixture = fixture();
     let reference_src = fixture["reference_src"].as_str().unwrap().to_owned();
     let src = Path::new("/nagaya/hip/src");
@@ -59,7 +59,7 @@ fn each_op_compile_is_the_compile_of_mk_cmake_build() {
         let expected: Vec<String> = words
             .map(|word| word.replace(&reference_src, &src.display().to_string()))
             .collect();
-        // mk writes the object to its build directory. The path is the same text here.
+        // The reference writes the object to its build directory. The path is the same text here.
         let object = format!("src/ops/CMakeFiles/qwen38_{name}.dir/{name}.hip.o");
         let got = build::ops_build::op_compile(src, name, Path::new(&object));
         assert_eq!(got, expected, "the compile of {name}.hip");
@@ -67,13 +67,13 @@ fn each_op_compile_is_the_compile_of_mk_cmake_build() {
 }
 
 #[test]
-fn each_op_link_has_the_flags_of_mk_cmake_build() {
+fn each_op_link_has_the_flags_of_the_reference_cmake_build() {
     let fixture = fixture();
-    // The words before the soname are the same in every link rule of mk. The rule is the same text for each library.
+    // The words before the soname are the same in every link rule of the reference. The rule is the same text for each library.
     let rule = fixture["link_rule"].as_str().unwrap();
     assert!(
         rule.contains("-fPIC $LANGUAGE_COMPILE_FLAGS $ARCH_FLAGS $LINK_FLAGS $SONAME_FLAG$SONAME -o $TARGET_FILE $in"),
-        "the link rule of mk changed: {rule}"
+        "the link rule of the reference changed: {rule}"
     );
     for link in fixture["links"].as_array().unwrap() {
         let library = link["library"].as_str().unwrap();

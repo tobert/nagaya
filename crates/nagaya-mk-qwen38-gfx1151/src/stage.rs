@@ -1,4 +1,4 @@
-//! The Rust mirror of mk's stage (`hip/src/engine/stage.h`) and of the argument types of its ops.
+//! The Rust mirror of the reference's stage (`hip/src/engine/stage.h`) and of the argument types of its ops.
 //!
 //! A pass is a list of stages, and a stage is one op with its arguments. The engine builds the list in C++. The Rust
 //! schedule (`schedule.rs`) reads it through these `#[repr(C)]` types. `hip/src/engine/stage_layout.def` holds each

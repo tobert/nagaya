@@ -27,7 +27,7 @@ fn main() {
     }
     let result = unsafe { libc::sched_setaffinity(0, size_of::<libc::cpu_set_t>(), &set) };
     assert_eq!(result, 0, "sched_setaffinity failed");
-    let _engine = nagaya_mk_qwen38_gfx1151::open().expect("open mk");
+    let _engine = nagaya_mk_qwen38_gfx1151::open().expect("open the engine");
     let mut bad = 0;
     let mut threads = 0;
     for entry in std::fs::read_dir("/proc/self/task").expect("read /proc/self/task") {

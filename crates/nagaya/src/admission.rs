@@ -194,7 +194,7 @@ impl Registry {
         self.factories.is_empty()
     }
 
-    /// Make a registry with the mk engine only. The tests of the mk engine use it.
+    /// Make a registry with the Qwen3.8 engine only. The tests of the Qwen3.8 engine use it.
     #[cfg(feature = "hip")]
     pub fn with_qwen38() -> Self {
         let mut registry = Self::new();
@@ -202,7 +202,7 @@ impl Registry {
         registry
     }
 
-    /// Make a registry with a factory for each engine kind that this build has: the mk engine with the feature
+    /// Make a registry with a factory for each engine kind that this build has: the Qwen3.8 engine with the feature
     /// `hip`, the Gemma 4, Qwen3-TTS, SDXL, EmbeddingGemma 2 and LFM3 engines with the feature `xe`, and the fake
     /// kinds with the feature `fake`.
     pub fn compiled_in() -> Self {

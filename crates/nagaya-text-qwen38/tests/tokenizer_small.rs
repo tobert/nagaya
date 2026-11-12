@@ -52,7 +52,7 @@ fn the_leftmost_pair_goes_first_when_ranks_are_equal() {
 
 #[test]
 fn a_repeated_merge_keeps_its_last_rank() {
-    // As in mk's dict: the pair "a b" ends with rank 2, so "b c" (rank 1) goes first.
+    // As in the reference's dict: the pair "a b" ends with rank 2, so "b c" (rank 1) goes first.
     let t = build(&[("ab", NORMAL), ("bc", NORMAL)], &["a b", "b c", "a b"]);
     assert_eq!(t.encode("abc").unwrap(), [0, 6]);
 }
@@ -167,7 +167,7 @@ fn sixty_six_special_tokens_use_the_noncharacters_in_order() {
     let names: Vec<String> = (0..66).map(|i| format!("<|s{i}|>")).collect();
     let tokens: Vec<(&str, i32)> = names.iter().map(|n| (n.as_str(), CONTROL)).collect();
     let t = Tokenizer::from_metadata(&small_metadata("qwen35", "gpt2", &tokens, None, &[])).unwrap();
-    // The order of Unicode noncharacters in mk: U+FDD0 to U+FDEF, then U+FFFE and U+FFFF of planes 0 to 16.
+    // The order of Unicode noncharacters in the reference: U+FDD0 to U+FDEF, then U+FFFE and U+FFFF of planes 0 to 16.
     let mut expected: Vec<char> = (0xFDD0u32..=0xFDEF).map(|c| char::from_u32(c).unwrap()).collect();
     for plane in 0..17u32 {
         expected.push(char::from_u32(plane << 16 | 0xFFFE).unwrap());
@@ -241,7 +241,7 @@ fn refuses_a_token_type_that_does_not_fit_a_signed_64_bit_integer() {
 
 #[test]
 fn refuses_a_special_token_with_an_empty_text_and_names_its_id() {
-    // mk builds an empty alternative here and then splits the text at every position. This reader refuses it.
+    // The reference builds an empty alternative here and then splits the text at every position. This reader refuses it.
     for kind in [CONTROL, USER_DEFINED] {
         let tokens = [("a", NORMAL), ("<|s|>", CONTROL), ("", kind)];
         match Tokenizer::from_metadata(&small_metadata("qwen35", "gpt2", &tokens, None, &[])) {

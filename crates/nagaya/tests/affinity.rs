@@ -37,7 +37,7 @@ fn a_cpu_past_the_mask_size_is_refused() {
 
 #[test]
 fn a_thread_that_a_pinned_thread_starts_keeps_the_mask() {
-    // The mk engine starts its worker thread inside `open`, on the pinned group thread. The worker relies on this
+    // The Qwen3.8 engine starts its worker thread inside `open`, on the pinned group thread. The worker relies on this
     // rule to run on the pool set (spec 3.2a).
     let inner = thread::spawn(|| {
         pin_current_thread(&[0]).expect("CPU 0 is online on every test machine");

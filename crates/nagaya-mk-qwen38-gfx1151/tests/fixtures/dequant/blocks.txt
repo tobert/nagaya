@@ -1,4 +1,4 @@
-# The dequant of mk's C++ copy (dequant.cpp) on fixed inputs. tools/mk_dequant_digests.cpp wrote it.
+# The dequant of the reference C++ copy (dequant.cpp) on fixed inputs. tools/mk_dequant_digests.cpp wrote it.
 # type, blocks, the SHA-256 of the f32 output. The input is 64 blocks of splitmix64 bytes, seed = type id.
 F32 64 c8048a17929cf11fedc4b63a69f7b67c9df23af91443cc72eba6c497721583d3
 BF16 64 9ad6adce0c07e1afe6076d19d970b2d984f7a95d6bb78f4b8faa72eebd03b644

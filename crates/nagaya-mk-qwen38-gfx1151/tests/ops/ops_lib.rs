@@ -1,4 +1,4 @@
-//! The loader of the op libraries and the calls that most op tests share. It ports `tests/ops/mkops.py` of mk.
+//! The loader of the op libraries and the calls that most op tests share. It ports `tests/ops/mkops.py` of the reference.
 
 #![allow(dead_code)]
 

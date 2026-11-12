@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-# Build mk's engine from `hip/` with ROCm, and link it statically. A build without it needs no ROCm.
+# Build the Qwen3.8 engine from `hip/` with ROCm, and link it statically. A build without it needs no ROCm.
 hip = []
 
 [[example]]

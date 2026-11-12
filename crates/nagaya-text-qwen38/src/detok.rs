@@ -1,6 +1,6 @@
 //! The detokenizer: token bytes to text, as the stream of tokens arrives.
 //!
-//! These are ports of `Utf8Stream` in mk's `service/chatfmt.py` and `piece_text` in `service/common.py`.
+//! These are ports of `Utf8Stream` in the reference's `service/chatfmt.py` and `piece_text` in `service/common.py`.
 
 /// Turns the bytes of tokens into text. A character split across tokens comes out whole with the token that completes
 /// it. A byte that cannot start or continue a character becomes U+FFFD. Nothing fails in the middle of a stream.

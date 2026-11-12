@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""Write `tests/fixtures/council.json`: fixed renders of the Qwen3.8 council rendering, from mk's Python front-end.
+"""Write `tests/fixtures/council.json`: fixed renders of the Qwen3.8 council rendering, from the reference's Python front-end.
 
-The chat template and the tokenizer are mk's (`service/common.py` `render_messages`, `harness/tokenizer.py`). The
+The chat template and the tokenizer are the reference's (`service/common.py` `render_messages`, `harness/tokenizer.py`). The
 layout of a council read (spec layer, case turn, letter menu, queue call) is written out again below in Python. That
 text is a second port of mkviolet's `src/template.rs` to Qwen3.8's chat format. It was checked by hand against
 mkviolet's `template.rs` on 2026-10-20. The script does not take it from mkviolet. The Rust library must give the same
-text and the same token ids. The script runs no service and uses no GPU. It only reads mk and the GGUF file.
+text and the same token ids. The script runs no service and uses no GPU. It only reads the reference and the GGUF file.
 
     MEGAKERNEL_LLAMA_CPP=~/src/wt/llama.cpp-master-0924 \
     ~/src/megakernel-qwen38-flashnext-strixhalo/.venv/bin/python \
         crates/nagaya-text-qwen38/tools/make_council_fixture.py \
-        --mk ~/src/megakernel-qwen38-flashnext-strixhalo \
+        --reference ~/src/megakernel-qwen38-flashnext-strixhalo \
         --gguf /tank/ml/models/llama.cpp/Qwen3.8-Flash-Next-GGUF/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf
 
-The fixture keeps the text of each render and the SHA-256 of its token ids, to stay small. The script refuses a mk
-tree with local changes, and it never writes into mk.
+The fixture keeps the text of each render and the SHA-256 of its token ids, to stay small. The script refuses a reference
+tree with local changes, and it never writes into the reference.
 """
 from __future__ import annotations
 
@@ -76,8 +76,8 @@ CONTEXTS = {
 }
 
 
-def git(mk: Path, *args: str) -> str:
-    return subprocess.run(["git", "-C", str(mk), *args], check=True, capture_output=True, text=True).stdout.strip()
+def git(reference: Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(reference), *args], check=True, capture_output=True, text=True).stdout.strip()
 
 
 def sha(ids: list[int]) -> str:
@@ -86,13 +86,13 @@ def sha(ids: list[int]) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mk", required=True, type=Path)
+    ap.add_argument("--reference", required=True, type=Path)
     ap.add_argument("--gguf", required=True, type=Path)
     args = ap.parse_args()
-    mk = args.mk.resolve()
-    if git(mk, "status", "--porcelain"):
-        sys.exit(f"{mk} has local changes. Commit or stash them first, so that the recorded revision is exact.")
-    sys.path.insert(0, str(mk))
+    reference = args.reference.resolve()
+    if git(reference, "status", "--porcelain"):
+        sys.exit(f"{reference} has local changes. Commit or stash them first, so that the recorded revision is exact.")
+    sys.path.insert(0, str(reference))
     from harness.tokenizer import Tokenizer
     from service.common import render_messages
     from service.template import Template
@@ -216,7 +216,7 @@ def main() -> None:
     header = {
         "author": "written by Claude Sonnet 5.5 for this tool, 2026-10-20",
         "generator": "crates/nagaya-text-qwen38/tools/make_council_fixture.py",
-        "reference_rev": git(mk, "rev-parse", "HEAD"),
+        "reference_rev": git(reference, "rev-parse", "HEAD"),
         "source_files": ["service/common.py", "service/template.py", "harness/tokenizer.py"],
         "gguf": args.gguf.name,
         "effort": EFFORT,

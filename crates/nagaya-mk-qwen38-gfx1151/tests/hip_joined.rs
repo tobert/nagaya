@@ -1,7 +1,7 @@
-//! The joined decode of mk on gfx1151 (milestone 30 step 2): a decode row gives the bits that it gives alone, also at
+//! The joined decode of the engine on gfx1151 (milestone 30 step 2): a decode row gives the bits that it gives alone, also at
 //! deep positions, in a pass of 16 segments, and beside a long prefill.
 //!
-//! mk declares `segments_exact` (engine-abi D11). The conformance gate `segments_exact_bits` checks it at position 0
+//! The engine declares `segments_exact` (engine-abi D11). The conformance gate `segments_exact_bits` checks it at position 0
 //! with segments of 1 and 2 tokens. This gate checks the decode rows that a joined quantum of the process makes: one
 //! token for each context, after a prefill of thousands of tokens, past the indexer budget of the attention layers.
 //! Run it with `QWEN38_FAST_QMM` unset and with `QWEN38_FAST_QMM=0`, and with `--test-threads=1`.
@@ -11,16 +11,16 @@
 use nagaya_abi::{Engine, OutputsWanted, Segment, SegmentInputs, State};
 use nagaya_mk_qwen38_gfx1151::{Hold, Qwen38Engine, Qwen38Error, hold};
 
-/// The hold of this binary on mk's weights.
+/// The hold of this binary on the engine's weights.
 static HOLD: std::sync::OnceLock<Hold> = std::sync::OnceLock::new();
 
 /// Open a handle, with the weights held for the binary. Each open makes a new context pool.
 fn open() -> Result<Qwen38Engine, Qwen38Error> {
-    HOLD.get_or_init(|| hold().expect("hold mk's weights"));
+    HOLD.get_or_init(|| hold().expect("hold the engine's weights"));
     nagaya_mk_qwen38_gfx1151::open()
 }
 
-/// The slots of mk: 12 small slots of 4096 tokens, then 4 large slots of 32 768 (`spec.rs` `CONTEXT_CLASSES`).
+/// The slots of the engine: 12 small slots of 4096 tokens, then 4 large slots of 32 768 (`spec.rs` `CONTEXT_CLASSES`).
 const SLOTS: u32 = 16;
 /// The first large slot.
 const LARGE: u32 = 12;
@@ -114,7 +114,7 @@ fn plan(step: usize) -> (Vec<u32>, bool) {
 #[test]
 fn a_decode_row_gives_its_bits_alone_and_joined_at_deep_positions() {
     // The reference: each segment alone, in a pass of one segment.
-    let mut alone = open().expect("open mk");
+    let mut alone = open().expect("open the engine");
     prefill(&mut alone);
     let mut wanted: Vec<Vec<Vec<u32>>> = Vec::new();
     for step in 0..STEPS {
@@ -139,7 +139,7 @@ fn a_decode_row_gives_its_bits_alone_and_joined_at_deep_positions() {
     drop(alone);
 
     // The same feeds on a new pool: each step is one pass of all its segments.
-    let mut joined = open().expect("open mk");
+    let mut joined = open().expect("open the engine");
     prefill(&mut joined);
     for (step, rows) in wanted.iter().enumerate() {
         let (slots, beside) = plan(step);
