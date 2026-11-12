@@ -198,6 +198,15 @@ pub fn vector_bytes(shift: usize) -> Vec<u8> {
         .collect()
 }
 
+/// Write the vector `vector_bytes(shift)` into the entry `index`.
+pub fn write_vector(engine: &mut Qwen38Engine, index: u32, shift: usize) {
+    engine
+        .control()
+        .expect("the engine gives the control table")
+        .control_write(index, &vector_bytes(shift))
+        .unwrap_or_else(|why| panic!("control_write {index}: {why}"));
+}
+
 /// The one layer of `vector_bytes(shift)`, as f32 values.
 pub fn vector_layer(shift: usize, layer: usize) -> Vec<f32> {
     (0..WIDTH)

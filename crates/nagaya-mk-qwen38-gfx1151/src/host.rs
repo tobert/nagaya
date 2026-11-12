@@ -12,7 +12,7 @@ use std::time::Instant;
 
 use crate::binding::{Binding, PassStop, Qwen38Launch, Qwen38Segment};
 use crate::context::{Copy, Qwen38Context};
-use crate::cuts::{CutDevice, Cuts};
+use crate::cuts::{ControlTable, CutDevice, Cuts};
 use crate::pass::{self, Builder, Knobs, PassBuffers, Scratch, Seg, Weights};
 use crate::ple;
 use crate::stage::Stage;
@@ -67,6 +67,8 @@ pub(crate) struct Host {
     /// The stage list of a pass, in pinned host memory that the device reads, and its room in stages.
     stages: *mut Stage,
     stage_cap: usize,
+    /// The table of control vectors, made after the scratch probe (`cuts.rs`). `None` until then.
+    pub(crate) control: Option<ControlTable>,
 }
 
 impl Host {
@@ -89,6 +91,7 @@ impl Host {
             inv_freq: std::ptr::null_mut(),
             stages: std::ptr::null_mut(),
             stage_cap: 0,
+            control: None,
         }
     }
 
@@ -448,7 +451,7 @@ pub(crate) unsafe fn run_pass(
                 mixed: device_mixed,
             };
             // SAFETY: `h` and `mixed` are scratch buffers of the pool, and the launch has ended.
-            if let Err(error) = unsafe { cuts.at_cut(&device, cut_layers[index]) } {
+            if let Err(error) = unsafe { cuts.at_cut(&device, host.control.as_ref(), cut_layers[index]) } {
                 return Err(poison(
                     &segs,
                     &format!("the host step after layer {} failed: {error}", cut_layers[index]),

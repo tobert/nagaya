@@ -7,8 +7,9 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use nagaya_abi::{
-    BitClass, BitSetting, Capability, ChainLimits, CoverageSpan, Determinism, Dtype, ElasticTerm, Identity, Inputs,
-    Kind, Lifetime, Limits, MandatoryTerm, MemoryLimits, PartKind, PartLimits, SlotLimit, Stage, TapLimit, Tier,
+    BitClass, BitSetting, CONTROL_TERM, Capability, ChainLimits, CoverageSpan, Determinism, Dtype, ElasticTerm,
+    Identity, Inputs, Kind, Lifetime, Limits, MandatoryTerm, MemoryLimits, PartKind, PartLimits, SlotLimit, Stage,
+    TapLimit, Tier,
 };
 
 /// The vocabulary size (the reference `kVocab`).
@@ -411,6 +412,7 @@ pub fn limits(arena_bytes: u64) -> Limits {
             Capability::Seal,
             Capability::Slots,
             Capability::Close,
+            Capability::Control,
         ],
         parts: parts(),
         inputs: Inputs::Tokens,
@@ -457,6 +459,14 @@ pub fn limits(arena_bytes: u64) -> Limits {
                     lifetime: Lifetime::Engine,
                     kinds: vec![Kind::Prefill, Kind::Decode],
                 },
+                // The table of control vectors: one allocation at open, outside the probe of the pass scratch.
+                MandatoryTerm {
+                    name: CONTROL_TERM.to_owned(),
+                    tier: Tier::Device(0),
+                    bytes: crate::control::LIMIT.table_bytes(),
+                    lifetime: Lifetime::Engine,
+                    kinds: vec![Kind::Prefill, Kind::Decode],
+                },
             ],
             elastic: Vec::<ElasticTerm>::new(),
         },
@@ -480,7 +490,7 @@ pub fn limits(arena_bytes: u64) -> Limits {
         checkpoint_grain: Some(CHECKPOINT_GRAIN),
         feed: None,
         residual_row_bytes: 0,
-        control: None,
+        control: Some(crate::control::LIMIT),
     }
 }
 
@@ -779,7 +789,7 @@ mod tests {
     fn the_limits_declare_only_the_reachable_capabilities() {
         // The ABI takes a capability from its accessor. The engine has parts(), coverage(), seal() and slots(), and no
         // accessor for contexts, poison or the pass check, so the limits must not declare those. The drop of the last
-        // handle frees the weights, so the engine declares close.
+        // handle frees the weights, so the engine declares close. `control()` gives the table of control vectors.
         let limits = limits(0);
         assert_eq!(
             limits.capabilities,
@@ -788,7 +798,8 @@ mod tests {
                 Capability::Coverage,
                 Capability::Seal,
                 Capability::Slots,
-                Capability::Close
+                Capability::Close,
+                Capability::Control
             ]
         );
     }
@@ -956,15 +967,36 @@ mod tests {
     }
 
     #[test]
-    fn the_limits_declare_the_taps_residual_and_fold_with_no_conditions() {
+    fn the_limits_declare_the_taps_and_the_control_table_and_they_pass_the_abi_check() {
         let limits = limits(94);
+        assert!(limits.capabilities.contains(&Capability::Control));
         let taps: Vec<(&str, &[String])> = limits
             .taps
             .iter()
             .map(|tap| (tap.name.as_str(), tap.conditions.as_slice()))
             .collect();
         assert_eq!(taps, [("residual", &[][..]), ("fold", &[][..])]);
+        let control = limits.control.expect("the engine declares a control table");
+        assert_eq!((control.tables, control.layers, control.width), (8, 48, 10_240));
+        let term = limits
+            .memory
+            .mandatory
+            .iter()
+            .find(|term| term.name == CONTROL_TERM)
+            .expect("the control table is a mandatory term");
+        assert_eq!(term.bytes, 15_728_640);
+        assert_eq!(term.tier, Tier::Device(0));
+        assert_eq!(term.lifetime, Lifetime::Engine);
+        // The rule of the ABI: the capability, the limit and the term come together, and the term has the table's bytes.
         limits.check().expect("the limits pass the check of the ABI");
+        // The pass scratch term does not change with the table: its constant is the measured pool.
+        let scratch = limits
+            .memory
+            .mandatory
+            .iter()
+            .find(|term| term.name == "pass_scratch")
+            .expect("the pass scratch term");
+        assert_eq!(scratch.bytes, PASS_SCRATCH_BYTES);
     }
 
     #[test]

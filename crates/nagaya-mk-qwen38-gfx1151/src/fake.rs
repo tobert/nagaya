@@ -200,6 +200,8 @@ struct Device {
     launches: Vec<Launch>,
     copies: Vec<CopyRecord>,
     hook: Option<LaunchHook>,
+    /// The bytes of each call of `hip_rt_malloc` and `hip_rt_host_malloc`, since the thread began.
+    sizes: Vec<u64>,
 }
 
 impl Drop for Device {
@@ -243,6 +245,16 @@ pub(crate) fn clear_hook() {
     DEVICE.with(|d| d.borrow_mut().hook = None);
 }
 
+/// The allocations that the fake device made on this thread.
+pub(crate) fn mallocs() -> usize {
+    DEVICE.with(|d| d.borrow().sizes.len())
+}
+
+/// The bytes of each allocation that the fake device made on this thread, in order.
+pub(crate) fn malloc_sizes() -> Vec<u64> {
+    DEVICE.with(|d| d.borrow().sizes.clone())
+}
+
 fn allocate(bytes: u64) -> *mut c_void {
     let layout = Layout::from_size_align(bytes.max(1) as usize, 256).expect("a fake buffer layout");
     // SAFETY: the layout is not empty.
@@ -250,6 +262,7 @@ fn allocate(bytes: u64) -> *mut c_void {
     assert!(!pointer.is_null(), "the fake device has no memory for {bytes} bytes");
     DEVICE.with(|d| {
         let mut d = d.borrow_mut();
+        d.sizes.push(bytes);
         d.allocations.push((pointer, layout));
     });
     pointer.cast()

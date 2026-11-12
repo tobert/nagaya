@@ -3,8 +3,8 @@
 use std::sync::{Arc, OnceLock};
 
 use nagaya_abi::{
-    Coverage, CoverageSpan, Dtype, Engine, Identity, Limits, Output, PartError, PartId, Parts, PassError,
-    PassErrorKind, PassOut, PassStatus, Seal, SealError, Segment, SegmentInputs, SlotId, Slots, State, Tap,
+    Control, ControlItem, Coverage, CoverageSpan, Dtype, Engine, Identity, Limits, Output, PartError, PartId, Parts,
+    PassError, PassErrorKind, PassOut, PassStatus, Seal, SealError, Segment, SegmentInputs, SlotId, Slots, State, Tap,
     WriteResult,
 };
 
@@ -260,6 +260,8 @@ struct PassPlan {
     tokens: Vec<i32>,
     /// True for each segment that wants its logit row.
     wants: Vec<bool>,
+    /// The control list of each segment.
+    control: Vec<Vec<ControlItem>>,
     /// The taps that the pass names.
     taps: TapSet,
 }
@@ -283,9 +285,9 @@ fn refused(message: String) -> PassError {
 ///
 /// Every check here runs before the binding calls the engine. Thus a refused pass changes no context.
 ///
-/// The engine gives the taps `residual` and `fold` (engine-abi "The residual of the Qwen3.8 engine"). An unknown tap and
-/// a tap with no logit row are refused. This build has no control table yet. The ABI says that an engine without
-/// `control` refuses a segment with a control list, so the refusal is here and not in the process.
+/// The engine gives the taps `residual` and `fold` and a control table (engine-abi "The residual of the Qwen3.8
+/// engine"). An unknown tap, a tap with no logit row and a control list that breaks a rule of the table are refused.
+/// The worker refuses a list that names an entry that no write filled, because it holds the table.
 fn plan_pass(segments: &[Segment], taps: &[Tap], contexts: &[SegmentContext]) -> Result<PassPlan, PassError> {
     assert_eq!(segments.len(), contexts.len(), "every segment needs its context");
     let tap_set = control::tap_set(taps).map_err(refused)?;
@@ -295,11 +297,8 @@ fn plan_pass(segments: &[Segment], taps: &[Tap], contexts: &[SegmentContext]) ->
     };
     for (index, segment) in segments.iter().enumerate() {
         let context = contexts[index];
-        if !segment.control.is_empty() {
-            return Err(refused(format!(
-                "segment {index} has {} control items, but this build of the engine has no control table yet; send the segment with no control list",
-                segment.control.len()
-            )));
+        if let Some(problem) = control::list_problem(index, &segment.control) {
+            return Err(refused(problem));
         }
         let segment_tokens = match &segment.inputs {
             SegmentInputs::Tokens(tokens) => tokens,
@@ -359,6 +358,7 @@ fn plan_pass(segments: &[Segment], taps: &[Tap], contexts: &[SegmentContext]) ->
         plan.lens.push(segment_tokens.len() as u32);
         plan.tokens.extend(segment_tokens.iter().map(|token| *token as i32));
         plan.wants.push(want_logits);
+        plan.control.push(segment.control.clone());
     }
     control::tap_layout(&plan.wants, plan.taps).map_err(refused)?;
     if plan.tokens.len() > spec::MAX_PASS_TOKENS as usize {
@@ -414,6 +414,7 @@ impl Engine for Qwen38Engine {
             tokens: plan.tokens,
             want_logits,
             wants: plan.wants.clone(),
+            control: plan.control,
             taps: plan.taps,
         }) {
             Ok(reply) => reply,
@@ -473,6 +474,22 @@ impl Engine for Qwen38Engine {
 
     fn slots(&mut self) -> Option<&mut dyn Slots> {
         Some(self)
+    }
+
+    fn control(&mut self) -> Option<&mut dyn Control> {
+        Some(self)
+    }
+}
+
+/// The table of control vectors (engine-abi "The residual of the Qwen3.8 engine"). The write goes to the worker thread,
+/// which owns the device.
+impl Control for Qwen38Engine {
+    fn control_write(&mut self, index: u32, bytes: &[u8]) -> Result<(), String> {
+        let result = self.worker.control_write(index, bytes.to_vec());
+        if let Err(message) = &result {
+            self.last_error = Some(message.clone());
+        }
+        result
     }
 }
 
@@ -699,57 +716,66 @@ mod tests {
         assert!(error.message.contains("not rows"), "{}", error.message);
     }
 
-    #[test]
-    fn a_segment_with_a_control_list_is_refused_before_the_pass() {
-        let contexts = [SegmentContext { id: 7, n: 3 }];
-        let mut segment = token_segment(&[11], 3);
-        segment.control = vec![ControlItem {
-            index: 0,
-            op: ControlOp::Add,
-            strength: 1.0,
-            layers: None,
-        }];
-        let error =
-            plan_pass(std::slice::from_ref(&segment), &[], &contexts).expect_err("this build has no control table");
-        assert_eq!(error.kind, PassErrorKind::Refused, "a refused pass did not run");
-        // The message says what failed, why, and what the reader can do.
-        assert!(
-            error.message.contains("segment 0 has 1 control items"),
-            "{}",
-            error.message
-        );
-        assert!(error.message.contains("has no control table yet"), "{}", error.message);
-        assert!(
-            error.message.contains("send the segment with no control list"),
-            "{}",
-            error.message
-        );
-    }
-
-    #[test]
-    fn the_control_list_of_a_later_segment_is_refused_too() {
-        let contexts = [SegmentContext { id: 7, n: 3 }, SegmentContext { id: 8, n: 0 }];
-        let plain = token_segment(&[11], 3);
-        let mut steered = token_segment(&[12], 0);
-        steered.control = vec![ControlItem {
-            index: 3,
-            op: ControlOp::Clamp,
-            strength: 0.0,
-            layers: Some(vec![(8, 0.0)]),
-        }];
-        let error = plan_pass(&[plain, steered], &[], &contexts).expect_err("segment 1 has a list");
-        assert!(
-            error.message.contains("segment 1 has 1 control items"),
-            "{}",
-            error.message
-        );
-    }
-
     /// A segment of one token that asks for its logit row.
     fn logit_segment(token: u32, start: u64) -> Segment {
         let mut segment = token_segment(&[token], start);
         segment.outputs.logit_rows = vec![start];
         segment
+    }
+
+    fn item(index: u32, op: ControlOp, strength: f32, layers: Option<Vec<(u32, f32)>>) -> ControlItem {
+        ControlItem {
+            index,
+            op,
+            strength,
+            layers,
+        }
+    }
+
+    #[test]
+    fn a_segment_with_a_control_list_that_the_table_refuses_is_refused_before_the_pass() {
+        let contexts = [SegmentContext { id: 7, n: 3 }];
+        // The table has 8 entries, 0 to 7.
+        let mut segment = token_segment(&[11], 3);
+        segment.control = vec![item(8, ControlOp::Add, 1.0, None)];
+        let error = plan_pass(std::slice::from_ref(&segment), &[], &contexts).expect_err("entry 8 is not in the table");
+        assert_eq!(error.kind, PassErrorKind::Refused, "a refused pass did not run");
+        assert!(error.message.contains("segment 0"), "{}", error.message);
+        assert!(error.message.contains("entry 8"), "{}", error.message);
+        // A strength that is not finite.
+        segment.control = vec![item(0, ControlOp::Add, f32::NAN, None)];
+        let error = plan_pass(std::slice::from_ref(&segment), &[], &contexts).expect_err("NaN is not a strength");
+        assert!(error.message.contains("finite"), "{}", error.message);
+        // A layer that the model does not have: the message names the layer and the count.
+        segment.control = vec![item(0, ControlOp::Add, 1.0, Some(vec![(48, 1.0)]))];
+        let error = plan_pass(std::slice::from_ref(&segment), &[], &contexts).expect_err("layer 48 does not exist");
+        assert!(error.message.contains("layer 48"), "{}", error.message);
+        assert!(error.message.contains("48 layers"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_good_control_list_goes_into_the_plan_with_its_segment() {
+        let contexts = [SegmentContext { id: 7, n: 3 }, SegmentContext { id: 8, n: 0 }];
+        let plain = token_segment(&[11], 3);
+        let mut steered = token_segment(&[12], 0);
+        steered.control = vec![
+            item(3, ControlOp::Clamp, 0.0, Some(vec![(8, 0.0)])),
+            item(0, ControlOp::Ablate, 1.0, None),
+        ];
+        let plan = plan_pass(&[plain, steered.clone()], &[], &contexts).expect("the lists fit the table");
+        assert_eq!(plan.control.len(), 2);
+        assert!(plan.control[0].is_empty(), "segment 0 has no list");
+        assert_eq!(plan.control[1], steered.control, "segment 1 keeps its list, in order");
+    }
+
+    #[test]
+    fn the_control_list_of_a_later_segment_is_refused_by_its_segment_number() {
+        let contexts = [SegmentContext { id: 7, n: 3 }, SegmentContext { id: 8, n: 0 }];
+        let plain = token_segment(&[11], 3);
+        let mut steered = token_segment(&[12], 0);
+        steered.control = vec![item(9, ControlOp::Clamp, 0.0, None)];
+        let error = plan_pass(&[plain, steered], &[], &contexts).expect_err("segment 1 has a bad list");
+        assert!(error.message.contains("segment 1"), "{}", error.message);
     }
 
     #[test]

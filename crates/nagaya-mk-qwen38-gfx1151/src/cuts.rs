@@ -1,14 +1,23 @@
 //! The host steps of a pass that is cut at layer ends (milestone 34, engine-abi "The residual of the Qwen3.8 engine").
 //!
 //! `host::run_pass` launches the ranges of a cut pass. After each launch that ends a layer, it calls `Cuts::at_cut`.
-//! The step reads the rows of the tap `residual`. After the last launch, `Cuts::finish` reads the rows of the tap
-//! `fold`. Every access to the device goes through `hip_rt_memcpy` of the binding: the host never addresses device
-//! memory. The control items come with the next commit, and until then the engine refuses a control list, so no
-//! pass reaches an action.
+//! The step applies the control items of the layer to the rows of `h`, and it reads the rows of the tap `residual`.
+//! After the last launch, `Cuts::finish` reads the rows of the tap `fold`. Every access to the device goes through
+//! `hip_rt_memcpy` of the binding: the host never addresses device memory.
+//!
+//! The control table holds the vectors on the device. The host keeps only the sum of squares of each layer of each
+//! entry, and the op reads the vector of a layer from the device with one copy (`ControlTable::read_layer`).
+
+use std::collections::HashMap;
+use std::ffi::c_void;
+
+use nagaya_abi::ControlItem;
 
 use crate::binding::Binding;
 use crate::context::Copy as CopyKind;
-use crate::control::{self, CutPlan, FOLD_WIDTH, LAYERS, SegmentShape, TapOutput, TapSet, WIDTH};
+use crate::control::{
+    self, Action, CutPlan, FOLD_WIDTH, LAYERS, LIMIT, LayerVector, SegmentShape, TABLES, TapOutput, TapSet, WIDTH,
+};
 
 /// The device buffers that a host step reads and writes.
 pub(crate) struct CutDevice<'a> {
@@ -34,6 +43,117 @@ impl CutDevice<'_> {
                 CopyKind::DeviceToHost as u32,
             )
         };
+    }
+
+    /// Copy `values` to the device at `to`.
+    ///
+    /// # Safety
+    ///
+    /// `to` names that many writable values on the device.
+    unsafe fn write(&self, to: *mut f32, values: &[f32]) {
+        unsafe {
+            (self.binding.rt_memcpy)(
+                to.cast(),
+                values.as_ptr().cast(),
+                std::mem::size_of_val(values) as u64,
+                CopyKind::HostToDevice as u32,
+            )
+        };
+    }
+}
+
+/// The table of control vectors: one device allocation of `LIMIT.table_bytes()`, and the sum of squares of each layer of
+/// each entry.
+pub(crate) struct ControlTable {
+    /// The entries on the device, `LAYERS * WIDTH` values each, in layer order.
+    device: *mut f32,
+    /// The sum of squares of each layer of each entry. A layer that was never written has the sum 0.
+    sums: Vec<Vec<f32>>,
+    /// True for an entry that `write` filled.
+    written: Vec<bool>,
+}
+
+impl ControlTable {
+    /// Allocate the table on the device and fill it with zeros. This is the one allocation of the table, made at open.
+    ///
+    /// # Safety
+    ///
+    /// `binding` is the linked engine's, on the worker thread.
+    pub(crate) unsafe fn new(binding: &Binding) -> ControlTable {
+        let bytes = LIMIT.table_bytes();
+        let device = unsafe { (binding.rt_malloc)(bytes) } as *mut f32;
+        assert!(!device.is_null(), "hip_rt_malloc({bytes}) gave no control table");
+        unsafe { (binding.rt_memset)(device.cast(), 0, bytes) };
+        ControlTable {
+            device,
+            sums: vec![vec![0.0; LAYERS]; TABLES as usize],
+            written: vec![false; TABLES as usize],
+        }
+    }
+
+    /// The device address of one entry.
+    fn entry(&self, index: u32) -> *mut f32 {
+        assert!(
+            index < TABLES,
+            "the control table has {TABLES} entries, not entry {index}"
+        );
+        self.device.wrapping_add(index as usize * LAYERS * WIDTH)
+    }
+
+    /// Write one vector into an entry. A bad index, a bad size or a value that is not finite is an error, and nothing
+    /// changes: the checks of `control::write_sums` run before the copy.
+    ///
+    /// # Safety
+    ///
+    /// `binding` is the linked engine's, on the worker thread.
+    pub(crate) unsafe fn write(&mut self, binding: &Binding, index: u32, bytes: &[u8]) -> Result<(), String> {
+        let sums = control::write_sums(index, bytes)?;
+        unsafe {
+            (binding.rt_memcpy)(
+                self.entry(index).cast::<c_void>(),
+                bytes.as_ptr().cast(),
+                bytes.len() as u64,
+                CopyKind::HostToDevice as u32,
+            )
+        };
+        self.sums[index as usize] = sums;
+        self.written[index as usize] = true;
+        Ok(())
+    }
+
+    /// The vector of one layer of one entry: copy its `WIDTH` values from the device into `out`.
+    ///
+    /// # Safety
+    ///
+    /// `device` has the binding of the table's engine.
+    unsafe fn read_layer(&self, device: &CutDevice, entry: u32, layer: usize, out: &mut [f32]) {
+        assert_eq!(out.len(), WIDTH, "a layer of a vector has {WIDTH} values");
+        unsafe { device.read(self.entry(entry).wrapping_add(layer * WIDTH), out) };
+    }
+
+    /// The first control item that names an entry that `write` never filled, or `None`. A pass over such an entry
+    /// would read zeros and act on no row, and the caller meant a vector.
+    pub(crate) fn unwritten(&self, lists: &[&[ControlItem]]) -> Option<String> {
+        for (segment, items) in lists.iter().enumerate() {
+            for (i, item) in items.iter().enumerate() {
+                if item.index >= TABLES {
+                    // The limit check of the plan reports this.
+                    continue;
+                }
+                if !self.written[item.index as usize] {
+                    return Some(format!(
+                        "segment {segment}: control item {i} names table entry {}, but no control_write filled it; write the vector first",
+                        item.index
+                    ));
+                }
+            }
+        }
+        None
+    }
+
+    /// The sum of squares of one layer of one entry.
+    pub(crate) fn sum_squares(&self, entry: u32, layer: usize) -> f32 {
+        self.sums[entry as usize][layer]
     }
 }
 
@@ -89,12 +209,17 @@ impl Cuts {
         self.plan.fuse_hc_off
     }
 
-    /// The host step after the launch that ends layer `layer`: the reads of the tap.
+    /// The host step after the launch that ends layer `layer`: the control items of the layer, then the reads of the tap.
     ///
     /// # Safety
     ///
     /// `device` names the scratch of the pass, and the launch has ended.
-    pub(crate) unsafe fn at_cut(&mut self, device: &CutDevice, layer: usize) -> Result<(), String> {
+    pub(crate) unsafe fn at_cut(
+        &mut self,
+        device: &CutDevice,
+        table: Option<&ControlTable>,
+        layer: usize,
+    ) -> Result<(), String> {
         let Some(cut) = self.plan.cuts.get(self.next) else {
             return Err(format!("the plan has no cut after layer {layer}"));
         };
@@ -105,6 +230,21 @@ impl Cuts {
             ));
         }
         self.next += 1;
+        // The actions of one segment share its rows, and they come in list order. One read and one write of the
+        // rows serve all of them.
+        let mut done = 0;
+        while done < cut.actions.len() {
+            let segment = cut.actions[done].segment;
+            let mut end = done;
+            while end < cut.actions.len() && cut.actions[end].segment == segment {
+                end += 1;
+            }
+            let Some(table) = table else {
+                return Err("the pass has control items, but the engine has no control table".to_owned());
+            };
+            unsafe { apply_segment(device, table, layer, &cut.actions[done..end]) };
+            done = end;
+        }
         for (k, read) in cut.reads.iter().enumerate() {
             let row = &mut self.residual[k][layer * WIDTH..(layer + 1) * WIDTH];
             unsafe { device.read(device.h.wrapping_add(read.row * WIDTH), row) };
@@ -155,6 +295,49 @@ impl Cuts {
     }
 }
 
+/// Apply the actions of one segment at one cut: read its rows of `h`, apply each action in list order, and write the
+/// rows back when one changed. No other row is read or written.
+///
+/// # Safety
+///
+/// As for `Cuts::at_cut`.
+unsafe fn apply_segment(device: &CutDevice, table: &ControlTable, layer: usize, actions: &[Action]) {
+    let rows = actions[0].rows.clone();
+    assert!(
+        actions.iter().all(|action| action.rows == rows),
+        "the actions of one segment share its rows"
+    );
+    let mut values = vec![0f32; rows.len() * WIDTH];
+    unsafe { device.read(device.h.wrapping_add(rows.start * WIDTH), &mut values) };
+    // One vector of this layer for each entry that the actions name.
+    let mut vectors: HashMap<u32, (Vec<f32>, f32)> = HashMap::new();
+    for action in actions {
+        vectors.entry(action.entry).or_insert_with(|| {
+            let mut vector = vec![0f32; WIDTH];
+            unsafe { table.read_layer(device, action.entry, layer, &mut vector) };
+            (vector, table.sum_squares(action.entry, layer))
+        });
+    }
+    // The rows of the slice start at 0, so the actions name rows from 0.
+    let relative: Vec<Action> = actions
+        .iter()
+        .map(|action| Action {
+            rows: 0..rows.len(),
+            ..action.clone()
+        })
+        .collect();
+    let changed = control::apply_actions(&mut values, &relative, |entry| {
+        let (values, sum_squares) = &vectors[&entry];
+        LayerVector {
+            values,
+            sum_squares: *sum_squares,
+        }
+    });
+    if changed > 0 {
+        unsafe { device.write(device.h.wrapping_add(rows.start * WIDTH), &values) };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -164,7 +347,7 @@ mod tests {
 
     use super::*;
     use crate::binding::{PassStop, Qwen38Launch};
-    use crate::control::{FOLD_BYTES, RESIDUAL_BYTES};
+    use crate::control::{FOLD_BYTES, RESIDUAL_BYTES, apply_row};
     use crate::fake::{self, FAST, Launch, Rig, StageKey};
     use crate::host::LaunchKnobs;
     use crate::stage::{ST_HC_COMBINE_RMS, Stage};
@@ -174,6 +357,18 @@ mod tests {
     /// A made-up value of the residual after the launch `k`: finite, and different for each row and index.
     fn pattern(k: usize, row: usize, j: usize) -> f32 {
         ((k * 131 + row * 17 + j * 7) % 211) as f32 / 16.0 - 6.0
+    }
+
+    /// The made-up vector of an entry: the value at layer `layer`, index `j`.
+    fn vector(layer: usize, j: usize) -> f32 {
+        ((layer * 29 + j * 13) % 97) as f32 / 32.0 - 1.5
+    }
+
+    fn vector_bytes() -> Vec<u8> {
+        (0..LAYERS)
+            .flat_map(|layer| (0..WIDTH).map(move |j| vector(layer, j)))
+            .flat_map(f32::to_le_bytes)
+            .collect()
     }
 
     fn shape(rows: usize, logit_row: bool, control: &[ControlItem]) -> SegmentShape<'_> {
@@ -329,6 +524,16 @@ mod tests {
         }];
         let shapes = [shape(2, false, &list)];
         let mut cuts = Cuts::new(&shapes, TapSet::default()).expect("a list");
+        // SAFETY: the fake binding.
+        rig.host.control = Some(unsafe { ControlTable::new(&rig.binding) });
+        unsafe {
+            rig.host
+                .control
+                .as_mut()
+                .unwrap()
+                .write(&rig.binding, 0, &vector_bytes())
+                .expect("a good vector")
+        };
         rig.run(FAST, fake::no_knobs(), Some(&mut cuts))
             .expect("a steered pass runs");
         let lists = lists.borrow();
@@ -585,5 +790,336 @@ mod tests {
             .filter(|c| c.kind == 1 && c.dst == rig.h() as usize)
             .count();
         assert_eq!(writes_to_h, 0, "a tap writes no row of h");
+    }
+
+    // ---- piece 8: the control table and the host op ------------------------------------------------------------
+
+    fn table(rig: &mut Rig) {
+        // SAFETY: the fake binding.
+        rig.host.control = Some(unsafe { ControlTable::new(&rig.binding) });
+        unsafe {
+            rig.host
+                .control
+                .as_mut()
+                .unwrap()
+                .write(&rig.binding, 0, &vector_bytes())
+                .expect("a good vector")
+        };
+    }
+
+    fn add(strength: f32, layers: &[(u32, f32)]) -> ControlItem {
+        ControlItem {
+            index: 0,
+            op: ControlOp::Add,
+            strength,
+            layers: Some(layers.to_vec()),
+        }
+    }
+
+    #[test]
+    fn a_list_on_layers_3_and_20_reads_and_writes_exactly_the_rows_of_its_segment_at_those_cuts() {
+        // Segment 0 has 2 rows and no list. Segment 1 has 3 rows (rows 2, 3 and 4 of the pass) and a list.
+        let mut rig = rig(&[2, 3]);
+        table(&mut rig);
+        let h = rig.h() as usize;
+        let seen = fill_h(&mut rig, 5);
+        let list = [add(2.0, &[(3, 2.0), (20, 2.0)])];
+        let shapes = [shape(2, false, &[]), shape(3, false, &list)];
+        let mut cuts = Cuts::new(&shapes, TapSet::default()).expect("a list");
+        fake::reset();
+        rig.run(FAST, fake::no_knobs(), Some(&mut cuts))
+            .expect("a steered pass runs");
+        assert_eq!(fake::launches().len(), 3, "2 cuts make 3 launches");
+        // The copies that touch h: a read and a write of the rows 2 to 4, at each of the 2 cuts, and no other row.
+        let touching: Vec<_> = fake::copies()
+            .into_iter()
+            .filter(|c| (c.src >= h && c.src < h + 256 * row_bytes()) || (c.dst >= h && c.dst < h + 256 * row_bytes()))
+            .filter(|c| (c.bytes as usize).is_multiple_of(row_bytes()) && c.bytes as usize / row_bytes() == 3)
+            .collect();
+        assert_eq!(
+            touching.len(),
+            4,
+            "2 cuts x (1 read + 1 write) of the 3 rows of segment 1"
+        );
+        for (i, copy) in touching.iter().enumerate() {
+            let (device, kind) = if copy.kind == 2 {
+                (copy.src, "read")
+            } else {
+                (copy.dst, "write")
+            };
+            assert_eq!(device, h + 2 * row_bytes(), "copy {i} ({kind}) starts at row 2");
+            assert_eq!(
+                copy.kind,
+                if i % 2 == 0 { 2 } else { 1 },
+                "read, then write, at each cut"
+            );
+        }
+        // No copy reads or writes a row of segment 0 (rows 0 and 1), and none touches a row past row 4, except the reads
+        // of the table and the logits.
+        let region = |from: usize| (from >= h && from < h + 256 * row_bytes()).then(|| (from - h) / row_bytes());
+        for copy in fake::copies() {
+            for address in [copy.src, copy.dst] {
+                if let Some(row) = region(address) {
+                    assert!((2..5).contains(&row), "a copy touches row {row}: {copy:?}");
+                }
+            }
+        }
+        // The bytes written are the op applied to the bytes read. At the start of launch k, `h` holds what the host step
+        // left after launch k - 1, and the fake kernel filled `h` with `pattern(k - 1, ..)` in that launch.
+        let seen = seen.borrow();
+        for (launch, layer) in [(1, 3), (2, 20)] {
+            let after = &seen[launch];
+            let v: Vec<f32> = (0..WIDTH).map(|j| vector(layer, j)).collect();
+            let vv = control::sum_squares(&v);
+            let bits = |values: &[f32]| values.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            for row in 0..5 {
+                let kernel: Vec<f32> = (0..WIDTH).map(|j| pattern(launch - 1, row, j)).collect();
+                let got = &after[row * WIDTH..(row + 1) * WIDTH];
+                if row < 2 {
+                    assert_eq!(
+                        bits(got),
+                        bits(&kernel),
+                        "launch {launch}: row {row} of segment 0 is untouched"
+                    );
+                } else {
+                    let mut want = kernel.clone();
+                    assert!(apply_row(ControlOp::Add, 2.0, &mut want, &v, vv));
+                    assert_eq!(
+                        bits(got),
+                        bits(&want),
+                        "launch {launch}: row {row} is the add of the row that the kernel left"
+                    );
+                    assert_ne!(bits(got), bits(&kernel), "the add changed the row");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_list_of_the_first_segment_leaves_the_rows_of_the_second_alone() {
+        let mut rig = rig(&[2, 3]);
+        table(&mut rig);
+        let h = rig.h() as usize;
+        let _seen = fill_h(&mut rig, 5);
+        let list = [add(1.0, &[(3, 1.0)])];
+        let shapes = [shape(2, false, &list), shape(3, false, &[])];
+        let mut cuts = Cuts::new(&shapes, TapSet::default()).expect("a list");
+        fake::reset();
+        rig.run(FAST, fake::no_knobs(), Some(&mut cuts))
+            .expect("a steered pass runs");
+        for copy in fake::copies() {
+            for address in [copy.src, copy.dst] {
+                if address >= h && address < h + 256 * row_bytes() {
+                    let row = (address - h) / row_bytes();
+                    assert!(row < 2, "a copy touches row {row} of the second segment: {copy:?}");
+                }
+            }
+        }
+        assert_eq!(fake::launches().len(), 2);
+    }
+
+    #[test]
+    fn an_add_or_an_ablate_of_strength_0_makes_one_launch_and_no_read() {
+        for op in [ControlOp::Add, ControlOp::Ablate] {
+            let mut rig = rig(&[2]);
+            table(&mut rig);
+            let h = rig.h() as usize;
+            let list = [ControlItem {
+                index: 0,
+                op,
+                strength: 0.0,
+                layers: None,
+            }];
+            let shapes = [shape(2, false, &list)];
+            let mut cuts = Cuts::new(&shapes, TapSet::default()).expect("a list");
+            assert!(
+                !cuts.fuse_hc_off(),
+                "{op:?} of 0 acts on no layer, so the pass keeps the fused combine"
+            );
+            fake::reset();
+            let (_, lists) = record_stages(&mut rig, 2);
+            rig.run(FAST, fake::no_knobs(), Some(&mut cuts)).expect("a pass runs");
+            assert_eq!(fake::launches().len(), 1, "{op:?}");
+            assert!(reads_of(h, 2 * row_bytes()).is_empty(), "{op:?}: no read of h");
+            assert!(
+                lists.borrow()[0].iter().any(|key| key.0 == ST_HC_COMBINE_RMS),
+                "{op:?}: the list is the list of a plain pass"
+            );
+        }
+        // A clamp of 0 removes the concept, so it acts on each layer.
+        let list = [ControlItem {
+            index: 0,
+            op: ControlOp::Clamp,
+            strength: 0.0,
+            layers: None,
+        }];
+        let shapes = [shape(2, false, &list)];
+        let cuts = Cuts::new(&shapes, TapSet::default()).expect("a list");
+        assert_eq!(cuts.layers().len(), 48);
+        assert!(cuts.fuse_hc_off());
+    }
+
+    #[test]
+    fn fuse_hc_is_off_for_a_pass_with_an_action_and_on_for_a_pass_with_a_tap_or_none() {
+        let on = plain_keys(&[2]);
+        assert!(on.iter().any(|key| key.0 == ST_HC_COMBINE_RMS));
+        // A tap alone keeps the list of the plain pass (checked in full above); a list on one layer builds without it.
+        let mut rig = rig(&[2]);
+        table(&mut rig);
+        let (_, lists) = record_stages(&mut rig, 2);
+        let list = [add(1.0, &[(10, 1.0)])];
+        let shapes = [shape(2, false, &list)];
+        let mut cuts = Cuts::new(&shapes, TapSet::default()).expect("a list");
+        rig.run(FAST, fake::no_knobs(), Some(&mut cuts))
+            .expect("a steered pass runs");
+        let joined: Vec<StageKey> = lists.borrow().iter().flatten().copied().collect();
+        assert!(joined.iter().all(|key| key.0 != ST_HC_COMBINE_RMS));
+        assert!(joined.len() > on.len(), "the unfused list has more stages");
+    }
+
+    #[test]
+    fn a_taps_and_a_list_in_one_pass_read_the_row_after_the_items_of_the_layer() {
+        let mut rig = rig(&[2]);
+        table(&mut rig);
+        let _seen = fill_h(&mut rig, 2);
+        let list = [add(3.0, &[(5, 3.0)])];
+        let shapes = [shape(2, true, &list)];
+        let mut cuts = Cuts::new(&shapes, RESIDUAL).expect("a list and a tap");
+        rig.run(FAST, fake::no_knobs(), Some(&mut cuts))
+            .expect("a steered, tapped pass runs");
+        assert_eq!(fake::launches().len(), 49, "the tap cuts at each layer");
+        let outputs = cuts.into_outputs().expect("the outputs");
+        let bytes = &outputs[0].1;
+        let read = |layer: usize| -> Vec<f32> {
+            bytes[layer * WIDTH * 4..(layer + 1) * WIDTH * 4]
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|b| f32::from_le_bytes(*b))
+                .collect()
+        };
+        let v: Vec<f32> = (0..WIDTH).map(|j| vector(5, j)).collect();
+        let vv = control::sum_squares(&v);
+        let mut want: Vec<f32> = (0..WIDTH).map(|j| pattern(5, 1, j)).collect();
+        apply_row(ControlOp::Add, 3.0, &mut want, &v, vv);
+        assert_eq!(
+            read(5).iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+            want.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+            "layer 5 is read after its item"
+        );
+        // The layers with no item are as the kernel left them.
+        assert_eq!(read(6)[10].to_bits(), pattern(6, 1, 10).to_bits());
+    }
+
+    #[test]
+    fn the_table_is_one_allocation_of_the_declared_bytes_and_a_write_allocates_nothing() {
+        fake::reset();
+        let rig = Rig::new(&[1]);
+        let before = fake::mallocs();
+        // SAFETY: the fake binding.
+        let mut table = unsafe { ControlTable::new(&rig.binding) };
+        assert_eq!(fake::mallocs(), before + 1, "the table is one allocation");
+        assert_eq!(
+            fake::malloc_sizes().last().copied(),
+            Some(15_728_640),
+            "its size is the declared bytes of the term"
+        );
+        assert_eq!(LIMIT.table_bytes(), 15_728_640);
+        let bytes = vector_bytes();
+        // SAFETY: the fake binding.
+        unsafe { table.write(&rig.binding, 3, &bytes).expect("a good vector") };
+        unsafe { table.write(&rig.binding, 3, &bytes).expect("a second write") };
+        assert_eq!(fake::mallocs(), before + 1, "a write makes no allocation");
+        // The write is one copy of the entry's bytes to the entry's address.
+        let writes: Vec<_> = fake::copies()
+            .into_iter()
+            .filter(|c| c.kind == 1 && c.bytes == bytes.len() as u64)
+            .collect();
+        assert_eq!(writes.len(), 2);
+        assert_eq!(writes[0].dst, table.entry(3) as usize);
+        assert_eq!(writes[0].dst - table.entry(0) as usize, 3 * LAYERS * WIDTH * 4);
+        // The table was zero at open: an entry that was never written reads as zeros.
+        // SAFETY: the table holds 8 entries of 48 layers.
+        let zero = unsafe { std::slice::from_raw_parts(table.entry(5), LAYERS * WIDTH) };
+        assert!(zero.iter().all(|x| x.to_bits() == 0));
+    }
+
+    #[test]
+    fn a_write_refuses_a_bad_index_a_bad_size_and_a_value_that_is_not_finite_and_changes_nothing() {
+        let rig = Rig::new(&[1]);
+        fake::reset();
+        // SAFETY: the fake binding.
+        let mut table = unsafe { ControlTable::new(&rig.binding) };
+        let good = vector_bytes();
+        let mut nan = good.clone();
+        nan[4 * 12_345..4 * 12_345 + 4].copy_from_slice(&f32::NAN.to_le_bytes());
+        let mut infinite = good.clone();
+        infinite[0..4].copy_from_slice(&f32::INFINITY.to_le_bytes());
+        let copies = fake::copies().len();
+        for (index, bytes, why) in [
+            (8, good.clone(), "entries"),
+            (u32::MAX, good.clone(), "entries"),
+            (0, good[..good.len() - 4].to_vec(), "send the whole vector"),
+            (0, Vec::new(), "send the whole vector"),
+            (0, nan, "value 12345"),
+            (0, infinite, "value 0"),
+        ] {
+            let error = unsafe { table.write(&rig.binding, index, &bytes) }.expect_err("a bad write");
+            assert!(error.contains(why), "{error}");
+        }
+        assert_eq!(fake::copies().len(), copies, "a refused write copies nothing");
+        assert!(!table.written.iter().any(|w| *w), "a refused write marks no entry");
+        assert!(
+            table.sums.iter().all(|sums| sums.iter().all(|s| *s == 0.0)),
+            "and keeps no sum"
+        );
+    }
+
+    #[test]
+    fn a_list_that_names_an_entry_that_was_never_written_is_refused() {
+        let rig = Rig::new(&[1]);
+        // SAFETY: the fake binding.
+        let mut table = unsafe { ControlTable::new(&rig.binding) };
+        let item = |index| ControlItem {
+            index,
+            op: ControlOp::Add,
+            strength: 1.0,
+            layers: None,
+        };
+        let list = [item(0), item(2)];
+        let lists: [&[ControlItem]; 2] = [&[], &list];
+        let problem = table.unwritten(&lists).expect("no entry was written");
+        assert!(
+            problem.contains("segment 1: control item 0 names table entry 0"),
+            "{problem}"
+        );
+        assert!(problem.contains("no control_write filled it"), "{problem}");
+        unsafe { table.write(&rig.binding, 0, &vector_bytes()).expect("write 0") };
+        let problem = table.unwritten(&lists).expect("entry 2 is still empty");
+        assert!(problem.contains("control item 1 names table entry 2"), "{problem}");
+        unsafe { table.write(&rig.binding, 2, &vector_bytes()).expect("write 2") };
+        assert_eq!(table.unwritten(&lists), None);
+    }
+
+    #[test]
+    fn a_cut_after_a_layer_that_the_plan_does_not_name_is_an_error_and_so_is_a_missing_table() {
+        let mut rig = rig(&[2]);
+        let list = [add(1.0, &[(3, 1.0)])];
+        let shapes = [shape(2, false, &list)];
+        let mut cuts = Cuts::new(&shapes, TapSet::default()).expect("a list");
+        // No table: the step refuses to act on rows it cannot compute.
+        let (h, mixed) = (rig.h(), rig.mixed());
+        let device = CutDevice {
+            binding: &rig.binding,
+            h,
+            mixed,
+        };
+        let error = unsafe { cuts.at_cut(&device, None, 3) }.expect_err("no table");
+        assert!(error.contains("no control table"), "{error}");
+        let mut cuts = Cuts::new(&shapes, TapSet::default()).expect("a list");
+        let error = unsafe { cuts.at_cut(&device, None, 4) }.expect_err("layer 4 is not a cut");
+        assert!(error.contains("cuts after layer 3"), "{error}");
+        let error = unsafe { cuts.finish(&device) }.expect_err("no cut ran");
+        assert!(error.contains("ran 0 of its 1 cuts"), "{error}");
     }
 }

@@ -11,12 +11,12 @@ use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, mpsc};
 
-use nagaya_abi::{Identity, Limits};
+use nagaya_abi::{ControlItem, Identity, Limits};
 
 use crate::arena::{self, Arena};
 use crate::binding::{self, Binding, PassStop, Qwen38Segment};
 use crate::control::{SegmentShape, TapSet};
-use crate::cuts::Cuts;
+use crate::cuts::{ControlTable, Cuts};
 use crate::gguf;
 use crate::host::{self, Host, LaunchKnobs, PassIn};
 use crate::pass::{self, Knobs, Weights};
@@ -147,6 +147,8 @@ pub(crate) struct PassRequest {
     pub want_logits: bool,
     /// True for each segment that asks for its logit row.
     pub wants: Vec<bool>,
+    /// The control list of each segment.
+    pub control: Vec<Vec<ControlItem>>,
     /// The taps that the pass names.
     pub taps: TapSet,
 }
@@ -289,6 +291,12 @@ enum Command {
         part: u32,
         n: u32,
         reply: mpsc::Sender<u64>,
+    },
+    /// Write one vector into an entry of the control table.
+    ControlWrite {
+        index: u32,
+        bytes: Vec<u8>,
+        reply: mpsc::Sender<Result<(), String>>,
     },
     /// Load the weights again after an unload. A loaded engine does nothing.
     Load {
@@ -465,6 +473,12 @@ impl Worker {
     /// The engine's byte count for one part and token count, or `None` when the worker stopped.
     pub fn part_bytes(&self, part: u32, n: u32) -> Option<u64> {
         self.ask(|reply| Command::PartBytes { part, n, reply })
+    }
+
+    /// Write one vector into an entry of the control table.
+    pub fn control_write(&self, index: u32, bytes: Vec<u8>) -> Result<(), String> {
+        self.ask(|reply| Command::ControlWrite { index, bytes, reply })
+            .unwrap_or_else(|| Err("the engine worker stopped; restart the process".to_owned()))
     }
 }
 
@@ -793,6 +807,8 @@ impl ThreadState {
         // open error and the ledger's term is what the engine holds.
         let pass_scratch = state.measure_pass_scratch().map_err(Qwen38Error::new)?;
         spec::scratch_problem(pass_scratch).map_err(Qwen38Error::new)?;
+        // The table of control vectors (milestone 34). It comes after the probe, so the probe measures the same pool.
+        state.make_control_table();
 
         let identity = spec::identity(&paths.shards, &build, fast_qmm, tiles, &digest, &text);
         let limits = spec::limits(arena_bytes);
@@ -977,6 +993,9 @@ impl ThreadState {
             }
             Command::PartBytes { part, n, reply } => {
                 let _ = reply.send(unsafe { (self.binding.part_bytes)(part, n) });
+            }
+            Command::ControlWrite { index, bytes, reply } => {
+                let _ = reply.send(self.control_write(index, &bytes));
             }
             Command::Load { reply } => {
                 let _ = reply.send(self.load_again());
@@ -1457,23 +1476,53 @@ impl ThreadState {
 }
 
 impl ThreadState {
-    /// The cuts of a pass: `None` for a plain pass. The plan refuses a tap with no logit row (`control::plan_cuts`).
+    /// The cuts of a pass: `None` for a plain pass. The pass is refused when a list names an entry that no write
+    /// filled, or when the plan refuses it (`control::plan_cuts`).
     fn plan_cuts(&self, request: &PassRequest) -> Result<Option<Cuts>, String> {
         let count = request.contexts.len();
-        if request.wants.len() != count {
-            return Err("the segment and logit-row counts differ".to_owned());
+        if request.wants.len() != count || request.control.len() != count {
+            return Err("the segment, logit-row and control-list counts differ".to_owned());
         }
-        if !request.taps.any() {
+        let steered = request.control.iter().any(|list| !list.is_empty());
+        if !steered && !request.taps.any() {
             return Ok(None);
         }
         let shapes: Vec<SegmentShape> = (0..count)
             .map(|i| SegmentShape {
                 rows: request.lens[i] as usize,
                 logit_row: request.wants[i],
-                control: &[],
+                control: &request.control[i],
             })
             .collect();
-        Cuts::new(&shapes, request.taps).map(Some)
+        let cuts = Cuts::new(&shapes, request.taps)?;
+        if steered {
+            let table = self.host.as_ref().and_then(|host| host.control.as_ref());
+            let Some(table) = table else {
+                return Err("the pass has control items, but the engine has no control table".to_owned());
+            };
+            let lists: Vec<&[ControlItem]> = request.control.iter().map(Vec::as_slice).collect();
+            if let Some(problem) = table.unwritten(&lists) {
+                return Err(problem);
+            }
+        }
+        Ok(Some(cuts))
+    }
+
+    /// Make the control table on the device. A stub has no pass host, so it gets no table.
+    fn make_control_table(&mut self) {
+        if let Some(host) = self.host.as_mut() {
+            // SAFETY: the binding is the linked engine's, and this runs on the worker thread.
+            host.control = Some(unsafe { ControlTable::new(&self.binding) });
+        }
+    }
+
+    /// Write one vector into an entry of the control table. It makes no allocation.
+    fn control_write(&mut self, index: u32, bytes: &[u8]) -> Result<(), String> {
+        let Some(table) = self.host.as_mut().and_then(|host| host.control.as_mut()) else {
+            return Err("the engine has no control table".to_owned());
+        };
+        // SAFETY: the binding is the linked engine's, and this runs on the worker thread.
+        unsafe { table.write(&self.binding, index, bytes) }
     }
 
     /// The knobs of the pass build from the environment. A bad value refuses the pass.
@@ -1683,48 +1732,86 @@ mod tests {
         }
     }
 
-    /// A request for one segment of 2 tokens at context 1, with the taps `taps`.
-    fn tapped_request(taps: crate::control::TapSet, wants: bool) -> super::PassRequest {
+    /// A request for one segment of `lens` tokens at context 1, with `list` as its control list.
+    fn steered_request(list: Vec<nagaya_abi::ControlItem>, taps: crate::control::TapSet) -> super::PassRequest {
         super::PassRequest {
             contexts: vec![1],
             lens: vec![2],
             tokens: vec![10, 11],
-            want_logits: wants,
-            wants: vec![wants],
+            want_logits: true,
+            wants: vec![true],
+            control: vec![list],
             taps,
         }
     }
 
+    fn add_item(index: u32) -> nagaya_abi::ControlItem {
+        nagaya_abi::ControlItem {
+            index,
+            op: nagaya_abi::ControlOp::Add,
+            strength: 1.0,
+            layers: None,
+        }
+    }
+
+    fn vector_of_ones() -> Vec<u8> {
+        (0..crate::control::LAYERS * crate::control::WIDTH)
+            .flat_map(|_| 1.0f32.to_le_bytes())
+            .collect()
+    }
+
     #[test]
-    fn a_plain_request_plans_no_cut_and_a_request_with_a_tap_does() {
+    fn a_plain_request_plans_no_cut_and_a_request_with_a_list_needs_a_written_entry() {
         let context = StubContext::new(false);
-        let state = stub_state(&context);
+        let mut state = stub_state(&context);
         let none = crate::control::TapSet::default();
-        assert!(state.plan_cuts(&tapped_request(none, true)).unwrap().is_none());
-        let residual = crate::control::TapSet {
+        // A plain pass makes no `Cuts`, with or without a table.
+        assert!(state.plan_cuts(&steered_request(Vec::new(), none)).unwrap().is_none());
+        // A list with no table is refused, and so is a write.
+        let error = state
+            .plan_cuts(&steered_request(vec![add_item(0)], none))
+            .err()
+            .expect("no table");
+        assert!(error.contains("no control table"), "{error}");
+        assert!(
+            state
+                .control_write(0, &vector_of_ones())
+                .unwrap_err()
+                .contains("no control table")
+        );
+        // With a table on the fake device, an entry that no write filled is refused by its segment and item.
+        state.binding = crate::fake::binding();
+        // SAFETY: the fake binding makes host memory.
+        state.host = Some(unsafe { crate::host::Host::new(&state.binding) });
+        state.make_control_table();
+        let error = state
+            .plan_cuts(&steered_request(vec![add_item(0)], none))
+            .err()
+            .expect("an empty entry");
+        assert!(
+            error.contains("segment 0: control item 0 names table entry 0"),
+            "{error}"
+        );
+        assert!(error.contains("no control_write filled it"), "{error}");
+        state.control_write(0, &vector_of_ones()).expect("a good write");
+        let cuts = state
+            .plan_cuts(&steered_request(vec![add_item(0)], none))
+            .expect("entry 0 is filled");
+        let cuts = cuts.expect("a list makes cuts");
+        assert_eq!(cuts.layers().len(), 48, "an add on every layer cuts at every layer");
+        assert!(cuts.fuse_hc_off());
+        // A tap alone makes cuts too, and a tap keeps the fused combine.
+        let tap = crate::control::TapSet {
             residual: true,
             fold: false,
         };
         let cuts = state
-            .plan_cuts(&tapped_request(residual, true))
+            .plan_cuts(&steered_request(Vec::new(), tap))
             .unwrap()
             .expect("a tap makes cuts");
-        assert_eq!(cuts.layers().len(), 48, "the tap residual cuts at each layer");
-        assert!(!cuts.fuse_hc_off(), "a tap keeps the fused combine");
-        // The tap fold makes no cut: it reads after the last launch.
-        let fold = crate::control::TapSet {
-            residual: false,
-            fold: true,
-        };
-        let cuts = state.plan_cuts(&tapped_request(fold, true)).unwrap().expect("a plan");
-        assert!(cuts.layers().is_empty());
-        // A tap with no logit row is refused, and so are counts that differ.
-        let error = state
-            .plan_cuts(&tapped_request(residual, false))
-            .err()
-            .expect("no logit row");
-        assert!(error.contains("no segment asks for a logit row"), "{error}");
-        let mut bad = tapped_request(residual, true);
+        assert!(!cuts.fuse_hc_off());
+        // The counts of the request must agree.
+        let mut bad = steered_request(Vec::new(), tap);
         bad.wants = vec![true, false];
         assert!(
             state
@@ -1733,6 +1820,36 @@ mod tests {
                 .expect("counts differ")
                 .contains("counts differ")
         );
+    }
+
+    #[test]
+    fn a_worker_write_that_the_table_refuses_changes_nothing() {
+        let context = StubContext::new(false);
+        let mut state = stub_state(&context);
+        state.binding = crate::fake::binding();
+        // SAFETY: the fake binding makes host memory.
+        state.host = Some(unsafe { crate::host::Host::new(&state.binding) });
+        state.make_control_table();
+        crate::fake::reset();
+        let good = vector_of_ones();
+        let mut not_finite = good.clone();
+        not_finite[8..12].copy_from_slice(&f32::NEG_INFINITY.to_le_bytes());
+        assert!(state.control_write(8, &good).unwrap_err().contains("entries"));
+        assert!(
+            state
+                .control_write(0, &good[..100])
+                .unwrap_err()
+                .contains("send the whole vector")
+        );
+        assert!(state.control_write(0, &not_finite).unwrap_err().contains("value 2"));
+        assert!(crate::fake::copies().is_empty(), "a refused write copies nothing");
+        let none = crate::control::TapSet::default();
+        assert!(
+            state.plan_cuts(&steered_request(vec![add_item(0)], none)).is_err(),
+            "no entry was filled"
+        );
+        state.control_write(0, &good).unwrap();
+        assert_eq!(crate::fake::copies().len(), 1, "a good write is one copy");
     }
 
     #[test]
