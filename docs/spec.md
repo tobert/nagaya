@@ -1871,6 +1871,39 @@ Today the engine only runs the canary and reports the hashes.
 Reason: this content covers a short prefill, a long prefill in two passes and a joined decode, in about 3 s. The card
 gates keep the cases that it does not cover.
 
+**Proposed** (Claude Fable 5.2, 2026-11-12): the record of a canary is a table in the crate of the Qwen3.8 engine.
+
+- The key of an entry is the checkpoint digest, `fast_qmm` and `tiles`. The value is the canary hash.
+- The identity takes `canary_hash` from the table. Thus a description gives it with no GPU and no load.
+- A set of key values with no entry does not open. The open error names the three key values.
+
+Reason: the council takes the digest and the root recipe of an engine on demand from its description, before any
+load (11.1). A canary hash that only an open measures would come too late for that.
+
+**Proposed** (Claude Fable 5.2, 2026-11-12): a mismatch of the canary refuses the open, with no tolerance.
+
+- The engine runs the canary at each load of its weights, after the scratch probe. It compares the canary hash with
+  the table.
+- A build with other bits does not open until a commit records its hash. The commit says that the bits moved. Then
+  the engine has a new digest.
+- At start, a mismatch makes the nagaya exit with code 3. A mismatch at a later load stops the process today, as
+  each failed open of a swap does.
+- The message of the error gives the table entry, the measured canary hash and the 19 measured row hashes.
+- A canary pass that fails for another reason, such as a stop on the spin bound, is an ordinary open error. It is
+  not a mismatch.
+- Not built: the fatal state and the run after a pass failure of 8.2.
+
+Reason: a build that gives other bits must not serve under the old digest. The owner said that a load is rare, so a
+check at each load can cost its time.
+
+**Proposed** (Claude Fable 5.2, 2026-11-12): a checkpoint that the table does not hold.
+
+- A person with another checkpoint gets an open error that gives the measured canary hash.
+- The person adds one line to the table, and the next open passes.
+- A key of the profile that gives the hash is a later choice of the owner.
+
+Reason: the table is the simplest record that needs no new file. A stranger needs one line for each checkpoint.
+
 **8.2 Pass failures.** A pass returns ok, poison (D6), or timeout. The nagaya treats outputs that are not finite as
 poison. After a poison or a timeout, the nagaya does these steps:
 
@@ -5070,6 +5103,14 @@ different most of the time."
 - The canary covers the shapes of the oracle fixture (8.3): a short prompt, a long prompt and a greedy decode. A
   staged engine runs each stage, and a ring part wraps.
 - Order: build the canary (8.1) first. Until it runs at each start, `build` stays in the digest, as now.
+
+**Proposed** (Claude Fable 5.2, 2026-11-12): not built yet, when the canary of the Qwen3.8 engine is.
+
+- The expected identity in the index of the store, and the compare of it at start.
+- The check of `pin_identity` of the profile. The profile parses the key, and no code compares it.
+- The `build` of an entry. An entry does not yet record the build that made it.
+
+Reason: the canary needs none of the three. Each one is a larger change, so it is a later step.
 
 Reason: the bits decide if a build changed the numbers, not the facts of the build. A canary covers only the paths
 that it runs, so its inputs must run each path that the limits allow.
