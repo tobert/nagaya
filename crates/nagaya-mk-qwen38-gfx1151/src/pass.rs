@@ -1385,15 +1385,22 @@ mod tests {
         built.stages.iter().filter(|stage| stage.op == op).count()
     }
 
-    /// The knobs of each path that the engine runs: the fast path, and the exact path (`QWEN38_FAST_QMM=0`).
-    fn paths() -> [(&'static str, Knobs); 2] {
+    /// The knobs of each build that the engine runs: the fast path, the exact path (`QWEN38_FAST_QMM=0`), and the
+    /// builds of a pass with a control action, which have the fused combine off.
+    fn paths() -> [(&'static str, Knobs); 4] {
+        let exact = Knobs {
+            fast_qmm: false,
+            ..FAST
+        };
         [
             ("fast", FAST),
+            ("exact", exact),
+            ("fast, unfused combine", Knobs { fuse_hc: false, ..FAST }),
             (
-                "exact",
+                "exact, unfused combine",
                 Knobs {
-                    fast_qmm: false,
-                    ..FAST
+                    fuse_hc: false,
+                    ..exact
                 },
             ),
         ]
