@@ -1875,7 +1875,7 @@ gates keep the cases that it does not cover.
 
 - The key of an entry is the checkpoint digest, `fast_qmm` and `tiles`. The value is the canary hash.
 - The identity takes `canary_hash` from the table. Thus a description gives it with no GPU and no load.
-- A set of key values with no entry does not open. The open error names the three key values.
+- A set of key values with no entry does not open. The error names the three key values and what to do.
 
 Reason: the council takes the digest and the root recipe of an engine on demand from its description, before any
 load (11.1). A canary hash that only an open measures would come too late for that.
@@ -1898,9 +1898,14 @@ check at each load can cost its time.
 
 **Proposed** (Claude Fable 5.2, 2026-11-12): a checkpoint that the table does not hold.
 
-- A person with another checkpoint gets an open error that gives the measured canary hash.
-- The person adds one line to the table, and the next open passes.
-- A key of the profile that gives the hash is a later choice of the owner.
+- A set of key values with no entry is an error in the description and in the open. The start refuses with exit 3, as
+  each other error of a description does.
+- The service cannot measure the hash then, because it does not start. The crate gives the open a second form that runs
+  the canary, reports it and compares nothing. The test `hip_canary` uses that form and prints the measured hash.
+- The person adds one line to the table, in a commit that records the bits of that checkpoint.
+- The process always uses the checked form. A card test of a deploy opens the engine in the checked form too.
+- Another choice for later: the start goes on without that engine, and its first load fails with the measured hash.
+- A key of the profile that gives the hash is also a later choice of the owner.
 
 Reason: the table is the simplest record that needs no new file. A stranger needs one line for each checkpoint.
 
