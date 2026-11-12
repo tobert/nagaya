@@ -243,11 +243,26 @@ fn refused(message: String) -> PassError {
 /// Build the engine call for one pass, or say why the binding refuses it.
 ///
 /// Every check here runs before the binding calls the engine. Thus a refused pass changes no context.
-fn plan_pass(segments: &[Segment], contexts: &[SegmentContext]) -> Result<PassPlan, PassError> {
+///
+/// This build has no tap and no control table. The ABI says that an engine without `control` refuses a segment with a
+/// control list, so the refusal is here and not in the process.
+fn plan_pass(segments: &[Segment], taps: &[Tap], contexts: &[SegmentContext]) -> Result<PassPlan, PassError> {
     assert_eq!(segments.len(), contexts.len(), "every segment needs its context");
+    if let Some(tap) = taps.first() {
+        return Err(refused(format!(
+            "the pass names the tap `{}`, but this build gives no tap yet; the engine will give the taps `residual` and `fold`: send the pass with no tap",
+            tap.name
+        )));
+    }
     let mut plan = PassPlan::default();
     for (index, segment) in segments.iter().enumerate() {
         let context = contexts[index];
+        if !segment.control.is_empty() {
+            return Err(refused(format!(
+                "segment {index} has {} control items, but this build of the engine has no control table yet; send the segment with no control list",
+                segment.control.len()
+            )));
+        }
         let segment_tokens = match &segment.inputs {
             SegmentInputs::Tokens(tokens) => tokens,
             _ => {
@@ -327,9 +342,6 @@ impl Engine for Qwen38Engine {
     }
 
     fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
-        if !taps.is_empty() {
-            return Err(self.failed("the Qwen3.8 engine gives no tap in this binding, because a tap needs the unfused path; send the pass with no tap".to_owned()));
-        }
         if segments.is_empty() {
             return Err(self.failed("a pass needs at least one segment".to_owned()));
         }
@@ -351,7 +363,7 @@ impl Engine for Qwen38Engine {
             };
             contexts.push(SegmentContext { id, n });
         }
-        let plan = match plan_pass(segments, &contexts) {
+        let plan = match plan_pass(segments, taps, &contexts) {
             Ok(plan) => plan,
             Err(error) => return Err(self.failed(error.message)),
         };
@@ -586,7 +598,9 @@ impl Seal for Qwen38Engine {
 
 #[cfg(test)]
 mod tests {
-    use nagaya_abi::{OutputsWanted, PassErrorKind, PassStatus, Segment, SegmentInputs, State};
+    use nagaya_abi::{
+        ControlItem, ControlOp, OutputsWanted, PassErrorKind, PassStatus, Segment, SegmentInputs, State, Tap,
+    };
 
     use super::{SegmentContext, logit_outputs, plan_pass, write_from};
     use crate::spec;
@@ -617,29 +631,95 @@ mod tests {
         let contexts = [SegmentContext { id: 7, n: 3 }];
 
         let wrong = token_segment(&[11, 12], 4);
-        let error = plan_pass(std::slice::from_ref(&wrong), &contexts).expect_err("position 4 is not 3");
+        let error = plan_pass(std::slice::from_ref(&wrong), &[], &contexts).expect_err("position 4 is not 3");
         assert_eq!(error.kind, PassErrorKind::Refused, "a refused pass did not run");
         assert!(error.message.contains("appends at 3"), "{}", error.message);
 
         // 248_320 is one past the last token id.
         let past = token_segment(&[spec::VOCAB], 3);
-        let error = plan_pass(std::slice::from_ref(&past), &contexts).expect_err("the token is past the vocabulary");
+        let error =
+            plan_pass(std::slice::from_ref(&past), &[], &contexts).expect_err("the token is past the vocabulary");
         assert_eq!(error.kind, PassErrorKind::Refused, "a refused pass did not run");
         assert!(error.message.contains("past the vocabulary"), "{}", error.message);
 
         // The engine takes token ids, not rows.
         let mut rows = token_segment(&[11], 3);
         rows.inputs = SegmentInputs::Rows(vec![0; 4]);
-        let error = plan_pass(std::slice::from_ref(&rows), &contexts).expect_err("rows are not token ids");
+        let error = plan_pass(std::slice::from_ref(&rows), &[], &contexts).expect_err("rows are not token ids");
         assert_eq!(error.kind, PassErrorKind::Refused, "a refused pass did not run");
         assert!(error.message.contains("not rows"), "{}", error.message);
+    }
+
+    #[test]
+    fn a_segment_with_a_control_list_is_refused_before_the_pass() {
+        let contexts = [SegmentContext { id: 7, n: 3 }];
+        let mut segment = token_segment(&[11], 3);
+        segment.control = vec![ControlItem {
+            index: 0,
+            op: ControlOp::Add,
+            strength: 1.0,
+            layers: None,
+        }];
+        let error =
+            plan_pass(std::slice::from_ref(&segment), &[], &contexts).expect_err("this build has no control table");
+        assert_eq!(error.kind, PassErrorKind::Refused, "a refused pass did not run");
+        // The message says what failed, why, and what the reader can do.
+        assert!(
+            error.message.contains("segment 0 has 1 control items"),
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains("has no control table yet"), "{}", error.message);
+        assert!(
+            error.message.contains("send the segment with no control list"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn the_control_list_of_a_later_segment_is_refused_too() {
+        let contexts = [SegmentContext { id: 7, n: 3 }, SegmentContext { id: 8, n: 0 }];
+        let plain = token_segment(&[11], 3);
+        let mut steered = token_segment(&[12], 0);
+        steered.control = vec![ControlItem {
+            index: 3,
+            op: ControlOp::Clamp,
+            strength: 0.0,
+            layers: Some(vec![(8, 0.0)]),
+        }];
+        let error = plan_pass(&[plain, steered], &[], &contexts).expect_err("segment 1 has a list");
+        assert!(
+            error.message.contains("segment 1 has 1 control items"),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn a_pass_that_names_a_tap_is_refused_and_the_message_names_the_taps_of_the_engine() {
+        let contexts = [SegmentContext { id: 7, n: 3 }];
+        let segments = [token_segment(&[11], 3)];
+        for name in ["residual", "fold", "lens"] {
+            let taps = [Tap { name: name.to_owned() }];
+            let error = plan_pass(&segments, &taps, &contexts).expect_err("this build has no tap");
+            assert_eq!(error.kind, PassErrorKind::Refused, "a refused pass did not run");
+            assert!(
+                error.message.contains(&format!("names the tap `{name}`")),
+                "{}",
+                error.message
+            );
+            assert!(error.message.contains("`residual` and `fold`"), "{}", error.message);
+            assert!(error.message.contains("this build gives no tap"), "{}", error.message);
+            assert!(error.message.contains("send the pass with no tap"), "{}", error.message);
+        }
     }
 
     #[test]
     fn a_pass_that_the_engine_can_run_plans_its_call() {
         let contexts = [SegmentContext { id: 7, n: 3 }];
         let segments = [token_segment(&[11, 12], 3)];
-        let plan = plan_pass(&segments, &contexts).expect("the engine can run this pass");
+        let plan = plan_pass(&segments, &[], &contexts).expect("the engine can run this pass");
         assert_eq!(plan.contexts, [7]);
         assert_eq!(plan.lens, [2]);
         assert_eq!(plan.tokens, [11, 12]);
