@@ -371,7 +371,7 @@ Reason: the fake engine must serve a family with a vocabulary, and the output ro
 | open / attach | `qwen38_engine_open(watchdog_deadline_s)`; no attach | no device argument: the HIP device is the calling thread's current one, so the wrapper sets it on the group's thread; the Rust reader parses the three GGUF shards, and the Rust host fills the arena (Proposed notes below); the C++ engine is the runtime layer only: the launches under the control block and the watchdog |
 | plan | none yet | the wrapper computes the terms from the config and mk's fixed shapes |
 | arena | `arena::plan` and `arena::create` in Rust (`arena.rs`) | one sealed memfd in mk's `arena.h` layout; no check of another process's arena yet: milestone 15 step 6 removed the C++ check, which had no call |
-| identity | built in the Python service | moves into the engine; must include `fused` and `MK_FAST_QMM` |
+| identity | built in the Python service | moves into the engine; must include `fused` and `QWEN38_FAST_QMM` |
 | contexts | `context::ctx_new`, `ctx_free`, `ctx_n` in Rust (`context.rs`) | over the runtime calls `hip_rt_malloc`, `hip_rt_free` and `hip_rt_memset` of `rt.cpp`; no fork and no copy |
 | parts | `context::state_read`, `state_write`, `cells_write`, `set_n` in Rust | over `hip_rt_memcpy` and `hip_rt_memcpy_2d`; after `set_n` the worker pools the index keys (`host.rs` `pool_context`, through `qwen38_launch_each`). Parts 0-2 and 5 fixed, 3-4 cells; `idx_pooled` derived. `cells_read` takes only rows 0 to n, the whole part: snapshots are stored whole (about 316 MB at n = 3584, ontology "Part") |
 | slots | `ctx_n`, `ctx_free` then `ctx_new` | `slot_high` is the token count; `slot_clear` makes a new context of the same capacity |
@@ -479,11 +479,10 @@ the ABI.
   - `open` refuses a pool that would leave less than the 12 GiB floor. Thus at most three handles are open at once.
   - A gate of the conformance suite holds at most three handles.
 - **`canary_hash` is empty.** This binding does not run mk's canary. The process does not run it yet (spec 8.1).
-- **The identity carries `MK_FAST_QMM`, `MK_TILES` and `fused`.** They are `Approx`, `ReferenceDefining` and
-  `Approx`. The worker reads `MK_FAST_QMM` at each pass build (`worker.rs` `fast_qmm`). `MK_TILES` chooses the tiled
-  or the GGUF layout at load (`worker.rs` `tiles`, `arena.rs` `plan`). The binding has not measured whether the two
-  give equal bits. A change after
-  open refuses the pass, as for `MK_FAST_QMM`.
+- **The identity carries `QWEN38_FAST_QMM`, `QWEN38_TILES` and `fused`.** They are `Approx`, `ReferenceDefining` and
+  `Approx`. The worker reads `QWEN38_FAST_QMM` at each pass build (`worker.rs` `fast_qmm`). `QWEN38_TILES` chooses the
+  tiled or the GGUF layout at load (`worker.rs` `tiles`, `arena.rs` `plan`). The binding has not measured whether
+  the two give equal bits. A change after open refuses the pass, as for `QWEN38_FAST_QMM`.
 
 Reason for all: the code must not guess.
 

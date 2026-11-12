@@ -535,12 +535,12 @@ pub(crate) fn identity(
         plan_table: "none".to_owned(),
         bit_settings: vec![
             BitSetting {
-                name: "MK_FAST_QMM".to_owned(),
+                name: "QWEN38_FAST_QMM".to_owned(),
                 value: u8::from(fast_qmm).to_string(),
                 class: BitClass::Approx,
             },
             BitSetting {
-                name: "MK_TILES".to_owned(),
+                name: "QWEN38_TILES".to_owned(),
                 value: u8::from(tiles).to_string(),
                 // The tiled and the GGUF layouts use different kernels. The binding has not measured whether they
                 // give equal bits, so each layout defines its own reference.
@@ -910,8 +910,8 @@ mod tests {
         assert_eq!(on.numbers.get("tiles").map(String::as_str), Some("1"));
         assert_eq!(off.numbers.get("tiles").map(String::as_str), Some("0"));
         assert_ne!(on, off);
-        assert!(on.bit_settings.iter().any(|setting| setting.name == "MK_TILES"));
-        assert!(off.bit_settings.iter().any(|setting| setting.name == "MK_TILES"));
+        assert!(on.bit_settings.iter().any(|setting| setting.name == "QWEN38_TILES"));
+        assert!(off.bit_settings.iter().any(|setting| setting.name == "QWEN38_TILES"));
     }
 
     #[test]

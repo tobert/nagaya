@@ -1866,13 +1866,13 @@ from mk's archive, with mk's venv (`AGENTS.md`, "Checks").
 
 The fixture holds five prompts of 5 to 596 tokens, with the top 64 logits and the logsumexp of the last position.
 The bench `oracle` in the mk crate compares mk with it.
-mk's exact path (`MK_FAST_QMM=0`) is the gate. Its largest gap was a logit difference of 1.7e-5 on 2026-10-20.
+mk's exact path (`QWEN38_FAST_QMM=0`) is the gate. Its largest gap was a logit difference of 1.7e-5 on 2026-10-20.
 Decided 2026-10-20 (reading).
 
 - On the exact path, the argmax agrees when the reference's top two differ by more than 0.25. The reference's top 8
   are in the engine's top 16. The largest logit difference is at most 1e-3, the KL at most 1e-8, and the logsumexp
   difference at most 1e-3.
-- The fast path (`MK_FAST_QMM` unset) is an approximation (12.1). It keeps only the argmax and top-8 rules, and the
+- The fast path (`QWEN38_FAST_QMM` unset) is an approximation (12.1). It keeps only the argmax and top-8 rules, and the
   bench reports its other numbers. At 249 tokens its largest logit difference was 1.03.
 
 The fixture covers prompts of up to 596 tokens. Past about 640 tokens, the gap between mk and the reference is not
@@ -5161,7 +5161,7 @@ The inventories found these items. We correct each one when its code moves. We d
    profile for another host").
 6. The template engine differs from jinja2 on integers past 2^127 and on a float key that is not finite (milestone
    11.5 text step). The chat template uses none of them. Which ones do we match?
-7. How far does mk's fast path (`MK_FAST_QMM` unset) move council decisions? At 249 tokens it moved logits by up to
+7. How far does mk's fast path (`QWEN38_FAST_QMM` unset) move council decisions? At 249 tokens it moved logits by up to
    1.03, and the argmax and the top 8 held (8.3). Amy, 2026-10-20: "we'll measure later".
 8. What causes the oracle gap past about 640 tokens, and how large is it at 2,000 tokens and more? The contexts
    hold 4,096 and 32,768 tokens now, and a long prompt takes several passes. On the exact path, the findings are
@@ -5304,7 +5304,7 @@ before the last one are from 2026-10-20 night.
 - The pool is 112 GiB, the store's host budget is 2 GiB, and its NVMe budget is 50 GiB. The host budget was 16 GiB
   until "Two engines on gfx1151host" (Decided 2026-11-02).
 - `interval_copies` is 0, so the scheduler makes no interval copy.
-- `MK_FAST_QMM` stays unset. Milestone 15 removed the library pin.
+- `QWEN38_FAST_QMM` stays unset. Milestone 15 removed the library pin.
 - The profile is copied into the store directory once, and it is not a link.
 - The release binary is built with `--features hip`.
 - `weights_bytes` is the size of mk's weight arena, and a wrong size exits 3.

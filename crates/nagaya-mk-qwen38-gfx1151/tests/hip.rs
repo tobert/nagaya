@@ -503,16 +503,16 @@ fn a_tile_change_after_open_refuses_the_pass() {
     let state = State::Slot(0);
     let tiles = engine.identity().numbers.get("tiles").cloned().unwrap_or_default();
     let other = if tiles == "0" { "1" } else { "0" };
-    let original = std::env::var_os("MK_TILES");
+    let original = std::env::var_os("QWEN38_TILES");
     // SAFETY: the hip tests run with --test-threads=1, and this test restores the value before it ends.
-    unsafe { std::env::set_var("MK_TILES", other) };
+    unsafe { std::env::set_var("QWEN38_TILES", other) };
     let result = engine.pass(std::slice::from_ref(&segment(state, &[1], 0)), &[]);
     match original {
-        Some(value) => unsafe { std::env::set_var("MK_TILES", value) },
-        None => unsafe { std::env::remove_var("MK_TILES") },
+        Some(value) => unsafe { std::env::set_var("QWEN38_TILES", value) },
+        None => unsafe { std::env::remove_var("QWEN38_TILES") },
     }
     let error = result.expect_err("the pass must refuse a tile change");
-    assert!(error.message.contains("MK_TILES changed"), "{}", error.message);
+    assert!(error.message.contains("QWEN38_TILES changed"), "{}", error.message);
 }
 
 #[test]

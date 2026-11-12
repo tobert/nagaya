@@ -43,7 +43,7 @@ using namespace qwen38::model;
 
 // The whole MoE block for tests: x [T, 2560] -> out [T, 2560], plus the router's choices.
 // Weights as stored in the GGUF (raw bytes of the full 512-expert tensors). fast = 1: the quantized matmuls
-// (experts and the shared expert) on f16 WMMA, as the engine builds them with MK_FAST_QMM=1.
+// (experts and the shared expert) on f16 WMMA, as the engine builds them with QWEN38_FAST_QMM=1.
 extern "C" int qwen38_moe(const float *x, uint64_t x_bytes, uint32_t t, const float *router, uint64_t router_bytes,
                       const float *shexp_gate, uint64_t shexp_gate_bytes, uint32_t type_gate, const void *gate,
                       uint64_t gate_bytes, uint32_t type_up, const void *up, uint64_t up_bytes, uint32_t type_down,

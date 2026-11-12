@@ -293,7 +293,7 @@ then.
 
 The unit leaves one mk setting unset. Set it with a drop-in file: `systemctl --user edit nagaya.service`.
 
-- `MK_FAST_QMM=0` selects the exact path. Unset means the fast path, an approximation. The identity carries the
+- `QWEN38_FAST_QMM=0` selects the exact path. Unset means the fast path, an approximation. The identity carries the
   setting (`docs/engine-abi.md`). A change of it changes the identity.
 
 ## Arenas through a restart
@@ -314,7 +314,7 @@ These rules fill gaps in the spec. Each one is the simplest choice that works.
 - The pool is 112 GiB, the store's host budget is 2 GiB and its NVMe budget is 50 GiB (see "The memory budgets").
 - `interval_copies` is 0 (spec 6.13), so the scheduler makes no interval copy. A larger value turns the copies on.
   A change of it restarts the process (spec 2.3).
-- `MK_FAST_QMM` stays unset. The library pin was unset too. Milestone 15 removed it, because the binary links its
+- `QWEN38_FAST_QMM` stays unset. The library pin was unset too. Milestone 15 removed it, because the binary links its
   engine (Amy, 2026-10-22).
 - The profile is copied into the store directory once. It is not a link.
 - The release binary is built with `--features hip`. The plain build has no engine and exits 3.

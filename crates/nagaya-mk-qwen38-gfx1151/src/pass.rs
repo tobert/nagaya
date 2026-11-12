@@ -451,7 +451,7 @@ impl Builder<'_> {
                 fuse_hc(&mut s, &mut ends);
             }
         }
-        // The fold lives in the f16 matmul's epilogue (qmmh.h); the exact engine (MK_FAST_QMM=0) has only kStQmm
+        // The fold lives in the f16 matmul's epilogue (qmmh.h); the exact engine (QWEN38_FAST_QMM=0) has only kStQmm
         // stages, so its passes keep their hc_mix stages.
         if self.knobs.fuse && self.knobs.fuse_hcmix && self.knobs.fast_qmm {
             fuse_hc_mix(&mut s, &mut ends);

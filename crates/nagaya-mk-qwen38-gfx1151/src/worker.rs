@@ -539,40 +539,40 @@ fn load_weights(
     Ok((model, ple, arena, weights))
 }
 
-/// Read `MK_FAST_QMM` as mk reads it: unset or 1 is fast, 0 is exact, and any other value stops mk.
+/// Read `QWEN38_FAST_QMM` as mk reads it: unset or 1 is fast, 0 is exact, and any other value stops mk.
 fn fast_qmm() -> Result<bool, Qwen38Error> {
-    match std::env::var("MK_FAST_QMM") {
+    match std::env::var("QWEN38_FAST_QMM") {
         Ok(value) => fast_qmm_from(Some(&value)),
         Err(std::env::VarError::NotPresent) => fast_qmm_from(None),
-        Err(error) => Err(Qwen38Error::new(format!("MK_FAST_QMM: {error}"))),
+        Err(error) => Err(Qwen38Error::new(format!("QWEN38_FAST_QMM: {error}"))),
     }
 }
 
-/// Read `MK_TILES` as mk reads it: unset or 1 is tiled, 0 is the GGUF layout, and any other value stops mk.
+/// Read `QWEN38_TILES` as mk reads it: unset or 1 is tiled, 0 is the GGUF layout, and any other value stops mk.
 fn tiles() -> Result<bool, Qwen38Error> {
-    match std::env::var("MK_TILES") {
+    match std::env::var("QWEN38_TILES") {
         Ok(value) => tiles_from(Some(&value)),
         Err(std::env::VarError::NotPresent) => tiles_from(None),
-        Err(error) => Err(Qwen38Error::new(format!("MK_TILES: {error}"))),
+        Err(error) => Err(Qwen38Error::new(format!("QWEN38_TILES: {error}"))),
     }
 }
 
-/// The value of one `MK_TILES` string.
+/// The value of one `QWEN38_TILES` string.
 fn tiles_from(value: Option<&str>) -> Result<bool, Qwen38Error> {
     match value {
         Some("1") => Ok(true),
         Some("0") => Ok(false),
-        Some(other) => Err(Qwen38Error::new(format!("MK_TILES={other}: want 0 or 1"))),
+        Some(other) => Err(Qwen38Error::new(format!("QWEN38_TILES={other}: want 0 or 1"))),
         None => Ok(true),
     }
 }
 
-/// The value of one `MK_FAST_QMM` string.
+/// The value of one `QWEN38_FAST_QMM` string.
 fn fast_qmm_from(value: Option<&str>) -> Result<bool, Qwen38Error> {
     match value {
         Some("1") => Ok(true),
         Some("0") => Ok(false),
-        Some(other) => Err(Qwen38Error::new(format!("MK_FAST_QMM={other}: want 0 or 1"))),
+        Some(other) => Err(Qwen38Error::new(format!("QWEN38_FAST_QMM={other}: want 0 or 1"))),
         None => Ok(true),
     }
 }
@@ -1318,26 +1318,26 @@ impl ThreadState {
 
     fn pass(&mut self, request: PassRequest) -> Result<PassReply, PassProblem> {
         let problem = |message: String| PassProblem { message, poison: false };
-        // mk reads MK_FAST_QMM at each pass build. A change after open would change the bits, and the identity
+        // mk reads QWEN38_FAST_QMM at each pass build. A change after open would change the bits, and the identity
         // would be wrong, so refuse the pass.
         match fast_qmm() {
             Ok(value) if value == self.fast_qmm => {}
             Ok(value) => {
                 return Err(problem(format!(
-                    "MK_FAST_QMM changed from {} to {} after the engine opened",
+                    "QWEN38_FAST_QMM changed from {} to {} after the engine opened",
                     u8::from(self.fast_qmm),
                     u8::from(value)
                 )));
             }
             Err(error) => return Err(problem(error.to_string())),
         }
-        // mk reads MK_TILES once, at load. A change after open makes the environment disagree with the identity,
-        // so refuse the pass, as for MK_FAST_QMM.
+        // mk reads QWEN38_TILES once, at load. A change after open makes the environment disagree with the identity,
+        // so refuse the pass, as for QWEN38_FAST_QMM.
         match tiles() {
             Ok(value) if value == self.tiles => {}
             Ok(value) => {
                 return Err(problem(format!(
-                    "MK_TILES changed from {} to {} after the engine opened",
+                    "QWEN38_TILES changed from {} to {} after the engine opened",
                     u8::from(self.tiles),
                     u8::from(value)
                 )));

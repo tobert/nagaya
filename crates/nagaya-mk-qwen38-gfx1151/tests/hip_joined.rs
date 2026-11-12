@@ -4,7 +4,7 @@
 //! mk declares `segments_exact` (engine-abi D11). The conformance gate `segments_exact_bits` checks it at position 0
 //! with segments of 1 and 2 tokens. This gate checks the decode rows that a joined quantum of the process makes: one
 //! token for each context, after a prefill of thousands of tokens, past the indexer budget of the attention layers.
-//! Run it with `MK_FAST_QMM` unset and with `MK_FAST_QMM=0`, and with `--test-threads=1`.
+//! Run it with `QWEN38_FAST_QMM` unset and with `QWEN38_FAST_QMM=0`, and with `--test-threads=1`.
 
 #![cfg(feature = "hip")]
 

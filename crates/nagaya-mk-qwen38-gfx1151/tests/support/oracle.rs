@@ -18,7 +18,7 @@ pub const MARGIN: f64 = 0.25;
 /// The reference top-8 ids must all be inside the engine's top list of this size.
 pub const TOP8_INSIDE: usize = 16;
 
-/// The qmm path that the engine runs. `MK_FAST_QMM=0` is exact. Unset or 1 is the f16 fast path, an approximation.
+/// The qmm path that the engine runs. `QWEN38_FAST_QMM=0` is exact. Unset or 1 is the f16 fast path, an approximation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QmmPath {
     Exact,
@@ -26,23 +26,23 @@ pub enum QmmPath {
 }
 
 impl QmmPath {
-    /// Read the value of `MK_FAST_QMM` as the binding reads it (`worker.rs` `fast_qmm_from`).
+    /// Read the value of `QWEN38_FAST_QMM` as the binding reads it (`worker.rs` `fast_qmm_from`).
     pub fn from_setting(value: Option<&str>) -> Result<Self, String> {
         match value {
             None | Some("1") => Ok(Self::Fast),
             Some("0") => Ok(Self::Exact),
-            Some(other) => Err(format!("MK_FAST_QMM={other}: want 0 or 1")),
+            Some(other) => Err(format!("QWEN38_FAST_QMM={other}: want 0 or 1")),
         }
     }
 
     pub fn from_env() -> Self {
-        let value = std::env::var("MK_FAST_QMM").ok();
+        let value = std::env::var("QWEN38_FAST_QMM").ok();
         Self::from_setting(value.as_deref()).unwrap_or_else(|error| panic!("{error}"))
     }
 
     pub fn name(self) -> &'static str {
         match self {
-            Self::Exact => "exact (MK_FAST_QMM=0, a gate)",
+            Self::Exact => "exact (QWEN38_FAST_QMM=0, a gate)",
             Self::Fast => "fast (f16 qmm, measured only)",
         }
     }

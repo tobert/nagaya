@@ -305,7 +305,7 @@ get ran sometimes, perhaps just a bump in our AGENTS.md"
 
 On gfx1151host, run the oracle bench with `QWEN38_SHARDS` set and the unit inactive:
 `cargo bench -p nagaya-mk-qwen38-gfx1151 --features hip --bench oracle`. It exits with 1 when a gate breaks.
-Set `MK_FAST_QMM=0` for the gate: the exact path must match the reference. Leave it unset to measure the fast path.
+Set `QWEN38_FAST_QMM=0` for the gate: the exact path must match the reference. Leave it unset to measure the fast path.
 
 The bench prints the SHA-256 of the logits of each prompt. A port step that keeps the bits keeps each hash.
 
@@ -402,8 +402,9 @@ Make the repository fit for a public post on GitHub. Amy started it on 2026-11-1
 - **License:** MIT, but not now. Step 6 waits for her word.
 - **People and machines:** the docs name her and her machines less. A doc that must name her writes @tobert.
 - **New names of the Qwen3.8 identifiers:** a variable of the engine takes `QWEN38_`, as in `QWEN38_SHARDS`. A
-  variable of the whole process takes `NAGAYA_`, as in `NAGAYA_FAST_QMM`. A macro of the HIP runtime takes `HIP_`,
-  as in `HIP_CHECK`. The served model `mk` becomes `qwen38`. The table of step 1 follows these patterns.
+  variable of the whole process takes `NAGAYA_`, as in `NAGAYA_REQUIRE_MODELS`. Decided 2026-11-12: only the engine
+  reads `FAST_QMM` and `TILES`, so they are `QWEN38_FAST_QMM` and `QWEN38_TILES`. A macro of the HIP runtime takes
+  `HIP_`, as in `HIP_CHECK`. The served model `mk` becomes `qwen38`. The table of step 1 follows these patterns.
 - **The merge came first.** The Qwen work of gfx1151host is on `main` since 2026-11-11, so a rename can start.
 
 The rules of the work:
