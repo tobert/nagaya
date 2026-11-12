@@ -60,11 +60,22 @@ pub fn config(table: &toml::Table) -> Result<Config, PlanError> {
             .and_then(|count| usize::try_from(count).ok())
             .ok_or_else(|| fail(format!("`{key}` in {what} is {value}, not a count")))
     };
+    // A count gives slots of the default size. A list gives the positions of each slot (engine-abi "Slot sizes").
     let slots = match table.get("slots") {
-        Some(value) => count("slots", value)?,
+        Some(toml::Value::Array(list)) => list
+            .iter()
+            .map(|value| count("slots", value))
+            .collect::<Result<Vec<_>, _>>()?,
+        Some(value @ toml::Value::Integer(_)) => vec![spec::SLOT_TOKENS; count("slots", value)?],
+        Some(value) => {
+            return Err(fail(format!(
+                "`slots` in {what} is {value}; give a count of slots of {} positions, or a list of positions",
+                spec::SLOT_TOKENS
+            )));
+        }
         None => {
             return Err(fail(format!(
-                "{what} needs `slots`, the count of slots of {} positions each",
+                "{what} needs `slots`, a count of slots of {} positions each, or a list of positions",
                 spec::SLOT_TOKENS
             )));
         }

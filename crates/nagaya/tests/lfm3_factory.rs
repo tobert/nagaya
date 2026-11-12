@@ -43,7 +43,7 @@ fn the_config_gives_the_folder_the_slots_and_the_block() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().display();
     let parsed = config(&table(&format!("model_dir = \"{path}\"\nslots = 2"))).unwrap();
-    assert_eq!((parsed.slots, parsed.max_block), (2, 512));
+    assert_eq!((parsed.slots, parsed.max_block), (vec![32_768, 32_768], 512));
     assert_eq!(parsed.model_dir, dir.path());
     let block = config(&table(&format!("model_dir = \"{path}\"\nslots = 1\nmax_block = 256"))).unwrap();
     assert_eq!(block.max_block, 256);
@@ -51,8 +51,16 @@ fn the_config_gives_the_folder_the_slots_and_the_block() {
     assert!(unknown.message.contains("`seq`"), "{}", unknown.message);
     let missing = config(&table(&format!("model_dir = \"{path}\""))).unwrap_err();
     assert!(missing.message.contains("`slots`"), "{}", missing.message);
-    let list = config(&table(&format!("model_dir = \"{path}\"\nslots = [32768]"))).unwrap_err();
-    assert!(list.message.contains("not a count"), "{}", list.message);
+    let list = config(&table(&format!("model_dir = \"{path}\"\nslots = [32768, 262144]"))).unwrap();
+    assert_eq!(list.slots, vec![32_768, 262_144]);
+    let word = config(&table(&format!("model_dir = \"{path}\"\nslots = \"8\""))).unwrap_err();
+    assert!(word.message.contains("a list of positions"), "{}", word.message);
+    let item = config(&table(&format!("model_dir = \"{path}\"\nslots = [32768, \"x\"]"))).unwrap_err();
+    assert!(item.message.contains("\"x\""), "{}", item.message);
+    let down = config(&table(&format!("model_dir = \"{path}\"\nslots = [262144, 32768]"))).unwrap_err();
+    assert!(down.message.contains("short to long"), "{}", down.message);
+    let past = config(&table(&format!("model_dir = \"{path}\"\nslots = [300000]"))).unwrap_err();
+    assert!(past.message.contains("300000"), "{}", past.message);
     let big = config(&table(&format!("model_dir = \"{path}\"\nslots = 1\nmax_block = 1024"))).unwrap_err();
     assert!(big.message.contains("max_block"), "{}", big.message);
     let none = config(&table("slots = 1")).unwrap_err();

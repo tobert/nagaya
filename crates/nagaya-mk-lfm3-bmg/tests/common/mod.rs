@@ -223,6 +223,17 @@ pub fn max_abs(got: &[f32], want: &[f32]) -> f64 {
 pub fn open(which: Which, slots: usize, max_block: usize) -> nagaya_mk_lfm3_bmg::Lfm3Engine {
     let config = nagaya_mk_lfm3_bmg::Config {
         model_dir: model_dir(which),
+        slots: vec![nagaya_mk_lfm3_bmg::spec::SLOT_TOKENS; slots],
+        max_block,
+    };
+    nagaya_mk_lfm3_bmg::Lfm3Engine::open(config, &cards()[0]).unwrap_or_else(|e| panic!("open {which:?}: {e}"))
+}
+
+/// The engine of `which` on card 0 with slots of the positions `slots`, from short to long (engine-abi "Slot sizes").
+#[cfg(feature = "xe")]
+pub fn open_sized(which: Which, slots: Vec<usize>, max_block: usize) -> nagaya_mk_lfm3_bmg::Lfm3Engine {
+    let config = nagaya_mk_lfm3_bmg::Config {
+        model_dir: model_dir(which),
         slots,
         max_block,
     };
