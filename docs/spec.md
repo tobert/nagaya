@@ -4515,8 +4515,8 @@ The checkpoints are LiquidAI `LFM3-Omni-2B` at `21d75123f86c1f7ffb4bef1ea202710c
 - `lfm3-omni` lists `media.inputs` of `image/png`, `image/jpeg` and `audio/wav`, and `media.outputs` of `audio/wav`.
   Its replies hold text, so it serves builds, decisions and raw reads too.
 - Each served model gets its own `tokenizer_hash` and `template`, because the two checkpoints ship different files.
-- Each slot holds 32,768 positions, the context of Omni's model card. `lfm3` also uses 32,768 in v0. Reason: one
-  slot shape for the engine kind. Its 256K positions (its model card) are a later setting of the profile.
+- A slot holds 32,768 positions by default, the context of Omni's model card. A profile can list the positions of
+  each slot, up to 262,144 (engine-abi "Slot sizes", Decided 2026-11-12). `context_tokens` is the longest slot.
 
 **The served name of an LFM3 engine.** **Proposed** by Claude Opus 5.5, 2026-11-10. Reason: the profile of b70host
 has two engines of `LFM3-1.7B`, `lfm3` and `lfm3-1` (milestone 29). The rule of 11.1 gives both the served name

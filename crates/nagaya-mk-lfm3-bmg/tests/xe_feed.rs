@@ -5,6 +5,8 @@
 //!   attention give other bits, so the engine declares a feed rule.
 //! - A ring slot that has wrapped continues with the same bits after a restore of its rows, also of only the last 256.
 //! - The last block of a full slot fits `MAX_QUANTUM_MS`.
+//! - A long slot gives the bits of a short slot, and its last block fits `MAX_QUANTUM_MS` too (engine-abi "Slot
+//!   sizes").
 //!
 //! Stop `nagaya.service` first: the nagaya must be the only client of the cards (spec 3.1). Run alone:
 //! `cargo test -p nagaya-mk-lfm3-bmg --features xe --test xe_feed -- --test-threads=1 --nocapture`.
@@ -14,7 +16,7 @@ mod common;
 
 use common::Which;
 use nagaya_abi::{Engine, PartKind, State, WriteResult};
-use nagaya_mk_lfm3_bmg::spec::{MAX_QUANTUM_MS, SLOT_TOKENS};
+use nagaya_mk_lfm3_bmg::spec::{MAX_QUANTUM_MS, MAX_SLOT_TOKENS, SLOT_TOKENS};
 
 const BLOCK: usize = 512;
 
@@ -216,5 +218,44 @@ fn the_longest_quantum_fits_its_bound() {
         last_block.max(out.ms) < u64::from(MAX_QUANTUM_MS),
         "a quantum took {} ms; the engine declares {MAX_QUANTUM_MS}",
         last_block.max(out.ms)
+    );
+}
+
+#[test]
+fn a_long_slot_gives_the_bits_of_a_short_slot_and_its_last_block_fits_the_bound() {
+    if common::absent(Which::Text) {
+        return;
+    }
+    let mut engine = common::open_sized(Which::Text, vec![SLOT_TOKENS, MAX_SLOT_TOKENS], BLOCK);
+    // 4,096 tokens wrap the rings of the sliding layers in both slots.
+    let ids = common::ids(MAX_SLOT_TOKENS, 5);
+    let rule = common::blocks(4096, BLOCK);
+    let short = common::feed_split(&mut engine, 0, 0, &ids[..4096], &rule);
+    let long = common::feed_split(&mut engine, 1, 0, &ids[..4096], &rule);
+    assert_eq!(
+        common::first_other_bits(&short, &long),
+        None,
+        "the long slot gives other bits than the short slot"
+    );
+    let mut at = 4096usize;
+    let mut longest = 0u64;
+    for n in common::blocks(MAX_SLOT_TOKENS - 1 - at, BLOCK) {
+        let out = engine
+            .pass(&[common::segment(1, at as u64, &ids[at..at + n], &[])], &[])
+            .unwrap();
+        longest = longest.max(out.ms);
+        at += n;
+    }
+    let out = engine
+        .pass(&[common::segment(1, at as u64, &ids[at..], &[at as u64])], &[])
+        .unwrap();
+    println!(
+        "the longest block of {BLOCK} in a slot of {MAX_SLOT_TOKENS}: {longest} ms; the last decode step: {} ms",
+        out.ms
+    );
+    assert!(
+        longest.max(out.ms) < u64::from(MAX_QUANTUM_MS),
+        "a quantum took {} ms; the engine declares {MAX_QUANTUM_MS}",
+        longest.max(out.ms)
     );
 }
