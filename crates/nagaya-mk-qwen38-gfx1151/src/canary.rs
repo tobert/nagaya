@@ -117,6 +117,17 @@ pub fn plan() -> Vec<PlannedPass> {
     passes
 }
 
+impl Which {
+    /// The tokens that the context holds at the end of the run: its prompt and the 8 decode steps.
+    pub fn tokens_needed(self) -> usize {
+        let prompt = match self {
+            Which::Short => SHORT_IDS.len(),
+            Which::Long => LONG_IDS.len(),
+        };
+        prompt + DECODE_STEPS
+    }
+}
+
 /// One pass for the closure of the caller to run. Each pass asks for one logits row for each segment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PassCall {
@@ -423,6 +434,12 @@ mod tests {
                 .all(|id| (0..spec::VOCAB as i32).contains(id))
         );
         assert_eq!(fixture["vocab"].as_u64(), Some(u64::from(spec::VOCAB)));
+    }
+
+    #[test]
+    fn each_context_needs_its_prompt_and_the_decode_steps() {
+        assert_eq!(Which::Short.tokens_needed(), 13);
+        assert_eq!(Which::Long.tokens_needed(), 308);
     }
 
     /// A fake pass. Context A's argmax at call `k` is `100 + k`, and context B's is `200 + k`.

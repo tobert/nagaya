@@ -120,6 +120,14 @@ impl Qwen38Engine {
         self.worker.spec().pass_scratch
     }
 
+    /// Run the canary of the engine (spec 8.1) and report its row hashes and its time.
+    ///
+    /// The worker thread runs it in two contexts of its own and frees them. It touches no context of this handle.
+    /// It checks no record: nothing compares the hashes yet. A pass that fails is an error.
+    pub fn canary(&self) -> Result<crate::canary::Report, Qwen38Error> {
+        self.worker.canary()
+    }
+
     /// What each class of contexts took when the engine made it, in the order of `spec::CONTEXT_CLASSES`.
     pub fn pool_readings(&self) -> &[ClassReading] {
         &self.readings

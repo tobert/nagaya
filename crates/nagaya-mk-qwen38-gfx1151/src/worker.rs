@@ -15,6 +15,7 @@ use nagaya_abi::{Identity, Limits};
 
 use crate::arena::{self, Arena};
 use crate::binding::{self, Binding, PassStop, Qwen38Segment};
+use crate::canary;
 use crate::gguf;
 use crate::host::{self, Host, LaunchKnobs, PassIn};
 use crate::pass::{self, Knobs, Weights};
@@ -290,6 +291,10 @@ enum Command {
     Unload {
         reply: mpsc::Sender<Result<(), String>>,
     },
+    /// Run the canary (spec 8.1) in two contexts of its own, and free them.
+    Canary {
+        reply: mpsc::Sender<Result<canary::Report, String>>,
+    },
 }
 
 /// The handle's side of the worker: a channel and the engine's declared facts.
@@ -452,6 +457,13 @@ impl Worker {
                 poison: false,
             })
         })
+    }
+
+    /// Run the canary on the worker thread (spec 8.1). It uses two contexts of its own and touches no pool context.
+    pub fn canary(&self) -> Result<canary::Report, Qwen38Error> {
+        self.ask(|reply| Command::Canary { reply })
+            .unwrap_or_else(|| Err("the engine worker stopped; restart the process".to_owned()))
+            .map_err(Qwen38Error::from)
     }
 
     /// The engine's byte count for one part and token count, or `None` when the worker stopped.
@@ -976,6 +988,9 @@ impl ThreadState {
             Command::Unload { reply } => {
                 let _ = reply.send(self.unload());
             }
+            Command::Canary { reply } => {
+                let _ = reply.send(self.run_canary());
+            }
         }
     }
 
@@ -1037,6 +1052,73 @@ impl ThreadState {
             });
         }
         Ok(Pool { ids, readings })
+    }
+
+    /// Run the canary (spec 8.1) in two contexts that this call makes and frees.
+    ///
+    /// The contexts are not in any handle's pool, so the pool contexts keep their state. Each pass goes through
+    /// `pass`, the call that a client pass takes: the same checks, the same fast or exact path, and the same join of
+    /// segments. The contexts are freed on success and on every error. The run reports only: it checks no record.
+    fn run_canary(&mut self) -> Result<canary::Report, String> {
+        if self.weights.is_none() {
+            return Err("the canary needs the weights, and they are not loaded; open a handle first".to_owned());
+        }
+        let capacity = |which: canary::Which| {
+            which.tokens_needed().div_ceil(spec::CAPACITY_STEP as usize) as u32 * spec::CAPACITY_STEP
+        };
+        let classes = [canary::Which::Short, canary::Which::Long].map(|which| spec::ContextClass {
+            count: 1,
+            capacity: capacity(which),
+        });
+        let needed: u64 = classes
+            .iter()
+            .map(|class| spec::context_declared_bytes(class.capacity))
+            .sum();
+        memory_problem(
+            "the canary contexts",
+            mem_available().map_err(|error| error.to_string())?,
+            needed,
+        )?;
+        let mut ids = Vec::with_capacity(classes.len());
+        for class in classes {
+            match self.open_states(class) {
+                Ok(made) => ids.extend(made),
+                Err(error) => {
+                    self.free_ids(&ids);
+                    return Err(error);
+                }
+            }
+        }
+        let result = canary::run(|call| {
+            let request = PassRequest {
+                contexts: call.contexts.iter().map(|which| ids[*which as usize]).collect(),
+                lens: call.lens.clone(),
+                tokens: call.tokens.clone(),
+                want_logits: true,
+            };
+            let reply = self.pass(request).map_err(|problem| {
+                format!(
+                    "a canary pass failed: {}{}",
+                    problem.message,
+                    if problem.poison {
+                        " (the pass poisoned its contexts)"
+                    } else {
+                        ""
+                    }
+                )
+            })?;
+            let bytes = reply.logits.ok_or_else(|| {
+                "a canary pass gave no logits; the engine must give one row for each segment".to_owned()
+            })?;
+            Ok(bytes
+                .as_chunks::<4>()
+                .0
+                .chunks(spec::VOCAB as usize)
+                .map(|row| row.iter().map(|chunk| f32::from_le_bytes(*chunk)).collect())
+                .collect())
+        });
+        self.free_ids(&ids);
+        result
     }
 
     /// Free the contexts with these ids.
