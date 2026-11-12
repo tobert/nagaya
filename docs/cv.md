@@ -217,6 +217,136 @@ Not tried: latent steps, then a `</think>` that the request writes. The route pu
 feed a token after them. The raw replies of these trials are in `target/trials-2026-11-11/` on b70host, which
 git does not hold.
 
+**Soft inputs** (`docs/lab.md`, "Soft inputs in a request"), 2026-11-12, the build of `9367f8c`. Each row is 24
+replies of `lfm3` at temperature 1.0, with the seeds 0 to 23. Thus the rows of one prompt are paired by seed. The
+share is the mean weight of the rows other than the token (`mean_share`).
+
+With thinking on and `span: "think"`, for 600 tokens at most:
+
+| Row | 17 times 23: thinking | Share | Rabbits: thinking | Share |
+|---|---|---|---|---|
+| no `soft` | 86 | 0 | 212.5 | 0 |
+| `moi`, `beta` 1 | 86 | 0.0044 | 213 | 0.0018 |
+| `moi`, `beta` 0.25 | 91 | 0.0071 | 214.5 | 0.0030 |
+| `moi`, `beta` 4 | 88.5 | 0.0018 | 212.5 | 0.0008 |
+| `gumbel`, `tau` 0.5 | 92.5 | 0.0473 | 227 | 0.0225 |
+
+- Each of the 10 rows had 24 of 24 right answers. "Rabbits" asks for the rabbits of 35 heads and 94 legs.
+- The median length of the thinking did not change. As with latent steps, these tasks are too easy to show a gain.
+- `moi` mixes little here: thinking about easy math has a low entropy, and `moi` divides the entropy by the log of
+  the vocabulary size.
+
+With thinking off and `span: "all"`, for 200 tokens at most:
+
+| Row | Owl story: share | Distinct pairs | Ended | Sea poem: share | Distinct pairs | Ended |
+|---|---|---|---|---|---|---|
+| no `soft` | 0 | 0.770 | 23 | 0 | 0.840 | 24 |
+| `moi`, `beta` 1 | 0.053 | 0.786 | 23 | 0.071 | 0.828 | 24 |
+| `moi`, `beta` 0.25 | 0.083 | 0.760 | 24 | 0.114 | 0.842 | 24 |
+| `gumbel`, `tau` 0.5 | 0.193 | 0.760 | 21 | 0.198 | 0.783 | 24 |
+| `gumbel`, `tau` 0.9 | 0.349 | 0.776 | 24 | 0.372 | 0.834 | 24 |
+
+- "Distinct pairs" is the count of distinct word pairs over all pairs of the 24 replies. "Ended" counts the replies
+  that ended before the limit.
+- The counts do not show the main result. At a share of 0.2 and more, words break inside the reply: for example
+  "scrainkets", "whereumbling" and "peruck". Two replies of each `gumbel` row show it, at `tau` 0.5 and more at 0.9.
+  Two replies of `moi` with `beta` 0.25, a share near 0.1, read as plain text.
+- The cause: the reply holds the token, but the next pass reads the mix. Then the model continues the mix, not
+  the token, and the text of the reply leaves what the model read. Soft Thinking and Stochastic Soft Thinking mix
+  only the reasoning, and they decode the answer as tokens. These trials show why.
+- A count of words that are not one token of the tokenizer did not find the breaks. Plain replies gave 14% to 15%
+  of such words, and `gumbel` with `tau` 0.9 gave 11% to 13%. A broken piece is often a token too. A count of the
+  right kind needs the log probability of each token of a reply with no soft input. No route gives that now.
+
+Thus the next trials are these. Use a harder task for the reasoning. Give a creative reply its soft inputs in its
+reasoning, then decode the reply as tokens. The raw counts are in `target/trials-2026-11-12/`, which git does not
+hold.
+
+**The second trials of 2026-11-12**, on the build of `30e4d86`. The score of a reply is the mean log probability of
+its content with no soft input (`docs/lab.md`, "The score of a text"). The force puts the content after the same
+prompt, with thinking off. Each row of these trials ran on `lfm3` or `lfm3-1`, which give the same score for a text.
+
+The score finds the broken words. The rows of thinking off above, run again with the same seeds:
+
+| Row | Owl story: score | Median of the minimum | Sea poem: score | Median of the minimum |
+|---|---|---|---|---|
+| no `soft` | -1.70 | -11.1 | -2.13 | -10.9 |
+| `moi`, `beta` 1 | -1.71 | -11.7 | -2.11 | -10.9 |
+| `moi`, `beta` 0.25 | -1.70 | -11.9 | -2.19 | -10.1 |
+| `gumbel`, `tau` 0.5 | -2.35 | -19.2 | -2.26 | -16.6 |
+| `gumbel`, `tau` 0.9 | -3.37 | -21.7 | -3.57 | -19.0 |
+
+Harder reasoning: 12 tasks with 6 seeds each, thinking on, 1500 tokens at most. The tasks are four products of two
+numbers, two-step word problems, a count of primes, and a trick question.
+
+| Row | Right of 72 | Median thinking | Share |
+|---|---|---|---|
+| no `soft` | 65 | 249.5 | 0 |
+| `moi`, `beta` 0.25, `span: "think"` | 65 | 265 | 0.0056 |
+| `gumbel`, `tau` 0.5, `span: "think"` | 51 | 262 | 0.041 |
+| 16 latent steps with `stop` | 46 | 337 | none |
+
+- `gumbel` breaks digit work. Three of the four products were right in 1 of 6, where no `soft` gave 4 or 5. A mix of
+  two digits is neither digit.
+- Latent steps lost on two of the products (0 of 6 each), the train, the primes and the trick question.
+- The stop never ended latent steps. In each request with latent steps, all 16 ran. The top tokens of the steps are
+  words such as " need" and ":". The stop works in the host tests, but `lfm3` gives no end token in its steps.
+
+Creative replies with soft inputs in their reasoning, thinking on, and the reply decoded as tokens. A run of 600
+tokens cut most owl stories inside their reasoning, so the owl story ran again with 1500.
+
+| Run | Row | Median thinking | Ended | Score |
+|---|---|---|---|---|
+| Sea poem, seeds 0 to 23, 600 tokens | no `soft` | 258 | 17 of 24 | -1.95 |
+| | `moi`, `beta` 0.25 | 145.5 | 21 of 24 | -1.83 |
+| | `moi`, `beta` 1 | 205 | 19 of 24 | -1.91 |
+| Sea poem, seeds 24 to 71, 600 tokens | no `soft` | 241.5 | 34 of 48 | -1.85 |
+| | `moi`, `beta` 0.25 | 209.5 | 42 of 48 | -1.93 |
+| | `moi`, `beta` 1 | 224.5 | 38 of 48 | -1.86 |
+| Owl story, seeds 0 to 23, 1500 tokens | no `soft` | 858.5 | 20 of 24 | -1.93 |
+| | `moi`, `beta` 0.25 | 687.5 | 23 of 24 | -1.90 |
+| | `moi`, `beta` 1 | 1025 | 20 of 24 | -1.93 |
+
+- In each of the three runs, `moi` with `beta` 0.25 gave shorter reasoning and more replies that ended. The reply
+  scored the same, within 0.1. The gain is 13% to 44% of the median reasoning, and it is smaller in the larger run.
+  This agrees with Soft Thinking, which gave 12% to 22% shorter replies.
+- `moi` with `beta` 1 is not a gain: it made the reasoning of the owl story longer.
+- With thinking on, `gumbel` in the reasoning did not break the reply. With `tau` 0.9, the sea poem reasoned for a
+  median of 419.5 tokens, and 16 of 24 replies ended.
+- Each score is of the replies that ended, and the median thinking counts a cut reply at the limit.
+
+Thus `moi` with a low `beta` in the reasoning is the first setting that gives a measured gain. It is small, and two
+prompts hold it. Trial it on more prompts before the web app gets a field for it.
+
+**Ten more prompts**, the same day and build: no `soft` against `moi` with `beta` 0.25 and `span: "think"`, thinking
+on, 1500 tokens at most, the seeds 0 to 23. Five prompts ran on `lfm3`, and five on `lfm3-1`.
+
+| Prompt | Median thinking | Ended of 24 | Score | Share |
+|---|---|---|---|---|
+| Dialogue: a robot and a cat | 1034 -> 745.5 | 18 -> 23 | -2.36 -> -2.27 | 0.072 |
+| Letter of a grandmother | 922 -> 681.5 | 11 -> 17 | -1.99 -> -1.87 | 0.069 |
+| Advertisement of a time machine | 939.5 -> 773 | 14 -> 17 | -1.92 -> -1.83 | 0.077 |
+| A night market on clouds | 530.5 -> 476.5 | 23 -> 24 | -1.90 -> -1.87 | 0.058 |
+| A lighthouse keeper | 1500 -> 1436 | 6 -> 9 | -1.98 -> -2.05 | 0.039 |
+| A myth of the moon | 1500 -> 1500 | 0 -> 4 | -2.27 -> -2.26 | 0.090 |
+| A folk song of a river | 1500 -> 1500 | 1 -> 1 | -1.97 -> -2.01 | 0.089 |
+| Three haiku | 1500 -> 1500 | 0 -> 0 | none | 0.028 |
+| A recipe of a dragon | 1500 -> 1500 | 0 -> 0 | -1.80 -> -1.57 | 0.079 |
+| A sonnet of a city | 1500 -> 1500 | 0 -> 0 | none | 0.048 |
+
+- Each arrow goes from no `soft` to `moi`. A score is the mean of the replies that ended. A reply cut at the limit
+  that has content gets a score too.
+- In no prompt did fewer replies end with `moi`. Over the ten prompts, 73 of 240 ended with no `soft`, and 95 with
+  `moi`.
+- Four prompts had a median reasoning below the limit: the dialogue, the letter, the advertisement and the market.
+  In each, `moi` cut the median reasoning by 10% to 28%, and the score rose by 0.03 to 0.12.
+- Five prompts reasoned past 1500 tokens in most replies, with either setting. Haiku and the sonnet never ended.
+  The first 400 characters of their reasoning count syllables and rhymes. Nobody read the rest, so a loop is a guess.
+  A loop is the trap that Amy named on 2026-11-12. A stop of the kind of Cold Stop is the tool for it.
+
+Thus `moi` with `beta` 0.25 in the reasoning gains over twelve creative prompts. The reasoning is shorter, more
+replies end, and the score stays. The gain is not large, but no prompt went against it.
+
 ## Open questions
 
 1. Does the op run before or after the norm of the next layer? Arditi et al. change the residual, so the first

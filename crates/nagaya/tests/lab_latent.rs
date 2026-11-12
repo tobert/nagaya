@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use council_support::{ControlLog, ENGINE, Fixture, Seen, TermFactory};
+use council_support::{ControlLog, ENGINE, Fixture, Script, Seen, TermFactory};
 use nagaya::council::{Service, ServiceConfig};
 use nagaya::http::{Council, Served, router};
 use nagaya_abi::SegmentInputs;
@@ -82,6 +82,11 @@ fn folder(dir: &Path) {
 /// A council whose served model `toy` runs on the fake. With `taps`, the fake has the control table and the tap
 /// `residual`.
 fn lab_with(taps: bool) -> Lab {
+    lab_scripted(taps, Script::default())
+}
+
+/// A council as [`lab_with`] gives, whose engine favors the tokens of `script`.
+fn lab_scripted(taps: bool, script: Script) -> Lab {
     let log = ControlLog::default();
     let seen = Seen::default();
     let factory = TermFactory {
@@ -90,6 +95,7 @@ fn lab_with(taps: bool) -> Lab {
         seal: false,
         log: log.clone(),
         seen: Some(seen.clone()),
+        script,
         ..TermFactory::toy()
     };
     let fixture = Fixture::with_factory(factory, 1 << 20, None, ServiceConfig::new("toy", ENGINE));
@@ -292,4 +298,367 @@ fn a_model_with_no_tap_residual_is_a_400_that_names_latent() {
     // With 0 steps, the request is the request with no member, so it runs.
     let (status, got) = send(&lab.council, &request(Some(json!({"steps": 0}))));
     assert_eq!(status, StatusCode::OK, "{got}");
+}
+
+// Soft inputs (docs/lab.md, "Soft inputs in a request"). They read the table of the same model folder.
+
+fn soft_request(soft: Value, temperature: f64, thinking: bool) -> Value {
+    let mut body = request(None);
+    body["sample"]["temperature"] = json!(temperature);
+    body["contexts"][0]["thinking"] = json!(thinking);
+    body["soft"] = soft;
+    body
+}
+
+/// The rows of each segment with a latent span, as `f32` values.
+fn latent_rows(segments: &[nagaya_abi::Segment]) -> Vec<Vec<f32>> {
+    segments
+        .iter()
+        .filter(|s| latent_span(&s.meta).is_some())
+        .map(|s| {
+            let SegmentInputs::TokensAndRows { rows, .. } = &s.inputs else {
+                panic!("a latent span feeds tokens and rows");
+            };
+            rows.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect()
+        })
+        .collect()
+}
+
+/// At temperature 0 the sampler keeps one survivor, so each mix is one row and the pass feeds the token. Thus `moi`
+/// gives the reply and the passes of the same request with no `soft`.
+#[test]
+fn moi_at_temperature_0_gives_the_reply_and_the_passes_of_no_member() {
+    let plain = lab_with(true);
+    let mut body = request(None);
+    body["sample"]["temperature"] = json!(0.0);
+    let (status, want) = send(&plain.council, &body);
+    assert_eq!(status, StatusCode::OK, "{want}");
+    let passes = plain.log.take();
+
+    let lab = lab_with(true);
+    let (status, got) = send(&lab.council, &soft_request(json!({"map": "moi"}), 0.0, false));
+    assert_eq!(status, StatusCode::OK, "{got}");
+    for member in ["content", "finish", "usage"] {
+        assert_eq!(got[member], want[member], "{member}");
+    }
+    assert_eq!(
+        got["soft"],
+        json!({"map": "moi", "beta": 1.0, "top": 16, "span": "all", "mixed": 0, "mean_share": 0.0})
+    );
+    let logged = lab.log.take();
+    assert_eq!((logged.sizes, logged.passes), (passes.sizes, passes.passes));
+    assert!(lab.seen.take().iter().all(|s| s.meta.is_empty()), "no latent span");
+}
+
+/// With a spread distribution, a token after another takes a soft row: a latent span at its position, with a row that
+/// is no row of the table.
+#[test]
+fn moi_feeds_a_mixed_row_after_an_uncertain_token() {
+    let lab = lab_with(true);
+    let (status, got) = send(&lab.council, &soft_request(json!({"map": "moi", "top": 4}), 1.0, false));
+    assert_eq!(status, StatusCode::OK, "{got}");
+    let mixed = got["soft"]["mixed"].as_u64().unwrap();
+    let share = got["soft"]["mean_share"].as_f64().unwrap();
+    assert!(mixed >= 1, "{got}");
+    assert!(share > 0.0 && share < 1.0, "{got}");
+    let rows = latent_rows(&lab.seen.take());
+    assert_eq!(rows.len() as u64, mixed, "one latent span for each soft row");
+    for row in &rows {
+        assert_eq!(row.len(), WIDTH);
+        let is_table_row = (0..VOCAB).any(|r| (0..WIDTH).all(|c| row[c] == table(r, c)));
+        assert!(!is_table_row, "a soft row mixes rows: {row:?}");
+    }
+    // A soft row is not a token, so the reply holds no head: only the seals of the build.
+    let plain = lab_with(true);
+    let mut body = request(None);
+    body["sample"]["temperature"] = json!(1.0);
+    let (status, want) = send(&plain.council, &body);
+    assert_eq!(status, StatusCode::OK, "{want}");
+    assert!(
+        lab.fixture.entries() < plain.fixture.entries(),
+        "the soft reply holds {} entries, and the plain reply {}",
+        lab.fixture.entries(),
+        plain.fixture.entries()
+    );
+}
+
+/// With a small `tau`, the Gumbel-softmax puts almost all the weight on its token, so each soft row is near one row
+/// of the table.
+#[test]
+fn gumbel_with_a_small_tau_feeds_rows_near_the_table() {
+    let lab = lab_with(true);
+    let (status, got) = send(
+        &lab.council,
+        &soft_request(json!({"map": "gumbel", "tau": 0.05, "top": 4}), 1.0, false),
+    );
+    assert_eq!(status, StatusCode::OK, "{got}");
+    assert_eq!(got["soft"]["tau"], 0.05);
+    let rows = latent_rows(&lab.seen.take());
+    assert_eq!(rows.len() as u64, got["soft"]["mixed"].as_u64().unwrap());
+    assert!(!rows.is_empty(), "{got}");
+    for row in rows {
+        let near = (0..VOCAB).any(|r| (0..WIDTH).all(|c| (row[c] - table(r, c)).abs() < 0.05));
+        assert!(near, "a soft row of a small tau is near a row of the table: {row:?}");
+    }
+}
+
+/// With the span `think`, only a token of the reasoning takes a soft row. A reply with no reasoning takes none, and
+/// the sampler picks each token, so `gumbel` gives the reply of the same request with no `soft`.
+#[test]
+fn the_span_think_mixes_only_the_reasoning() {
+    let plain = lab_with(true);
+    let mut body = request(None);
+    body["sample"]["temperature"] = json!(1.0);
+    let (_, want) = send(&plain.council, &body);
+    let lab = lab_with(true);
+    let (status, got) = send(
+        &lab.council,
+        &soft_request(json!({"map": "gumbel", "span": "think"}), 1.0, false),
+    );
+    assert_eq!(status, StatusCode::OK, "{got}");
+    assert_eq!(got["soft"]["mixed"], 0, "{got}");
+    assert_eq!(got["content"], want["content"]);
+    assert!(lab.seen.take().iter().all(|s| s.meta.is_empty()), "no latent span");
+
+    let thinking = lab_with(true);
+    let (status, got) = send(
+        &thinking.council,
+        &soft_request(json!({"map": "moi", "span": "think"}), 1.0, true),
+    );
+    assert_eq!(status, StatusCode::OK, "{got}");
+    assert!(got["soft"]["mixed"].as_u64().unwrap() >= 1, "{got}");
+}
+
+#[test]
+fn each_fault_of_soft_is_a_400_that_names_its_member() {
+    let lab = lab_with(true);
+    let cases = [
+        ("soft.map", json!({"map": "coconut"})),
+        ("soft.map", json!({})),
+        ("soft.tau", json!({"map": "moi", "tau": 0.5})),
+        ("soft.beta", json!({"map": "gumbel", "beta": 1.0})),
+        ("soft.beta", json!({"map": "moi", "beta": -1.0})),
+        ("soft.tau", json!({"map": "gumbel", "tau": 0.0})),
+        ("soft.top", json!({"map": "moi", "top": 0})),
+        ("soft.top", json!({"map": "moi", "top": 65})),
+        ("soft.span", json!({"map": "moi", "span": "reply"})),
+        ("soft", json!("moi")),
+    ];
+    for (member, soft) in cases {
+        let (status, got) = send(&lab.council, &soft_request(soft.clone(), 1.0, false));
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{soft}: {got}");
+        assert_eq!(got["error"]["param"], member, "{soft}: {got}");
+    }
+    let mut two = soft_request(json!({"map": "moi"}), 1.0, false);
+    let context = two["contexts"][0].clone();
+    two["contexts"].as_array_mut().unwrap().push(context);
+    let (status, got) = send(&lab.council, &two);
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{got}");
+    assert_eq!(got["error"]["param"], "soft", "{got}");
+    let mut weighted = soft_request(json!({"map": "moi"}), 1.0, false);
+    weighted["weights"] = json!([2.0]);
+    let (status, got) = send(&lab.council, &weighted);
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{got}");
+    assert_eq!(got["error"]["param"], "weights", "{got}");
+    assert!(lab.log.take().passes.is_empty(), "a refused request runs no pass");
+}
+
+// The stop of latent steps (docs/lab.md, "a stop for steps that do not end by themselves").
+
+/// The position of the first latent row of the request, from the latent span of a run with one step.
+fn first_latent(body: &Value) -> usize {
+    let lab = lab_with(true);
+    let mut one = body.clone();
+    one["latent"] = json!({"steps": 1});
+    one.as_object_mut().unwrap().remove("soft");
+    let (status, got) = send(&lab.council, &one);
+    assert_eq!(status, StatusCode::OK, "{got}");
+    let spans: Vec<_> = lab.seen.take().iter().filter_map(|s| latent_span(&s.meta)).collect();
+    assert_eq!(spans.len(), 1, "one latent row");
+    spans[0].0 as usize
+}
+
+/// The count of passes that fed a latent row.
+fn latent_passes(lab: &Lab) -> usize {
+    lab.seen
+        .take()
+        .iter()
+        .filter(|s| latent_span(&s.meta).is_some())
+        .count()
+}
+
+/// The steps end at the first step whose top token ends the turn. The reply starts from the row of that step.
+#[test]
+fn a_stop_ends_the_steps_at_a_step_whose_top_token_ends_the_turn() {
+    let body = request(Some(json!({"steps": 8, "stop": true, "read": true})));
+    let first = first_latent(&body);
+    // The row of step k is at the position first + k - 1, and it gives the token at first + k. A script names the
+    // position of the token. Thus step 3 favors the end of the turn.
+    let script = Script::default();
+    // Steps 1 and 2 favor a letter, so that no step before step 3 ends by chance.
+    let a = u32::from(b'a');
+    script.set(first + 1, vec![a, a, gogi_toy::END]);
+    let lab = lab_scripted(true, script.clone());
+    let (status, got) = send(&lab.council, &body);
+    assert_eq!(status, StatusCode::OK, "{got}");
+    assert_eq!(got["latent"]["steps"], 8, "{got}");
+    assert_eq!(got["latent"]["ran"], 3, "{got}");
+    assert_eq!(got["latent"]["read"].as_array().unwrap().len(), 3, "{got}");
+    assert_eq!(got["latent"]["read"][2]["id"], gogi_toy::END, "{got}");
+    assert_eq!(latent_passes(&lab), 3, "three latent rows");
+    // The reply starts from the row of step 3, whose top token ends the turn.
+    assert_eq!(got["finish"], "end_turn", "{got}");
+
+    // With no stop, all 8 steps run, and the response names no `ran`.
+    let mut no_stop = body.clone();
+    no_stop["latent"] = json!({"steps": 8, "read": true});
+    let lab = lab_scripted(true, script);
+    let (status, got) = send(&lab.council, &no_stop);
+    assert_eq!(status, StatusCode::OK, "{got}");
+    assert!(got["latent"].get("ran").is_none(), "{got}");
+    assert_eq!(latent_passes(&lab), 8);
+}
+
+/// The top tokens of 6 steps: a letter, the end of the reasoning, then letters.
+fn steps_then_endthink() -> Vec<u32> {
+    let a = u32::from(b'a');
+    vec![a, gogi_toy::ENDTHINK, a, a, a, a]
+}
+
+/// With thinking on, the token that ends the reasoning stops the steps. With thinking off, it does not.
+#[test]
+fn a_stop_with_thinking_ends_at_the_end_of_the_reasoning() {
+    let mut body = request(Some(json!({"steps": 6, "stop": true, "read": true})));
+    body["contexts"][0]["thinking"] = json!(true);
+    let first = first_latent(&body);
+    let script = Script::default();
+    script.set(first + 1, steps_then_endthink());
+    let lab = lab_scripted(true, script);
+    let (status, got) = send(&lab.council, &body);
+    assert_eq!(status, StatusCode::OK, "{got}");
+    assert_eq!(got["latent"]["ran"], 2, "{got}");
+    assert_eq!(latent_passes(&lab), 2);
+
+    let mut off = request(Some(json!({"steps": 6, "stop": true})));
+    off["contexts"][0]["thinking"] = json!(false);
+    let first = first_latent(&off);
+    let script = Script::default();
+    script.set(first + 1, steps_then_endthink());
+    let lab = lab_scripted(true, script);
+    let (status, got) = send(&lab.council, &off);
+    assert_eq!(status, StatusCode::OK, "{got}");
+    assert_eq!(got["latent"]["ran"], 6, "{got}");
+    assert_eq!(latent_passes(&lab), 6);
+}
+
+#[test]
+fn a_stop_takes_one_context_and_a_boolean() {
+    let lab = lab_with(true);
+    let mut two = request(Some(json!({"steps": 2, "stop": true})));
+    let context = two["contexts"][0].clone();
+    two["contexts"].as_array_mut().unwrap().push(context);
+    let (status, got) = send(&lab.council, &two);
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{got}");
+    assert_eq!(got["error"]["param"], "latent.stop", "{got}");
+    let (status, got) = send(&lab.council, &request(Some(json!({"steps": 2, "stop": "yes"}))));
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{got}");
+    assert_eq!(got["error"]["param"], "latent.stop", "{got}");
+    assert!(lab.log.take().passes.is_empty(), "a refused request runs no pass");
+}
+
+// The score of a text (docs/lab.md, "The score of a text").
+
+/// A generation and the force of its own text give the same stats: each token's probability in the row before it.
+#[test]
+fn the_force_of_the_text_of_a_generation_gives_its_stats() {
+    let lab = lab_with(true);
+    let mut short = request(None);
+    short["max_tokens"] = json!(6);
+    let (status, plain) = send(&lab.council, &short);
+    assert_eq!(status, StatusCode::OK, "{plain}");
+    assert_eq!(plain["finish"], "max_tokens", "the reply has no end token: {plain}");
+    assert!(plain["stats"]["content"]["tokens"].as_u64().unwrap() > 0, "{plain}");
+
+    let mut force = request(None);
+    force.as_object_mut().unwrap().remove("max_tokens");
+    force["force"] = plain["content"].clone();
+    // Another seed: a forced reply samples nothing.
+    force["sample"]["seed"] = json!(99);
+    let forced = lab_with(true);
+    let (status, got) = send(&forced.council, &force);
+    assert_eq!(status, StatusCode::OK, "{got}");
+    assert_eq!(got["content"], plain["content"]);
+    assert_eq!(got["stats"], plain["stats"]);
+    assert_eq!(got["usage"]["completion"], plain["usage"]["completion"]);
+}
+
+/// A forced text that the model finds unlikely scores below its own sample.
+#[test]
+fn a_forced_text_scores_each_of_its_tokens() {
+    let lab = lab_with(true);
+    let mut body = request(None);
+    body.as_object_mut().unwrap().remove("max_tokens");
+    body["force"] = json!("zzzz");
+    let (status, got) = send(&lab.council, &body);
+    assert_eq!(status, StatusCode::OK, "{got}");
+    assert_eq!(got["content"], "zzzz");
+    let stats = &got["stats"]["content"];
+    assert_eq!(stats["tokens"], 4, "{got}");
+    assert!(stats["mean_logprob"].as_f64().unwrap() < 0.0, "{got}");
+    assert!(stats["min_logprob"].as_f64().unwrap() <= stats["mean_logprob"].as_f64().unwrap());
+}
+
+#[test]
+fn each_fault_of_force_is_a_400_that_names_its_member() {
+    let lab = lab_with(true);
+    let mut empty = request(None);
+    empty.as_object_mut().unwrap().remove("max_tokens");
+    empty["force"] = json!("");
+    let mut counted = request(None);
+    counted["force"] = json!("abc");
+    let mut soft = request(None);
+    soft.as_object_mut().unwrap().remove("max_tokens");
+    soft["force"] = json!("abc");
+    soft["soft"] = json!({"map": "moi"});
+    let mut number = request(None);
+    number.as_object_mut().unwrap().remove("max_tokens");
+    number["force"] = json!(4);
+    for (member, body) in [
+        ("force", empty),
+        ("max_tokens", counted),
+        ("force", soft),
+        ("force", number),
+    ] {
+        let (status, got) = send(&lab.council, &body);
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}: {got}");
+        assert_eq!(got["error"]["param"], member, "{body}: {got}");
+    }
+    assert!(lab.log.take().passes.is_empty(), "a refused request runs no pass");
+}
+
+/// After a stop, the reply takes its positions after the steps that ran, not after the most steps. A soft row names
+/// its position, so the job checks it.
+#[test]
+fn soft_rows_after_a_stop_take_the_positions_after_the_steps_that_ran() {
+    let mut body = soft_request(json!({"map": "moi"}), 1.0, true);
+    body["latent"] = json!({"steps": 6, "stop": true});
+    let first = first_latent(&body);
+    let script = Script::default();
+    script.set(first + 1, steps_then_endthink());
+    let lab = lab_scripted(true, script);
+    let (status, got) = send(&lab.council, &body);
+    assert_eq!(status, StatusCode::OK, "{got}");
+    assert_eq!(got["latent"]["ran"], 2, "{got}");
+    assert!(got["soft"]["mixed"].as_u64().unwrap() >= 1, "{got}");
+    let spans: Vec<u64> = lab
+        .seen
+        .take()
+        .iter()
+        .filter_map(|s| latent_span(&s.meta))
+        .map(|span| span.0)
+        .collect();
+    // Two latent steps, then soft rows from the next position on, one position each.
+    assert_eq!(spans[..2], [first as u64, first as u64 + 1]);
+    assert!(spans[2] >= first as u64 + 2, "{spans:?}");
+    assert!(spans.windows(2).all(|w| w[0] < w[1]), "{spans:?}");
 }

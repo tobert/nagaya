@@ -362,6 +362,100 @@ generation of the lab can think in latent steps first.
 - **Members.** `latent` has only `steps` and `read`. Another member is a 400 that names `latent.<member>`, and
   `read` that is not a boolean names `latent.read`.
 
+### Soft inputs in a request
+
+**Proposed** (Claude Opus 5.5, 2026-11-12, milestone 33 step 2). Amy, 2026-11-12: "I'm curious if there is a middle
+ground where we get some of the compute cost and precision (not round tripping through English, or does that help?)
+benefits of latent steps, while making them more productive."
+
+Three papers measured this. Each is training-free, and each feeds a mix of embedding rows in place of one token:
+
+- **Mixture of Inputs.** Yufan Zhuang et al., *Text Generation Beyond Discrete Token Sampling*, arXiv 2505.14827,
+  NeurIPS 2025. The sampler picks a token as before, and the next input mixes it with the distribution. The weight of
+  the mix grows with the entropy. It gave 1.8 points more accuracy on average, over 16 pairs of model and task.
+- **Soft Thinking.** Zhen Zhang et al., *Soft Thinking: Unlocking the Reasoning Potential of LLMs in Continuous
+  Concept Space*, arXiv 2505.15778, 2025. The input of each step of the reasoning is the mix of the top 10 to 15
+  rows. With it, replies were 12% to 22% shorter, and accuracy rose by 0.5 to 2.5 points. Its own ablation fed the last
+  hidden state back, as our latent steps do. That scored 0.0 on AIME 2024 and LiveCodeBench, and each reply ran to
+  the limit.
+- **Stochastic Soft Thinking.** Junhong Wu et al., *LLMs are Single-threaded Reasoners: Demystifying the Working
+  Mechanism of Soft Thinking*, arXiv 2508.03440, ICLR 2026. A plain mix follows its top token, and it scored below
+  sampled text. Gumbel noise in the mix, with `tau` 0.5, scored above sampled text on each of the three models.
+
+All three used reasoning models of 27B parameters and more, on math, code and questions. Nobody measured a small model
+or creative text. LFM3 is both, so these trials are new.
+
+```json
+"soft": {"map": "moi", "beta": 1.0, "top": 16, "span": "all"}
+"soft": {"map": "gumbel", "tau": 0.5, "top": 16, "span": "think"}
+```
+
+- **Where.** `soft` is a member of `ensemble`, as `latent` is. It changes the input row after each sampled token. The
+  token goes into the reply and the record as before.
+- **The distribution.** `p` is the draw probabilities of the survivors of the sampler (spec 11.2). The mix uses the
+  `top` most probable survivors, scaled to a sum of 1. `top` is 1 to 64, and 16 when it is absent.
+- **`moi`.** The sampler picks the token `t` as before. Let `H` be the entropy of `p` over all survivors, divided by
+  the log of the vocabulary size. The weight of each row is `(1 - a) onehot(t) + a p`, with `a = H / (beta + 1)`.
+  `beta` is finite and 0 or more, and 1 when it is absent. The paper calls this the posterior mean of a Dirichlet
+  prior.
+- **`gumbel`.** For each survivor `i` of the top, `g_i = -ln(-ln u_i)`, with `u_i` from the seed, the position and
+  `i`. The weights are `softmax((ln p_i + g_i) / tau)`. The token is the survivor of the largest weight. It is a draw
+  from `p`, by the Gumbel-max trick. `tau` is finite and above 0, and 0.5 when it is absent.
+- **The input row.** It is the sum of the weights times the rows of the embedding table, in `f64`, then `f32`. The
+  pass feeds it at the next position, as a latent row (engine-abi "Latent rows of LFM3").
+- **One row is a token.** When the weight of one row is 1, the pass feeds that token, not a latent row. Thus `moi`
+  at temperature 0 gives the bits of the same request with no `soft`. The host test checks this.
+- **`span`.** With `all`, each token of the reply takes a soft input. With `think`, only a token of the reasoning
+  does, and the token that ends the reasoning feeds as a token. `all` is the default.
+- **No head.** A reply that fed a soft row holds no head, as a reply after latent steps does. The next turn by
+  `parent` feeds the tokens of the reply as text. A reply that fed no soft row holds its head as a plain reply does.
+- **One context.** `soft` takes one context with the weight 1, and the ensemble runs it as a generation. Another count
+  is a 400 that names `soft`.
+- **Joins.** A soft row is a latent row, and a latent row shares no pass (engine-abi "Batched passes"). Thus the first
+  build feeds each soft row in a pass alone. A join of soft rows is later work, if the trials show a gain.
+- **The response.** `soft` echoes the request with each default filled in. It also gives `mixed`, the count of soft
+  rows, and `mean_share`. The share of a step is 1 minus the weight of its token. `mean_share` is the mean over the
+  steps of the span, and a token that feeds as a token has a share of 0.
+- **Errors.** An unknown `map` is a 400 that names `soft.map`. A member of the other map, or an unknown member, is a
+  400 that names `soft.<member>`. A value out of range is a 400 that names its member.
+
+**Proposed**: a stop for steps that do not end by themselves. Amy, 2026-11-12: "I think detecting </think> or
+other end tokens would be helpful so the model isn't trapped in a loop it has no use for." She accepted the build
+of `latent.stop` on the same day. `soft.cold` is later.
+
+- **`latent.stop`.** With `true`, the latent steps end at the first step whose top token ends the reasoning or the
+  turn. The reply starts after that step, from its logit row. `steps` is then the most steps.
+- **The end of a step.** The family's reply parser decides it. Push the top token into a new parser at the start of
+  the reply. The step ends the steps when the parser then ends the reply, or leaves the reasoning. Thus with thinking
+  off, only a token that ends the turn stops the steps.
+- **The response.** `latent` also gives `ran`, the steps that ran, when the request sends `stop`.
+- **One context.** `stop` takes one context, as `soft` does, and the ensemble runs it as a generation. Reason: the
+  contexts of an ensemble share one step count. Another count is a 400 that names `latent.stop`.
+- **`soft.cold`.** This is "Cold Stop" of Soft Thinking: `{"entropy": 0.05, "run": 128}`. After `run` tokens in a row
+  with an entropy below `entropy`, the reply takes the token that ends the reasoning. It needs `span: "think"`.
+
+The trials of these rules are in `docs/cv.md`, "The stream of thought". The paper files are not in git.
+
+### The score of a text
+
+**Proposed** (Claude Opus 5.5, 2026-11-12). The trials of soft inputs found broken words that no counter saw
+(`docs/cv.md`). Amy accepted a measure: the log probability of each token of a reply, with no soft input.
+
+```json
+"force": "The owl collected buttons."
+-> "stats": {"content": {"tokens": 6, "mean_logprob": -1.92, "min_logprob": -5.1, …}}
+```
+
+- **`force`** is a member of `ensemble`: a text that the reply takes in place of the samples. The family tokenizes
+  it, and each token goes into the reply as if the sampler had picked it.
+- **The score** is `stats` of the response, as gogi gives it for a generation. Each token gives its untempered
+  probability in the logit row before it. Thus a generation and the force of its own text give the same `stats`.
+- **The response** of `ensemble` gives `stats` and `reasoning` for each request now, with `force` or without it.
+- **The end.** The reply ends after the last token of the text, or before it when the parser ends the reply.
+- **Errors.** An empty text is a 400 that names `force`. `force` with `max_tokens` is a 400 that names
+  `max_tokens`, because the text gives the count. `force` with `soft` is a 400 that names `force`, because the score
+  reads plain inputs.
+
 ## `latent` and `merge`: the parts of a swarm
 
 **Proposed** (Claude Opus 5.5, 2026-11-09, milestone 29 step 2). Amy chose a text swarm first, then latent steps and

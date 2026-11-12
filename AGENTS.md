@@ -553,6 +553,9 @@ checks green.
      steps before the reply (`docs/lab.md`, "Latent steps in a request"). Compare the count of drafts, the replies
      and the tokens with thinking on and with thinking off. The web app gets a field for the latent steps of a
      chat turn.
+   - **Soft inputs.** Amy, 2026-11-12, asked for a middle ground between text and latent steps. The next input
+     mixes rows of the embedding table (`docs/lab.md`, "Soft inputs in a request"). Trial `moi` and `gumbel` on
+     `lfm3` first, then Qwen3.8 on gfx1151host, then Gemma 4. A stop for latent steps at an end token follows.
 3. **One identity on two engines.** `lfm3` and `lfm3-1` have one identity, so they share their snapshots. The gogi
    suite fails "builds the same context into a snapshot of its own". Amy decides: the contract lets equal engines
    share, or the second engine gets an identity of its own.

@@ -27,8 +27,9 @@ use super::routes::{answer, bytes};
 use super::{Council, RequestId, Served};
 use crate::council::control;
 use crate::council::error::ServiceError;
-use crate::council::generations::Latent;
+use crate::council::generations::{Latent, Soft};
 use crate::council::trace::{JLENS, ModelFacts, TraceMembers};
+use nagaya_council::soft::{DEFAULT_TOP, MAX_TOP, SoftMap, SoftPlan, Span};
 
 type Shared = State<Arc<Council>>;
 type Id = Extension<RequestId>;
@@ -540,7 +541,7 @@ async fn trace(State(council): Shared, Extension(id): Id, body: Body) -> Respons
 }
 
 /// The members of an ensemble request (`docs/lab.md`, "`ensemble`").
-const ENSEMBLE_MEMBERS: [&str; 8] = [
+const ENSEMBLE_MEMBERS: [&str; 10] = [
     "model",
     "contexts",
     "combine",
@@ -549,11 +550,13 @@ const ENSEMBLE_MEMBERS: [&str; 8] = [
     "max_tokens",
     "sample",
     "latent",
+    "soft",
+    "force",
 ];
 
 /// The member `latent` of an ensemble request (docs/lab.md, "Latent steps in a request"): the steps and the read. A
 /// member of another type, or another member, is a 400 that names it.
-fn latent_member(value: &Value) -> Result<(usize, bool), Failure> {
+fn latent_member(value: &Value) -> Result<(usize, bool, bool), Failure> {
     let refuse = |param: &str, message: String| Failure::from(invalid(param, format!("nothing ran: {message}")));
     let Value::Object(map) = value else {
         return Err(refuse(
@@ -561,10 +564,13 @@ fn latent_member(value: &Value) -> Result<(usize, bool), Failure> {
             format!("latent is {value}; send an object with steps and read"),
         ));
     };
-    if let Some(other) = map.keys().find(|key| !["steps", "read"].contains(&key.as_str())) {
+    if let Some(other) = map
+        .keys()
+        .find(|key| !["steps", "read", "stop"].contains(&key.as_str()))
+    {
         return Err(refuse(
             &format!("latent.{other}"),
-            format!("latent has no member {other}; its members are steps and read"),
+            format!("latent has no member {other}; its members are steps, read and stop"),
         ));
     }
     let most = nagaya_council::latent::MAX_STEPS;
@@ -583,7 +589,100 @@ fn latent_member(value: &Value) -> Result<(usize, bool), Failure> {
             .as_bool()
             .ok_or_else(|| refuse("latent.read", format!("latent.read is {read}; send true or false")))?,
     };
-    Ok((steps, read))
+    let stop = match map.get("stop") {
+        None => false,
+        Some(stop) => stop
+            .as_bool()
+            .ok_or_else(|| refuse("latent.stop", format!("latent.stop is {stop}; send true or false")))?,
+    };
+    Ok((steps, read, stop))
+}
+
+/// The member `soft` of an ensemble request (docs/lab.md, "Soft inputs in a request"): the map, its value, `top` and
+/// `span`. A fault is a 400 that names the member.
+fn soft_member(value: &Value) -> Result<SoftPlan, Failure> {
+    let refuse = |param: &str, message: String| Failure::from(invalid(param, format!("nothing ran: {message}")));
+    let Value::Object(map) = value else {
+        return Err(refuse("soft", format!("soft is {value}; send an object with map")));
+    };
+    let (kind, own) = match map.get("map").and_then(Value::as_str) {
+        Some("moi") => ("moi", "beta"),
+        Some("gumbel") => ("gumbel", "tau"),
+        _ => {
+            return Err(refuse(
+                "soft.map",
+                format!(
+                    "soft.map is {}; send \"moi\" or \"gumbel\"",
+                    map.get("map").unwrap_or(&Value::Null)
+                ),
+            ));
+        }
+    };
+    if let Some(other) = map
+        .keys()
+        .find(|key| !["map", own, "top", "span"].contains(&key.as_str()))
+    {
+        return Err(refuse(
+            &format!("soft.{other}"),
+            format!("soft with the map {kind} has no member {other}; its members are map, {own}, top and span"),
+        ));
+    }
+    let number = |name: &str, default: f64, ok: fn(f64) -> bool, rule: &str| -> Result<f64, Failure> {
+        match map.get(name) {
+            None => Ok(default),
+            Some(value) => value
+                .as_f64()
+                .filter(|x| x.is_finite() && ok(*x))
+                .ok_or_else(|| refuse(&format!("soft.{name}"), format!("soft.{name} is {value}; send {rule}"))),
+        }
+    };
+    let soft_map = match kind {
+        "moi" => SoftMap::Moi {
+            beta: number("beta", 1.0, |x| x >= 0.0, "a finite number of 0 or more")?,
+        },
+        _ => SoftMap::Gumbel {
+            tau: number("tau", 0.5, |x| x > 0.0, "a finite number above 0")?,
+        },
+    };
+    let top = match map.get("top") {
+        None => DEFAULT_TOP,
+        Some(top) => top
+            .as_u64()
+            .filter(|top| (1..=MAX_TOP as u64).contains(top))
+            .ok_or_else(|| {
+                refuse(
+                    "soft.top",
+                    format!("soft.top is {top}; send a whole number from 1 to {MAX_TOP}"),
+                )
+            })? as usize,
+    };
+    let span = match map.get("span").map(|span| (span, span.as_str())) {
+        None | Some((_, Some("all"))) => Span::All,
+        Some((_, Some("think"))) => Span::Think,
+        Some((span, _)) => {
+            return Err(refuse(
+                "soft.span",
+                format!("soft.span is {span}; send \"all\" or \"think\""),
+            ));
+        }
+    };
+    Ok(SoftPlan {
+        map: soft_map,
+        top,
+        span,
+    })
+}
+
+/// The echo of a soft plan in a response, with each default filled in.
+fn soft_echo(plan: &SoftPlan) -> Value {
+    let span = match plan.span {
+        Span::All => "all",
+        Span::Think => "think",
+    };
+    match plan.map {
+        SoftMap::Moi { beta } => serde_json::json!({"map": "moi", "beta": beta, "top": plan.top, "span": span}),
+        SoftMap::Gumbel { tau } => serde_json::json!({"map": "gumbel", "tau": tau, "top": plan.top, "span": span}),
+    }
 }
 
 /// The map of a latent step of the model in `dir`, from its checkpoint: the final norm and the mean norm of the rows of
@@ -628,6 +727,34 @@ async fn ensemble(State(council): Shared, Extension(id): Id, body: Body) -> Resp
             .ok_or_else(|| refuse("model", "send the model"))?;
         let (lab_served, dir) = council.lab_model(model)?;
         let latent = map.get("latent").map(latent_member).transpose()?;
+        let soft_plan = map.get("soft").map(soft_member).transpose()?;
+        // A forced text gives the reply its tokens and their count (docs/lab.md, "The score of a text").
+        let force = match map.get("force") {
+            None => None,
+            Some(Value::String(text)) if !text.is_empty() => Some(text.clone()),
+            Some(other) => {
+                return Err(refuse(
+                    "force",
+                    &format!("force is {other}; send the text of the reply as a string that is not empty"),
+                ));
+            }
+        };
+        if force.is_some() && map.contains_key("max_tokens") {
+            return Err(refuse(
+                "max_tokens",
+                "a forced text gives the count of tokens of the reply; send no max_tokens",
+            ));
+        }
+        if force.is_some() && soft_plan.is_some() {
+            return Err(refuse(
+                "force",
+                "the score of a forced text reads plain inputs; send force or soft, not both",
+            ));
+        }
+        let forced = match &force {
+            Some(text) => Some(lab_served.service.tokens_of(text)?),
+            None => None,
+        };
         let contexts = map
             .get("contexts")
             .and_then(Value::as_array)
@@ -687,32 +814,74 @@ async fn ensemble(State(council): Shared, Extension(id): Id, body: Body) -> Resp
                     request[member] = value.clone();
                 }
             }
+            if let Some(tokens) = &forced {
+                request["max_tokens"] = tokens.len().into();
+            }
             let body = serde_json::to_vec(&request).expect("a JSON value encodes");
             requests.push(parse::<GenerationRequest>(&body, "ensemble")?);
         }
         let refs: Vec<&gogi_proto::Context> = requests.iter().map(|request| &request.context).collect();
         // The latent steps read the final norm and the table of the checkpoint. Their checks read no engine.
         let plan = match latent {
-            Some((steps, read)) if steps > 0 => {
+            Some((steps, read, stop)) if steps > 0 => {
                 lab_served.service.takes_latent(1)?;
-                let map = council.call(move || latent_map(&lab_served, &dir)).await?;
+                let (latent_served, latent_dir) = (Arc::clone(&lab_served), dir.clone());
+                let map = council.call(move || latent_map(&latent_served, &latent_dir)).await?;
                 Some(Latent {
                     steps,
                     read,
+                    stop,
                     map: Arc::new(map),
                 })
             }
             _ => None,
         };
+        // The soft inputs read the rows of the embedding table of the checkpoint.
+        let soft = match soft_plan {
+            Some(soft_plan) => {
+                let (soft_served, soft_dir) = (Arc::clone(&lab_served), dir.clone());
+                let table = council
+                    .call(move || {
+                        Unembedding::open(&soft_dir).map_err(|error| {
+                            ServiceError::internal(format!(
+                                "the lab cannot read the checkpoint of {}: {error}",
+                                soft_served.service.model()
+                            ))
+                        })
+                    })
+                    .await?;
+                let table = Arc::new(table);
+                Some(Soft {
+                    plan: soft_plan,
+                    width: table.width(),
+                    table: Arc::new(move |id| table.head_row(id)),
+                })
+            }
+            None => None,
+        };
         let served = council.route_contexts(model, &refs, true)?;
         let ensembled = council
-            .call(move || served.service.ensemble(&requests, rule, weights, plan))
+            .call(move || served.service.ensemble(&requests, rule, weights, plan, soft, forced))
             .await?;
         let out = serde_json::to_value(&ensembled.done).expect("a generation response encodes");
         let mut body = serde_json::json!({"model": out["model"], "content": out["content"], "finish": out["finish"],
                                           "usage": out["usage"]});
-        if let Some((steps, read)) = latent {
+        // The stats score the reply, and the reasoning shows what the model thought (docs/lab.md).
+        for member in ["stats", "reasoning"] {
+            if out.get(member).is_some_and(|value| !value.is_null()) {
+                body[member] = out[member].clone();
+            }
+        }
+        if let (Some(plan), Some((mixed, share))) = (soft_plan, ensembled.soft) {
+            body["soft"] = soft_echo(&plan);
+            body["soft"]["mixed"] = mixed.into();
+            body["soft"]["mean_share"] = share.into();
+        }
+        if let Some((steps, read, stop)) = latent {
             body["latent"] = serde_json::json!({"steps": steps});
+            if stop {
+                body["latent"]["ran"] = ensembled.ran.unwrap_or(0).into();
+            }
             if read {
                 let tokens: Vec<Value> = ensembled
                     .read
