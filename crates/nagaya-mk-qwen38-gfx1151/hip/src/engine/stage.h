@@ -137,7 +137,7 @@ __device__ __attribute__((always_inline)) inline void run_stage(const Stage &s, 
     case kStAttnCore: op_attn_attend(s.aatt, wg, nwg); break;
     case kStQmmH: op_qmmh(s.qmm, wg, nwg); break;
     case kStQmmKsum: op_qmm_ksum(s.qmm, wg, nwg); break;
-    default: MK_TRAP(kTrapBadOp, kTrapFileStage);
+    default: HIP_TRAP(kTrapBadOp, kTrapFileStage);
   }
 }
 

@@ -22,9 +22,9 @@ __global__ void __launch_bounds__(kMkBlock) k_attn_select_masked(AttnSelectMaske
 template <class T>
 static T *up(const T *h, size_t n) {
   T *d;
-  MK_CHECK(hipMalloc(&d, sizeof(T) * n));
-  if (h) MK_CHECK(hipMemcpy(d, h, sizeof(T) * n, hipMemcpyHostToDevice));
-  else MK_CHECK(hipMemset(d, 0, sizeof(T) * n));
+  HIP_CHECK(hipMalloc(&d, sizeof(T) * n));
+  if (h) HIP_CHECK(hipMemcpy(d, h, sizeof(T) * n, hipMemcpyHostToDevice));
+  else HIP_CHECK(hipMemset(d, 0, sizeof(T) * n));
   return d;
 }
 
@@ -39,10 +39,10 @@ extern "C" int qwen38_attn(uint32_t t, uint32_t p0, const float *q_raw, const fl
                        const float *idxq_gamma, const float *idxk_gamma, const float *inv_freq, float *kv_cache,
                        float *ik_cache, uint32_t budget, uint32_t ratio, int32_t *sel_out, uint32_t *sel_count_out,
                        float *block_scores_out, float *attn_out, uint32_t grid) {
-  if (t == 0) MK_DIE("qwen38_attn: T must be >= 1");
-  if (ratio == 0 || budget < ratio) MK_DIE("qwen38_attn: budget (%u) must be >= ratio (%u) >= 1", budget, ratio);
+  if (t == 0) HIP_DIE("qwen38_attn: T must be >= 1");
+  if (ratio == 0 || budget < ratio) HIP_DIE("qwen38_attn: budget (%u) must be >= ratio (%u) >= 1", budget, ratio);
   // attn.h pools and expands blocks of exactly 4 cells (kaibo M2 review): any other ratio dies.
-  if (ratio != model::kIdxRatio) MK_DIE("qwen38_attn: ratio %u, but the op is specialized to %u", ratio, model::kIdxRatio);
+  if (ratio != model::kIdxRatio) HIP_DIE("qwen38_attn: ratio %u, but the op is specialized to %u", ratio, model::kIdxRatio);
   const uint32_t cap = p0 + t;
   const uint32_t max_nb = cap / ratio;
   const uint32_t max_sel = budget + ratio - 1;
@@ -71,7 +71,7 @@ extern "C" int qwen38_attn(uint32_t t, uint32_t p0, const float *q_raw, const fl
   uint32_t *dsel_count = up<uint32_t>(nullptr, t);
 
   float *dattn_out = up<float>(nullptr, size_t(t) * model::kHeads * model::kHeadDim);
-  MK_CHECK(hipMemset(dattn_out, 0xff, sizeof(float) * size_t(t) * model::kHeads * model::kHeadDim));
+  HIP_CHECK(hipMemset(dattn_out, 0xff, sizeof(float) * size_t(t) * model::kHeads * model::kHeadDim));
 
   // ---- stage 1: prep ----
   AttnPrepArgs pa{dq_raw, dk_raw, dv_raw, diq_raw, dik_raw, dqg, dkg, diqg, dinv,
@@ -89,23 +89,23 @@ extern "C" int qwen38_attn(uint32_t t, uint32_t p0, const float *q_raw, const fl
   const uint32_t attend_items = t == 1 ? model::kHeads : t * (model::kHeads / kAttnHeadsPerWave);
   k_attn_attend<<<grid ? grid : attend_items, kMkBlock>>>(aa);
 
-  MK_CHECK(hipGetLastError());
-  MK_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipDeviceSynchronize());
 
-  MK_CHECK(hipMemcpy(kv_cache, dkv, sizeof(float) * size_t(cap) * 2 * model::kKvHeads * model::kHeadDim,
+  HIP_CHECK(hipMemcpy(kv_cache, dkv, sizeof(float) * size_t(cap) * 2 * model::kKvHeads * model::kHeadDim,
                      hipMemcpyDeviceToHost));
-  MK_CHECK(hipMemcpy(ik_cache, dik, sizeof(float) * size_t(cap) * model::kIdxDim, hipMemcpyDeviceToHost));
-  MK_CHECK(hipMemcpy(sel_out, dsel, sizeof(int32_t) * size_t(t) * max_sel, hipMemcpyDeviceToHost));
-  MK_CHECK(hipMemcpy(sel_count_out, dsel_count, sizeof(uint32_t) * t, hipMemcpyDeviceToHost));
-  MK_CHECK(hipMemcpy(block_scores_out, dscores_out, sizeof(float) * size_t(t) * (max_nb ? max_nb : 1),
+  HIP_CHECK(hipMemcpy(ik_cache, dik, sizeof(float) * size_t(cap) * model::kIdxDim, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipMemcpy(sel_out, dsel, sizeof(int32_t) * size_t(t) * max_sel, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipMemcpy(sel_count_out, dsel_count, sizeof(uint32_t) * t, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipMemcpy(block_scores_out, dscores_out, sizeof(float) * size_t(t) * (max_nb ? max_nb : 1),
                      hipMemcpyDeviceToHost));
-  MK_CHECK(hipMemcpy(attn_out, dattn_out, sizeof(float) * size_t(t) * model::kHeads * model::kHeadDim,
+  HIP_CHECK(hipMemcpy(attn_out, dattn_out, sizeof(float) * size_t(t) * model::kHeads * model::kHeadDim,
                      hipMemcpyDeviceToHost));
 
   for (void *p : std::vector<void *>{dq_raw, dk_raw, dv_raw, diq_raw, dik_raw, dqg, dkg, diqg, dikg, dinv, dkv, dik,
                                      dq_out, dgate_out, diq_out, dscores, dscores_out, dpicked, dsel, dsel_count,
                                      dattn_out})
-    MK_CHECK(hipFree(p));
+    HIP_CHECK(hipFree(p));
   return 0;
 }
 
@@ -120,16 +120,16 @@ __global__ void __launch_bounds__(kMkBlock) k_attn_select_emit(AttnSelectArgs a)
 
 extern "C" int qwen38_attn_select_emit(uint32_t t, uint32_t p0, uint32_t budget, uint32_t ratio, const float *scores,
                                    int32_t *sel_out, uint32_t *sel_count_out, uint32_t grid) {
-  if (t == 0) MK_DIE("qwen38_attn_select_emit: T must be >= 1");
-  if (ratio != model::kIdxRatio || budget < ratio) MK_DIE("qwen38_attn_select_emit: budget %u ratio %u", budget, ratio);
+  if (t == 0) HIP_DIE("qwen38_attn_select_emit: T must be >= 1");
+  if (ratio != model::kIdxRatio || budget < ratio) HIP_DIE("qwen38_attn_select_emit: budget %u ratio %u", budget, ratio);
   const uint32_t max_nb = (p0 + t) / ratio, max_sel = budget + ratio - 1;
   const size_t ns = size_t(t) * (max_nb ? max_nb : 1);
   float *dscores = up<float>(nullptr, ns);
-  if (max_nb) MK_CHECK(hipMemcpy(dscores, scores, sizeof(float) * size_t(t) * max_nb, hipMemcpyHostToDevice));
+  if (max_nb) HIP_CHECK(hipMemcpy(dscores, scores, sizeof(float) * size_t(t) * max_nb, hipMemcpyHostToDevice));
   int32_t *dsel = up<int32_t>(nullptr, size_t(t) * max_sel);
-  MK_CHECK(hipMemset(dsel, 0x5a, sizeof(int32_t) * size_t(t) * max_sel));
+  HIP_CHECK(hipMemset(dsel, 0x5a, sizeof(int32_t) * size_t(t) * max_sel));
   uint32_t *dcount = up<uint32_t>(nullptr, t);
-  MK_CHECK(hipMemset(dcount, 0x5a, sizeof(uint32_t) * t));
+  HIP_CHECK(hipMemset(dcount, 0x5a, sizeof(uint32_t) * t));
   AttnSelectArgs a{};
   a.t = t;
   a.p0 = p0;
@@ -142,11 +142,11 @@ extern "C" int qwen38_attn_select_emit(uint32_t t, uint32_t p0, uint32_t budget,
   a.max_sel = max_sel;
   a.block_topk_max = budget / ratio;
   k_attn_select_emit<<<grid ? grid : t, kMkBlock>>>(a);
-  MK_CHECK(hipGetLastError());
-  MK_CHECK(hipDeviceSynchronize());
-  MK_CHECK(hipMemcpy(sel_out, dsel, sizeof(int32_t) * size_t(t) * max_sel, hipMemcpyDeviceToHost));
-  MK_CHECK(hipMemcpy(sel_count_out, dcount, sizeof(uint32_t) * t, hipMemcpyDeviceToHost));
-  for (void *p : std::vector<void *>{dscores, dsel, dcount}) MK_CHECK(hipFree(p));
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipMemcpy(sel_out, dsel, sizeof(int32_t) * size_t(t) * max_sel, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipMemcpy(sel_count_out, dcount, sizeof(uint32_t) * t, hipMemcpyDeviceToHost));
+  for (void *p : std::vector<void *>{dscores, dsel, dcount}) HIP_CHECK(hipFree(p));
   return 0;
 }
 
@@ -155,12 +155,12 @@ extern "C" int qwen38_attn_select_emit(uint32_t t, uint32_t p0, uint32_t budget,
 extern "C" int qwen38_attn_attend(uint32_t t, uint32_t n_cells, uint32_t max_sel, const float *q_out, const float *gate,
                               const float *kv, const int32_t *sel, const uint32_t *sel_count, float *attn_out,
                               uint32_t grid) {
-  if (t == 0 || n_cells == 0) MK_DIE("qwen38_attn_attend: T %u, %u cells", t, n_cells);
+  if (t == 0 || n_cells == 0) HIP_DIE("qwen38_attn_attend: T %u, %u cells", t, n_cells);
   for (uint32_t i = 0; i < t; ++i) {
-    if (sel_count[i] == 0 || sel_count[i] > max_sel) MK_DIE("qwen38_attn_attend: token %u selects %u of %u", i, sel_count[i], max_sel);
+    if (sel_count[i] == 0 || sel_count[i] > max_sel) HIP_DIE("qwen38_attn_attend: token %u selects %u of %u", i, sel_count[i], max_sel);
     for (uint32_t k = 0; k < sel_count[i]; ++k)
       if (sel[size_t(i) * max_sel + k] < 0 || uint32_t(sel[size_t(i) * max_sel + k]) >= n_cells)
-        MK_DIE("qwen38_attn_attend: token %u slot %u: cell %d of %u", i, k, sel[size_t(i) * max_sel + k], n_cells);
+        HIP_DIE("qwen38_attn_attend: token %u slot %u: cell %d of %u", i, k, sel[size_t(i) * max_sel + k], n_cells);
   }
   const size_t nq = size_t(t) * model::kHeads * model::kHeadDim;
   float *dq = up(q_out, nq), *dg = up(gate, nq);
@@ -168,13 +168,13 @@ extern "C" int qwen38_attn_attend(uint32_t t, uint32_t n_cells, uint32_t max_sel
   int32_t *dsel = up(sel, size_t(t) * max_sel);
   uint32_t *dcnt = up(sel_count, t);
   float *dout = up<float>(nullptr, nq);
-  MK_CHECK(hipMemset(dout, 0xff, sizeof(float) * nq));
+  HIP_CHECK(hipMemset(dout, 0xff, sizeof(float) * nq));
   AttnAttendArgs aa{dq, dg, dkv, dsel, dcnt, t, max_sel, dout};
   k_attn_attend<<<grid ? grid : (t == 1 ? model::kHeads : t * (model::kHeads / kAttnHeadsPerWave)), kMkBlock>>>(aa);
-  MK_CHECK(hipGetLastError());
-  MK_CHECK(hipDeviceSynchronize());
-  MK_CHECK(hipMemcpy(attn_out, dout, sizeof(float) * nq, hipMemcpyDeviceToHost));
-  for (void *p : std::vector<void *>{dq, dg, dkv, dsel, dcnt, dout}) MK_CHECK(hipFree(p));
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipMemcpy(attn_out, dout, sizeof(float) * nq, hipMemcpyDeviceToHost));
+  for (void *p : std::vector<void *>{dq, dg, dkv, dsel, dcnt, dout}) HIP_CHECK(hipFree(p));
   return 0;
 }
 
@@ -188,17 +188,17 @@ extern "C" int qwen38_attn_masked(uint32_t t, uint32_t p0, const float *q_raw, c
                               uint64_t kv_bytes, float *ik_cache, uint64_t ik_bytes, uint32_t budget, uint32_t ratio,
                               uint32_t n_mask, const uint32_t *mask_lo, const uint32_t *mask_hi, int32_t *sel_out,
                               uint32_t *sel_count_out, float *block_scores_out, float *attn_out, uint32_t grid) {
-  if (t == 0) MK_DIE("qwen38_attn_masked: T must be >= 1");
-  if (ratio != model::kIdxRatio || budget < ratio) MK_DIE("qwen38_attn_masked: budget %u ratio %u", budget, ratio);
+  if (t == 0) HIP_DIE("qwen38_attn_masked: T must be >= 1");
+  if (ratio != model::kIdxRatio || budget < ratio) HIP_DIE("qwen38_attn_masked: budget %u ratio %u", budget, ratio);
   const uint32_t cap = p0 + t;
-  MK_CHECK_BYTES("qwen38_attn_masked", "kv_cache", kv_bytes, sizeof(float) * size_t(cap) * 2 * model::kKvHeads * model::kHeadDim);
-  MK_CHECK_BYTES("qwen38_attn_masked", "ik_cache", ik_bytes, sizeof(float) * size_t(cap) * model::kIdxDim);
-  if (n_mask > kAttnMaskMax) MK_DIE("qwen38_attn_masked: %u ranges, at most %u", n_mask, kAttnMaskMax);
+  HIP_CHECK_BYTES("qwen38_attn_masked", "kv_cache", kv_bytes, sizeof(float) * size_t(cap) * 2 * model::kKvHeads * model::kHeadDim);
+  HIP_CHECK_BYTES("qwen38_attn_masked", "ik_cache", ik_bytes, sizeof(float) * size_t(cap) * model::kIdxDim);
+  if (n_mask > kAttnMaskMax) HIP_DIE("qwen38_attn_masked: %u ranges, at most %u", n_mask, kAttnMaskMax);
   AttnCellMask m{};
   m.n = n_mask;
   for (uint32_t i = 0; i < n_mask; ++i) {
     if (mask_lo[i] >= mask_hi[i] || mask_hi[i] > p0 || (i && mask_lo[i] < mask_hi[i - 1]))
-      MK_DIE("qwen38_attn_masked: range %u [%u, %u) breaks the mask's rules (p0 %u)", i, mask_lo[i], mask_hi[i], p0);
+      HIP_DIE("qwen38_attn_masked: range %u [%u, %u) breaks the mask's rules (p0 %u)", i, mask_lo[i], mask_hi[i], p0);
     m.lo[i] = mask_lo[i];
     m.hi[i] = mask_hi[i];
   }
@@ -223,10 +223,10 @@ extern "C" int qwen38_attn_masked(uint32_t t, uint32_t p0, const float *q_raw, c
   float *dscores_out = up<float>(nullptr, size_t(t) * (max_nb ? max_nb : 1));
   int32_t *dpicked = up<int32_t>(nullptr, size_t(t) * (block_topk_max ? block_topk_max : 1));
   int32_t *dsel = up<int32_t>(nullptr, size_t(t) * max_sel);
-  MK_CHECK(hipMemset(dsel, 0x5a, sizeof(int32_t) * size_t(t) * max_sel));
+  HIP_CHECK(hipMemset(dsel, 0x5a, sizeof(int32_t) * size_t(t) * max_sel));
   uint32_t *dsel_count = up<uint32_t>(nullptr, t);
   float *dattn_out = up<float>(nullptr, size_t(t) * model::kHeads * model::kHeadDim);
-  MK_CHECK(hipMemset(dattn_out, 0xff, sizeof(float) * size_t(t) * model::kHeads * model::kHeadDim));
+  HIP_CHECK(hipMemset(dattn_out, 0xff, sizeof(float) * size_t(t) * model::kHeads * model::kHeadDim));
 
   AttnPrepArgs pa{dq_raw, dk_raw, dv_raw, diq_raw, dik_raw, dqg, dkg, diqg, dinv,
                   t,      p0,     dq_out, dgate_out, diq_out, dkv, dik};
@@ -239,17 +239,17 @@ extern "C" int qwen38_attn_masked(uint32_t t, uint32_t p0, const float *q_raw, c
   AttnAttendArgs aa{dq_out, dgate_out, dkv, dsel, dsel_count, t, max_sel, dattn_out};
   const uint32_t attend_items = t == 1 ? model::kHeads : t * (model::kHeads / kAttnHeadsPerWave);
   k_attn_attend<<<grid ? grid : attend_items, kMkBlock>>>(aa);
-  MK_CHECK(hipGetLastError());
-  MK_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipDeviceSynchronize());
 
-  MK_CHECK(hipMemcpy(kv_cache, dkv, kv_bytes, hipMemcpyDeviceToHost));
-  MK_CHECK(hipMemcpy(ik_cache, dik, ik_bytes, hipMemcpyDeviceToHost));
-  MK_CHECK(hipMemcpy(sel_out, dsel, sizeof(int32_t) * size_t(t) * max_sel, hipMemcpyDeviceToHost));
-  MK_CHECK(hipMemcpy(sel_count_out, dsel_count, sizeof(uint32_t) * t, hipMemcpyDeviceToHost));
-  MK_CHECK(hipMemcpy(block_scores_out, dscores_out, sizeof(float) * size_t(t) * (max_nb ? max_nb : 1), hipMemcpyDeviceToHost));
-  MK_CHECK(hipMemcpy(attn_out, dattn_out, sizeof(float) * size_t(t) * model::kHeads * model::kHeadDim, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipMemcpy(kv_cache, dkv, kv_bytes, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipMemcpy(ik_cache, dik, ik_bytes, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipMemcpy(sel_out, dsel, sizeof(int32_t) * size_t(t) * max_sel, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipMemcpy(sel_count_out, dsel_count, sizeof(uint32_t) * t, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipMemcpy(block_scores_out, dscores_out, sizeof(float) * size_t(t) * (max_nb ? max_nb : 1), hipMemcpyDeviceToHost));
+  HIP_CHECK(hipMemcpy(attn_out, dattn_out, sizeof(float) * size_t(t) * model::kHeads * model::kHeadDim, hipMemcpyDeviceToHost));
   for (void *p : std::vector<void *>{dq_raw, dk_raw, dv_raw, diq_raw, dik_raw, dqg, dkg, diqg, dikg, dinv, dkv, dik, dq_out,
                                      dgate_out, diq_out, dscores, dscores_out, dpicked, dsel, dsel_count, dattn_out})
-    MK_CHECK(hipFree(p));
+    HIP_CHECK(hipFree(p));
   return 0;
 }

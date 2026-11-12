@@ -127,7 +127,7 @@ fn the_groups_on_disk_are_the_groups_that_the_tests_load() {
     );
 }
 
-/// A site that traps without recording would be a silent trap. `MK_TRAP` is the only way to trap (`hip/src/rt/trap.h`).
+/// A site that traps without recording would be a silent trap. `HIP_TRAP` is the only way to trap (`hip/src/rt/trap.h`).
 #[test]
 fn no_bare_builtin_trap_outside_the_trap_header() {
     fn walk(dir: &std::path::Path, found: &mut Vec<String>) {

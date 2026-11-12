@@ -12,14 +12,14 @@
 //   blockIdx.x, gridDim.x)) and a C ABI entry `mk_<name>(...)` for tests (host pointers in and
 //   out; allocates, copies, launches, synchronizes, frees; returns 0 or dies with a message).
 // - Shapes are compile-time constants of this model (model.h); a runtime shape that disagrees
-//   stops the program (MK_DIE), it never falls back.
+//   stops the program (HIP_DIE), it never falls back.
 // - Activations and accumulators are f32. Weights stay in their GGUF block format in memory and
 //   are dequantized exactly into f32 registers (quant.h).
 #pragma once
 #include <hip/hip_runtime.h>
 #include <cstdint>
 
-#include "trap.h"  // MK_TRAP: the ops' traps name themselves (PLAN.md Problems 2026-09-29)
+#include "trap.h"  // HIP_TRAP: the ops' traps name themselves (PLAN.md Problems 2026-09-29)
 
 constexpr uint32_t kMkBlock = 256;  // threads per workgroup: 8 wave32s
 constexpr uint32_t kWave = 32;

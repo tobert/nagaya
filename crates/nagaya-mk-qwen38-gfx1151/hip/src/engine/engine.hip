@@ -75,7 +75,7 @@ Engine::~Engine() {
 
 void Engine::make_event() {
   if (!launched_ev_) {
-    MK_CHECK(hipEventCreate(&launched_ev_));
+    HIP_CHECK(hipEventCreate(&launched_ev_));
     ++host_stats().events_created;
   }
 }
@@ -95,9 +95,9 @@ LaunchResult Engine::launch_fused(const Stage *ds, uint32_t n, int grid, uint32_
   wd_.begin();
   make_event();
   launch_coop(mega_kernel(), grid, kMkBlock, args, 0, 0);
-  MK_CHECK(hipEventRecord(launched_ev_, 0));
+  HIP_CHECK(hipEventRecord(launched_ev_, 0));
   wd_.arm(launched_ev_);
-  MK_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipDeviceSynchronize());
   wd_.finish();
   cb_.end_pass();
   return result();
@@ -112,13 +112,13 @@ LaunchResult Engine::launch_each(const Stage *ds, uint32_t n) {
   wd_.begin();
   for (uint32_t i = 0; i < n; ++i) {
     k_stage<<<kUnfusedGrid, kMkBlock>>>(ds + i, ctl, i);
-    MK_CHECK(hipGetLastError());
+    HIP_CHECK(hipGetLastError());
     // After every launch (the same event, re-recorded): the watchdog's "a kernel is still running" query then looks at
     // the newest launch; armed once, after the first record.
-    MK_CHECK(hipEventRecord(launched_ev_, 0));
+    HIP_CHECK(hipEventRecord(launched_ev_, 0));
     if (i == 0) wd_.arm(launched_ev_);
   }
-  MK_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipDeviceSynchronize());
   wd_.finish();
   cb_.end_pass();
   return result();

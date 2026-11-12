@@ -86,7 +86,7 @@ __device__ __attribute__((always_inline)) inline void attn_select_masked_emit(co
   uint32_t *wtot = hist + 256;
   uint32_t *bc = wtot + kWavesPerBlock;
   uint32_t *picked = bc + 8;  // [kBitWords] bit b: clear block b is selected (sparse only)
-  if (nb > kBitWords * 32) MK_TRAP(kTrapAttnSelect, kTrapFileAttn);
+  if (nb > kBitWords * 32) HIP_TRAP(kTrapAttnSelect, kTrapFileAttn);
 
   uint32_t n_clear = 0;
   for (uint32_t b = tid; b < nb; b += kMkBlock) n_clear += attn_block_clear(m, b, a.ratio) ? 1u : 0u;
@@ -138,7 +138,7 @@ __device__ __attribute__((always_inline)) inline void attn_select_masked_emit(co
       carry_gt += total & 0xffffu;
       carry_eq += total >> 16;
     }
-    if (carry_gt != above || carry_eq < R) MK_TRAP(kTrapAttnSelect, kTrapFileAttn);
+    if (carry_gt != above || carry_eq < R) HIP_TRAP(kTrapAttnSelect, kTrapFileAttn);
     lds_sync();
   }
 
@@ -154,12 +154,12 @@ __device__ __attribute__((always_inline)) inline void attn_select_masked_emit(co
     }
     const uint32_t slot = out_n + wg_incl_scan(in, wtot, total) - in;
     if (in) {
-      if (slot >= a.max_sel) MK_TRAP(kTrapAttnSelect, kTrapFileAttn);
+      if (slot >= a.max_sel) HIP_TRAP(kTrapAttnSelect, kTrapFileAttn);
       sel[slot] = int32_t(c);
     }
     out_n += total;
   }
-  if (out_n == 0) MK_TRAP(kTrapAttnNoSel, kTrapFileAttn);
+  if (out_n == 0) HIP_TRAP(kTrapAttnNoSel, kTrapFileAttn);
   if (tid == 0) a.sel_count[t] = out_n;
   for (uint32_t k = out_n + tid; k < a.max_sel; k += kMkBlock) sel[k] = -1;
   lds_sync();  // picked and the scan words are rewritten by the next token's selection

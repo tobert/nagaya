@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "rt.h"
 
-#define MK_TRAP_NO_BINDER  // rt.cpp has no device code: nothing of its own to bind (trap.h)
+#define HIP_TRAP_NO_BINDER  // rt.cpp has no device code: nothing of its own to bind (trap.h)
 #include "trap.h"
 
 #include <signal.h>
@@ -94,7 +94,7 @@ void on_sigabrt(int sig, siginfo_t *info, void *ctx) {
 
 void trap_register_binder(void (*bind)(Control *)) {
   const int i = g_nbinders.fetch_add(1);
-  if (i >= kMaxBinders) MK_DIE("trap: more than %d translation units with device traps", kMaxBinders);
+  if (i >= kMaxBinders) HIP_DIE("trap: more than %d translation units with device traps", kMaxBinders);
   g_binders[i].store(bind);
 }
 
@@ -119,13 +119,13 @@ Control *trap_sink_install() {
   std::lock_guard<std::mutex> lk(g_sink_m);
   Control *c = g_trap_record.load();
   if (c == nullptr) {
-    MK_CHECK(hipHostMalloc((void **)&c, sizeof(Control), hipHostMallocCoherent));
+    HIP_CHECK(hipHostMalloc((void **)&c, sizeof(Control), hipHostMallocCoherent));
     c->abort = c->status = c->status_wg = c->status_site = 0;
     struct sigaction sa {};
     sa.sa_sigaction = on_sigabrt;
     sa.sa_flags = SA_SIGINFO;
     sigemptyset(&sa.sa_mask);
-    if (sigaction(SIGABRT, &sa, &g_old_abrt) != 0) MK_DIE("trap: sigaction(SIGABRT) failed");
+    if (sigaction(SIGABRT, &sa, &g_old_abrt) != 0) HIP_DIE("trap: sigaction(SIGABRT) failed");
     g_trap_record.store(c, std::memory_order_release);
   }
   const int n = g_nbinders.load();
@@ -141,9 +141,9 @@ HostStats &host_stats() {
 // ---- event ring ----
 EventRing::EventRing(uint32_t lanes, uint32_t capacity) {
   if (lanes == 0 || capacity == 0 || (capacity & (capacity - 1)) != 0)
-    MK_DIE("event ring needs lanes > 0 and a power-of-two capacity, got %u x %u", lanes, capacity);
-  MK_CHECK(hipHostMalloc((void **)&v_.records, sizeof(EventRecord) * lanes * capacity, hipHostMallocCoherent));
-  MK_CHECK(hipHostMalloc((void **)&v_.headers, sizeof(RingLaneHeader) * lanes, hipHostMallocCoherent));
+    HIP_DIE("event ring needs lanes > 0 and a power-of-two capacity, got %u x %u", lanes, capacity);
+  HIP_CHECK(hipHostMalloc((void **)&v_.records, sizeof(EventRecord) * lanes * capacity, hipHostMallocCoherent));
+  HIP_CHECK(hipHostMalloc((void **)&v_.headers, sizeof(RingLaneHeader) * lanes, hipHostMallocCoherent));
   memset(v_.records, 0, sizeof(EventRecord) * lanes * capacity);
   memset(v_.headers, 0, sizeof(RingLaneHeader) * lanes);
   v_.lanes = lanes;
@@ -157,8 +157,8 @@ EventRing::~EventRing() {
 
 // ---- control block ----
 ControlBlock::ControlBlock() {
-  MK_CHECK(hipHostMalloc((void **)&c_, sizeof(Control), hipHostMallocCoherent));
-  MK_CHECK(hipMalloc((void **)&b_, sizeof(Barrier)));
+  HIP_CHECK(hipHostMalloc((void **)&c_, sizeof(Control), hipHostMallocCoherent));
+  HIP_CHECK(hipMalloc((void **)&b_, sizeof(Barrier)));
   reset();
 }
 
@@ -172,9 +172,9 @@ void ControlBlock::reset() {
   __atomic_store_n(&c_->status_wg, 0u, __ATOMIC_RELAXED);
   __atomic_store_n(&c_->status_site, 0u, __ATOMIC_RELAXED);
   __atomic_store_n(&c_->status, 0u, __ATOMIC_RELEASE);
-  MK_CHECK(hipMemset(b_, 0, sizeof(Barrier)));
+  HIP_CHECK(hipMemset(b_, 0, sizeof(Barrier)));
   ++host_stats().cb_memsets;
-  MK_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipDeviceSynchronize());
   ++host_stats().cb_syncs;
   clean_ = true;
 }
@@ -211,21 +211,21 @@ int max_coop_grid(const void *kernel, int block, size_t lds) {
   static std::mutex m;
   static std::map<std::tuple<int, const void *, int, size_t>, int> cache;
   int dev = 0, sms = 0, per_sm = 0;
-  MK_CHECK(hipGetDevice(&dev));
+  HIP_CHECK(hipGetDevice(&dev));
   const auto key = std::make_tuple(dev, kernel, block, lds);
   std::lock_guard<std::mutex> lk(m);
   auto it = cache.find(key);
   if (it != cache.end()) return it->second;
-  MK_CHECK(hipDeviceGetAttribute(&sms, hipDeviceAttributeMultiprocessorCount, dev));
-  MK_CHECK(hipOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, kernel, block, lds));
+  HIP_CHECK(hipDeviceGetAttribute(&sms, hipDeviceAttributeMultiprocessorCount, dev));
+  HIP_CHECK(hipOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm, kernel, block, lds));
   ++host_stats().occupancy_queries;
   return cache[key] = sms * per_sm;
 }
 
 void launch_coop(const void *kernel, int grid, int block, void **args, size_t lds, hipStream_t s) {
   const int max = max_coop_grid(kernel, block, lds);
-  if (grid <= 0 || grid > max) MK_DIE("cooperative grid %d outside 1..%d (block %d, lds %zu)", grid, max, block, lds);
-  MK_CHECK(hipLaunchCooperativeKernel(kernel, dim3(grid), dim3(block), args, lds, s));
+  if (grid <= 0 || grid > max) HIP_DIE("cooperative grid %d outside 1..%d (block %d, lds %zu)", grid, max, block, lds);
+  HIP_CHECK(hipLaunchCooperativeKernel(kernel, dim3(grid), dim3(block), args, lds, s));
 }
 
 // ---- watchdog ----
@@ -237,12 +237,12 @@ uint64_t mem_available_bytes() {
   while (f >> key >> kb >> unit) {
     if (key == "MemAvailable:") return kb * 1024;
   }
-  MK_DIE("MemAvailable not found in /proc/meminfo");
+  HIP_DIE("MemAvailable not found in /proc/meminfo");
 }
 
 Watchdog::Watchdog(ControlBlock &cb, WatchdogConfig cfg, bool armed) : cb_(cb), cfg_(cfg) {
   if (cfg_.grace_s * kWallHz <= double(kMaxSpinTicks))
-    MK_DIE("watchdog grace %.2f s must outlast the longest device spin bound (%.2f s)", cfg_.grace_s,
+    HIP_DIE("watchdog grace %.2f s must outlast the longest device spin bound (%.2f s)", cfg_.grace_s,
            double(kMaxSpinTicks) / kWallHz);
   t_ = std::thread([this] { run(); });
   ++host_stats().watchdog_threads;
@@ -262,7 +262,7 @@ Watchdog::~Watchdog() {
 void Watchdog::begin() {
   {
     std::lock_guard<std::mutex> lk(m_);
-    if (state_ != State::kIdle) MK_DIE("watchdog: begin() while a watch is still open (finish() first)");
+    if (state_ != State::kIdle) HIP_DIE("watchdog: begin() while a watch is still open (finish() first)");
     reason_.store(0);
     launched_.store(nullptr);
     state_ = State::kWatching;
@@ -344,36 +344,36 @@ void Watchdog::watch(std::unique_lock<std::mutex> &lk) {
 }  // namespace mk
 
 // The thin runtime calls of the Rust host (src/binding.rs, milestone 15 step 6). Each call makes one HIP call and stops
-// the program when it fails, as MK_CHECK does. The host makes every call on its one worker thread.
+// the program when it fails, as HIP_CHECK does. The host makes every call on its one worker thread.
 extern "C" {
 // Registers n bytes of host memory at p with the device, coarse-grained: weights never change while a kernel runs.
 // HIP registers host memory fine-grained by default (hip_runtime_api.h). Measured 2026-09-30, 51-token fused read p50:
 // fine-grained arena 452-456 ms, coarse-grained 448 ms, hipMalloc baseline 454 ms: no difference that decides it.
-void mk_rt_host_register(void *p, uint64_t n) { MK_CHECK(hipHostRegister(p, n, hipExtHostRegisterCoarseGrained)); }
+void mk_rt_host_register(void *p, uint64_t n) { HIP_CHECK(hipHostRegister(p, n, hipExtHostRegisterCoarseGrained)); }
 // Removes the registration of mk_rt_host_register, so the host memory can be unmapped (the close of the weights).
-void mk_rt_host_unregister(void *p) { MK_CHECK(hipHostUnregister(p)); }
+void mk_rt_host_unregister(void *p) { HIP_CHECK(hipHostUnregister(p)); }
 // n bytes of pinned host memory.
 void *mk_rt_host_malloc(uint64_t n) {
   void *p = nullptr;
-  MK_CHECK(hipHostMalloc(&p, n, hipHostMallocDefault));
+  HIP_CHECK(hipHostMalloc(&p, n, hipHostMallocDefault));
   return p;
 }
-void mk_rt_host_free(void *p) { MK_CHECK(hipHostFree(p)); }
+void mk_rt_host_free(void *p) { HIP_CHECK(hipHostFree(p)); }
 // n bytes of device memory.
 void *mk_rt_malloc(uint64_t n) {
   void *p = nullptr;
-  MK_CHECK(hipMalloc(&p, n));
+  HIP_CHECK(hipMalloc(&p, n));
   return p;
 }
-void mk_rt_free(void *p) { MK_CHECK(hipFree(p)); }
+void mk_rt_free(void *p) { HIP_CHECK(hipFree(p)); }
 // Sets n bytes of device memory at p to the byte value.
-void mk_rt_memset(void *p, int value, uint64_t n) { MK_CHECK(hipMemset(p, value, n)); }
+void mk_rt_memset(void *p, int value, uint64_t n) { HIP_CHECK(hipMemset(p, value, n)); }
 // kind: 1 host to device, 2 device to host (hipMemcpyKind). The copies wait for the device.
 void mk_rt_memcpy(void *dst, const void *src, uint64_t n, uint32_t kind) {
-  MK_CHECK(hipMemcpy(dst, src, n, hipMemcpyKind(kind)));
+  HIP_CHECK(hipMemcpy(dst, src, n, hipMemcpyKind(kind)));
 }
 void mk_rt_memcpy_2d(void *dst, uint64_t dpitch, const void *src, uint64_t spitch, uint64_t width, uint64_t height,
                      uint32_t kind) {
-  MK_CHECK(hipMemcpy2D(dst, dpitch, src, spitch, width, height, hipMemcpyKind(kind)));
+  HIP_CHECK(hipMemcpy2D(dst, dpitch, src, spitch, width, height, hipMemcpyKind(kind)));
 }
 }

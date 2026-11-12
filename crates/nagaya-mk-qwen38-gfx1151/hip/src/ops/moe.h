@@ -95,7 +95,7 @@ __device__ inline void op_moe_router(const MoeRouterArgs &a, uint32_t wg, uint32
             bi = oi;
           }
         }
-        if (bi < 0) MK_TRAP(kTrapMoeRoute, kTrapFileMoe);  // nothing selectable: NaN probabilities
+        if (bi < 0) HIP_TRAP(kTrapMoeRoute, kTrapFileMoe);  // nothing selectable: NaN probabilities
         if (bi % int32_t(kWave) == l) taken |= 1u << (bi / int32_t(kWave));
         if (uint32_t(l) == k) {
           my_v = bv;
@@ -147,10 +147,10 @@ __device__ inline void op_moe_group(const MoeGroupArgs &a, uint32_t wg, uint32_t
   uint32_t *per = reinterpret_cast<uint32_t *>(lds_arena() + kMaxA * 2);         // [512] counts, then offsets
   uint32_t *wtot = per + kExperts;                                               // [3][8] wave totals
   const uint32_t na = a.t * kTopK, tid = mk_tid(), w = tid / kWave, l = tid % kWave;
-  if (na > kMaxA) MK_TRAP(kTrapMoeGroup, kTrapFileMoe);
+  if (na > kMaxA) HIP_TRAP(kTrapMoeGroup, kTrapFileMoe);
   for (uint32_t i = tid; i < na; i += kMkBlock) {
     const int32_t e = a.topk_idx[i];
-    if (e < 0 || e >= int32_t(kExperts)) MK_TRAP(kTrapMoeGroup, kTrapFileMoe);
+    if (e < 0 || e >= int32_t(kExperts)) HIP_TRAP(kTrapMoeGroup, kTrapFileMoe);
     ids[i] = uint16_t(e);
   }
   __syncthreads();
@@ -250,7 +250,7 @@ __device__ __attribute__((always_inline)) inline void qmm_item_any(uint32_t type
       case q::IQ3_S: qmmh_item_w<q::IQ3_S, QmmhMoe>(q, local); break;
       case q::IQ3_S_TILES: qmmh_item_iq3s_tiles(q, local); break;
       case q::IQ4_NL_TILES: qmmh_item_moe_tiles_w<q::IQ4_NL_TILES>(q, local); break;
-      default: MK_TRAP(kTrapBadOp, kTrapFileMoe);
+      default: HIP_TRAP(kTrapBadOp, kTrapFileMoe);
     }
     return;
   }
@@ -261,14 +261,14 @@ __device__ __attribute__((always_inline)) inline void qmm_item_any(uint32_t type
     case q::IQ3_S: qmm_item<q::IQ3_S>(q, local); break;
     case q::IQ3_S_TILES: qmm_item<q::IQ3_S_TILES>(q, local); break;
     case q::IQ4_NL_TILES: qmm_item<q::IQ4_NL_TILES>(q, local); break;
-    default: MK_TRAP(kTrapBadOp, kTrapFileMoe);
+    default: HIP_TRAP(kTrapBadOp, kTrapFileMoe);
   }
 }
 
 // An item count read from device memory can't exceed what T * 10 assignments allow; anything
 // larger is corrupted group data, and the kernel traps rather than loop over it.
 __device__ inline void moe_check_total(uint32_t total, uint32_t mats_x_rows, MoeTile tile) {
-  if (total > mats_x_rows / tile.rows * (model::kMaxPassTokens * kTopK / tile.toks + kExperts)) MK_TRAP(kTrapMoeTotal, kTrapFileMoe);
+  if (total > mats_x_rows / tile.rows * (model::kMaxPassTokens * kTopK / tile.toks + kExperts)) HIP_TRAP(kTrapMoeTotal, kTrapFileMoe);
 }
 
 __device__ __attribute__((always_inline)) inline void op_moe_gu(const MoeFfnArgs &a, uint32_t wg, uint32_t nwg) {

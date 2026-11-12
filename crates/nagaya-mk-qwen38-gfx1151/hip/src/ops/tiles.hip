@@ -93,7 +93,7 @@ __global__ void __launch_bounds__(kMkBlock) k_tile_qmm(QmmArgs a, uint32_t mode)
 using namespace mk;
 
 static void check_iq3s_shape(uint32_t n, uint32_t k) {
-  if (n == 0 || n % 16 || k == 0 || k % 256) MK_DIE("IQ3_S tiles: %u x %u is not 16-row groups of 256-value superblocks", n, k);
+  if (n == 0 || n % 16 || k == 0 || k % 256) HIP_DIE("IQ3_S tiles: %u x %u is not 16-row groups of 256-value superblocks", n, k);
 }
 
 // raw: N rows of GGUF IQ3_S; tiled_out: iq3s_tiled_bytes(N, K). tiled_out's prior contents are uploaded first, so a
@@ -102,19 +102,19 @@ extern "C" int qwen38_relayout_iq3s(const void *raw, uint64_t raw_bytes, uint32_
                                 uint64_t tiled_bytes) {
   check_iq3s_shape(n, k);
   const uint64_t src_bytes = uint64_t(n) * (k / 256) * 110, dst_bytes = iq3s_tiled_bytes(n, k);
-  MK_CHECK_BYTES("qwen38_relayout_iq3s", "raw", raw_bytes, src_bytes);
-  MK_CHECK_BYTES("qwen38_relayout_iq3s", "tiled_out", tiled_bytes, dst_bytes);
+  HIP_CHECK_BYTES("qwen38_relayout_iq3s", "raw", raw_bytes, src_bytes);
+  HIP_CHECK_BYTES("qwen38_relayout_iq3s", "tiled_out", tiled_bytes, dst_bytes);
   uint8_t *src, *dst;
-  MK_CHECK(hipMalloc(&src, src_bytes));
-  MK_CHECK(hipMalloc(&dst, dst_bytes));
-  MK_CHECK(hipMemcpy(src, raw, src_bytes, hipMemcpyHostToDevice));
-  MK_CHECK(hipMemcpy(dst, tiled_out, dst_bytes, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMalloc(&src, src_bytes));
+  HIP_CHECK(hipMalloc(&dst, dst_bytes));
+  HIP_CHECK(hipMemcpy(src, raw, src_bytes, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMemcpy(dst, tiled_out, dst_bytes, hipMemcpyHostToDevice));
   k_relayout_iq3s<<<256, kMkBlock>>>(RelayoutArgs{src, dst, n, k});
-  MK_CHECK(hipGetLastError());
-  MK_CHECK(hipDeviceSynchronize());
-  MK_CHECK(hipMemcpy(tiled_out, dst, dst_bytes, hipMemcpyDeviceToHost));
-  MK_CHECK(hipFree(src));
-  MK_CHECK(hipFree(dst));
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipMemcpy(tiled_out, dst, dst_bytes, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipFree(src));
+  HIP_CHECK(hipFree(dst));
   return 0;
 }
 
@@ -122,20 +122,20 @@ extern "C" int qwen38_tile_dequant_iq3s(const void *tiled, uint64_t tiled_bytes,
                                     uint64_t out_bytes) {
   check_iq3s_shape(n, k);
   const uint64_t bytes = iq3s_tiled_bytes(n, k);
-  MK_CHECK_BYTES("qwen38_tile_dequant_iq3s", "tiled", tiled_bytes, bytes);
-  MK_CHECK_BYTES("qwen38_tile_dequant_iq3s", "out", out_bytes, sizeof(float) * uint64_t(n) * k);
+  HIP_CHECK_BYTES("qwen38_tile_dequant_iq3s", "tiled", tiled_bytes, bytes);
+  HIP_CHECK_BYTES("qwen38_tile_dequant_iq3s", "out", out_bytes, sizeof(float) * uint64_t(n) * k);
   uint8_t *t;
   float *out;
-  MK_CHECK(hipMalloc(&t, bytes));
-  MK_CHECK(hipMalloc(&out, sizeof(float) * uint64_t(n) * k));
-  MK_CHECK(hipMemcpy(t, tiled, bytes, hipMemcpyHostToDevice));
-  MK_CHECK(hipMemset(out, 0xff, sizeof(float) * uint64_t(n) * k));
+  HIP_CHECK(hipMalloc(&t, bytes));
+  HIP_CHECK(hipMalloc(&out, sizeof(float) * uint64_t(n) * k));
+  HIP_CHECK(hipMemcpy(t, tiled, bytes, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMemset(out, 0xff, sizeof(float) * uint64_t(n) * k));
   k_tile_dequant_iq3s<<<256, kMkBlock>>>(t, n, k, out);
-  MK_CHECK(hipGetLastError());
-  MK_CHECK(hipDeviceSynchronize());
-  MK_CHECK(hipMemcpy(out_host, out, sizeof(float) * uint64_t(n) * k, hipMemcpyDeviceToHost));
-  MK_CHECK(hipFree(t));
-  MK_CHECK(hipFree(out));
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipMemcpy(out_host, out, sizeof(float) * uint64_t(n) * k, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipFree(t));
+  HIP_CHECK(hipFree(out));
   return 0;
 }
 
@@ -144,27 +144,27 @@ extern "C" int qwen38_tile_dequant_iq3s(const void *tiled, uint64_t tiled_bytes,
 extern "C" int qwen38_tile_qmm_iq3s(const void *raw, uint64_t raw_size, uint32_t n, uint32_t k, const float *x_host,
                                 uint64_t x_size, uint32_t t, float *y_host, uint64_t y_size, uint32_t mode, uint32_t grid) {
   check_iq3s_shape(n, k);
-  if (mode > 3) MK_DIE("qwen38_tile_qmm_iq3s: mode %u", mode);
+  if (mode > 3) HIP_DIE("qwen38_tile_qmm_iq3s: mode %u", mode);
   const bool tiled = mode & 1, exact = mode & 2;
-  if (t == 0) MK_DIE("qwen38_tile_qmm_iq3s: no tokens");
+  if (t == 0) HIP_DIE("qwen38_tile_qmm_iq3s: no tokens");
   const uint64_t raw_bytes = uint64_t(n) * (k / 256) * 110, tiled_bytes = iq3s_tiled_bytes(n, k);
-  MK_CHECK_BYTES("qwen38_tile_qmm_iq3s", "raw", raw_size, raw_bytes);
-  MK_CHECK_BYTES("qwen38_tile_qmm_iq3s", "x", x_size, sizeof(float) * uint64_t(t) * k);
-  MK_CHECK_BYTES("qwen38_tile_qmm_iq3s", "y", y_size, sizeof(float) * uint64_t(t) * n);
+  HIP_CHECK_BYTES("qwen38_tile_qmm_iq3s", "raw", raw_size, raw_bytes);
+  HIP_CHECK_BYTES("qwen38_tile_qmm_iq3s", "x", x_size, sizeof(float) * uint64_t(t) * k);
+  HIP_CHECK_BYTES("qwen38_tile_qmm_iq3s", "y", y_size, sizeof(float) * uint64_t(t) * n);
   uint8_t *src, *w;
   float *x, *y;
-  MK_CHECK(hipMalloc(&src, raw_bytes));
-  MK_CHECK(hipMemcpy(src, raw, raw_bytes, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMalloc(&src, raw_bytes));
+  HIP_CHECK(hipMemcpy(src, raw, raw_bytes, hipMemcpyHostToDevice));
   if (tiled) {
-    MK_CHECK(hipMalloc(&w, tiled_bytes));
+    HIP_CHECK(hipMalloc(&w, tiled_bytes));
     k_relayout_iq3s<<<256, kMkBlock>>>(RelayoutArgs{src, w, n, k});
   } else {
     w = src;
   }
-  MK_CHECK(hipMalloc(&x, sizeof(float) * uint64_t(t) * k));
-  MK_CHECK(hipMalloc(&y, sizeof(float) * uint64_t(t) * n));
-  MK_CHECK(hipMemcpy(x, x_host, sizeof(float) * uint64_t(t) * k, hipMemcpyHostToDevice));
-  MK_CHECK(hipMemset(y, 0xff, sizeof(float) * uint64_t(t) * n));
+  HIP_CHECK(hipMalloc(&x, sizeof(float) * uint64_t(t) * k));
+  HIP_CHECK(hipMalloc(&y, sizeof(float) * uint64_t(t) * n));
+  HIP_CHECK(hipMemcpy(x, x_host, sizeof(float) * uint64_t(t) * k, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMemset(y, 0xff, sizeof(float) * uint64_t(t) * n));
   QmmArgs a{};
   a.type = tiled ? q::IQ3_S_TILES : q::IQ3_S;
   a.w = w;
@@ -179,18 +179,18 @@ extern "C" int qwen38_tile_qmm_iq3s(const void *raw, uint64_t raw_size, uint32_t
   const uint32_t rows_i = exact ? kQmmRows : QmmhMoe::kRows, toks_i = exact ? kQmmToks : QmmhMoe::kToks;
   const uint32_t items = ((n + rows_i - 1) / rows_i) * ((t + toks_i - 1) / toks_i);
   k_tile_qmm<<<grid ? grid : items, kMkBlock>>>(a, mode);
-  MK_CHECK(hipGetLastError());
-  MK_CHECK(hipDeviceSynchronize());
-  MK_CHECK(hipMemcpy(y_host, y, sizeof(float) * uint64_t(t) * n, hipMemcpyDeviceToHost));
-  if (tiled) MK_CHECK(hipFree(w));
-  MK_CHECK(hipFree(src));
-  MK_CHECK(hipFree(x));
-  MK_CHECK(hipFree(y));
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipMemcpy(y_host, y, sizeof(float) * uint64_t(t) * n, hipMemcpyDeviceToHost));
+  if (tiled) HIP_CHECK(hipFree(w));
+  HIP_CHECK(hipFree(src));
+  HIP_CHECK(hipFree(x));
+  HIP_CHECK(hipFree(y));
   return 0;
 }
 
 static void check_q8_shape(uint32_t n, uint32_t k) {
-  if (n == 0 || n % 16 || k == 0 || k % 64) MK_DIE("Q8_0 tiles: %u x %u is not 16-row groups of 64-value unit pairs", n, k);
+  if (n == 0 || n % 16 || k == 0 || k % 64) HIP_DIE("Q8_0 tiles: %u x %u is not 16-row groups of 64-value unit pairs", n, k);
 }
 
 // raw: N rows of GGUF Q8_0; tiled_out: q8_tiled_bytes(N, K) (the same size), uploaded first so unwritten bytes show.
@@ -198,20 +198,20 @@ extern "C" int qwen38_relayout_q8(const void *raw, uint64_t raw_bytes, uint32_t 
                               uint64_t tiled_bytes) {
   check_q8_shape(n, k);
   const uint64_t bytes = q8_tiled_bytes(n, k);
-  MK_CHECK_BYTES("qwen38_relayout_q8", "raw", raw_bytes, bytes);
-  MK_CHECK_BYTES("qwen38_relayout_q8", "tiled_out", tiled_bytes, bytes);
-  if (bytes != q::row_bytes(q::Q8_0, k) * n) MK_DIE("Q8_0 tiles: %lu bytes for %u x %u", (unsigned long)bytes, n, k);
+  HIP_CHECK_BYTES("qwen38_relayout_q8", "raw", raw_bytes, bytes);
+  HIP_CHECK_BYTES("qwen38_relayout_q8", "tiled_out", tiled_bytes, bytes);
+  if (bytes != q::row_bytes(q::Q8_0, k) * n) HIP_DIE("Q8_0 tiles: %lu bytes for %u x %u", (unsigned long)bytes, n, k);
   uint8_t *src, *dst;
-  MK_CHECK(hipMalloc(&src, bytes));
-  MK_CHECK(hipMalloc(&dst, bytes));
-  MK_CHECK(hipMemcpy(src, raw, bytes, hipMemcpyHostToDevice));
-  MK_CHECK(hipMemcpy(dst, tiled_out, bytes, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMalloc(&src, bytes));
+  HIP_CHECK(hipMalloc(&dst, bytes));
+  HIP_CHECK(hipMemcpy(src, raw, bytes, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMemcpy(dst, tiled_out, bytes, hipMemcpyHostToDevice));
   k_relayout_q8<<<256, kMkBlock>>>(RelayoutArgs{src, dst, n, k});
-  MK_CHECK(hipGetLastError());
-  MK_CHECK(hipDeviceSynchronize());
-  MK_CHECK(hipMemcpy(tiled_out, dst, bytes, hipMemcpyDeviceToHost));
-  MK_CHECK(hipFree(src));
-  MK_CHECK(hipFree(dst));
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipMemcpy(tiled_out, dst, bytes, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipFree(src));
+  HIP_CHECK(hipFree(dst));
   return 0;
 }
 
@@ -219,20 +219,20 @@ extern "C" int qwen38_tile_dequant_q8(const void *tiled, uint64_t tiled_bytes, u
                                   uint64_t out_bytes) {
   check_q8_shape(n, k);
   const uint64_t bytes = q8_tiled_bytes(n, k);
-  MK_CHECK_BYTES("qwen38_tile_dequant_q8", "tiled", tiled_bytes, bytes);
-  MK_CHECK_BYTES("qwen38_tile_dequant_q8", "out", out_bytes, sizeof(float) * uint64_t(n) * k);
+  HIP_CHECK_BYTES("qwen38_tile_dequant_q8", "tiled", tiled_bytes, bytes);
+  HIP_CHECK_BYTES("qwen38_tile_dequant_q8", "out", out_bytes, sizeof(float) * uint64_t(n) * k);
   uint8_t *t;
   float *out;
-  MK_CHECK(hipMalloc(&t, bytes));
-  MK_CHECK(hipMalloc(&out, sizeof(float) * uint64_t(n) * k));
-  MK_CHECK(hipMemcpy(t, tiled, bytes, hipMemcpyHostToDevice));
-  MK_CHECK(hipMemset(out, 0xff, sizeof(float) * uint64_t(n) * k));
+  HIP_CHECK(hipMalloc(&t, bytes));
+  HIP_CHECK(hipMalloc(&out, sizeof(float) * uint64_t(n) * k));
+  HIP_CHECK(hipMemcpy(t, tiled, bytes, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMemset(out, 0xff, sizeof(float) * uint64_t(n) * k));
   k_tile_dequant_q8<<<256, kMkBlock>>>(t, n, k, out);
-  MK_CHECK(hipGetLastError());
-  MK_CHECK(hipDeviceSynchronize());
-  MK_CHECK(hipMemcpy(out_host, out, sizeof(float) * uint64_t(n) * k, hipMemcpyDeviceToHost));
-  MK_CHECK(hipFree(t));
-  MK_CHECK(hipFree(out));
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipMemcpy(out_host, out, sizeof(float) * uint64_t(n) * k, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipFree(t));
+  HIP_CHECK(hipFree(out));
   return 0;
 }
 
@@ -242,33 +242,33 @@ extern "C" int qwen38_tile_qmm_q8(const void *raw, uint64_t raw_size, uint32_t n
                               uint64_t x_size, uint32_t t, float *y_host, uint64_t y_size, uint32_t mode, uint32_t ksplit,
                               uint32_t grid) {
   check_q8_shape(n, k);
-  if (mode > 3) MK_DIE("qwen38_tile_qmm_q8: mode %u", mode);
+  if (mode > 3) HIP_DIE("qwen38_tile_qmm_q8: mode %u", mode);
   const bool tiled = mode & 1, exact = mode & 2;
-  if (t == 0) MK_DIE("qwen38_tile_qmm_q8: no tokens");
-  if (exact && ksplit > 1) MK_DIE("qwen38_tile_qmm_q8: the exact kernel has no split");
-  if (!exact && !qmmh_ksplit_ok(k, ksplit)) MK_DIE("qwen38_tile_qmm_q8: ksplit %u leaves an empty slice of K=%u", ksplit, k);
-  if (ksplit > kMaxKsplit) MK_DIE("qwen38_tile_qmm_q8: ksplit %u > %u", ksplit, kMaxKsplit);
+  if (t == 0) HIP_DIE("qwen38_tile_qmm_q8: no tokens");
+  if (exact && ksplit > 1) HIP_DIE("qwen38_tile_qmm_q8: the exact kernel has no split");
+  if (!exact && !qmmh_ksplit_ok(k, ksplit)) HIP_DIE("qwen38_tile_qmm_q8: ksplit %u leaves an empty slice of K=%u", ksplit, k);
+  if (ksplit > kMaxKsplit) HIP_DIE("qwen38_tile_qmm_q8: ksplit %u > %u", ksplit, kMaxKsplit);
   const uint64_t bytes = q8_tiled_bytes(n, k);
-  MK_CHECK_BYTES("qwen38_tile_qmm_q8", "raw", raw_size, bytes);
-  MK_CHECK_BYTES("qwen38_tile_qmm_q8", "x", x_size, sizeof(float) * uint64_t(t) * k);
-  MK_CHECK_BYTES("qwen38_tile_qmm_q8", "y", y_size, sizeof(float) * uint64_t(t) * n);
+  HIP_CHECK_BYTES("qwen38_tile_qmm_q8", "raw", raw_size, bytes);
+  HIP_CHECK_BYTES("qwen38_tile_qmm_q8", "x", x_size, sizeof(float) * uint64_t(t) * k);
+  HIP_CHECK_BYTES("qwen38_tile_qmm_q8", "y", y_size, sizeof(float) * uint64_t(t) * n);
   uint8_t *src, *w;
   float *x, *y, *part = nullptr;
-  MK_CHECK(hipMalloc(&src, bytes));
-  MK_CHECK(hipMemcpy(src, raw, bytes, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMalloc(&src, bytes));
+  HIP_CHECK(hipMemcpy(src, raw, bytes, hipMemcpyHostToDevice));
   if (tiled) {
-    MK_CHECK(hipMalloc(&w, bytes));
+    HIP_CHECK(hipMalloc(&w, bytes));
     k_relayout_q8<<<256, kMkBlock>>>(RelayoutArgs{src, w, n, k});
   } else {
     w = src;
   }
-  MK_CHECK(hipMalloc(&x, sizeof(float) * uint64_t(t) * k));
-  MK_CHECK(hipMalloc(&y, sizeof(float) * uint64_t(t) * n));
-  MK_CHECK(hipMemcpy(x, x_host, sizeof(float) * uint64_t(t) * k, hipMemcpyHostToDevice));
-  MK_CHECK(hipMemset(y, 0xff, sizeof(float) * uint64_t(t) * n));
+  HIP_CHECK(hipMalloc(&x, sizeof(float) * uint64_t(t) * k));
+  HIP_CHECK(hipMalloc(&y, sizeof(float) * uint64_t(t) * n));
+  HIP_CHECK(hipMemcpy(x, x_host, sizeof(float) * uint64_t(t) * k, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMemset(y, 0xff, sizeof(float) * uint64_t(t) * n));
   if (ksplit > 1) {
-    MK_CHECK(hipMalloc(&part, sizeof(float) * uint64_t(ksplit) * t * n));
-    MK_CHECK(hipMemset(part, 0xff, sizeof(float) * uint64_t(ksplit) * t * n));
+    HIP_CHECK(hipMalloc(&part, sizeof(float) * uint64_t(ksplit) * t * n));
+    HIP_CHECK(hipMemset(part, 0xff, sizeof(float) * uint64_t(ksplit) * t * n));
   }
   QmmArgs a{};
   a.type = tiled ? q::Q8_0_TILES : q::Q8_0;
@@ -286,17 +286,17 @@ extern "C" int qwen38_tile_qmm_q8(const void *raw, uint64_t raw_size, uint32_t n
   const uint32_t G = grid ? grid : 1024;
   k_tile_qmm<<<G, kMkBlock>>>(a, mode | 4);
   if (ksplit > 1) k_tile_qmm<<<G, kMkBlock>>>(a, 8);
-  MK_CHECK(hipGetLastError());
-  MK_CHECK(hipDeviceSynchronize());
-  MK_CHECK(hipMemcpy(y_host, y, sizeof(float) * uint64_t(t) * n, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipMemcpy(y_host, y, sizeof(float) * uint64_t(t) * n, hipMemcpyDeviceToHost));
   for (void *p : {static_cast<void *>(src), static_cast<void *>(x), static_cast<void *>(y), static_cast<void *>(part)})
-    if (p) MK_CHECK(hipFree(p));
-  if (tiled) MK_CHECK(hipFree(w));
+    if (p) HIP_CHECK(hipFree(p));
+  if (tiled) HIP_CHECK(hipFree(w));
   return 0;
 }
 
 static void check_q6_shape(uint32_t n, uint32_t k) {
-  if (n == 0 || n % 16 || k == 0 || k % 256) MK_DIE("Q6_K tiles: %u x %u is not 16-row groups of 256-value superblocks", n, k);
+  if (n == 0 || n % 16 || k == 0 || k % 256) HIP_DIE("Q6_K tiles: %u x %u is not 16-row groups of 256-value superblocks", n, k);
 }
 
 // raw: N rows of GGUF Q6_K; tiled_out: q6_tiled_bytes(N, K) (the same size), uploaded first so unwritten bytes show.
@@ -304,20 +304,20 @@ extern "C" int qwen38_relayout_q6(const void *raw, uint64_t raw_bytes, uint32_t 
                               uint64_t tiled_bytes) {
   check_q6_shape(n, k);
   const uint64_t bytes = q6_tiled_bytes(n, k);
-  MK_CHECK_BYTES("qwen38_relayout_q6", "raw", raw_bytes, bytes);
-  MK_CHECK_BYTES("qwen38_relayout_q6", "tiled_out", tiled_bytes, bytes);
-  if (bytes != q::row_bytes(q::Q6_K, k) * n) MK_DIE("Q6_K tiles: %lu bytes for %u x %u", (unsigned long)bytes, n, k);
+  HIP_CHECK_BYTES("qwen38_relayout_q6", "raw", raw_bytes, bytes);
+  HIP_CHECK_BYTES("qwen38_relayout_q6", "tiled_out", tiled_bytes, bytes);
+  if (bytes != q::row_bytes(q::Q6_K, k) * n) HIP_DIE("Q6_K tiles: %lu bytes for %u x %u", (unsigned long)bytes, n, k);
   uint8_t *src, *dst;
-  MK_CHECK(hipMalloc(&src, bytes));
-  MK_CHECK(hipMalloc(&dst, bytes));
-  MK_CHECK(hipMemcpy(src, raw, bytes, hipMemcpyHostToDevice));
-  MK_CHECK(hipMemcpy(dst, tiled_out, bytes, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMalloc(&src, bytes));
+  HIP_CHECK(hipMalloc(&dst, bytes));
+  HIP_CHECK(hipMemcpy(src, raw, bytes, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMemcpy(dst, tiled_out, bytes, hipMemcpyHostToDevice));
   k_relayout_q6<<<256, kMkBlock>>>(RelayoutArgs{src, dst, n, k});
-  MK_CHECK(hipGetLastError());
-  MK_CHECK(hipDeviceSynchronize());
-  MK_CHECK(hipMemcpy(tiled_out, dst, bytes, hipMemcpyDeviceToHost));
-  MK_CHECK(hipFree(src));
-  MK_CHECK(hipFree(dst));
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipMemcpy(tiled_out, dst, bytes, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipFree(src));
+  HIP_CHECK(hipFree(dst));
   return 0;
 }
 
@@ -325,20 +325,20 @@ extern "C" int qwen38_tile_dequant_q6(const void *tiled, uint64_t tiled_bytes, u
                                   uint64_t out_bytes) {
   check_q6_shape(n, k);
   const uint64_t bytes = q6_tiled_bytes(n, k);
-  MK_CHECK_BYTES("qwen38_tile_dequant_q6", "tiled", tiled_bytes, bytes);
-  MK_CHECK_BYTES("qwen38_tile_dequant_q6", "out", out_bytes, sizeof(float) * uint64_t(n) * k);
+  HIP_CHECK_BYTES("qwen38_tile_dequant_q6", "tiled", tiled_bytes, bytes);
+  HIP_CHECK_BYTES("qwen38_tile_dequant_q6", "out", out_bytes, sizeof(float) * uint64_t(n) * k);
   uint8_t *t;
   float *out;
-  MK_CHECK(hipMalloc(&t, bytes));
-  MK_CHECK(hipMalloc(&out, sizeof(float) * uint64_t(n) * k));
-  MK_CHECK(hipMemcpy(t, tiled, bytes, hipMemcpyHostToDevice));
-  MK_CHECK(hipMemset(out, 0xff, sizeof(float) * uint64_t(n) * k));
+  HIP_CHECK(hipMalloc(&t, bytes));
+  HIP_CHECK(hipMalloc(&out, sizeof(float) * uint64_t(n) * k));
+  HIP_CHECK(hipMemcpy(t, tiled, bytes, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMemset(out, 0xff, sizeof(float) * uint64_t(n) * k));
   k_tile_dequant_q6<<<256, kMkBlock>>>(t, n, k, out);
-  MK_CHECK(hipGetLastError());
-  MK_CHECK(hipDeviceSynchronize());
-  MK_CHECK(hipMemcpy(out_host, out, sizeof(float) * uint64_t(n) * k, hipMemcpyDeviceToHost));
-  MK_CHECK(hipFree(t));
-  MK_CHECK(hipFree(out));
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipMemcpy(out_host, out, sizeof(float) * uint64_t(n) * k, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipFree(t));
+  HIP_CHECK(hipFree(out));
   return 0;
 }
 
@@ -348,33 +348,33 @@ extern "C" int qwen38_tile_qmm_q6(const void *raw, uint64_t raw_size, uint32_t n
                               uint64_t x_size, uint32_t t, float *y_host, uint64_t y_size, uint32_t mode, uint32_t ksplit,
                               uint32_t grid) {
   check_q6_shape(n, k);
-  if (mode > 3) MK_DIE("qwen38_tile_qmm_q6: mode %u", mode);
+  if (mode > 3) HIP_DIE("qwen38_tile_qmm_q6: mode %u", mode);
   const bool tiled = mode & 1, exact = mode & 2;
-  if (t == 0) MK_DIE("qwen38_tile_qmm_q6: no tokens");
-  if (exact && ksplit > 1) MK_DIE("qwen38_tile_qmm_q6: the exact kernel has no split");
-  if (!exact && !qmmh_ksplit_ok(k, ksplit)) MK_DIE("qwen38_tile_qmm_q6: ksplit %u leaves an empty slice of K=%u", ksplit, k);
-  if (ksplit > kMaxKsplit) MK_DIE("qwen38_tile_qmm_q6: ksplit %u > %u", ksplit, kMaxKsplit);
+  if (t == 0) HIP_DIE("qwen38_tile_qmm_q6: no tokens");
+  if (exact && ksplit > 1) HIP_DIE("qwen38_tile_qmm_q6: the exact kernel has no split");
+  if (!exact && !qmmh_ksplit_ok(k, ksplit)) HIP_DIE("qwen38_tile_qmm_q6: ksplit %u leaves an empty slice of K=%u", ksplit, k);
+  if (ksplit > kMaxKsplit) HIP_DIE("qwen38_tile_qmm_q6: ksplit %u > %u", ksplit, kMaxKsplit);
   const uint64_t bytes = q6_tiled_bytes(n, k);
-  MK_CHECK_BYTES("qwen38_tile_qmm_q6", "raw", raw_size, bytes);
-  MK_CHECK_BYTES("qwen38_tile_qmm_q6", "x", x_size, sizeof(float) * uint64_t(t) * k);
-  MK_CHECK_BYTES("qwen38_tile_qmm_q6", "y", y_size, sizeof(float) * uint64_t(t) * n);
+  HIP_CHECK_BYTES("qwen38_tile_qmm_q6", "raw", raw_size, bytes);
+  HIP_CHECK_BYTES("qwen38_tile_qmm_q6", "x", x_size, sizeof(float) * uint64_t(t) * k);
+  HIP_CHECK_BYTES("qwen38_tile_qmm_q6", "y", y_size, sizeof(float) * uint64_t(t) * n);
   uint8_t *src, *w;
   float *x, *y, *part = nullptr;
-  MK_CHECK(hipMalloc(&src, bytes));
-  MK_CHECK(hipMemcpy(src, raw, bytes, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMalloc(&src, bytes));
+  HIP_CHECK(hipMemcpy(src, raw, bytes, hipMemcpyHostToDevice));
   if (tiled) {
-    MK_CHECK(hipMalloc(&w, bytes));
+    HIP_CHECK(hipMalloc(&w, bytes));
     k_relayout_q6<<<256, kMkBlock>>>(RelayoutArgs{src, w, n, k});
   } else {
     w = src;
   }
-  MK_CHECK(hipMalloc(&x, sizeof(float) * uint64_t(t) * k));
-  MK_CHECK(hipMalloc(&y, sizeof(float) * uint64_t(t) * n));
-  MK_CHECK(hipMemcpy(x, x_host, sizeof(float) * uint64_t(t) * k, hipMemcpyHostToDevice));
-  MK_CHECK(hipMemset(y, 0xff, sizeof(float) * uint64_t(t) * n));
+  HIP_CHECK(hipMalloc(&x, sizeof(float) * uint64_t(t) * k));
+  HIP_CHECK(hipMalloc(&y, sizeof(float) * uint64_t(t) * n));
+  HIP_CHECK(hipMemcpy(x, x_host, sizeof(float) * uint64_t(t) * k, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMemset(y, 0xff, sizeof(float) * uint64_t(t) * n));
   if (ksplit > 1) {
-    MK_CHECK(hipMalloc(&part, sizeof(float) * uint64_t(ksplit) * t * n));
-    MK_CHECK(hipMemset(part, 0xff, sizeof(float) * uint64_t(ksplit) * t * n));
+    HIP_CHECK(hipMalloc(&part, sizeof(float) * uint64_t(ksplit) * t * n));
+    HIP_CHECK(hipMemset(part, 0xff, sizeof(float) * uint64_t(ksplit) * t * n));
   }
   QmmArgs a{};
   a.type = tiled ? q::Q6_K_TILES : q::Q6_K;
@@ -392,17 +392,17 @@ extern "C" int qwen38_tile_qmm_q6(const void *raw, uint64_t raw_size, uint32_t n
   const uint32_t G = grid ? grid : 1024;
   k_tile_qmm<<<G, kMkBlock>>>(a, mode | 4);  // bit 2: the dense shape (the type is in a.type)
   if (ksplit > 1) k_tile_qmm<<<G, kMkBlock>>>(a, 8);
-  MK_CHECK(hipGetLastError());
-  MK_CHECK(hipDeviceSynchronize());
-  MK_CHECK(hipMemcpy(y_host, y, sizeof(float) * uint64_t(t) * n, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipMemcpy(y_host, y, sizeof(float) * uint64_t(t) * n, hipMemcpyDeviceToHost));
   for (void *p : {static_cast<void *>(src), static_cast<void *>(x), static_cast<void *>(y), static_cast<void *>(part)})
-    if (p) MK_CHECK(hipFree(p));
-  if (tiled) MK_CHECK(hipFree(w));
+    if (p) HIP_CHECK(hipFree(p));
+  if (tiled) HIP_CHECK(hipFree(w));
   return 0;
 }
 
 static void check_iq4_shape(uint32_t n, uint32_t k) {
-  if (n == 0 || n % 16 || k == 0 || k % 128) MK_DIE("IQ4_NL tiles: %u x %u is not 16-row groups of 128-value tiles", n, k);
+  if (n == 0 || n % 16 || k == 0 || k % 128) HIP_DIE("IQ4_NL tiles: %u x %u is not 16-row groups of 128-value tiles", n, k);
 }
 
 // raw: N rows of GGUF IQ4_NL; tiled_out: iq4_tiled_bytes(N, K) (the same size), uploaded first so unwritten bytes show.
@@ -410,20 +410,20 @@ extern "C" int qwen38_relayout_iq4nl(const void *raw, uint64_t raw_bytes, uint32
                               uint64_t tiled_bytes) {
   check_iq4_shape(n, k);
   const uint64_t bytes = iq4_tiled_bytes(n, k);
-  MK_CHECK_BYTES("qwen38_relayout_iq4nl", "raw", raw_bytes, bytes);
-  MK_CHECK_BYTES("qwen38_relayout_iq4nl", "tiled_out", tiled_bytes, bytes);
-  if (bytes != q::row_bytes(q::IQ4_NL, k) * n) MK_DIE("IQ4_NL tiles: %lu bytes for %u x %u", (unsigned long)bytes, n, k);
+  HIP_CHECK_BYTES("qwen38_relayout_iq4nl", "raw", raw_bytes, bytes);
+  HIP_CHECK_BYTES("qwen38_relayout_iq4nl", "tiled_out", tiled_bytes, bytes);
+  if (bytes != q::row_bytes(q::IQ4_NL, k) * n) HIP_DIE("IQ4_NL tiles: %lu bytes for %u x %u", (unsigned long)bytes, n, k);
   uint8_t *src, *dst;
-  MK_CHECK(hipMalloc(&src, bytes));
-  MK_CHECK(hipMalloc(&dst, bytes));
-  MK_CHECK(hipMemcpy(src, raw, bytes, hipMemcpyHostToDevice));
-  MK_CHECK(hipMemcpy(dst, tiled_out, bytes, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMalloc(&src, bytes));
+  HIP_CHECK(hipMalloc(&dst, bytes));
+  HIP_CHECK(hipMemcpy(src, raw, bytes, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMemcpy(dst, tiled_out, bytes, hipMemcpyHostToDevice));
   k_relayout_iq4<<<256, kMkBlock>>>(RelayoutArgs{src, dst, n, k});
-  MK_CHECK(hipGetLastError());
-  MK_CHECK(hipDeviceSynchronize());
-  MK_CHECK(hipMemcpy(tiled_out, dst, bytes, hipMemcpyDeviceToHost));
-  MK_CHECK(hipFree(src));
-  MK_CHECK(hipFree(dst));
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipMemcpy(tiled_out, dst, bytes, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipFree(src));
+  HIP_CHECK(hipFree(dst));
   return 0;
 }
 
@@ -431,19 +431,19 @@ extern "C" int qwen38_tile_dequant_iq4nl(const void *tiled, uint64_t tiled_bytes
                                   uint64_t out_bytes) {
   check_iq4_shape(n, k);
   const uint64_t bytes = iq4_tiled_bytes(n, k);
-  MK_CHECK_BYTES("qwen38_tile_dequant_iq4nl", "tiled", tiled_bytes, bytes);
-  MK_CHECK_BYTES("qwen38_tile_dequant_iq4nl", "out", out_bytes, sizeof(float) * uint64_t(n) * k);
+  HIP_CHECK_BYTES("qwen38_tile_dequant_iq4nl", "tiled", tiled_bytes, bytes);
+  HIP_CHECK_BYTES("qwen38_tile_dequant_iq4nl", "out", out_bytes, sizeof(float) * uint64_t(n) * k);
   uint8_t *t;
   float *out;
-  MK_CHECK(hipMalloc(&t, bytes));
-  MK_CHECK(hipMalloc(&out, sizeof(float) * uint64_t(n) * k));
-  MK_CHECK(hipMemcpy(t, tiled, bytes, hipMemcpyHostToDevice));
-  MK_CHECK(hipMemset(out, 0xff, sizeof(float) * uint64_t(n) * k));
+  HIP_CHECK(hipMalloc(&t, bytes));
+  HIP_CHECK(hipMalloc(&out, sizeof(float) * uint64_t(n) * k));
+  HIP_CHECK(hipMemcpy(t, tiled, bytes, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMemset(out, 0xff, sizeof(float) * uint64_t(n) * k));
   k_tile_dequant_iq4<<<256, kMkBlock>>>(t, n, k, out);
-  MK_CHECK(hipGetLastError());
-  MK_CHECK(hipDeviceSynchronize());
-  MK_CHECK(hipMemcpy(out_host, out, sizeof(float) * uint64_t(n) * k, hipMemcpyDeviceToHost));
-  MK_CHECK(hipFree(t));
-  MK_CHECK(hipFree(out));
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipMemcpy(out_host, out, sizeof(float) * uint64_t(n) * k, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipFree(t));
+  HIP_CHECK(hipFree(out));
   return 0;
 }

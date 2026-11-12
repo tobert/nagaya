@@ -205,7 +205,7 @@ struct AttnSelectArgs {
 __device__ __attribute__((always_inline)) inline uint32_t attn_score_key(float s) {
   uint32_t u = __float_as_uint(s);
   if (u == 0x80000000u) u = 0;
-  if (u > 0x7f800000u) MK_TRAP(kTrapAttnSelect, kTrapFileAttn);
+  if (u > 0x7f800000u) HIP_TRAP(kTrapAttnSelect, kTrapFileAttn);
   return u;
 }
 
@@ -314,7 +314,7 @@ __device__ __attribute__((always_inline)) inline void attn_select_emit(const Att
       carry_eq += total >> 16;
     }
     // The emission's own count must agree with the radix select's: else the two passes saw different keys.
-    if (select_count > 0 && (carry_gt != above || carry_eq < R)) MK_TRAP(kTrapAttnSelect, kTrapFileAttn);
+    if (select_count > 0 && (carry_gt != above || carry_eq < R)) HIP_TRAP(kTrapAttnSelect, kTrapFileAttn);
     out_n = select_count * 4;
     for (uint32_t c = tail_start + tid; c < n_vis; c += kMkBlock) sel[out_n + (c - tail_start)] = int32_t(c);
     out_n += n_vis - tail_start;
@@ -558,7 +558,7 @@ __device__ __attribute__((always_inline)) inline void attn_attend_item(const Att
   float *pl = pm + kAttnSlices;                          // [slice] l
 
   const uint32_t n_sel = a.sel_count[tok];
-  if (n_sel == 0) MK_TRAP(kTrapAttnNoSel, kTrapFileAttn);  // causal self-visibility means this can't happen
+  if (n_sel == 0) HIP_TRAP(kTrapAttnNoSel, kTrapFileAttn);  // causal self-visibility means this can't happen
   const int32_t *sel = a.sel + uint64_t(tok) * a.max_sel;
 
   const uint32_t lo = attn_slice_lo(w, n_sel), hi = attn_slice_lo(w + 1, n_sel);

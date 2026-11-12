@@ -17,9 +17,9 @@ __global__ void __launch_bounds__(kMkBlock) k_qmm2(QmmArgs a) { op_qmm(a, blockI
 template <class T>
 static T *up(const T *h, size_t n) {
   T *d;
-  MK_CHECK(hipMalloc(&d, sizeof(T) * n));
-  if (h) MK_CHECK(hipMemcpy(d, h, sizeof(T) * n, hipMemcpyHostToDevice));
-  else MK_CHECK(hipMemset(d, 0xff, sizeof(T) * n));
+  HIP_CHECK(hipMalloc(&d, sizeof(T) * n));
+  if (h) HIP_CHECK(hipMemcpy(d, h, sizeof(T) * n, hipMemcpyHostToDevice));
+  else HIP_CHECK(hipMemset(d, 0xff, sizeof(T) * n));
   return d;
 }
 }  // namespace mk
@@ -57,13 +57,13 @@ extern "C" int qwen38_hc_pre(const float *h, uint32_t t, uint32_t e, uint32_t r,
   }
   HcMixArgs ma{dxn, dup, dmix, dwi ? dz : nullptr, dinj, t, e};
   k_hc_mix<<<64, kMkBlock>>>(ma);
-  MK_CHECK(hipGetLastError());
-  MK_CHECK(hipDeviceSynchronize());
-  MK_CHECK(hipMemcpy(mixed_out, dmix, sizeof(float) * t * e, hipMemcpyDeviceToHost));
-  if (dwi) MK_CHECK(hipMemcpy(inject_out, dinj, sizeof(float) * t * 4, hipMemcpyDeviceToHost));
-  MK_CHECK(hipMemcpy(xn_out, dxn, sizeof(float) * t * d4, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipMemcpy(mixed_out, dmix, sizeof(float) * t * e, hipMemcpyDeviceToHost));
+  if (dwi) HIP_CHECK(hipMemcpy(inject_out, dinj, sizeof(float) * t * 4, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipMemcpy(xn_out, dxn, sizeof(float) * t * d4, hipMemcpyDeviceToHost));
   for (void *p : std::vector<void *>{dh, dg, dxn, dwd, dwu, dwi, ddown, dact, dup, dmix, dz, dinj})
-    if (p) MK_CHECK(hipFree(p));
+    if (p) HIP_CHECK(hipFree(p));
   return 0;
 }
 
@@ -72,10 +72,10 @@ extern "C" int qwen38_hc_combine(float *h, const float *out, const float *inject
   float *dh = up(h, size_t(t) * 4 * e), *dout = up(out, size_t(t) * e), *dinj = up(inject, size_t(t) * 4);
   HcCombineArgs a{dh, dout, dinj, t, e};
   k_hc_combine<<<64, kMkBlock>>>(a);
-  MK_CHECK(hipGetLastError());
-  MK_CHECK(hipDeviceSynchronize());
-  MK_CHECK(hipMemcpy(h, dh, sizeof(float) * t * 4 * e, hipMemcpyDeviceToHost));
-  for (void *p : std::vector<void *>{dh, dout, dinj}) MK_CHECK(hipFree(p));
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipMemcpy(h, dh, sizeof(float) * t * 4 * e, hipMemcpyDeviceToHost));
+  for (void *p : std::vector<void *>{dh, dout, dinj}) HIP_CHECK(hipFree(p));
   return 0;
 }
 
@@ -93,10 +93,10 @@ extern "C" int qwen38_hc_combine_rms(const float *h, const float *out, const flo
     k_hc_combine<<<grid, kMkBlock>>>(ca);
     k_rms<<<grid, kMkBlock>>>(ra);
   }
-  MK_CHECK(hipGetLastError());
-  MK_CHECK(hipDeviceSynchronize());
-  MK_CHECK(hipMemcpy(h_out, dh, sizeof(float) * t * 4 * e, hipMemcpyDeviceToHost));
-  MK_CHECK(hipMemcpy(xn_out, dxn, sizeof(float) * t * 4 * e, hipMemcpyDeviceToHost));
-  for (void *p : std::vector<void *>{dh, dout, dinj, dg, dxn}) MK_CHECK(hipFree(p));
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipMemcpy(h_out, dh, sizeof(float) * t * 4 * e, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipMemcpy(xn_out, dxn, sizeof(float) * t * 4 * e, hipMemcpyDeviceToHost));
+  for (void *p : std::vector<void *>{dh, dout, dinj, dg, dxn}) HIP_CHECK(hipFree(p));
   return 0;
 }

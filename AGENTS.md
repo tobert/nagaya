@@ -199,7 +199,7 @@ An agent may also stop and start the web app on b70host (`python3 tools/nagaya_w
   systemd's store, give `/proc/self/fd/<n>`.
 - The context calls (`context.rs`) return nothing. The worker maps the result onto the three write results (ABI
   "Capabilities") through the poison flag of the context.
-- The C++ runtime layer aborts the process on a failed HIP call (`MK_CHECK`), and the Rust host stops it on a
+- The C++ runtime layer aborts the process on a failed HIP call (`HIP_CHECK`), and the Rust host stops it on a
   defect. The extern layer `extern.hip` checks nothing, so the worker checks each rule first.
   `host::segments_problem` runs before each pass.
 - The HIP device is the device that is current on the calling thread. Make every engine call from one thread.

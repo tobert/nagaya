@@ -261,7 +261,7 @@ fn status_name(binding: &Binding, status: u32) -> String {
     unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned()
 }
 
-/// Stop the program: a launch failed in a way that no caller can recover from (`MK_DIE`).
+/// Stop the program: a launch failed in a way that no caller can recover from (`HIP_DIE`).
 fn die(why: &str) -> ! {
     eprintln!("engine: {why}");
     std::process::abort();

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Device traps that say which one fired (PLAN.md Problems 2026-09-29 00:11: "HSA_STATUS_ERROR_EXCEPTION ... which trap
-// unknown"). A trap site calls MK_TRAP(status, file): the lane first records a distinct Status and a site id (the file's
+// unknown"). A trap site calls HIP_TRAP(status, file): the lane first records a distinct Status and a site id (the file's
 // TrapFile and the source line) in the process's trap record, then traps as before (never skipped, never recoverable).
 // The trap kills the queue and the HIP runtime aborts the process; the SIGABRT handler installed by trap_sink_install()
 // (rt.cpp) reads the record and writes "device trap: <status> at site <file>:<line> (wg <n>)" to stderr first.
@@ -56,7 +56,7 @@ static __device__ __attribute__((visibility("default"))) Control *g_trap_ctl = n
 }  // namespace mk
 
 // A trap that names itself. `status` is a mk::Status (rt.h), `file` a mk::TrapFile.
-#define MK_TRAP(status, file)                                                                          \
+#define HIP_TRAP(status, file)                                                                          \
   do {                                                                                                 \
     ::mk::trap_record((status), (uint32_t(file) << 16) | uint32_t(__LINE__));                          \
     __builtin_trap();                                                                                  \
@@ -69,11 +69,11 @@ namespace mk {
 // rt.cpp keeps the list of binders (trap_register_binder) and runs them from trap_sink_install().
 void trap_register_binder(void (*bind)(Control *));
 [[maybe_unused]] static __host__ void trap_bind_this_tu(Control *c) {
-  MK_CHECK(hipMemcpyToSymbol(HIP_SYMBOL(g_trap_ctl), &c, sizeof c));
+  HIP_CHECK(hipMemcpyToSymbol(HIP_SYMBOL(g_trap_ctl), &c, sizeof c));
 }
 }  // namespace mk
 
-#if !defined(__HIP_DEVICE_COMPILE__) && !defined(MK_TRAP_NO_BINDER)
+#if !defined(__HIP_DEVICE_COMPILE__) && !defined(HIP_TRAP_NO_BINDER)
 namespace mk {
 namespace {
 struct TrapBinderRegistration {

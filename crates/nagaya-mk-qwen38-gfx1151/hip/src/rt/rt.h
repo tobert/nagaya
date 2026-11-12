@@ -13,16 +13,16 @@
 #include <string>
 #include <thread>
 
-#define MK_CHECK(expr)                                                                      \
+#define HIP_CHECK(expr)                                                                      \
   do {                                                                                      \
-    hipError_t mk_e_ = (expr);                                                              \
-    if (mk_e_ != hipSuccess) {                                                              \
-      fprintf(stderr, "%s:%d: %s -> %s\n", __FILE__, __LINE__, #expr, hipGetErrorString(mk_e_)); \
+    hipError_t hip_e_ = (expr);                                                              \
+    if (hip_e_ != hipSuccess) {                                                              \
+      fprintf(stderr, "%s:%d: %s -> %s\n", __FILE__, __LINE__, #expr, hipGetErrorString(hip_e_)); \
       abort();                                                                              \
     }                                                                                       \
   } while (0)
 
-#define MK_DIE(...)                                        \
+#define HIP_DIE(...)                                        \
   do {                                                     \
     fprintf(stderr, "%s:%d: ", __FILE__, __LINE__);        \
     fprintf(stderr, __VA_ARGS__);                          \
@@ -33,12 +33,12 @@
 // A C ABI that takes a buffer takes its byte size too, and dies unless it is exactly what the layout needs (A6;
 // PLAN.md Problems 2026-09-29: a tile pool sized at 110 B a row-superblock instead of 112 was written past). Checked on
 // the host before the first HIP call of the entry point. `op` is the entry point's symbol, `buf` the parameter's name.
-#define MK_CHECK_BYTES(op, buf, given, need)                                                         \
+#define HIP_CHECK_BYTES(op, buf, given, need)                                                         \
   do {                                                                                              \
-    const uint64_t mk_g_ = uint64_t(given), mk_n_ = uint64_t(need);                                  \
-    if (mk_g_ != mk_n_)                                                                             \
-      MK_DIE("%s: buffer '%s' is %llu B, the layout needs %llu B", op, buf, (unsigned long long)mk_g_, \
-             (unsigned long long)mk_n_);                                                            \
+    const uint64_t hip_given_ = uint64_t(given), hip_need_ = uint64_t(need);                                  \
+    if (hip_given_ != hip_need_)                                                                             \
+      HIP_DIE("%s: buffer '%s' is %llu B, the layout needs %llu B", op, buf, (unsigned long long)hip_given_, \
+             (unsigned long long)hip_need_);                                                            \
   } while (0)
 
 namespace mk {
@@ -48,7 +48,7 @@ enum Status : uint32_t {
   kOk = 0,
   kAborted = 1,       // the host set Control::abort
   kSpinTimeout = 2,   // a bounded spin ran out of time
-  // Device traps (trap.h: MK_TRAP records one of these, with the site, then traps; the host reports it). First value
+  // Device traps (trap.h: HIP_TRAP records one of these, with the site, then traps; the host reports it). First value
   // kTrapFirst; status_name() knows each.
   kTrapActRange = 16,  // qmmh: an activation beyond f16's range, or NaN/inf (crash, never inf)
   kTrapBadArgs,        // an op's precondition on its arguments: shape, alignment, tile, split, fused-staging setup

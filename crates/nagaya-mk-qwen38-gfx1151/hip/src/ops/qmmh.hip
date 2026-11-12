@@ -39,21 +39,21 @@ extern "C" int qwen38_qmmh(uint32_t type, const void *w_host, uint64_t w_bytes, 
                        uint64_t x_bytes, uint32_t x_rows, const uint32_t *x_row_host, uint64_t x_row_bytes, uint32_t t,
                        float *y_host, uint64_t y_bytes, uint32_t y_rows, const uint32_t *y_row_host,
                        uint64_t y_row_bytes, uint32_t ldy, uint32_t grid) {
-  if (!qmmh_type(type)) MK_DIE("qwen38_qmmh: type %u has no f16 path", type);
+  if (!qmmh_type(type)) HIP_DIE("qwen38_qmmh: type %u has no f16 path", type);
   return run_qmm(launch_qmmh, kQmmhRows, kQmmhToks, "qwen38_qmmh", type, w_host, w_bytes, n, k, x_host, x_bytes, x_rows,
                  x_row_host, x_row_bytes, t, y_host, y_bytes, y_rows, y_row_host, y_row_bytes, ldy, grid);
 }
 
 extern "C" double qwen38_qmmh_bench(uint32_t type, const void *w_host, uint64_t w_bytes, uint32_t n, uint32_t k,
                                 const float *x_host, uint64_t x_bytes, uint32_t t, uint32_t grid, uint32_t reps) {
-  if (!qmmh_type(type)) MK_DIE("qwen38_qmmh_bench: type %u has no f16 path", type);
+  if (!qmmh_type(type)) HIP_DIE("qwen38_qmmh_bench: type %u has no f16 path", type);
   return bench_qmm(launch_qmmh, "qwen38_qmmh_bench", type, w_host, w_bytes, n, k, x_host, x_bytes, t, grid, reps);
 }
 
 // k_qmmh's registers, scratch (bytes per lane) and static LDS, for the resource test.
 extern "C" int qwen38_qmmh_resources(int *regs, int *scratch, int *lds) {
   hipFuncAttributes fa{};
-  MK_CHECK(hipFuncGetAttributes(&fa, reinterpret_cast<const void *>(&k_qmmh)));
+  HIP_CHECK(hipFuncGetAttributes(&fa, reinterpret_cast<const void *>(&k_qmmh)));
   *regs = fa.numRegs;
   *scratch = int(fa.localSizeBytes);
   *lds = int(fa.sharedSizeBytes);
@@ -65,34 +65,34 @@ extern "C" int qwen38_qmmh_resources(int *regs, int *scratch, int *lds) {
 extern "C" int qwen38_qmmh_split(uint32_t type, const void *w_host, uint64_t w_bytes, uint32_t n, uint32_t k,
                              const float *x_host, uint64_t x_bytes, uint32_t t, float *y_host, uint64_t y_bytes,
                              uint32_t ksplit, uint32_t grid) {
-  if (!qmmh_type(type)) MK_DIE("qwen38_qmmh_split: type %u has no f16 path", type);
-  if (!qmmh_ksplit_ok(k, ksplit)) MK_DIE("qwen38_qmmh_split: ksplit %u leaves an empty slice of K=%u", ksplit, k);
-  if (ksplit > kMaxKsplit) MK_DIE("qwen38_qmmh_split: ksplit %u > %u", ksplit, kMaxKsplit);
+  if (!qmmh_type(type)) HIP_DIE("qwen38_qmmh_split: type %u has no f16 path", type);
+  if (!qmmh_ksplit_ok(k, ksplit)) HIP_DIE("qwen38_qmmh_split: ksplit %u leaves an empty slice of K=%u", ksplit, k);
+  if (ksplit > kMaxKsplit) HIP_DIE("qwen38_qmmh_split: ksplit %u > %u", ksplit, kMaxKsplit);
   const uint64_t ldw = q::row_bytes(type, k);
-  MK_CHECK_BYTES("qwen38_qmmh_split", "w", w_bytes, ldw * n);
-  MK_CHECK_BYTES("qwen38_qmmh_split", "x", x_bytes, sizeof(float) * uint64_t(t) * k);
-  MK_CHECK_BYTES("qwen38_qmmh_split", "y", y_bytes, sizeof(float) * uint64_t(t) * n);
+  HIP_CHECK_BYTES("qwen38_qmmh_split", "w", w_bytes, ldw * n);
+  HIP_CHECK_BYTES("qwen38_qmmh_split", "x", x_bytes, sizeof(float) * uint64_t(t) * k);
+  HIP_CHECK_BYTES("qwen38_qmmh_split", "y", y_bytes, sizeof(float) * uint64_t(t) * n);
   uint8_t *w;
   float *x, *y, *part = nullptr;
-  MK_CHECK(hipMalloc(&w, ldw * n));
-  MK_CHECK(hipMemcpy(w, w_host, ldw * n, hipMemcpyHostToDevice));
-  MK_CHECK(hipMalloc(&x, sizeof(float) * t * k));
-  MK_CHECK(hipMemcpy(x, x_host, sizeof(float) * t * k, hipMemcpyHostToDevice));
-  MK_CHECK(hipMalloc(&y, sizeof(float) * t * n));
-  MK_CHECK(hipMemset(y, 0xff, sizeof(float) * t * n));
+  HIP_CHECK(hipMalloc(&w, ldw * n));
+  HIP_CHECK(hipMemcpy(w, w_host, ldw * n, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMalloc(&x, sizeof(float) * t * k));
+  HIP_CHECK(hipMemcpy(x, x_host, sizeof(float) * t * k, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMalloc(&y, sizeof(float) * t * n));
+  HIP_CHECK(hipMemset(y, 0xff, sizeof(float) * t * n));
   if (ksplit > 1) {
-    MK_CHECK(hipMalloc(&part, sizeof(float) * ksplit * t * n));
-    MK_CHECK(hipMemset(part, 0xff, sizeof(float) * ksplit * t * n));
+    HIP_CHECK(hipMalloc(&part, sizeof(float) * ksplit * t * n));
+    HIP_CHECK(hipMemset(part, 0xff, sizeof(float) * ksplit * t * n));
   }
   QmmArgs a{type, w, ldw, n, k, t, x, k, nullptr, y, n, nullptr, 0, ksplit, part};
   const uint32_t G = grid ? grid : 1024;
   k_qmmh<<<G, kMkBlock>>>(a, 0);
   if (ksplit > 1) k_qmmh<<<G, kMkBlock>>>(a, 1);
-  MK_CHECK(hipGetLastError());
-  MK_CHECK(hipDeviceSynchronize());
-  MK_CHECK(hipMemcpy(y_host, y, sizeof(float) * t * n, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipMemcpy(y_host, y, sizeof(float) * t * n, hipMemcpyDeviceToHost));
   for (void *p : {static_cast<void *>(w), static_cast<void *>(x), static_cast<void *>(y), static_cast<void *>(part)})
-    if (p) MK_CHECK(hipFree(p));
+    if (p) HIP_CHECK(hipFree(p));
   return 0;
 }
 
@@ -108,46 +108,46 @@ extern "C" int qwen38_qmmh_xin(uint32_t type, const void *w_host, uint64_t w_byt
                            uint32_t xks, uint32_t kind, float scale, float *y_fused_host, uint64_t y_fused_bytes,
                            float *y_ref_host, uint64_t y_ref_bytes, float *x_fused_host, uint64_t x_fused_bytes,
                            float *x_ref_host, uint64_t x_ref_bytes, uint32_t grid) {
-  if (!qmmh_type(type)) MK_DIE("qwen38_qmmh_xin: type %u has no f16 path", type);
-  if (kind != kXinSiluSum && kind != kXinSwigluSum) MK_DIE("qwen38_qmmh_xin: kind %u", kind);
-  if (xks < 2 || xks > kMaxKsplit) MK_DIE("qwen38_qmmh_xin: xks %u", xks);
-  if (t == 0 || k % 64 || n % 16) MK_DIE("qwen38_qmmh_xin: shape %u x %u, t %u", n, k, t);
+  if (!qmmh_type(type)) HIP_DIE("qwen38_qmmh_xin: type %u has no f16 path", type);
+  if (kind != kXinSiluSum && kind != kXinSwigluSum) HIP_DIE("qwen38_qmmh_xin: kind %u", kind);
+  if (xks < 2 || xks > kMaxKsplit) HIP_DIE("qwen38_qmmh_xin: xks %u", xks);
+  if (t == 0 || k % 64 || n % 16) HIP_DIE("qwen38_qmmh_xin: shape %u x %u, t %u", n, k, t);
   const uint64_t ldw = q::row_bytes(type, k), pn = uint64_t(xks) * t * k;
-  MK_CHECK_BYTES("qwen38_qmmh_xin", "w", w_bytes, ldw * n);
-  MK_CHECK_BYTES("qwen38_qmmh_xin", "parts", parts_bytes, sizeof(float) * pn);
-  MK_CHECK_BYTES("qwen38_qmmh_xin", "parts2", parts2_bytes, kind == kXinSwigluSum ? sizeof(float) * pn : 0);
-  MK_CHECK_BYTES("qwen38_qmmh_xin", "y_fused", y_fused_bytes, sizeof(float) * uint64_t(t) * n);
-  MK_CHECK_BYTES("qwen38_qmmh_xin", "y_ref", y_ref_bytes, sizeof(float) * uint64_t(t) * n);
-  MK_CHECK_BYTES("qwen38_qmmh_xin", "x_fused", x_fused_bytes, sizeof(float) * uint64_t(t) * k);
-  MK_CHECK_BYTES("qwen38_qmmh_xin", "x_ref", x_ref_bytes, sizeof(float) * uint64_t(t) * k);
+  HIP_CHECK_BYTES("qwen38_qmmh_xin", "w", w_bytes, ldw * n);
+  HIP_CHECK_BYTES("qwen38_qmmh_xin", "parts", parts_bytes, sizeof(float) * pn);
+  HIP_CHECK_BYTES("qwen38_qmmh_xin", "parts2", parts2_bytes, kind == kXinSwigluSum ? sizeof(float) * pn : 0);
+  HIP_CHECK_BYTES("qwen38_qmmh_xin", "y_fused", y_fused_bytes, sizeof(float) * uint64_t(t) * n);
+  HIP_CHECK_BYTES("qwen38_qmmh_xin", "y_ref", y_ref_bytes, sizeof(float) * uint64_t(t) * n);
+  HIP_CHECK_BYTES("qwen38_qmmh_xin", "x_fused", x_fused_bytes, sizeof(float) * uint64_t(t) * k);
+  HIP_CHECK_BYTES("qwen38_qmmh_xin", "x_ref", x_ref_bytes, sizeof(float) * uint64_t(t) * k);
   uint8_t *w;
   float *p, *p2 = nullptr, *g, *u = nullptr, *x, *y;
-  MK_CHECK(hipMalloc(&w, ldw * n));
-  MK_CHECK(hipMemcpy(w, w_host, ldw * n, hipMemcpyHostToDevice));
-  MK_CHECK(hipMalloc(&p, sizeof(float) * pn));
-  MK_CHECK(hipMemcpy(p, parts_host, sizeof(float) * pn, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMalloc(&w, ldw * n));
+  HIP_CHECK(hipMemcpy(w, w_host, ldw * n, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMalloc(&p, sizeof(float) * pn));
+  HIP_CHECK(hipMemcpy(p, parts_host, sizeof(float) * pn, hipMemcpyHostToDevice));
   if (kind == kXinSwigluSum) {
-    MK_CHECK(hipMalloc(&p2, sizeof(float) * pn));
-    MK_CHECK(hipMemcpy(p2, parts2_host, sizeof(float) * pn, hipMemcpyHostToDevice));
-    MK_CHECK(hipMalloc(&u, sizeof(float) * t * k));
+    HIP_CHECK(hipMalloc(&p2, sizeof(float) * pn));
+    HIP_CHECK(hipMemcpy(p2, parts2_host, sizeof(float) * pn, hipMemcpyHostToDevice));
+    HIP_CHECK(hipMalloc(&u, sizeof(float) * t * k));
   }
-  MK_CHECK(hipMalloc(&g, sizeof(float) * t * k));
-  MK_CHECK(hipMalloc(&x, sizeof(float) * t * k));
-  MK_CHECK(hipMalloc(&y, sizeof(float) * t * n));
+  HIP_CHECK(hipMalloc(&g, sizeof(float) * t * k));
+  HIP_CHECK(hipMalloc(&x, sizeof(float) * t * k));
+  HIP_CHECK(hipMalloc(&y, sizeof(float) * t * n));
   const uint32_t G = grid ? grid : 1024;
   // fused
   QmmArgs a{};
   a.type = type; a.w = w; a.ldw = ldw; a.n = n; a.k = k; a.t = t; a.x = nullptr; a.ldx = k; a.y = y; a.ldy = n;
   a.xin = kind; a.xks = xks; a.xp = p; a.xp2 = p2; a.xscale = scale;
-  MK_CHECK(hipMemset(y, 0xff, sizeof(float) * t * n));
+  HIP_CHECK(hipMemset(y, 0xff, sizeof(float) * t * n));
   k_qmmh<<<G, kMkBlock>>>(a, 0);
-  MK_CHECK(hipGetLastError());
-  MK_CHECK(hipDeviceSynchronize());
-  MK_CHECK(hipMemcpy(y_fused_host, y, sizeof(float) * t * n, hipMemcpyDeviceToHost));
-  MK_CHECK(hipMemset(x, 0xff, sizeof(float) * t * k));
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipMemcpy(y_fused_host, y, sizeof(float) * t * n, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipMemset(x, 0xff, sizeof(float) * t * k));
   k_xin_probe<<<G, kMkBlock>>>(a, x);
-  MK_CHECK(hipGetLastError());
-  MK_CHECK(hipMemcpy(x_fused_host, x, sizeof(float) * t * k, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipMemcpy(x_fused_host, x, sizeof(float) * t * k, hipMemcpyDeviceToHost));
   // reference: the stages the fusion replaces
   QmmArgs s{};
   s.n = k; s.t = t; s.ksplit = xks; s.part = p; s.y = g; s.ldy = k;
@@ -161,15 +161,15 @@ extern "C" int qwen38_qmmh_xin(uint32_t type, const void *w_host, uint64_t w_byt
   }
   QmmArgs r{};
   r.type = type; r.w = w; r.ldw = ldw; r.n = n; r.k = k; r.t = t; r.x = x; r.ldx = k; r.y = y; r.ldy = n;
-  MK_CHECK(hipMemset(y, 0xff, sizeof(float) * t * n));
+  HIP_CHECK(hipMemset(y, 0xff, sizeof(float) * t * n));
   k_qmmh<<<G, kMkBlock>>>(r, 0);
-  MK_CHECK(hipGetLastError());
-  MK_CHECK(hipDeviceSynchronize());
-  MK_CHECK(hipMemcpy(y_ref_host, y, sizeof(float) * t * n, hipMemcpyDeviceToHost));
-  MK_CHECK(hipMemcpy(x_ref_host, x, sizeof(float) * t * k, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipMemcpy(y_ref_host, y, sizeof(float) * t * n, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipMemcpy(x_ref_host, x, sizeof(float) * t * k, hipMemcpyDeviceToHost));
   for (void *q : {static_cast<void *>(w), static_cast<void *>(p), static_cast<void *>(p2), static_cast<void *>(g),
                   static_cast<void *>(u), static_cast<void *>(x), static_cast<void *>(y)})
-    if (q) MK_CHECK(hipFree(q));
+    if (q) HIP_CHECK(hipFree(q));
   return 0;
 }
 
@@ -184,46 +184,46 @@ extern "C" int qwen38_qmmh_hcmix(uint32_t type, const void *w_host, uint64_t w_b
                              uint64_t z_bytes, float *mixed_f_host, uint64_t mixed_f_bytes, float *inject_f_host,
                              uint64_t inject_f_bytes, float *mixed_r_host, uint64_t mixed_r_bytes, float *inject_r_host,
                              uint64_t inject_r_bytes, uint32_t grid) {
-  if (type != q::Q8_0 && type != q::Q8_0_TILES) MK_DIE("qwen38_qmmh_hcmix: type %u (Q8_0 or Q8_0 tiles only)", type);
-  if (t == 0 || e == 0 || e % 16 || k % 64) MK_DIE("qwen38_qmmh_hcmix: shape e=%u k=%u t=%u", e, k, t);
+  if (type != q::Q8_0 && type != q::Q8_0_TILES) HIP_DIE("qwen38_qmmh_hcmix: type %u (Q8_0 or Q8_0 tiles only)", type);
+  if (t == 0 || e == 0 || e % 16 || k % 64) HIP_DIE("qwen38_qmmh_hcmix: shape e=%u k=%u t=%u", e, k, t);
   const bool xin = parts_host != nullptr;
   const uint64_t n = 4ull * e, ldw = q::row_bytes(type, k), tk = uint64_t(t) * k, pn = uint64_t(xks) * tk;
-  MK_CHECK_BYTES("qwen38_qmmh_hcmix", "w", w_bytes, ldw * n);
-  MK_CHECK_BYTES("qwen38_qmmh_hcmix", "x", x_bytes, xin ? 0 : sizeof(float) * tk);
-  MK_CHECK_BYTES("qwen38_qmmh_hcmix", "parts", parts_bytes, xin ? sizeof(float) * pn : 0);
-  if (xin && (xks < 2 || xks > kMaxKsplit)) MK_DIE("qwen38_qmmh_hcmix: xks %u", xks);
-  MK_CHECK_BYTES("qwen38_qmmh_hcmix", "xn", xn_bytes, sizeof(float) * t * n);
-  MK_CHECK_BYTES("qwen38_qmmh_hcmix", "z", z_bytes, z_host ? sizeof(float) * 4 * t : 0);
-  MK_CHECK_BYTES("qwen38_qmmh_hcmix", "mixed_f", mixed_f_bytes, sizeof(float) * t * e);
-  MK_CHECK_BYTES("qwen38_qmmh_hcmix", "mixed_r", mixed_r_bytes, sizeof(float) * t * e);
-  MK_CHECK_BYTES("qwen38_qmmh_hcmix", "inject_f", inject_f_bytes, sizeof(float) * 4 * t);
-  MK_CHECK_BYTES("qwen38_qmmh_hcmix", "inject_r", inject_r_bytes, sizeof(float) * 4 * t);
+  HIP_CHECK_BYTES("qwen38_qmmh_hcmix", "w", w_bytes, ldw * n);
+  HIP_CHECK_BYTES("qwen38_qmmh_hcmix", "x", x_bytes, xin ? 0 : sizeof(float) * tk);
+  HIP_CHECK_BYTES("qwen38_qmmh_hcmix", "parts", parts_bytes, xin ? sizeof(float) * pn : 0);
+  if (xin && (xks < 2 || xks > kMaxKsplit)) HIP_DIE("qwen38_qmmh_hcmix: xks %u", xks);
+  HIP_CHECK_BYTES("qwen38_qmmh_hcmix", "xn", xn_bytes, sizeof(float) * t * n);
+  HIP_CHECK_BYTES("qwen38_qmmh_hcmix", "z", z_bytes, z_host ? sizeof(float) * 4 * t : 0);
+  HIP_CHECK_BYTES("qwen38_qmmh_hcmix", "mixed_f", mixed_f_bytes, sizeof(float) * t * e);
+  HIP_CHECK_BYTES("qwen38_qmmh_hcmix", "mixed_r", mixed_r_bytes, sizeof(float) * t * e);
+  HIP_CHECK_BYTES("qwen38_qmmh_hcmix", "inject_f", inject_f_bytes, sizeof(float) * 4 * t);
+  HIP_CHECK_BYTES("qwen38_qmmh_hcmix", "inject_r", inject_r_bytes, sizeof(float) * 4 * t);
   uint8_t *w;
   float *x = nullptr, *p = nullptr, *g = nullptr, *xn, *z = nullptr, *up, *mf, *jf, *mr, *jr;
-  MK_CHECK(hipMalloc(&w, ldw * n));
-  MK_CHECK(hipMemcpy(w, w_host, ldw * n, hipMemcpyHostToDevice));
-  MK_CHECK(hipMalloc(&x, sizeof(float) * tk));
+  HIP_CHECK(hipMalloc(&w, ldw * n));
+  HIP_CHECK(hipMemcpy(w, w_host, ldw * n, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMalloc(&x, sizeof(float) * tk));
   if (xin) {
-    MK_CHECK(hipMalloc(&p, sizeof(float) * pn));
-    MK_CHECK(hipMemcpy(p, parts_host, sizeof(float) * pn, hipMemcpyHostToDevice));
-    MK_CHECK(hipMalloc(&g, sizeof(float) * tk));
+    HIP_CHECK(hipMalloc(&p, sizeof(float) * pn));
+    HIP_CHECK(hipMemcpy(p, parts_host, sizeof(float) * pn, hipMemcpyHostToDevice));
+    HIP_CHECK(hipMalloc(&g, sizeof(float) * tk));
   } else {
-    MK_CHECK(hipMemcpy(x, x_host, sizeof(float) * tk, hipMemcpyHostToDevice));
+    HIP_CHECK(hipMemcpy(x, x_host, sizeof(float) * tk, hipMemcpyHostToDevice));
   }
-  MK_CHECK(hipMalloc(&xn, sizeof(float) * t * n));
-  MK_CHECK(hipMemcpy(xn, xn_host, sizeof(float) * t * n, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMalloc(&xn, sizeof(float) * t * n));
+  HIP_CHECK(hipMemcpy(xn, xn_host, sizeof(float) * t * n, hipMemcpyHostToDevice));
   if (z_host) {
-    MK_CHECK(hipMalloc(&z, sizeof(float) * 4 * t));
-    MK_CHECK(hipMemcpy(z, z_host, sizeof(float) * 4 * t, hipMemcpyHostToDevice));
+    HIP_CHECK(hipMalloc(&z, sizeof(float) * 4 * t));
+    HIP_CHECK(hipMemcpy(z, z_host, sizeof(float) * 4 * t, hipMemcpyHostToDevice));
   }
-  MK_CHECK(hipMalloc(&up, sizeof(float) * t * n));
-  MK_CHECK(hipMalloc(&mf, sizeof(float) * t * e));
-  MK_CHECK(hipMalloc(&mr, sizeof(float) * t * e));
-  MK_CHECK(hipMalloc(&jf, sizeof(float) * 4 * t));
-  MK_CHECK(hipMalloc(&jr, sizeof(float) * 4 * t));
-  for (float *o : {mf, mr}) MK_CHECK(hipMemset(o, 0xff, sizeof(float) * t * e));
-  for (float *o : {jf, jr}) MK_CHECK(hipMemset(o, 0xff, sizeof(float) * 4 * t));
-  MK_CHECK(hipMemset(up, 0xff, sizeof(float) * t * n));
+  HIP_CHECK(hipMalloc(&up, sizeof(float) * t * n));
+  HIP_CHECK(hipMalloc(&mf, sizeof(float) * t * e));
+  HIP_CHECK(hipMalloc(&mr, sizeof(float) * t * e));
+  HIP_CHECK(hipMalloc(&jf, sizeof(float) * 4 * t));
+  HIP_CHECK(hipMalloc(&jr, sizeof(float) * 4 * t));
+  for (float *o : {mf, mr}) HIP_CHECK(hipMemset(o, 0xff, sizeof(float) * t * e));
+  for (float *o : {jf, jr}) HIP_CHECK(hipMemset(o, 0xff, sizeof(float) * 4 * t));
+  HIP_CHECK(hipMemset(up, 0xff, sizeof(float) * t * n));
   const uint32_t G = grid ? grid : 1024;
   QmmArgs a{};
   a.type = type; a.w = w; a.ldw = ldw; a.n = uint32_t(n); a.k = k; a.t = t; a.x = x; a.ldx = k; a.y = up; a.ldy = uint32_t(n);
@@ -241,15 +241,15 @@ extern "C" int qwen38_qmmh_hcmix(uint32_t type, const void *w_host, uint64_t w_b
   k_ref_hc_mix<<<G, kMkBlock>>>(HcMixArgs{xn, up, mr, z, jr, t, e});
   a.yout = kYoutHcMix; a.mix_xn = xn; a.mix_z = z; a.mix_out = mf; a.mix_inject = z ? jf : nullptr; a.mix_e = e;
   k_qmmh<<<G, kMkBlock>>>(a, 0);
-  MK_CHECK(hipGetLastError());
-  MK_CHECK(hipDeviceSynchronize());
-  MK_CHECK(hipMemcpy(mixed_f_host, mf, sizeof(float) * t * e, hipMemcpyDeviceToHost));
-  MK_CHECK(hipMemcpy(mixed_r_host, mr, sizeof(float) * t * e, hipMemcpyDeviceToHost));
-  MK_CHECK(hipMemcpy(inject_f_host, jf, sizeof(float) * 4 * t, hipMemcpyDeviceToHost));
-  MK_CHECK(hipMemcpy(inject_r_host, jr, sizeof(float) * 4 * t, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipMemcpy(mixed_f_host, mf, sizeof(float) * t * e, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipMemcpy(mixed_r_host, mr, sizeof(float) * t * e, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipMemcpy(inject_f_host, jf, sizeof(float) * 4 * t, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipMemcpy(inject_r_host, jr, sizeof(float) * 4 * t, hipMemcpyDeviceToHost));
   for (void *q : {static_cast<void *>(w), static_cast<void *>(x), static_cast<void *>(p), static_cast<void *>(g),
                   static_cast<void *>(xn), static_cast<void *>(z), static_cast<void *>(up), static_cast<void *>(mf),
                   static_cast<void *>(mr), static_cast<void *>(jf), static_cast<void *>(jr)})
-    if (q) MK_CHECK(hipFree(q));
+    if (q) HIP_CHECK(hipFree(q));
   return 0;
 }

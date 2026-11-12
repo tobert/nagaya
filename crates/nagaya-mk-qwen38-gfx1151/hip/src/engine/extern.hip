@@ -45,9 +45,9 @@ void mk_relayout(uint32_t tile, const uint8_t *src, uint8_t *dst, uint32_t rows,
     case 2: relayout_q8_tiles(src, dst, rows, k); break;
     case 3: relayout_q6_tiles(src, dst, rows, k); break;
     case 4: relayout_iq4_tiles(src, dst, rows, k); break;
-    default: MK_DIE("mk_relayout: tile %u: want 1 to 4", tile);
+    default: HIP_DIE("mk_relayout: tile %u: want 1 to 4", tile);
   }
-  MK_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipDeviceSynchronize());
 }
 void mk_ctx_round_gdn_bf16(void *e, void *c) { static_cast<Engine *>(e)->round_gdn_bf16(static_cast<Context *>(c)); }
 // The launches of the stages that the Rust host built (engine.h Engine::launch_fused, Engine::launch_each).

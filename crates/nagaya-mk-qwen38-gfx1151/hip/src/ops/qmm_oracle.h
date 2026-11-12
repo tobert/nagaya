@@ -72,7 +72,7 @@ __device__ inline void op_qmm(const QmmArgs &a, uint32_t wg, uint32_t nwg) {
     case q::IQ3_S: oracle::op_qmm_t<q::IQ3_S>(a, wg, nwg); break;
     case q::F32: oracle::op_qmm_t<q::F32>(a, wg, nwg); break;
     case q::BF16: oracle::op_qmm_t<q::BF16>(a, wg, nwg); break;
-    default: MK_TRAP(kTrapBadOp, kTrapFileQmmOracle);
+    default: HIP_TRAP(kTrapBadOp, kTrapFileQmmOracle);
   }
 }
 

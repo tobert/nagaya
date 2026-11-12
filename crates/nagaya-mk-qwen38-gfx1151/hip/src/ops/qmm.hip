@@ -33,13 +33,13 @@ extern "C" int qwen38_dequant(uint32_t type, const void *w_host, uint64_t w_byte
                           uint64_t out_bytes) {
   check_shape(type, k);
   const uint64_t ldw = q::row_bytes(type, k);
-  MK_CHECK_BYTES("qwen38_dequant", "w", w_bytes, ldw * rows);
-  MK_CHECK_BYTES("qwen38_dequant", "out", out_bytes, sizeof(float) * uint64_t(rows) * k);
+  HIP_CHECK_BYTES("qwen38_dequant", "w", w_bytes, ldw * rows);
+  HIP_CHECK_BYTES("qwen38_dequant", "out", out_bytes, sizeof(float) * uint64_t(rows) * k);
   uint8_t *w;
   float *out;
-  MK_CHECK(hipMalloc(&w, ldw * rows));
-  MK_CHECK(hipMalloc(&out, sizeof(float) * uint64_t(rows) * k));
-  MK_CHECK(hipMemcpy(w, w_host, ldw * rows, hipMemcpyHostToDevice));
+  HIP_CHECK(hipMalloc(&w, ldw * rows));
+  HIP_CHECK(hipMalloc(&out, sizeof(float) * uint64_t(rows) * k));
+  HIP_CHECK(hipMemcpy(w, w_host, ldw * rows, hipMemcpyHostToDevice));
   const int grid = 256;
   switch (type) {
     case q::Q8_0: k_dequant<q::Q8_0><<<grid, kMkBlock>>>(w, ldw, rows, k, out); break;
@@ -49,13 +49,13 @@ extern "C" int qwen38_dequant(uint32_t type, const void *w_host, uint64_t w_byte
     case q::IQ3_S: k_dequant<q::IQ3_S><<<grid, kMkBlock>>>(w, ldw, rows, k, out); break;
     case q::F32: k_dequant<q::F32><<<grid, kMkBlock>>>(w, ldw, rows, k, out); break;
     case q::BF16: k_dequant<q::BF16><<<grid, kMkBlock>>>(w, ldw, rows, k, out); break;
-    default: MK_DIE("unknown quant type %u", type);
+    default: HIP_DIE("unknown quant type %u", type);
   }
-  MK_CHECK(hipGetLastError());
-  MK_CHECK(hipDeviceSynchronize());
-  MK_CHECK(hipMemcpy(out_host, out, sizeof(float) * uint64_t(rows) * k, hipMemcpyDeviceToHost));
-  MK_CHECK(hipFree(w));
-  MK_CHECK(hipFree(out));
+  HIP_CHECK(hipGetLastError());
+  HIP_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipMemcpy(out_host, out, sizeof(float) * uint64_t(rows) * k, hipMemcpyDeviceToHost));
+  HIP_CHECK(hipFree(w));
+  HIP_CHECK(hipFree(out));
   return 0;
 }
 

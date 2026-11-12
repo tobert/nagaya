@@ -324,12 +324,12 @@ __device__ __attribute__((always_inline)) inline float4 qmmh_psum4(const float *
 // kStQmmKsum (+ kStSiluScale | kStSwiglu) stages at decode (engine.hip fuse_prologues): same expressions, same bits.
 __device__ __attribute__((always_inline)) inline float4 qmmh_x4(const QmmArgs &a, uint32_t tok, uint32_t col) {
   if (a.xin == kXinPlain) return *reinterpret_cast<const float4 *>(a.x + uint64_t(a.x_row ? a.x_row[tok] : tok) * a.ldx + col);
-  if (a.xks < 2 || a.xks > kMaxKsplit || a.x_row) MK_TRAP(kTrapBadArgs, kTrapFileQmmh);
+  if (a.xks < 2 || a.xks > kMaxKsplit || a.x_row) HIP_TRAP(kTrapBadArgs, kTrapFileQmmh);
   const uint64_t tk = uint64_t(a.t) * a.k, at = uint64_t(tok) * a.k + col;
   const float4 g = qmmh_psum4(a.xp, a.xks, tk, at);
   if (a.xin == kXinSiluSum)
     return make_float4(siluf_(g.x * a.xscale), siluf_(g.y * a.xscale), siluf_(g.z * a.xscale), siluf_(g.w * a.xscale));
-  if (a.xin != kXinSwigluSum) MK_TRAP(kTrapBadArgs, kTrapFileQmmh);
+  if (a.xin != kXinSwigluSum) HIP_TRAP(kTrapBadArgs, kTrapFileQmmh);
   const float4 u = qmmh_psum4(a.xp2, a.xks, tk, at);
   return make_float4((g.x * sigmoidf_(g.x)) * u.x, (g.y * sigmoidf_(g.y)) * u.y, (g.z * sigmoidf_(g.z)) * u.z,
                      (g.w * sigmoidf_(g.w)) * u.w);
@@ -374,10 +374,10 @@ template <uint32_t T, class Sh>
 __device__ __attribute__((always_inline)) inline void qmmh_check_yout(const QmmArgs &a, uint32_t ks) {
   if (a.yout == kYoutPlain) return;
   constexpr bool ok_type = T == q::Q8_0 || T == q::Q8_0_TILES;
-  if constexpr (!ok_type || Sh::kWavesN != 4) MK_TRAP(kTrapBadArgs, kTrapFileQmmh);
+  if constexpr (!ok_type || Sh::kWavesN != 4) HIP_TRAP(kTrapBadArgs, kTrapFileQmmh);
   if (a.yout != kYoutHcMix || ks > 1 || a.y_row || a.mix_e == 0 || a.mix_e % 16 || a.n != 4 * a.mix_e || a.mix_xn == nullptr ||
       a.mix_out == nullptr || (a.mix_z != nullptr) != (a.mix_inject != nullptr))
-    MK_TRAP(kTrapBadArgs, kTrapFileQmmh);
+    HIP_TRAP(kTrapBadArgs, kTrapFileQmmh);
 }
 
 // The epilogue's LDS: slot g (one token block's four streams) = up[wn][tok][r], 4 * 16 * 16 floats = 4 KiB. The dense
@@ -456,7 +456,7 @@ __device__ __attribute__((always_inline)) inline void qmmh_item_q8t_decode(const
         const uint32_t tok = t0 + t;
         v = qmmh_x4(a, tok, cu0 * 32 + q4 * 4);
         if (!(fabsf(v.x) <= 65504.f && fabsf(v.y) <= 65504.f && fabsf(v.z) <= 65504.f && fabsf(v.w) <= 65504.f))
-          MK_TRAP(kTrapActRange, kTrapFileQmmh);  // beyond f16 (or NaN): crash, never inf
+          HIP_TRAP(kTrapActRange, kTrapFileQmmh);  // beyond f16 (or NaN): crash, never inf
       }
       _Float16 *dst = xs + t * kQ8tRowHalves + q4 * 4;
       dst[0] = _Float16(v.x);
@@ -533,7 +533,7 @@ __device__ __attribute__((always_inline)) inline void qmmh_item_q6t_decode(const
   const uint32_t wn = wave % Sh::kWavesN, wm = wave / Sh::kWavesN;
   const uint32_t r = lane % 16, h = lane / 16;
   const uint32_t n = rg * Sh::kRows + wn * 16 + r;
-  if (a.yout != kYoutPlain) MK_TRAP(kTrapBadArgs, kTrapFileQmmh);
+  if (a.yout != kYoutPlain) HIP_TRAP(kTrapBadArgs, kTrapFileQmmh);
   _Float16 *xs = reinterpret_cast<_Float16 *>(lds_arena());
   const uint8_t *grp = q6_tile(a.w, a.k, (n < a.n ? n : 0) / 16, 0);
   const WLd<P> wl(a.w);
@@ -558,7 +558,7 @@ __device__ __attribute__((always_inline)) inline void qmmh_item_q6t_decode(const
         const uint32_t tok = t0 + t;
         v = qmmh_x4(a, tok, cu0 * 32 + q4 * 4);
         if (!(fabsf(v.x) <= 65504.f && fabsf(v.y) <= 65504.f && fabsf(v.z) <= 65504.f && fabsf(v.w) <= 65504.f))
-          MK_TRAP(kTrapActRange, kTrapFileQmmh);  // beyond f16 (or NaN): crash, never inf
+          HIP_TRAP(kTrapActRange, kTrapFileQmmh);  // beyond f16 (or NaN): crash, never inf
       }
       _Float16 *dst = xs + t * kQ8tRowHalves + q4 * 4;
       dst[0] = _Float16(v.x);
@@ -633,14 +633,14 @@ __device__ __attribute__((always_inline)) inline void qmmh_item(const QmmArgs &a
   const uint32_t units = a.k / 32;
   const uint32_t us = ks > 1 ? qmmh_slice_units(units, ks) : units;
   const uint32_t u0 = slice * us, u1 = min(u0 + us, units);
-  if ((reinterpret_cast<uintptr_t>(a.x) & 15) || (a.ldx & 3)) MK_TRAP(kTrapBadArgs, kTrapFileQmmh);
-  if (ks > 1 && (u0 >= u1 || a.y_row)) MK_TRAP(kTrapBadArgs, kTrapFileQmmh);  // an empty slice; partials are token-indexed only
+  if ((reinterpret_cast<uintptr_t>(a.x) & 15) || (a.ldx & 3)) HIP_TRAP(kTrapBadArgs, kTrapFileQmmh);
+  if (ks > 1 && (u0 >= u1 || a.y_row)) HIP_TRAP(kTrapBadArgs, kTrapFileQmmh);  // an empty slice; partials are token-indexed only
   qmmh_check_yout<T, Sh>(a, ks);
   _Float16 *xs = reinterpret_cast<_Float16 *>(lds_arena());
   // Rows past N (the last item of a matrix) decode row 0 and are never written. Tiles: the row group's first tile.
   constexpr bool kQ8Tiles = T == q::Q8_0_TILES, kQ6Tiles = T == q::Q6_K_TILES, kTiles = kQ8Tiles || kQ6Tiles;
-  if (kQ8Tiles && (a.n % 16 || a.k % 64 || (reinterpret_cast<uintptr_t>(a.w) & 15))) MK_TRAP(kTrapBadArgs, kTrapFileQmmh);
-  if (kQ6Tiles && (a.n % 16 || a.k % 256 || (reinterpret_cast<uintptr_t>(a.w) & 15))) MK_TRAP(kTrapBadArgs, kTrapFileQmmh);
+  if (kQ8Tiles && (a.n % 16 || a.k % 64 || (reinterpret_cast<uintptr_t>(a.w) & 15))) HIP_TRAP(kTrapBadArgs, kTrapFileQmmh);
+  if (kQ6Tiles && (a.n % 16 || a.k % 256 || (reinterpret_cast<uintptr_t>(a.w) & 15))) HIP_TRAP(kTrapBadArgs, kTrapFileQmmh);
   if constexpr (kQ8Tiles && __is_same(Sh, QmmhDense)) {
     if (ntb == 1) {
       qmmh_item_q8t_decode<P>(a, rg, t0, nt, u0, u1, slice, ks);
@@ -673,7 +673,7 @@ __device__ __attribute__((always_inline)) inline void qmmh_item(const QmmArgs &a
         const uint32_t tok = t0 + t;
         v = qmmh_x4(a, tok, cu0 * 32 + q4 * 4);
         if (!(fabsf(v.x) <= 65504.f && fabsf(v.y) <= 65504.f && fabsf(v.z) <= 65504.f && fabsf(v.w) <= 65504.f))
-          MK_TRAP(kTrapActRange, kTrapFileQmmh);  // beyond f16 (or NaN): crash, never inf
+          HIP_TRAP(kTrapActRange, kTrapFileQmmh);  // beyond f16 (or NaN): crash, never inf
       }
       _Float16 *dst = xs + t * kQmmhRowHalves + q4 * 4;
       dst[0] = _Float16(v.x);
@@ -787,8 +787,8 @@ __device__ __attribute__((always_inline)) inline void qmmh_item_iq3s_tiles(const
   const uint32_t n0 = rg * Sh::kRows + wave * 16, n = n0 + r;
   const uint32_t t0 = tt * Sh::kToks, nt = min(Sh::kToks, a.t - t0);
   const uint32_t nsb = a.k / 256;
-  if (a.n % 16 || a.k % 256 || (reinterpret_cast<uintptr_t>(a.w) & 15) || a.xin != kXinPlain || a.yout != kYoutPlain) MK_TRAP(kTrapBadArgs, kTrapFileQmmh);
-  if ((reinterpret_cast<uintptr_t>(a.x) & 15) || (a.ldx & 3)) MK_TRAP(kTrapBadArgs, kTrapFileQmmh);
+  if (a.n % 16 || a.k % 256 || (reinterpret_cast<uintptr_t>(a.w) & 15) || a.xin != kXinPlain || a.yout != kYoutPlain) HIP_TRAP(kTrapBadArgs, kTrapFileQmmh);
+  if ((reinterpret_cast<uintptr_t>(a.x) & 15) || (a.ldx & 3)) HIP_TRAP(kTrapBadArgs, kTrapFileQmmh);
   _Float16 *xs = reinterpret_cast<_Float16 *>(lds_arena());
   // A row group past N (the last item of a matrix) decodes group 0 and is never written.
   const uint8_t *tiles = a.w + uint64_t(n0 < a.n ? n0 / 16 : 0) * nsb * kIq3sTile;
@@ -838,7 +838,7 @@ __device__ __attribute__((always_inline)) inline void qmmh_item_iq3s_tiles(const
       if (t < nt) {
         v = xc[j];
         if (!(fabsf(v.x) <= 65504.f && fabsf(v.y) <= 65504.f && fabsf(v.z) <= 65504.f && fabsf(v.w) <= 65504.f))
-          MK_TRAP(kTrapActRange, kTrapFileQmmh);  // beyond f16 (or NaN): crash, never inf
+          HIP_TRAP(kTrapActRange, kTrapFileQmmh);  // beyond f16 (or NaN): crash, never inf
       }
       _Float16 *dst = xs + t * kTileRowHalves + q4 * 4;
       dst[0] = _Float16(v.x);
@@ -861,7 +861,7 @@ __device__ __attribute__((always_inline)) inline void qmmh_item_iq3s_tiles(const
         const uint32_t tok = t0 + t;
         v = *reinterpret_cast<const float4 *>(a.x + uint64_t(a.x_row ? a.x_row[tok] : tok) * a.ldx + sb * 256 + q4 * 4);
         if (!(fabsf(v.x) <= 65504.f && fabsf(v.y) <= 65504.f && fabsf(v.z) <= 65504.f && fabsf(v.w) <= 65504.f))
-          MK_TRAP(kTrapActRange, kTrapFileQmmh);  // beyond f16 (or NaN): crash, never inf
+          HIP_TRAP(kTrapActRange, kTrapFileQmmh);  // beyond f16 (or NaN): crash, never inf
       }
       _Float16 *dst = xs + t * kTileRowHalves + q4 * 4;
       dst[0] = _Float16(v.x);
@@ -1013,8 +1013,8 @@ __device__ __attribute__((always_inline)) inline void qmmh_item_moe_tiles(const 
   const uint32_t n0 = rg * Sh::kRows + wave * 16, n = n0 + r;
   const uint32_t t0 = tt * Sh::kToks, nt = min(Sh::kToks, a.t - t0);
   const uint32_t units = a.k / 32;
-  if (a.n % 16 || a.k % MoeTileLoads<T>::kTileValues || (reinterpret_cast<uintptr_t>(a.w) & 15)) MK_TRAP(kTrapBadArgs, kTrapFileQmmh);
-  if ((reinterpret_cast<uintptr_t>(a.x) & 15) || (a.ldx & 3) || a.ksplit > 1 || a.yout != kYoutPlain) MK_TRAP(kTrapBadArgs, kTrapFileQmmh);
+  if (a.n % 16 || a.k % MoeTileLoads<T>::kTileValues || (reinterpret_cast<uintptr_t>(a.w) & 15)) HIP_TRAP(kTrapBadArgs, kTrapFileQmmh);
+  if ((reinterpret_cast<uintptr_t>(a.x) & 15) || (a.ldx & 3) || a.ksplit > 1 || a.yout != kYoutPlain) HIP_TRAP(kTrapBadArgs, kTrapFileQmmh);
   _Float16 *xs = reinterpret_cast<_Float16 *>(lds_arena());
   // A row group past N (the last item of a matrix) decodes group 0 and is never written.
   const uint32_t g = n0 < a.n ? n0 / 16 : 0;
@@ -1033,7 +1033,7 @@ __device__ __attribute__((always_inline)) inline void qmmh_item_moe_tiles(const 
         const uint32_t tok = t0 + t;
         v = qmmh_x4(a, tok, cu0 * 32 + q4 * 4);
         if (!(fabsf(v.x) <= 65504.f && fabsf(v.y) <= 65504.f && fabsf(v.z) <= 65504.f && fabsf(v.w) <= 65504.f))
-          MK_TRAP(kTrapActRange, kTrapFileQmmh);  // beyond f16 (or NaN): crash, never inf
+          HIP_TRAP(kTrapActRange, kTrapFileQmmh);  // beyond f16 (or NaN): crash, never inf
       }
       _Float16 *dst = xs + t * kTileRowHalves + q4 * 4;
       dst[0] = _Float16(v.x);
@@ -1092,7 +1092,7 @@ __device__ inline uint32_t qmmh_items(const QmmArgs &a) {
 // The slices are loaded together (unconditional, clamped), then added in order: a runtime-bound loop made one round
 // trip per slice (~9 us for 16 slices at decode). Same order, same bits.
 __device__ inline void op_qmm_ksum(const QmmArgs &a, uint32_t wg, uint32_t nwg) {
-  if (a.ksplit < 2 || a.ksplit > kMaxKsplit) MK_TRAP(kTrapBadArgs, kTrapFileQmmh);
+  if (a.ksplit < 2 || a.ksplit > kMaxKsplit) HIP_TRAP(kTrapBadArgs, kTrapFileQmmh);
   const uint64_t tn = uint64_t(a.t) * a.n;
   for (uint64_t i = uint64_t(wg) * kMkBlock + mk_tid(); i < tn; i += uint64_t(nwg) * kMkBlock) {
     float v[kMaxKsplit];
@@ -1124,7 +1124,7 @@ __device__ __attribute__((always_inline)) inline void op_qmmh(const QmmArgs &a, 
     case q::IQ4_NL: op_qmmh_t<q::IQ4_NL>(a, wg, nwg); break;
     case q::IQ4_XS: op_qmmh_t<q::IQ4_XS>(a, wg, nwg); break;
     case q::IQ3_S: op_qmmh_t<q::IQ3_S>(a, wg, nwg); break;
-    default: MK_TRAP(kTrapBadOp, kTrapFileQmmh);
+    default: HIP_TRAP(kTrapBadOp, kTrapFileQmmh);
   }
 }
 

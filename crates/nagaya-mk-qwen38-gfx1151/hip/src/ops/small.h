@@ -48,7 +48,7 @@ __device__ __attribute__((always_inline)) inline void rms_finish(const float (&x
 }
 __device__ inline void op_rms(const RmsArgs &a, uint32_t wg, uint32_t nwg) {
   __shared__ float scratch[kMkBlock / kWave];
-  if (a.d == 0 || a.d > kRmsPerThread * kMkBlock) MK_TRAP(kTrapBadArgs, kTrapFileSmall);
+  if (a.d == 0 || a.d > kRmsPerThread * kMkBlock) HIP_TRAP(kTrapBadArgs, kTrapFileSmall);
   const uint32_t items = a.t * a.n_groups, tid = mk_tid();
   for (uint32_t it = wg; it < items; it += nwg) {
     const uint32_t t = it / a.n_groups, g = it % a.n_groups;
@@ -141,7 +141,7 @@ struct HcCombineRmsArgs {
 __device__ inline void op_hc_combine_rms(const HcCombineRmsArgs &a, uint32_t wg, uint32_t nwg) {
   __shared__ float scratch[kMkBlock / kWave];
   const uint32_t e = a.c.e;
-  if (e == 0 || e > kRmsPerThread * kMkBlock) MK_TRAP(kTrapBadArgs, kTrapFileSmall);
+  if (e == 0 || e > kRmsPerThread * kMkBlock) HIP_TRAP(kTrapBadArgs, kTrapFileSmall);
   const uint32_t items = a.c.t * 4, tid = mk_tid();
   for (uint32_t it = wg; it < items; it += nwg) {
     const uint32_t t = it / 4, g = it % 4;
