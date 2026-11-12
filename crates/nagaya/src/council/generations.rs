@@ -173,9 +173,6 @@ pub(crate) struct GenerateThen {
     /// The seals of the state after the build: the boundaries of the build, and the cut and the seals of its chain
     /// when the build started from one.
     recipes: Vec<BoundaryRecipe>,
-    /// The rendering that the build makes: the context without the generation prompt, or the context before the open
-    /// message of a continuation.
-    rendering: Rendering,
     /// The tokens of the prompt: the context, then the generation prompt or the open text.
     prompt: Vec<u32>,
     /// The tokens that the build makes. The generation feeds the rest of the prompt for its first logit row.
@@ -461,12 +458,14 @@ impl GenerateThen {
         if context.open().is_some() {
             return Ok(self.cut_head(&rendering, context.messages.len() - 1));
         }
-        // The state has the boundaries of the build, the cut and the seam that it started from too.
+        // The state has each seal that its build made. The closed rendering has the marked boundaries only, but the
+        // plan of the prompt always ends with the last message, marked or not. So a seal that the closed rendering
+        // lacks, such as the end of an unmarked user message, goes back in as a cut.
         let inserted: Vec<Boundary> = self
             .recipes
             .iter()
             .map(|recipe| recipe.boundary)
-            .filter(|boundary| self.rendering.boundaries.iter().all(|b| b.tokens != boundary.tokens))
+            .filter(|boundary| rendering.boundaries.iter().all(|b| b.tokens != boundary.tokens))
             .collect();
         let recipes = recipes_with_cuts(self.root, &rendering, &inserted)?;
         // The slot holds the prompt and each sampled token but the last.
@@ -993,7 +992,6 @@ impl Service {
             open: context.open().cloned(),
             root,
             recipes: recipes.clone(),
-            rendering: built,
             prompt: rendering.tokens.clone(),
             end,
             settings,
