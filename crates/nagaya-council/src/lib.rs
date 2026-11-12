@@ -10,5 +10,6 @@ pub mod family;
 pub mod latent;
 pub mod read;
 pub mod sampler;
+pub mod soft;
 pub mod template_id;
 pub mod trace;

@@ -18,7 +18,8 @@ use nagaya_council::family::{
     Boundary, Family, FamilyError, ParsedReply, Rendering, ReplyCall, ReplyParser, ReplyStart,
 };
 use nagaya_council::latent::{LatentMap, top};
-use nagaya_council::sampler::{Settings, pick_except};
+use nagaya_council::sampler::{Settings, pick_except, survivors_except, token_stats};
+use nagaya_council::soft::{self, Mix, SoftMap, SoftPlan, Span};
 use nagaya_council::trace::Trace;
 use nagaya_store::{ContentId, Reason, RecipeId};
 
@@ -114,6 +115,26 @@ struct LatentRun {
     fed: usize,
     /// The top token of the logit row of each step, when the plan reads them.
     read: Vec<u32>,
+}
+
+/// The soft inputs of a generation (docs/lab.md, "Soft inputs in a request"): the plan and the embedding table.
+#[derive(Clone)]
+pub(crate) struct Soft {
+    pub plan: SoftPlan,
+    /// The width of a row of the table.
+    pub width: usize,
+    /// The row of the embedding table for a token id, as `f32`.
+    pub table: Arc<dyn Fn(u32) -> Vec<f32> + Send + Sync>,
+}
+
+/// The soft inputs of a generation while it samples.
+struct SoftRun {
+    soft: Soft,
+    /// The tokens of the span, and the tokens of the span that fed a soft row.
+    steps: usize,
+    mixed: usize,
+    /// The sum of the share of each step of the span.
+    share: f64,
 }
 
 /// Where a generation is.
@@ -213,9 +234,35 @@ pub(crate) struct GenerateThen {
     dropped: Vec<u32>,
     /// The latent steps before the first token of the reply, when the request asks for them.
     latent: Option<LatentRun>,
+    /// The soft inputs of the reply, when the request asks for them.
+    soft: Option<SoftRun>,
 }
 
 impl GenerateThen {
+    /// Give each token of the span a soft input (docs/lab.md, "Soft inputs in a request"). A soft row is not a token,
+    /// so the reply holds no head.
+    pub(crate) fn soften(&mut self, soft: Soft) {
+        self.heads = Heads::None;
+        self.soft = Some(SoftRun {
+            soft,
+            steps: 0,
+            mixed: 0,
+            share: 0.0,
+        });
+    }
+
+    /// The count of soft rows and the mean share of the steps of the span, when the request asked for soft inputs.
+    pub(crate) fn soft_stats(&self) -> Option<(usize, f64)> {
+        self.soft.as_ref().map(|run| {
+            let mean = if run.steps == 0 {
+                0.0
+            } else {
+                run.share / run.steps as f64
+            };
+            (run.mixed, mean)
+        })
+    }
+
     /// The latent rows that the slot holds before the reply.
     fn latent_steps(&self) -> usize {
         self.latent.as_ref().map_or(0, |run| run.plan.steps)
@@ -313,8 +360,41 @@ impl GenerateThen {
     /// Sample the next token from a logit row, and give it to the parser and to the stream.
     fn sample(&mut self, row: &[f32]) -> Result<Want, ServiceError> {
         let position = self.prompt.len() + self.latent_steps() + self.sampled.len();
-        let chosen = pick_except(row, &self.settings, position as u64, &self.dropped)
-            .map_err(|error| ServiceError::internal(format!("the sample at position {position} failed: {error}")))?;
+        let failed = |error| ServiceError::internal(format!("the sample at position {position} failed: {error}"));
+        let in_span = self.soft.as_ref().is_some_and(|run| match run.soft.plan.span {
+            Span::All => true,
+            Span::Think => self
+                .parser
+                .as_ref()
+                .is_some_and(|parser| parser.phase() == Phase::Reasoning),
+        });
+        let (chosen, mix) = match self.soft.as_ref().filter(|_| in_span) {
+            Some(run) => {
+                let plan = run.soft.plan;
+                let survivors = survivors_except(row, &self.settings, &self.dropped).map_err(failed)?;
+                let mix = match plan.map {
+                    SoftMap::Moi { beta } => {
+                        let chosen =
+                            pick_except(row, &self.settings, position as u64, &self.dropped).map_err(failed)?;
+                        soft::moi(&survivors, chosen.token, row.len(), plan.top, beta)
+                    }
+                    SoftMap::Gumbel { tau } => {
+                        soft::gumbel(&survivors, plan.top, tau, self.settings.seed, position as u64)
+                    }
+                };
+                let (p, h) = token_stats(row, mix.token()).map_err(failed)?;
+                let chosen = nagaya_council::sampler::Pick {
+                    token: mix.token(),
+                    p,
+                    h,
+                };
+                (chosen, Some(mix))
+            }
+            None => (
+                pick_except(row, &self.settings, position as u64, &self.dropped).map_err(failed)?,
+                None,
+            ),
+        };
         if let Some(tracing) = &mut self.tracing {
             let residual = tracing
                 .residual
@@ -383,8 +463,48 @@ impl GenerateThen {
         }
         match (end, parsed) {
             (Some(cut), Some(parsed)) => self.finish(cut, parsed),
-            _ => Ok(self.row_feed(vec![chosen.token], Kind::Decode)),
+            _ => self.soft_feed(chosen.token, mix),
         }
+    }
+
+    /// The feed of a sampled token: its soft row when the token takes one, or the token. With the span `think`, the
+    /// token that ends the reasoning feeds as a token.
+    fn soft_feed(&mut self, token: u32, mix: Option<Mix>) -> Result<Want, ServiceError> {
+        let Some(mut mix) = mix else {
+            return Ok(self.row_feed(vec![token], Kind::Decode));
+        };
+        let run = self.soft.as_mut().expect("a mix comes from the soft inputs");
+        let ended = run.soft.plan.span == Span::Think
+            && self
+                .parser
+                .as_ref()
+                .is_none_or(|parser| parser.phase() != Phase::Reasoning);
+        if ended {
+            mix = Mix {
+                weights: vec![(token, 1.0)],
+            };
+        }
+        run.steps += 1;
+        run.share += mix.share();
+        if mix.is_token() {
+            return Ok(self.row_feed(vec![token], Kind::Decode));
+        }
+        run.mixed += 1;
+        let width = run.soft.width;
+        let row = soft::row(&mix, width, |id| (run.soft.table)(id));
+        let position = self.prompt.len() + self.latent_steps() + self.sampled.len() - 1;
+        let (placeholder, meta) = self
+            .family
+            .latent_record(position, 1, width)
+            .ok_or_else(|| ServiceError::internal("the family lost its latent rows after the request check"))?;
+        Ok(Want::Latent {
+            token: placeholder,
+            meta,
+            row,
+            position,
+            tap: false,
+            kind: Kind::Decode,
+        })
     }
 
     /// The feed of tokens whose last logit row the generation samples. A trace names the taps on its last pass. The
@@ -873,6 +993,39 @@ impl Service {
         Ok(())
     }
 
+    /// Run a generation with soft inputs, and give the finished job and the facts of its response (docs/lab.md, "Soft
+    /// inputs in a request").
+    pub(crate) fn run_soft(
+        &self,
+        request: &GenerationRequest,
+        latent: Option<Latent>,
+        soft: Soft,
+    ) -> Result<(Finished<GenerateThen>, Facts), ServiceError> {
+        let Prepared { mut then, parts, facts } = self.prepare(request, None, None, latent)?;
+        then.soften(soft);
+        let schedule = Schedule::of(request.class, request.priority);
+        let _claim = self.claim(&parts.recipes);
+        let finished = self.run_context(|tx| parts.body(then, tx), schedule, None)?;
+        Ok((finished, facts))
+    }
+
+    /// Check that the family of the model takes latent rows of `width` values, which carry soft inputs. A fault is a
+    /// 400 that names `soft`.
+    pub(crate) fn takes_soft(&self, width: usize) -> Result<(), ServiceError> {
+        if self.family.latent_record(0, 1, width).is_none() {
+            return Err(Invalid::param(
+                "soft",
+                format!(
+                    "nothing ran: the family of {} has no latent rows, so it takes no soft inputs; send the request \
+                     with no soft",
+                    self.config.model
+                ),
+            )
+            .into());
+        }
+        Ok(())
+    }
+
     /// Check a generation request, render its context, and plan its job (spec 11.3c). The work of the job is a
     /// [`GenerateThen`]; the ensemble of `docs/lab.md` wraps it.
     pub(crate) fn prepare(
@@ -1003,6 +1156,7 @@ impl Service {
                 fed: 0,
                 read: Vec::new(),
             }),
+            soft: None,
         };
         let parts = JobParts {
             shared: Arc::clone(&self.shared),

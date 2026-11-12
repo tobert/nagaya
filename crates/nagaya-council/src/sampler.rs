@@ -227,6 +227,25 @@ pub fn survivors(logits: &[f32], s: &Settings) -> Result<Survivors, SamplerError
     candidates(&widen(logits)?, s, &[])
 }
 
+/// The survivors of the filters, as [`survivors`] gives them, and never one of `dropped`. A soft input reads them
+/// (docs/lab.md, "Soft inputs in a request").
+pub fn survivors_except(logits: &[f32], s: &Settings, dropped: &[u32]) -> Result<Survivors, SamplerError> {
+    s.validate()?;
+    candidates(&widen(logits)?, s, dropped)
+}
+
+/// The probability of `token` and the entropy (nats) of the untempered softmax over the whole vocabulary, as a
+/// [`Pick`] gives them. A token that another rule chose takes its numbers from here.
+pub fn token_stats(logits: &[f32], token: u32) -> Result<(f64, f64), SamplerError> {
+    let l = widen(logits)?;
+    assert!(
+        (token as usize) < l.len(),
+        "the token {token} is in the row of {} logits",
+        l.len()
+    );
+    Ok(raw_stats(&l, token))
+}
+
 /// The probability of the token and the entropy (nats) of the untempered softmax over the whole vocabulary.
 fn raw_stats(l: &[f64], token: u32) -> (f64, f64) {
     // One loop with the same sums in the same order as two passes, so the bits stay, and nothing is allocated.
