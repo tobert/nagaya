@@ -478,6 +478,15 @@ impl GenerateThen {
         let same_boundaries =
             recipes.len() == self.recipes.len() + 1 && recipes.iter().zip(&self.recipes).all(|(a, b)| a == b);
         if !same_boundaries || !in_slot || tokens.len() - fed > HEAD_FEED || tokens.len() > self.room {
+            // A null head costs the next turn a feed of the whole reply. The line says which rule refused the head.
+            tracing::debug!(
+                same_boundaries,
+                in_slot,
+                rendered = tokens.len(),
+                fed,
+                room = self.room,
+                "the reply holds no head: its closed rendering does not continue the state of the slot"
+            );
             return Ok(self.done());
         }
         let last: &BoundaryRecipe = recipes.last().expect("a rendering has a boundary");
@@ -519,6 +528,13 @@ impl GenerateThen {
             && tokens[..self.prompt.len()] == self.prompt[..]
             && tokens[self.prompt.len()..fed] == self.sampled[..self.sampled.len() - 1];
         if !in_slot || seam - fed > HEAD_FEED || at >= seam {
+            tracing::debug!(
+                in_slot,
+                seam,
+                fed,
+                sealed_at = at,
+                "the cut reply holds no head: its open rendering does not continue the state of the slot"
+            );
             return self.done();
         }
         // The family made the spans of this rendering, so a bad span is a defect of the family (spec 8.5).
@@ -564,6 +580,13 @@ impl GenerateThen {
             && tokens[..prompt] == self.prompt[..]
             && tokens[prompt..fed] == self.sampled[..self.sampled.len() - 1];
         if !in_slot || to - fed > HEAD_FEED || to > self.room {
+            tracing::debug!(
+                in_slot,
+                to,
+                fed,
+                room = self.room,
+                "the reply holds no decoded head: its rendering does not continue the state of the slot"
+            );
             return Ok(self.done());
         }
         let (base, at) = self
@@ -762,6 +785,12 @@ impl Then for GenerateThen {
             }
             (Stage::Head { .. }, Got::Fed(None)) => Ok(self.head_step()),
             (Stage::Head { boundary, .. }, Got::Held(id)) => {
+                if id.is_none() {
+                    tracing::debug!(
+                        tokens = boundary.tokens,
+                        "the reply holds no head: the store kept no snapshot of the state"
+                    );
+                }
                 self.head = id.map(|id| (*boundary, id));
                 Ok(self.done())
             }
