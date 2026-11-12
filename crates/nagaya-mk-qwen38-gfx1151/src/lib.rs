@@ -9,6 +9,7 @@
 
 mod arena;
 mod binding;
+pub mod canary;
 mod context;
 mod dequant;
 mod engine;
