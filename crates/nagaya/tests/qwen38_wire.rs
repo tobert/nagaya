@@ -90,7 +90,8 @@ fn a_hip_build_registers_the_qwen38_kind() {
 fn the_registered_kind_is_the_kind_in_the_gfx1151host_profile() {
     let profile = PlacementProfile::read(&repo().join("deploy/gfx1151host").join(PROFILE_FILE)).unwrap();
     assert_eq!(profile.engines[0].kind, qwen38::KIND);
-    let registry = Registry::with_qwen38();
+    // The registry of the process: the profile has an engine of each kind that a `hip` build registers.
+    let registry = Registry::compiled_in();
     for engine in &profile.engines {
         assert!(
             registry.factory(&engine.kind).is_some(),
@@ -226,7 +227,7 @@ fn an_arena_that_differs_from_the_plan_refuses_the_start_and_gives_the_real_size
 }
 
 #[test]
-fn the_gfx1151host_profile_admits_on_the_probed_gfx1151host_with_the_qwen38_factory() {
+fn the_gfx1151host_profile_admits_on_the_probed_gfx1151host_with_the_registry_of_the_process() {
     // The whole start path up to the open: the probe, the plan and the ledger. Nothing here opens the engine.
     let _env = ENV.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let install = Install::new();
@@ -235,9 +236,10 @@ fn the_gfx1151host_profile_admits_on_the_probed_gfx1151host_with_the_qwen38_fact
     let inventory = FileProbe::new(repo().join("crates/nagaya/tests/fixtures/probe/gfx1151host"))
         .probe()
         .unwrap();
-    let admitted = admit(&profile, &Registry::with_qwen38(), &inventory, &mut Ledger::new()).expect("gfx1151host admits");
-    assert_eq!(admitted.engines.len(), 1);
+    let admitted = admit(&profile, &Registry::compiled_in(), &inventory, &mut Ledger::new()).expect("gfx1151host admits");
+    assert_eq!(admitted.engines.len(), 2);
     assert_eq!(admitted.engines[0].name, "qwen38");
+    assert_eq!(admitted.engines[1].name, "qwen-image-fusal");
 }
 
 fn gfx1151host_device() -> GroupDevice {
