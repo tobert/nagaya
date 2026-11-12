@@ -52,6 +52,11 @@ impl Factory for Qwen38Factory {
         Ok(Box::new(engine))
     }
 
+    /// The open checks the shards against the free memory of the machine. The group asks it before a swap starts.
+    fn open_problem(&self, _config: &toml::Table, _devices: &[GroupDevice], freed_bytes: u64) -> Option<String> {
+        nagaya_mk_qwen38_gfx1151::open_problem(freed_bytes)
+    }
+
     /// The engine runs on the one HIP device of its thread, so the description reads no device.
     fn describe(
         &self,

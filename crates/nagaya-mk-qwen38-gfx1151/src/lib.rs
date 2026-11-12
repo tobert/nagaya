@@ -29,6 +29,17 @@ pub use engine::{Hold, Qwen38Engine, describe, hold, open};
 pub use spec::{CONTEXT_CLASSES, ContextClass, MAX_CONTEXT};
 pub use worker::{ClassReading, Qwen38Error, Qwen38Paths};
 
+/// The problem that an open of the engine would meet now, or `None` (spec 3.3b, "The memory check of an open").
+///
+/// It runs the memory check of the open on the shards of `QWEN38_SHARDS`, and it opens no device. `freed_bytes` counts
+/// as available memory: it is the most that an unload before the open returns. A problem names its numbers.
+pub fn open_problem(freed_bytes: u64) -> Option<String> {
+    match Qwen38Paths::from_env() {
+        Ok(paths) => worker::open_problem(&paths, freed_bytes),
+        Err(error) => Some(error.message().to_owned()),
+    }
+}
+
 /// The limits that `open` gives for an arena of `weights_bytes`. It reads no weights and opens no device.
 ///
 /// The engine knows the arena size only after the weights load. The caller of `plan` supplies the size, and `open`

@@ -1,6 +1,7 @@
 //! The load routes (spec 3.3b): `POST /nagaya/v1/engines/{name}/load` and `/unload` start a swap on the group
 //! thread of the engine. A request never starts a load (spec 3.3).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -84,11 +85,18 @@ fn counted_limits() -> Limits {
     limits
 }
 
-struct CountedFactory(Log);
+/// The factory of the counted engines. Its open check refuses the engine `voice` while `refuse` is true.
+struct CountedFactory(Log, Arc<AtomicBool>);
 
 impl Factory for CountedFactory {
     fn plan(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
         Ok(counted_limits())
+    }
+
+    fn open_problem(&self, config: &toml::Table, _devices: &[GroupDevice], freed_bytes: u64) -> Option<String> {
+        (config["name"].as_str() == Some("voice") && self.1.load(Ordering::SeqCst)).then(|| {
+            format!("the shards of the stub take 9 bytes in memory, but the unload frees only {freed_bytes} bytes")
+        })
     }
 
     fn open(&self, config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
@@ -126,11 +134,23 @@ fn start(directory: &std::path::Path) -> (Process, Log) {
     start_pinned(directory, false)
 }
 
+/// As [`start`], with the open check of `voice` that `refuse` switches (spec 3.3b, "The memory check of an open").
+fn start_checked(directory: &std::path::Path, refuse: &Arc<AtomicBool>) -> (Process, Log) {
+    start_with(directory, false, refuse)
+}
+
 /// As [`start`], with `chat` pinned when `pinned` is true (spec 3.3a, "Explicit layout").
 fn start_pinned(directory: &std::path::Path, pinned: bool) -> (Process, Log) {
+    start_with(directory, pinned, &Arc::default())
+}
+
+fn start_with(directory: &std::path::Path, pinned: bool, refuse: &Arc<AtomicBool>) -> (Process, Log) {
     let log: Log = Arc::default();
     let mut registry = Registry::new();
-    registry.register("counted", Box::new(CountedFactory(Arc::clone(&log))));
+    registry.register(
+        "counted",
+        Box::new(CountedFactory(Arc::clone(&log), Arc::clone(refuse))),
+    );
     let mut chat = engine("chat", Residency::Resident);
     chat.pinned = pinned;
     let profile = PlacementProfile {
@@ -255,6 +275,57 @@ fn a_load_that_does_not_fit_is_a_409_that_names_the_engine_in_the_way() {
     assert!(message.contains("short by 200 bytes"), "{body}");
     assert!(message.contains("`chat`") && message.contains("`unload`"), "{body}");
     assert_eq!(log_of(&log), ["open:chat"]);
+}
+
+/// A load that the open check of the engine refuses is a 409 that names the shortfall and the engines in the way. No
+/// swap starts, no state changes, and the process lives (spec 3.3b, "The memory check of an open").
+#[test]
+fn a_load_that_the_open_check_refuses_is_a_409_and_the_process_lives() {
+    let directory = tempfile::tempdir().unwrap();
+    let refuse = Arc::new(AtomicBool::new(true));
+    let (process, log) = start_checked(directory.path(), &refuse);
+    let council = council(&process);
+    // An empty list frees nothing and leaves `chat` in the way. The ledger would refuse this load too, but the check
+    // of the engine comes first, so the message is the shortfall of the engine.
+    let (status, body) = post(&council, "/nagaya/v1/engines/voice/load");
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["type"], json!("invalid_request"), "{body}");
+    assert_eq!(body["error"]["param"], json!("name"), "{body}");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.starts_with("nothing changed:"), "{body}");
+    assert!(message.contains("frees only 0 bytes"), "{body}");
+    assert!(message.contains("`chat`") && message.contains("`unload`"), "{body}");
+    // A list that names `chat` frees its 600 bytes, and the check still refuses.
+    let (status, body) = post_json(&council, "/nagaya/v1/engines/voice/load", &json!({"unload": ["chat"]}));
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("frees only 600 bytes"), "{body}");
+    assert_eq!(log_of(&log), ["open:chat"], "no engine closed or opened");
+    let ports = process.ports();
+    assert_eq!(ports.engine_state("voice").unwrap().as_str(), "unloaded");
+    assert_eq!(ports.engine_state("chat").unwrap().as_str(), "ready");
+    // The process lives: the group answers the next request.
+    let (status, body) = post(&council, "/nagaya/v1/engines/chat/load");
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // The same load goes on when the check passes.
+    refuse.store(false, Ordering::SeqCst);
+    let (status, body) = post_json(&council, "/nagaya/v1/engines/voice/load", &json!({"unload": ["chat"]}));
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(swapped(&process), (vec!["chat".to_owned()], vec!["voice".to_owned()]));
+    assert_eq!(log_of(&log), ["open:chat", "close:chat", "open:voice"]);
+}
+
+/// A load whose open check passes goes on as before.
+#[test]
+fn a_load_that_the_open_check_passes_is_a_202() {
+    let directory = tempfile::tempdir().unwrap();
+    let refuse = Arc::new(AtomicBool::new(false));
+    let (process, log) = start_checked(directory.path(), &refuse);
+    let council = council(&process);
+    let (status, body) = post_json(&council, "/nagaya/v1/engines/voice/load", &json!({"unload": ["chat"]}));
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(swapped(&process), (vec!["chat".to_owned()], vec!["voice".to_owned()]));
+    assert_eq!(log_of(&log), ["open:chat", "close:chat", "open:voice"]);
 }
 
 /// A body that does not decode, or an `unload` that names the engine itself, is a 400 that names `unload`.

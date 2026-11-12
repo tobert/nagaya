@@ -142,6 +142,14 @@ pub trait Factory {
         Ok(None)
     }
 
+    /// Give the problem that an open of this engine would meet now, or `None`. The group asks it before a swap starts,
+    /// so a load that the engine would refuse is a refusal that changes nothing (spec 3.3b). `freed_bytes` is an upper
+    /// bound of the memory that the unload of the swap returns to the machine. A kind with no check of its own gives
+    /// none. A problem that appears after this answer still fails the open.
+    fn open_problem(&self, _config: &toml::Table, _devices: &[GroupDevice], _freed_bytes: u64) -> Option<String> {
+        None
+    }
+
     /// Give the served model names of the engine `engine` with this config, with no open and no read of a file. The
     /// check of a profile refuses a name that a live peer serves (spec 2.3, "The check of a name"). A kind that cannot
     /// tell the names before the open gives none.
