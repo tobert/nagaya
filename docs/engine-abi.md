@@ -149,7 +149,7 @@ limits() -> {
     checkpoint_grain: tokens?,   the scheduler makes an interval copy at each multiple (spec 6.13)
     feed: {block: tokens}?,      the feed rule (D11): each span between boundaries goes in passes of `block`
     determinism: always | pinned | per-process,   and bit_dependence: [residency, ...] (D3)
-    taps: [...], with the conditions each needs (the Qwen3.8 engine: unfused, one segment)
+    taps: [...], with the conditions each needs
 }
 pass(segments, taps) -> status, ms, outputs
     segment = {state, inputs, positions, meta, outputs wanted}
@@ -384,8 +384,9 @@ Reason: the fake engine must serve a family with a vocabulary, and the output ro
 | poison / last_error | `Qwen38Context::poisoned` (`context.rs`); `last_error` of the handle (`engine.rs`) | |
 | part writes | `context::state_write`, `cells_write`, `set_n` | return nothing and stop the program on input they refuse; the wrapper checks every precondition first (part index, bytes, an empty context for parts 3-5, n within `max`, not poisoned) and returns refused; a write to a context that is already poisoned is refused, because this call changes nothing; after the call, the poison flag gives failed (decided 2026-10-18) |
 | close | the drop of the last handle or `Hold` (`engine.rs`) | frees the contexts, then the weights: the arena, the shard maps, the PLE table, the weight table (`worker.rs` `unload`); the next `open` loads them again from the same shards; the HIP runtime, the C++ engine and the pass host stay (see below) |
-| pass_check / pass | `host::segments_problem`, `host::run_pass` in Rust; `qwen38_launch_fused` | tokens only (PLE needs token ids); the worker refuses a segment count outside 1 to 16, then a problem of `segments_problem`, then a poisoned context, then a bad knob; the host gathers the PLE rows (`ple.rs`), builds the stages (`pass.rs`), and launches them; outputs are logits per segment |
-| taps | none | milestone 15 step 6 removed the taps (layers, routes, gates), which had no call |
+| pass_check / pass | `host::segments_problem`, `host::run_pass` in Rust; `qwen38_launch_fused` | tokens only (PLE needs token ids); the worker refuses a segment count outside 1 to 16, then a problem of `segments_problem`, then a poisoned context, then a bad knob; the host gathers the PLE rows (`ple.rs`), builds the stages (`pass.rs`), and launches them; outputs are logits per segment, then the tap outputs; a pass with a tap or a control item runs as several launches (see below) |
+| taps | `limits().taps`: `residual` and `fold` | `cuts.rs`; a pass with `residual` runs as 49 launches, cut after each layer, and the host copies the last row of `h` of each logit row with `hip_rt_memcpy`; `fold` is the row of `mixed` that the head reads, copied after the last launch; the rules are in "The residual of the Qwen3.8 engine" and are still Proposed |
+| control | `control()`, `limits().control`, the term `control` | `cuts.rs` `ControlTable`: one device allocation of 15,728,640 bytes at open, after the scratch probe; `control_write` is one copy to the entry; the host op reads the vector of a layer from the device, applies the items to the rows of its segment at the cuts, and writes the rows back; no device code changes; the rules are Proposed |
 | telemetry | none | milestone 15 step 6 removed the op times and the event ring of a pass, which had no call |
 | determinism | `always` | `stage.h`: "every op's output bits depend only on its work items"; top-k ties break by index; bit settings in the identity |
 
@@ -454,7 +455,9 @@ the ABI.
   refuses a segment whose first position is not n, or whose positions are not contiguous. The Qwen3.8 engine reads no
   per-token metadata, so `meta` must be empty.
 - **A pass is fused.** Milestone 15 step 6 removed the unfused pass, which no call used. The restore's pool stages
-  still run one launch each (`qwen38_launch_each`). This binding declares no taps.
+  still run one launch each (`qwen38_launch_each`). This binding declares the taps `residual` and `fold`, and a table
+  of control vectors ("The residual of the Qwen3.8 engine"). A pass with a tap or a control item runs as several
+  launches of the same kernel, cut at layer ends. A pass with neither runs as one launch.
 - **The checkpoint digest is a spot check.** The binding hashes each shard's size and its GGUF header, as the Qwen3.8
   engine's `weight_hash` does. The digest starts with `spot-sha256:`.
 - **`tokenizer_hash` is a hash of the GGUF tokenizer.** The Qwen3.8 engine loads no tokenizer file. The binding hashes
@@ -582,6 +585,51 @@ has none.
 
 Reason: a test that passes when the code is broken is a defect. A person must see this limit before trusting the
 check.
+
+### The residual of the Qwen3.8 engine
+
+Decided 2026-11-12. The state between two layers of the Qwen3.8 engine is 4 streams of 2,560 values each. The residual
+of a token is the 4 streams in stream order: 10,240 `f32` values. The tap `residual` and a control vector have this
+width.
+
+The rules below are for milestone 34 (proposed by Claude Fable 5.2, 2026-11-12). A rule with the mark "Decided"
+is decided. Each other rule is **Proposed**, and it follows from the decided rules.
+
+- **The tap `residual`.** For each logit row, it gives 48 rows of 10,240 `f32` values: the residual after layers 0 to
+  47. Each row is the residual after the control items of its layer. It has no row for the head. The size is 1,966,080
+  bytes for each logit row. Reason: spec 13.1 and the process give a tap one width, and this width equals the width
+  of `limits().control`.
+- **The tap `fold`.** Decided 2026-11-12. For each logit row, it gives the row that the head reads: 2,560 `f32`
+  values. The 4 streams fold into this row after layer 47. It is a tap of its own. Reason: the head's row is not a
+  residual of the layers, and a latent step reads it.
+- **The order of the outputs.** A pass gives one output for each tap and each logit row. The outputs follow the
+  `logits` outputs. All the `residual` outputs come first, then all the `fold` outputs. Each group follows the order
+  of the segments.
+- **The launch cuts.** Decided 2026-11-12, with the op on the host as the first form. A pass with a tap or a control
+  item runs as several fused launches of the same kernel, cut at layer ends. The host reads or changes the rows
+  between two launches. A pass with neither runs as one launch. The mutation knobs of the stage list refuse a pass
+  with cuts, because they name stage indices of one launch.
+- **The reason for the cuts.** No device code changes, and a plain pass keeps its stage list and its bits. A small
+  change of the device code faulted the GPU on 2026-11-10, and the defect is not known. A card run measures the cost
+  of the launches. If a steered decode step is too slow, `add` moves into the launch with an op that exists, with
+  equal bits. A new device op waits until that defect is found.
+- **The table.** `limits().control` is `{tables: 8, layers: 48, width: 10240}`. The term `control` is 15,728,640
+  bytes on the device, with the lifetime `engine`. Eight entries are the count that LFM3 has.
+- **The op.** The op runs on the host, on the rows that a cut reads. It has no device code. The sums of `h . v` and of
+  `v . v` add in 8 lanes by index modulo 8, and the lanes join as `((s0 + s1) + (s2 + s3)) + ((s4 + s5) + (s6 + s7))`.
+  The code never fuses a product with a sum. An item with `v . v` of 0 acts on no row.
+- **The coefficient.** Let `n` be the square root of `v . v`, and `p` be `h . v` divided by `n`. The coefficient `c` of
+  `add` is `a`. For `ablate`, it is `-a * p / n`. For `clamp`, it is `(a - p) / n`. The op sets `h[j]` to
+  `h[j] + c * v[j]`.
+- **The fused combine.** A pass with one control action or more builds with the fused combine of the next layer's
+  norm off. Without this, the norm of layer `l + 1` reads the row before the op changes it. The two forms give equal
+  bits, and a card gate checks that.
+- **The tap `lens`.** The Qwen3.8 engine does not declare `lens` yet. It needs 48 logit rows for each logit row, and
+  the scratch of the logits holds 16. The lab routes that need it come later.
+- **The latent rows.** A latent step reads the tap `fold`. The host scales the row to the mean norm of the rows of
+  `token_embd`. The pass copies the row over the embedding row of the position. The record is the kind 5 with the
+  width 2,560, as for LFM3. Decided 2026-11-12: the placeholder of a latent position is the padding token that the
+  GGUF tokenizer keys name.
 
 ## How mkviolet maps
 

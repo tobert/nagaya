@@ -596,10 +596,12 @@ Do the steps in this order. Each step ends with the checks green.
    - Not built: the canary of the other engines.
 3. **Docs.** Milestone 30 step 7, with the residual of 4 streams as a rule. The control vectors of Qwen3.8.
 4. **Oracle fixture.** Milestone 30 step 8, and one run with an `add`.
-5. **The tap hook.** Milestone 30 step 9. A tap in a joined pass gives the rows of the pass alone.
+5. **The tap hook.** Milestone 30 step 9. A tap in a joined pass gives the rows of the pass alone. Written: the host
+   code, with host tests, and the card tests in `tests/hip_tap.rs`. The card gates have not run.
 6. **Control vectors.** The table at `open`, `control_write`, and the op after each layer. `pass` checks
    `segment.control`. Card gates: a strength of 0 gives the bits of no item, and an `add` matches the oracle. Two
-   lists in one pass each give the bits of the pass alone.
+   lists in one pass each give the bits of the pass alone. Written: the host code, with host tests, and the card
+   tests in `tests/hip_control.rs`. The card gates have not run.
 7. **The lab routes.** A route chooses a model by what its engine declares, not by its kind. `project` and `trace`
    read the GGUF head and the output fold.
 8. **Latent steps.** Milestone 30 steps 10 and 11.

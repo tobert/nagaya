@@ -477,7 +477,7 @@ fn a_pass_runs_and_refuses_a_wrong_position() {
     engine.parts().unwrap().part_read(empty, 5, &mut after).unwrap();
     assert_eq!(before, after, "a refused pass changed the state");
 
-    // Rows, metadata and taps are not part of this binding.
+    // Rows and metadata are not part of this binding, and neither is a tap that it does not name.
     let mut rows = segment(empty, &[1], 0);
     rows.inputs = SegmentInputs::Rows(vec![0; 4]);
     assert!(engine.pass(std::slice::from_ref(&rows), &[]).is_err());

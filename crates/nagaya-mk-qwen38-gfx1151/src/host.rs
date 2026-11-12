@@ -7,10 +7,12 @@
 
 use std::collections::HashMap;
 use std::ffi::{CStr, c_void};
+use std::ops::Range;
 use std::time::Instant;
 
 use crate::binding::{Binding, PassStop, Qwen38Launch, Qwen38Segment};
 use crate::context::{Copy, Qwen38Context};
+use crate::cuts::{ControlTable, CutDevice, Cuts};
 use crate::pass::{self, Builder, Knobs, PassBuffers, Scratch, Seg, Weights};
 use crate::ple;
 use crate::stage::Stage;
@@ -65,6 +67,8 @@ pub(crate) struct Host {
     /// The stage list of a pass, in pinned host memory that the device reads, and its room in stages.
     stages: *mut Stage,
     stage_cap: usize,
+    /// The table of control vectors, made after the scratch probe (`cuts.rs`). `None` until then.
+    pub(crate) control: Option<ControlTable>,
 }
 
 impl Host {
@@ -87,6 +91,7 @@ impl Host {
             inv_freq: std::ptr::null_mut(),
             stages: std::ptr::null_mut(),
             stage_cap: 0,
+            control: None,
         }
     }
 
@@ -127,7 +132,7 @@ impl Host {
     }
 
     /// The scratch buffer `name` of `floats`.
-    fn scratch(&mut self, binding: &Binding, name: &str, floats: usize) -> *mut f32 {
+    pub(crate) fn scratch(&mut self, binding: &Binding, name: &str, floats: usize) -> *mut f32 {
         PoolScratch {
             binding,
             pool: &mut self.pool,
@@ -251,6 +256,28 @@ pub(crate) struct PassIn<'a> {
     pub ple: &'a [f32],
     pub knobs: Knobs,
     pub launch: LaunchKnobs,
+    /// The cuts of a pass with a tap or a control item, or `None` for the one launch of a plain pass.
+    pub cuts: Option<&'a mut Cuts>,
+}
+
+/// The ranges of stages that a pass launches, one launch for each range. The pass stops each launch at a cut: a cut is
+/// the index of the stage after the last stage of its launch. With no cut the pass is one range of every stage.
+///
+/// A cut must be inside the list and above the one before it, so the ranges cover the list with no gap and no overlap.
+pub(crate) fn launch_ranges(n: usize, cuts: &[usize]) -> Result<Vec<Range<usize>>, String> {
+    let mut ranges = Vec::with_capacity(cuts.len() + 1);
+    let mut start = 0;
+    for &cut in cuts {
+        if cut <= start || cut >= n {
+            return Err(format!(
+                "a cut at stage {cut} does not fit a list of {n} stages after a launch that starts at stage {start}; cut at a stage after the start and before the end"
+            ));
+        }
+        ranges.push(start..cut);
+        start = cut;
+    }
+    ranges.push(start..n);
+    Ok(ranges)
 }
 
 /// The name of a status of the control block.
@@ -340,6 +367,13 @@ pub(crate) unsafe fn run_pass(
         head_rows: host.head_rows,
         inv_freq: host.inv_freq(binding),
     };
+    // A control action changes `h` at a layer end. The fused combine of the next layer's norm reads `h` before that
+    // change, so a pass with an action builds without it (engine-abi "The residual of the Qwen3.8 engine").
+    let mut knobs = input.knobs;
+    let mut cuts = input.cuts;
+    if cuts.as_ref().is_some_and(|cuts| cuts.fuse_hc_off()) {
+        knobs.fuse_hc = false;
+    }
     let built = Builder {
         w: weights,
         scratch: &mut PoolScratch {
@@ -347,37 +381,83 @@ pub(crate) unsafe fn run_pass(
             pool: &mut host.pool,
         },
         buffers,
-        knobs: input.knobs,
+        knobs,
     }
     .build(&segs, t, want_logits);
-    let n = built.stages.len() as u32;
-    let skip = input.launch.skip_word(n).map_err(PassStop::Refused)?;
+    let n = built.stages.len();
+    let cut_layers = cuts.as_ref().map(|cuts| cuts.layers()).unwrap_or_default();
+    let mut stops = Vec::with_capacity(cut_layers.len());
+    for layer in &cut_layers {
+        match built.layer_ends.get(*layer) {
+            Some(end) => stops.push(*end as usize),
+            None => {
+                return Err(PassStop::Refused(format!(
+                    "the pass names a cut after layer {layer}, but it built {} layers; build all 48 layers (unset QWEN38_DEBUG_LAYERS)",
+                    built.layer_ends.len()
+                )));
+            }
+        }
+    }
+    let ranges = launch_ranges(n, &stops).map_err(PassStop::Refused)?;
+    if ranges.len() > 1 && (input.launch.skip.is_some() || input.launch.stall.is_some()) {
+        return Err(PassStop::Refused(format!(
+            "QWEN38_MUTATE_SKIP_BARRIER and QWEN38_MUTATE_STALL_BARRIER name a stage of one launch, but this pass runs as {} launches, because it has a tap or a control item; send the pass with no tap and no control item, or unset the knob",
+            ranges.len()
+        )));
+    }
+    let skip = input.launch.skip_word(n as u32).map_err(PassStop::Refused)?;
     let stages = host.upload(binding, &built.stages);
     let grid = match input.launch.grid {
         Some(grid) => grid,
         None => unsafe { (binding.max_coop_grid)() }.min(MAX_FUSED_GRID),
     };
-    let mut result = Qwen38Launch::default();
-    unsafe { (binding.launch_fused)(engine, stages, n, grid, skip, &mut result) };
-    if result.status != 0 {
-        let why = format!(
-            "megakernel stopped: {} at stage {} (wg {})",
-            status_name(binding, result.status),
-            result.site,
-            result.wg
-        );
-        // Recoverable only for a spin-timeout that the watchdog did not ask for (its deadline or the memory floor stay
-        // fatal). The control block's barrier count may be left mid-count; the next begin_pass does the full reset.
-        if result.status == SPIN_TIMEOUT && result.watchdog_stopped == 0 {
-            for s in &segs {
-                // SAFETY: a live context of this engine.
-                unsafe { (*s.c).poisoned = true };
+    let device_h = host.scratch(binding, "h", pass::MAX_PASS_TOKENS as usize * pass::HC_DIM as usize);
+    let device_mixed = host.scratch(binding, "mixed", pass::MAX_PASS_TOKENS as usize * pass::EMBD as usize);
+    for (index, range) in ranges.iter().enumerate() {
+        let mut result = Qwen38Launch::default();
+        // SAFETY: the range is inside the uploaded list, which holds `n` stages.
+        unsafe {
+            (binding.launch_fused)(
+                engine,
+                stages.add(range.start),
+                (range.end - range.start) as u32,
+                grid,
+                skip,
+                &mut result,
+            )
+        };
+        if result.status != 0 {
+            // The site is the index in the launch. Add the start of the range to name the stage in the whole list.
+            let why = format!(
+                "megakernel stopped: {} at stage {} (wg {})",
+                status_name(binding, result.status),
+                result.site.wrapping_add(range.start as u32),
+                result.wg
+            );
+            // Recoverable only for a spin-timeout that the watchdog did not ask for (its deadline or the memory floor
+            // stay fatal). The control block's barrier count may be left mid-count; the next begin_pass does the full
+            // reset.
+            if result.status == SPIN_TIMEOUT && result.watchdog_stopped == 0 {
+                return Err(poison(&segs, &why));
             }
-            let error = format!("{why}; the pass's {ns} context(s) are poisoned");
-            eprintln!("engine: {error}");
-            return Err(PassStop::Stopped(error));
+            die(&why);
         }
-        die(&why);
+        if let Some(cuts) = cuts.as_deref_mut()
+            && index < cut_layers.len()
+        {
+            let device = CutDevice {
+                binding,
+                h: device_h,
+                mixed: device_mixed,
+            };
+            // SAFETY: `h` and `mixed` are scratch buffers of the pool, and the launch has ended.
+            if let Err(error) = unsafe { cuts.at_cut(&device, host.control.as_ref(), cut_layers[index]) } {
+                return Err(poison(
+                    &segs,
+                    &format!("the host step after layer {} failed: {error}", cut_layers[index]),
+                ));
+            }
+        }
     }
     if let Some(logits) = logits {
         assert_eq!(
@@ -395,6 +475,20 @@ pub(crate) unsafe fn run_pass(
             )
         };
     }
+    if let Some(cuts) = cuts {
+        let device = CutDevice {
+            binding,
+            h: device_h,
+            mixed: device_mixed,
+        };
+        // SAFETY: as above; the last launch has ended.
+        if let Err(error) = unsafe { cuts.finish(&device) } {
+            return Err(poison(
+                &segs,
+                &format!("the host step after the last launch failed: {error}"),
+            ));
+        }
+    }
     for (s, segment) in segs.iter().zip(segments) {
         // SAFETY: a live context of this engine, and `t` readable tokens.
         let c = unsafe { &mut *s.c };
@@ -402,6 +496,17 @@ pub(crate) unsafe fn run_pass(
         advance(c, tk);
     }
     Ok(start.elapsed().as_secs_f64() * 1e3)
+}
+
+/// Stop the pass: poison each of its contexts and say why. The contexts are half-written.
+fn poison(segs: &[Seg], why: &str) -> PassStop {
+    for s in segs {
+        // SAFETY: a live context of this engine.
+        unsafe { (*s.c).poisoned = true };
+    }
+    let error = format!("{why}; the pass's {} context(s) are poisoned", segs.len());
+    eprintln!("engine: {error}");
+    PassStop::Stopped(error)
 }
 
 /// Advance a context by the tokens of a clean pass: the count, the pooled-key watermark (the pass's pool stages wrote
@@ -520,6 +625,43 @@ mod tests {
             segments_problem(&[null]).unwrap(),
             "segment 0: no context or no tokens pointer"
         );
+    }
+
+    #[test]
+    fn a_pass_with_no_cut_is_one_range_of_the_whole_list() {
+        let ranges = launch_ranges(1000, &[]).unwrap();
+        assert_eq!((ranges.len(), ranges[0].clone()), (1, 0..1000));
+        let ranges = launch_ranges(1, &[]).unwrap();
+        assert_eq!((ranges.len(), ranges[0].clone()), (1, 0..1));
+    }
+
+    #[test]
+    fn cuts_make_ranges_that_cover_the_list_with_no_gap_and_no_overlap() {
+        let ranges = launch_ranges(1000, &[40, 400]).unwrap();
+        assert_eq!(ranges, [0..40, 40..400, 400..1000]);
+        let cuts: Vec<usize> = (1..=48).map(|layer| layer * 20).collect();
+        let ranges = launch_ranges(1000, &cuts).unwrap();
+        assert_eq!(ranges.len(), 49);
+        assert_eq!(ranges[0].start, 0);
+        assert_eq!(ranges.last().unwrap().end, 1000);
+        for pair in ranges.windows(2) {
+            assert_eq!(pair[0].end, pair[1].start, "no gap and no overlap");
+        }
+        assert!(ranges.iter().all(|range| !range.is_empty()));
+    }
+
+    #[test]
+    fn a_cut_that_is_not_inside_the_list_or_not_rising_is_an_error() {
+        for (n, cuts) in [
+            (100, vec![0]),
+            (100, vec![100]),
+            (100, vec![101]),
+            (100, vec![50, 50]),
+            (100, vec![60, 50]),
+        ] {
+            let error = launch_ranges(n, &cuts).expect_err("a bad cut");
+            assert!(error.contains("does not fit a list of"), "{error}");
+        }
     }
 
     #[test]

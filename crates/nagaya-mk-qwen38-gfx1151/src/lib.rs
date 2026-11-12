@@ -11,8 +11,12 @@ mod arena;
 mod binding;
 pub mod canary;
 mod context;
+mod control;
+mod cuts;
 mod dequant;
 mod engine;
+#[cfg(test)]
+mod fake;
 mod gguf;
 #[cfg(test)]
 mod gguf_shard_tests;
