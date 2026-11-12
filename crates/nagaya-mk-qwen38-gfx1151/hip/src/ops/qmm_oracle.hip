@@ -7,12 +7,12 @@
 #include "rt.h"
 
 namespace mk {
-__global__ void __launch_bounds__(kMkBlock) k_qmm_oracle(QmmArgs a) { oracle::op_qmm(a, blockIdx.x, gridDim.x); }
+__global__ void __launch_bounds__(kBlockThreads) k_qmm_oracle(QmmArgs a) { oracle::op_qmm(a, blockIdx.x, gridDim.x); }
 }  // namespace mk
 
 using namespace mk;
 
-static void launch_oracle(const QmmArgs &a, uint32_t grid) { k_qmm_oracle<<<grid, kMkBlock>>>(a); }
+static void launch_oracle(const QmmArgs &a, uint32_t grid) { k_qmm_oracle<<<grid, kBlockThreads>>>(a); }
 
 extern "C" int qwen38_qmm_oracle(uint32_t type, const void *w_host, uint64_t w_bytes, uint32_t n, uint32_t k,
                              const float *x_host, uint64_t x_bytes, uint32_t x_rows, const uint32_t *x_row_host,

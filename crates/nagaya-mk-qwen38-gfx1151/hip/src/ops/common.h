@@ -3,12 +3,12 @@
 // device code and produce the same bits.
 //
 // - An op is a __device__ function `void op_<name>(const <Name>Args &a, uint32_t wg, uint32_t nwg)`
-//   called by every thread of a kMkBlock-thread workgroup. It splits its work into items and
+//   called by every thread of a kBlockThreads-thread workgroup. It splits its work into items and
 //   takes items wg, wg + nwg, wg + 2*nwg, ... The value of every output element depends only on
 //   its item, never on nwg or on which workgroup ran it: no float atomics, no cross-item
 //   reductions, reduction order fixed by the op's definition. So any grid size gives the same
 //   bits, and a single launch (grid = work items) equals the megakernel (grid = co-resident WGs).
-// - Every op has a wrapper kernel `k_<name>` (<<<grid, kMkBlock>>> calling op_<name>(args,
+// - Every op has a wrapper kernel `k_<name>` (<<<grid, kBlockThreads>>> calling op_<name>(args,
 //   blockIdx.x, gridDim.x)) and a C ABI entry `mk_<name>(...)` for tests (host pointers in and
 //   out; allocates, copies, launches, synchronizes, frees; returns 0 or dies with a message).
 // - Shapes are compile-time constants of this model (model.h); a runtime shape that disagrees
@@ -21,7 +21,7 @@
 
 #include "trap.h"  // HIP_TRAP: the ops' traps name themselves (PLAN.md Problems 2026-09-29)
 
-constexpr uint32_t kMkBlock = 256;  // threads per workgroup: 8 wave32s
+constexpr uint32_t kBlockThreads = 256;  // threads per workgroup: 8 wave32s
 constexpr uint32_t kWave = 32;
 
 // threadIdx.x for ops: the same value, passed through an empty asm so the compiler can't prove it loop-invariant.
@@ -65,8 +65,8 @@ __device__ inline float wave_sum(float v) {
   return v;
 }
 
-// Deterministic block-wide sum over kMkBlock threads: wave sums, then wave 0 adds the 8 partials
-// in wave order. Every thread gets the result. `scratch` needs kMkBlock / kWave floats of LDS.
+// Deterministic block-wide sum over kBlockThreads threads: wave sums, then wave 0 adds the 8 partials
+// in wave order. Every thread gets the result. `scratch` needs kBlockThreads / kWave floats of LDS.
 __device__ inline float block_sum(float v, float *scratch) {
   const uint32_t w = threadIdx.x / kWave, l = threadIdx.x % kWave;
   v = wave_sum(v);
@@ -75,7 +75,7 @@ __device__ inline float block_sum(float v, float *scratch) {
   __syncthreads();
   float t = 0.f;
 #pragma unroll
-  for (uint32_t i = 0; i < kMkBlock / kWave; ++i) t += scratch[i];
+  for (uint32_t i = 0; i < kBlockThreads / kWave; ++i) t += scratch[i];
   __syncthreads();
   return t;
 }

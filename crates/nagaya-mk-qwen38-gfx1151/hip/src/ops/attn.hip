@@ -8,14 +8,14 @@
 
 namespace mk {
 
-__global__ void __launch_bounds__(kMkBlock) k_attn_prep(AttnPrepArgs a) { op_attn_prep(a, blockIdx.x, gridDim.x); }
-__global__ void __launch_bounds__(kMkBlock) k_attn_select(AttnSelectArgs a) {
+__global__ void __launch_bounds__(kBlockThreads) k_attn_prep(AttnPrepArgs a) { op_attn_prep(a, blockIdx.x, gridDim.x); }
+__global__ void __launch_bounds__(kBlockThreads) k_attn_select(AttnSelectArgs a) {
   op_attn_select(a, blockIdx.x, gridDim.x);
 }
-__global__ void __launch_bounds__(kMkBlock) k_attn_attend(AttnAttendArgs a) {
+__global__ void __launch_bounds__(kBlockThreads) k_attn_attend(AttnAttendArgs a) {
   op_attn_attend(a, blockIdx.x, gridDim.x);
 }
-__global__ void __launch_bounds__(kMkBlock) k_attn_select_masked(AttnSelectMaskedArgs a) {
+__global__ void __launch_bounds__(kBlockThreads) k_attn_select_masked(AttnSelectMaskedArgs a) {
   op_attn_select_masked(a, blockIdx.x, gridDim.x);
 }
 
@@ -77,17 +77,17 @@ extern "C" int qwen38_attn(uint32_t t, uint32_t p0, const float *q_raw, const fl
   AttnPrepArgs pa{dq_raw, dk_raw, dv_raw, diq_raw, dik_raw, dqg, dkg, diqg, dinv,
                   t,      p0,     dq_out, dgate_out, diq_out, dkv, dik};
   const uint32_t prep_items = (t * kAttnPrepUnits + kWavesPerBlock - 1) / kWavesPerBlock;
-  k_attn_prep<<<grid ? grid : prep_items, kMkBlock>>>(pa);
+  k_attn_prep<<<grid ? grid : prep_items, kBlockThreads>>>(pa);
 
   // ---- stage 2: indexer selection ----
   AttnSelectArgs sa{diq_out, dik, dikg, dinv, t, p0, budget, ratio, dscores, dscores_out,
                      dpicked, dsel, dsel_count, max_nb ? max_nb : 1, max_sel, block_topk_max ? block_topk_max : 1};
-  k_attn_select<<<grid ? grid : t, kMkBlock>>>(sa);
+  k_attn_select<<<grid ? grid : t, kBlockThreads>>>(sa);
 
   // ---- stage 3: attention ----
   AttnAttendArgs aa{dq_out, dgate_out, dkv, dsel, dsel_count, t, max_sel, dattn_out};
   const uint32_t attend_items = t == 1 ? model::kHeads : t * (model::kHeads / kAttnHeadsPerWave);
-  k_attn_attend<<<grid ? grid : attend_items, kMkBlock>>>(aa);
+  k_attn_attend<<<grid ? grid : attend_items, kBlockThreads>>>(aa);
 
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipDeviceSynchronize());
@@ -113,7 +113,7 @@ extern "C" int qwen38_attn(uint32_t t, uint32_t p0, const float *q_raw, const fl
 // out, the same shapes as qwen38_attn (max_nb = (p0 + t) / ratio, max_sel = budget + ratio - 1). Same signature as the
 // serial oracle's qwen38_attn_select_serial. Unwritten sel cells come back as 0x5a5a5a5a.
 namespace mk {
-__global__ void __launch_bounds__(kMkBlock) k_attn_select_emit(AttnSelectArgs a) {
+__global__ void __launch_bounds__(kBlockThreads) k_attn_select_emit(AttnSelectArgs a) {
   for (uint32_t t = blockIdx.x; t < a.t; t += gridDim.x) attn_select_emit(a, t);
 }
 }  // namespace mk
@@ -141,7 +141,7 @@ extern "C" int qwen38_attn_select_emit(uint32_t t, uint32_t p0, uint32_t budget,
   a.max_nb = max_nb ? max_nb : 1;
   a.max_sel = max_sel;
   a.block_topk_max = budget / ratio;
-  k_attn_select_emit<<<grid ? grid : t, kMkBlock>>>(a);
+  k_attn_select_emit<<<grid ? grid : t, kBlockThreads>>>(a);
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipDeviceSynchronize());
   HIP_CHECK(hipMemcpy(sel_out, dsel, sizeof(int32_t) * size_t(t) * max_sel, hipMemcpyDeviceToHost));
@@ -170,7 +170,7 @@ extern "C" int qwen38_attn_attend(uint32_t t, uint32_t n_cells, uint32_t max_sel
   float *dout = up<float>(nullptr, nq);
   HIP_CHECK(hipMemset(dout, 0xff, sizeof(float) * nq));
   AttnAttendArgs aa{dq, dg, dkv, dsel, dcnt, t, max_sel, dout};
-  k_attn_attend<<<grid ? grid : (t == 1 ? model::kHeads : t * (model::kHeads / kAttnHeadsPerWave)), kMkBlock>>>(aa);
+  k_attn_attend<<<grid ? grid : (t == 1 ? model::kHeads : t * (model::kHeads / kAttnHeadsPerWave)), kBlockThreads>>>(aa);
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipDeviceSynchronize());
   HIP_CHECK(hipMemcpy(attn_out, dout, sizeof(float) * nq, hipMemcpyDeviceToHost));
@@ -231,14 +231,14 @@ extern "C" int qwen38_attn_masked(uint32_t t, uint32_t p0, const float *q_raw, c
   AttnPrepArgs pa{dq_raw, dk_raw, dv_raw, diq_raw, dik_raw, dqg, dkg, diqg, dinv,
                   t,      p0,     dq_out, dgate_out, diq_out, dkv, dik};
   const uint32_t prep_items = (t * kAttnPrepUnits + kWavesPerBlock - 1) / kWavesPerBlock;
-  k_attn_prep<<<grid ? grid : prep_items, kMkBlock>>>(pa);
+  k_attn_prep<<<grid ? grid : prep_items, kBlockThreads>>>(pa);
   AttnSelectMaskedArgs sa{AttnSelectArgs{diq_out, dik, dikg, dinv, t, p0, budget, ratio, dscores, dscores_out, dpicked, dsel,
                                          dsel_count, max_nb ? max_nb : 1, max_sel, block_topk_max ? block_topk_max : 1},
                           m};
-  k_attn_select_masked<<<grid ? grid : t, kMkBlock>>>(sa);
+  k_attn_select_masked<<<grid ? grid : t, kBlockThreads>>>(sa);
   AttnAttendArgs aa{dq_out, dgate_out, dkv, dsel, dsel_count, t, max_sel, dattn_out};
   const uint32_t attend_items = t == 1 ? model::kHeads : t * (model::kHeads / kAttnHeadsPerWave);
-  k_attn_attend<<<grid ? grid : attend_items, kMkBlock>>>(aa);
+  k_attn_attend<<<grid ? grid : attend_items, kBlockThreads>>>(aa);
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipDeviceSynchronize());
 

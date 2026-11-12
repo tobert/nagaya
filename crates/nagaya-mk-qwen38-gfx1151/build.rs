@@ -260,18 +260,18 @@ fn stage_layout(manifest: &Path, out: &Path) {
             }
         };
         match (kind, arguments.as_slice()) {
-            ("MK_SIZE", [ty, bytes]) => rust.push_str(&format!(
+            ("STAGE_SIZE", [ty, bytes]) => rust.push_str(&format!(
                 "const _: () = assert!(core::mem::size_of::<{ty}>() == {bytes}, \"{ty}: size\");\n"
             )),
-            ("MK_FIELD", [ty, name, offset]) => rust.push_str(&format!(
+            ("STAGE_FIELD", [ty, name, offset]) => rust.push_str(&format!(
                 "const _: () = assert!(core::mem::offset_of!({ty}, {}) == {offset}, \"{ty}::{name}: offset\");\n",
                 field(name)
             )),
-            ("MK_UNION", [ty, name, mirror, offset]) => rust.push_str(&format!(
+            ("STAGE_UNION", [ty, name, mirror, offset]) => rust.push_str(&format!(
                 "const _: () = assert!(core::mem::offset_of!({ty}, {mirror}) == {offset}, \"{ty}::{name}: offset\");\n"
             )),
-            ("MK_CONST", [cxx, name, value]) => rust.push_str(&format!(
-                "/// `{cxx}` of mk's engine.\npub(crate) const {name}: u32 = {value};\n"
+            ("STAGE_CONST", [cxx, name, value]) => rust.push_str(&format!(
+                "/// `{cxx}` of the Qwen3.8 engine.\npub(crate) const {name}: u32 = {value};\n"
             )),
             _ => panic!("{}: not a layout line", what()),
         }

@@ -6,7 +6,7 @@
 #include "rt.h"
 
 namespace mk {
-__global__ void __launch_bounds__(kMkBlock) k_attn_select_serial(AttnSelectArgs a) {
+__global__ void __launch_bounds__(kBlockThreads) k_attn_select_serial(AttnSelectArgs a) {
   for (uint32_t t = blockIdx.x; t < a.t; t += gridDim.x) oracle::attn_select_emit_serial(a, t);
 }
 }  // namespace mk
@@ -43,7 +43,7 @@ extern "C" int qwen38_attn_select_serial(uint32_t t, uint32_t p0, uint32_t budge
   a.max_nb = max_nb ? max_nb : 1;
   a.max_sel = max_sel;
   a.block_topk_max = topk;
-  k_attn_select_serial<<<grid ? grid : t, kMkBlock>>>(a);
+  k_attn_select_serial<<<grid ? grid : t, kBlockThreads>>>(a);
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipDeviceSynchronize());
   HIP_CHECK(hipMemcpy(sel_out, dsel, sizeof(int32_t) * size_t(t) * max_sel, hipMemcpyDeviceToHost));

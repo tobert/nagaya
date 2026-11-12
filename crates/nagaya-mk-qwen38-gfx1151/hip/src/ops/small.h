@@ -37,18 +37,18 @@ __device__ __attribute__((always_inline)) inline void rms_finish(const float (&x
   float s = 0.f;
 #pragma unroll
   for (uint32_t j = 0; j < kRmsPerThread; ++j)
-    if (tid + j * kMkBlock < d) s = fmaf(xv[j], xv[j], s);
+    if (tid + j * kBlockThreads < d) s = fmaf(xv[j], xv[j], s);
   s = block_sum(s, scratch);
   const float r = 1.0f / sqrtf(s / float(d) + eps);
 #pragma unroll
   for (uint32_t j = 0; j < kRmsPerThread; ++j) {
-    const uint32_t i = tid + j * kMkBlock;
+    const uint32_t i = tid + j * kBlockThreads;
     if (i < d) yr[i] = xv[j] * r * gv[j];
   }
 }
 __device__ inline void op_rms(const RmsArgs &a, uint32_t wg, uint32_t nwg) {
-  __shared__ float scratch[kMkBlock / kWave];
-  if (a.d == 0 || a.d > kRmsPerThread * kMkBlock) HIP_TRAP(kTrapBadArgs, kTrapFileSmall);
+  __shared__ float scratch[kBlockThreads / kWave];
+  if (a.d == 0 || a.d > kRmsPerThread * kBlockThreads) HIP_TRAP(kTrapBadArgs, kTrapFileSmall);
   const uint32_t items = a.t * a.n_groups, tid = mk_tid();
   for (uint32_t it = wg; it < items; it += nwg) {
     const uint32_t t = it / a.n_groups, g = it % a.n_groups;
@@ -57,7 +57,7 @@ __device__ inline void op_rms(const RmsArgs &a, uint32_t wg, uint32_t nwg) {
     float xv[kRmsPerThread], gv[kRmsPerThread];
 #pragma unroll
     for (uint32_t j = 0; j < kRmsPerThread; ++j) {  // unconditional (clamped) loads: no per-load wait
-      const uint32_t i = min(tid + j * kMkBlock, a.d - 1);
+      const uint32_t i = min(tid + j * kBlockThreads, a.d - 1);
       xv[j] = xr[i];
       gv[j] = gm[i];
     }
@@ -77,7 +77,7 @@ struct SiluScaleArgs {
   float scale;
 };
 __device__ inline void op_silu_scale(const SiluScaleArgs &a, uint32_t wg, uint32_t nwg) {
-  for (uint32_t i = wg * kMkBlock + mk_tid(); i < a.n; i += nwg * kMkBlock) a.y[i] = siluf_(a.x[i] * a.scale);
+  for (uint32_t i = wg * kBlockThreads + mk_tid(); i < a.n; i += nwg * kBlockThreads) a.y[i] = siluf_(a.x[i] * a.scale);
 }
 
 // mixed[t, c] = (sum_s sigmoid(up[t, s, c]) * xn[t, s, c]) / 4 over the 4 streams, in stream order;
@@ -103,7 +103,7 @@ __device__ __attribute__((always_inline)) inline float hc_inject_elem(float z) {
 
 __device__ inline void op_hc_mix(const HcMixArgs &a, uint32_t wg, uint32_t nwg) {
   const uint32_t n = a.t * a.e;
-  for (uint32_t i = wg * kMkBlock + mk_tid(); i < n; i += nwg * kMkBlock) {
+  for (uint32_t i = wg * kBlockThreads + mk_tid(); i < n; i += nwg * kBlockThreads) {
     const uint32_t t = i / a.e, c = i % a.e;
     const uint64_t base = uint64_t(t) * 4 * a.e + c;
     float up[4], xn[4];
@@ -123,7 +123,7 @@ struct HcCombineArgs {
 };
 __device__ inline void op_hc_combine(const HcCombineArgs &a, uint32_t wg, uint32_t nwg) {
   const uint32_t n = a.t * 4 * a.e;
-  for (uint32_t i = wg * kMkBlock + mk_tid(); i < n; i += nwg * kMkBlock) {
+  for (uint32_t i = wg * kBlockThreads + mk_tid(); i < n; i += nwg * kBlockThreads) {
     const uint32_t t = i / (4 * a.e), r = i % (4 * a.e), s = r / a.e, c = r % a.e;
     a.h[i] = a.h[i] + a.out[uint64_t(t) * a.e + c] * a.inject[t * 4 + s];
   }
@@ -139,9 +139,9 @@ struct HcCombineRmsArgs {
   RmsArgs r;        // x == c.h, y = xn, gamma [4 * e] per group, t == c.t, n_groups 4, d == c.e
 };
 __device__ inline void op_hc_combine_rms(const HcCombineRmsArgs &a, uint32_t wg, uint32_t nwg) {
-  __shared__ float scratch[kMkBlock / kWave];
+  __shared__ float scratch[kBlockThreads / kWave];
   const uint32_t e = a.c.e;
-  if (e == 0 || e > kRmsPerThread * kMkBlock) HIP_TRAP(kTrapBadArgs, kTrapFileSmall);
+  if (e == 0 || e > kRmsPerThread * kBlockThreads) HIP_TRAP(kTrapBadArgs, kTrapFileSmall);
   const uint32_t items = a.c.t * 4, tid = mk_tid();
   for (uint32_t it = wg; it < items; it += nwg) {
     const uint32_t t = it / 4, g = it % 4;
@@ -150,13 +150,13 @@ __device__ inline void op_hc_combine_rms(const HcCombineRmsArgs &a, uint32_t wg,
     float xv[kRmsPerThread], gv[kRmsPerThread];
 #pragma unroll
     for (uint32_t j = 0; j < kRmsPerThread; ++j) {  // clamped loads as op_rms's
-      const uint32_t c = min(tid + j * kMkBlock, e - 1);
+      const uint32_t c = min(tid + j * kBlockThreads, e - 1);
       xv[j] = hr[c] + a.c.out[uint64_t(t) * e + c] * a.c.inject[t * 4 + g];
       gv[j] = gm[c];
     }
 #pragma unroll
     for (uint32_t j = 0; j < kRmsPerThread; ++j)
-      if (tid + j * kMkBlock < e) hr[tid + j * kMkBlock] = xv[j];
+      if (tid + j * kBlockThreads < e) hr[tid + j * kBlockThreads] = xv[j];
     rms_finish(xv, gv, e, a.r.eps, a.r.y + uint64_t(t) * a.r.ldy + uint64_t(g) * e, tid, scratch);
   }
 }

@@ -7,8 +7,8 @@
 
 namespace mk {
 
-__global__ void __launch_bounds__(kMkBlock) k_gdn_conv(GdnConvArgs a) { op_gdn_conv(a, blockIdx.x, gridDim.x); }
-__global__ void __launch_bounds__(kMkBlock) k_gdn_core(GdnCoreArgs a) { op_gdn_core(a, blockIdx.x, gridDim.x); }
+__global__ void __launch_bounds__(kBlockThreads) k_gdn_conv(GdnConvArgs a) { op_gdn_conv(a, blockIdx.x, gridDim.x); }
+__global__ void __launch_bounds__(kBlockThreads) k_gdn_core(GdnCoreArgs a) { op_gdn_core(a, blockIdx.x, gridDim.x); }
 
 template <class T>
 static T *up(const T *h, size_t n) {
@@ -33,7 +33,7 @@ using namespace mk;
 // The gated DeltaNet core for one layer's T tokens: causal conv + silu (op_gdn_conv), then the
 // gated delta rule and gated RMSNorm per value head (op_gdn_core). Host pointers in and out,
 // tiled (GGUF) order throughout (see gdn.h). `grid` 0 means one workgroup per item for each
-// kernel (conv: ceil(10240 / kMkBlock); core: 48); tests pass other sizes to show the result
+// kernel (conv: ceil(10240 / kBlockThreads); core: 48); tests pass other sizes to show the result
 // doesn't depend on the grid.
 extern "C" int qwen38_gdn(const float *qkv_host, const float *z_host, const float *a_host, const float *b_host,
                       uint32_t t, const float *conv_state_in_host, const float *conv_w_host,
@@ -62,11 +62,11 @@ extern "C" int qwen38_gdn(const float *qkv_host, const float *z_host, const floa
   float *state_out = upv<float>(size_t(VH) * KD * VD);
 
   GdnConvArgs ca{qkv, conv_state_in, conv_w, conv_y, conv_state_out, t};
-  const uint32_t conv_items = (C + kMkBlock - 1) / kMkBlock;
-  k_gdn_conv<<<grid ? grid : conv_items, kMkBlock>>>(ca);
+  const uint32_t conv_items = (C + kBlockThreads - 1) / kBlockThreads;
+  k_gdn_conv<<<grid ? grid : conv_items, kBlockThreads>>>(ca);
 
   GdnCoreArgs ga{conv_y, z, a_in, b_in, ssm_a, dt_bias, gamma, state_in, y, state_out, t};
-  k_gdn_core<<<grid ? grid : VH, kMkBlock>>>(ga);
+  k_gdn_core<<<grid ? grid : VH, kBlockThreads>>>(ga);
 
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipDeviceSynchronize());

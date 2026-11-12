@@ -10,19 +10,19 @@
 namespace mk {
 
 // One dispatcher kernel in this TU (the LDS rule): which = 0 the matmul, 1 the split-K sum.
-__global__ void __launch_bounds__(kMkBlock) k_qmmh(QmmArgs a, uint32_t which) {
+__global__ void __launch_bounds__(kBlockThreads) k_qmmh(QmmArgs a, uint32_t which) {
   if (which == 0) op_qmmh(a, blockIdx.x, gridDim.x);
   else op_qmm_ksum(a, blockIdx.x, gridDim.x);
 }
 
 // The stages a fused staging replaces (tests: tests/ops/test_qmmh_xin.py). No LDS.
-__global__ void __launch_bounds__(kMkBlock) k_ref_silu(SiluScaleArgs a) { op_silu_scale(a, blockIdx.x, gridDim.x); }
-__global__ void __launch_bounds__(kMkBlock) k_ref_swiglu(SwigluArgs a) { op_swiglu(a, blockIdx.x, gridDim.x); }
-__global__ void __launch_bounds__(kMkBlock) k_ref_hc_mix(HcMixArgs a) { op_hc_mix(a, blockIdx.x, gridDim.x); }
+__global__ void __launch_bounds__(kBlockThreads) k_ref_silu(SiluScaleArgs a) { op_silu_scale(a, blockIdx.x, gridDim.x); }
+__global__ void __launch_bounds__(kBlockThreads) k_ref_swiglu(SwigluArgs a) { op_swiglu(a, blockIdx.x, gridDim.x); }
+__global__ void __launch_bounds__(kBlockThreads) k_ref_hc_mix(HcMixArgs a) { op_hc_mix(a, blockIdx.x, gridDim.x); }
 // x as the fused staging computes it, in f32 before the f16 rounding (which would hide a 1-ulp difference).
-__global__ void __launch_bounds__(kMkBlock) k_xin_probe(QmmArgs a, float *x) {
+__global__ void __launch_bounds__(kBlockThreads) k_xin_probe(QmmArgs a, float *x) {
   const uint64_t n4 = uint64_t(a.t) * a.k / 4;
-  for (uint64_t i = uint64_t(blockIdx.x) * kMkBlock + threadIdx.x; i < n4; i += uint64_t(gridDim.x) * kMkBlock) {
+  for (uint64_t i = uint64_t(blockIdx.x) * kBlockThreads + threadIdx.x; i < n4; i += uint64_t(gridDim.x) * kBlockThreads) {
     const uint32_t tok = uint32_t(i * 4 / a.k), col = uint32_t(i * 4 % a.k);
     *reinterpret_cast<float4 *>(x + uint64_t(tok) * a.k + col) = qmmh_x4(a, tok, col);
   }
@@ -32,7 +32,7 @@ __global__ void __launch_bounds__(kMkBlock) k_xin_probe(QmmArgs a, float *x) {
 
 using namespace mk;
 
-static void launch_qmmh(const QmmArgs &a, uint32_t grid) { k_qmmh<<<grid, kMkBlock>>>(a, 0); }
+static void launch_qmmh(const QmmArgs &a, uint32_t grid) { k_qmmh<<<grid, kBlockThreads>>>(a, 0); }
 
 // Same C ABI as qwen38_qmm (qmm.hip); quantized types only.
 extern "C" int qwen38_qmmh(uint32_t type, const void *w_host, uint64_t w_bytes, uint32_t n, uint32_t k, const float *x_host,
@@ -86,8 +86,8 @@ extern "C" int qwen38_qmmh_split(uint32_t type, const void *w_host, uint64_t w_b
   }
   QmmArgs a{type, w, ldw, n, k, t, x, k, nullptr, y, n, nullptr, 0, ksplit, part};
   const uint32_t G = grid ? grid : 1024;
-  k_qmmh<<<G, kMkBlock>>>(a, 0);
-  if (ksplit > 1) k_qmmh<<<G, kMkBlock>>>(a, 1);
+  k_qmmh<<<G, kBlockThreads>>>(a, 0);
+  if (ksplit > 1) k_qmmh<<<G, kBlockThreads>>>(a, 1);
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipDeviceSynchronize());
   HIP_CHECK(hipMemcpy(y_host, y, sizeof(float) * t * n, hipMemcpyDeviceToHost));
@@ -140,29 +140,29 @@ extern "C" int qwen38_qmmh_xin(uint32_t type, const void *w_host, uint64_t w_byt
   a.type = type; a.w = w; a.ldw = ldw; a.n = n; a.k = k; a.t = t; a.x = nullptr; a.ldx = k; a.y = y; a.ldy = n;
   a.xin = kind; a.xks = xks; a.xp = p; a.xp2 = p2; a.xscale = scale;
   HIP_CHECK(hipMemset(y, 0xff, sizeof(float) * t * n));
-  k_qmmh<<<G, kMkBlock>>>(a, 0);
+  k_qmmh<<<G, kBlockThreads>>>(a, 0);
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipDeviceSynchronize());
   HIP_CHECK(hipMemcpy(y_fused_host, y, sizeof(float) * t * n, hipMemcpyDeviceToHost));
   HIP_CHECK(hipMemset(x, 0xff, sizeof(float) * t * k));
-  k_xin_probe<<<G, kMkBlock>>>(a, x);
+  k_xin_probe<<<G, kBlockThreads>>>(a, x);
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipMemcpy(x_fused_host, x, sizeof(float) * t * k, hipMemcpyDeviceToHost));
   // reference: the stages the fusion replaces
   QmmArgs s{};
   s.n = k; s.t = t; s.ksplit = xks; s.part = p; s.y = g; s.ldy = k;
-  k_qmmh<<<G, kMkBlock>>>(s, 1);
+  k_qmmh<<<G, kBlockThreads>>>(s, 1);
   if (kind == kXinSwigluSum) {
     s.part = p2; s.y = u;
-    k_qmmh<<<G, kMkBlock>>>(s, 1);
-    k_ref_swiglu<<<G, kMkBlock>>>(SwigluArgs{g, u, k, k, x, k, t, k});
+    k_qmmh<<<G, kBlockThreads>>>(s, 1);
+    k_ref_swiglu<<<G, kBlockThreads>>>(SwigluArgs{g, u, k, k, x, k, t, k});
   } else {
-    k_ref_silu<<<G, kMkBlock>>>(SiluScaleArgs{g, x, t * k, scale});
+    k_ref_silu<<<G, kBlockThreads>>>(SiluScaleArgs{g, x, t * k, scale});
   }
   QmmArgs r{};
   r.type = type; r.w = w; r.ldw = ldw; r.n = n; r.k = k; r.t = t; r.x = x; r.ldx = k; r.y = y; r.ldy = n;
   HIP_CHECK(hipMemset(y, 0xff, sizeof(float) * t * n));
-  k_qmmh<<<G, kMkBlock>>>(r, 0);
+  k_qmmh<<<G, kBlockThreads>>>(r, 0);
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipDeviceSynchronize());
   HIP_CHECK(hipMemcpy(y_ref_host, y, sizeof(float) * t * n, hipMemcpyDeviceToHost));
@@ -233,14 +233,14 @@ extern "C" int qwen38_qmmh_hcmix(uint32_t type, const void *w_host, uint64_t w_b
   if (xin) {
     QmmArgs s{};
     s.n = k; s.t = t; s.ksplit = xks; s.part = p; s.y = g; s.ldy = k;
-    k_qmmh<<<G, kMkBlock>>>(s, 1);
-    k_ref_silu<<<G, kMkBlock>>>(SiluScaleArgs{g, x, uint32_t(tk), scale});
+    k_qmmh<<<G, kBlockThreads>>>(s, 1);
+    k_ref_silu<<<G, kBlockThreads>>>(SiluScaleArgs{g, x, uint32_t(tk), scale});
     r.x = x; r.xin = kXinPlain;
   }
-  k_qmmh<<<G, kMkBlock>>>(r, 0);
-  k_ref_hc_mix<<<G, kMkBlock>>>(HcMixArgs{xn, up, mr, z, jr, t, e});
+  k_qmmh<<<G, kBlockThreads>>>(r, 0);
+  k_ref_hc_mix<<<G, kBlockThreads>>>(HcMixArgs{xn, up, mr, z, jr, t, e});
   a.yout = kYoutHcMix; a.mix_xn = xn; a.mix_z = z; a.mix_out = mf; a.mix_inject = z ? jf : nullptr; a.mix_e = e;
-  k_qmmh<<<G, kMkBlock>>>(a, 0);
+  k_qmmh<<<G, kBlockThreads>>>(a, 0);
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipDeviceSynchronize());
   HIP_CHECK(hipMemcpy(mixed_f_host, mf, sizeof(float) * t * e, hipMemcpyDeviceToHost));

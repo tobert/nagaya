@@ -34,7 +34,7 @@ using namespace model;
 // launches drain in microseconds. The first to see the abort word records kAborted at `site` (the stage's index). One
 // thread reads and the workgroup shares the answer, so every thread agrees (run_stage has __syncthreads in it). This stops a
 // long or runaway sequence of stages BETWEEN stages; a stage that hangs inside an op can't be stopped (ops have no polls).
-__global__ void __launch_bounds__(kMkBlock) k_stage(const Stage *__restrict__ s, Control *ctl, uint32_t site) {
+__global__ void __launch_bounds__(kBlockThreads) k_stage(const Stage *__restrict__ s, Control *ctl, uint32_t site) {
   __shared__ uint32_t stop;
   if (mk_tid() == 0) {
     uint32_t v = 0;
@@ -94,7 +94,7 @@ LaunchResult Engine::launch_fused(const Stage *ds, uint32_t n, int grid, uint32_
   void *args[] = {&ds, &n, &ctl, &bar, &skip, &ev};
   wd_.begin();
   make_event();
-  launch_coop(mega_kernel(), grid, kMkBlock, args, 0, 0);
+  launch_coop(mega_kernel(), grid, kBlockThreads, args, 0, 0);
   HIP_CHECK(hipEventRecord(launched_ev_, 0));
   wd_.arm(launched_ev_);
   HIP_CHECK(hipDeviceSynchronize());
@@ -111,7 +111,7 @@ LaunchResult Engine::launch_each(const Stage *ds, uint32_t n) {
   make_event();
   wd_.begin();
   for (uint32_t i = 0; i < n; ++i) {
-    k_stage<<<kUnfusedGrid, kMkBlock>>>(ds + i, ctl, i);
+    k_stage<<<kUnfusedGrid, kBlockThreads>>>(ds + i, ctl, i);
     HIP_CHECK(hipGetLastError());
     // After every launch (the same event, re-recorded): the watchdog's "a kernel is still running" query then looks at
     // the newest launch; armed once, after the first record.

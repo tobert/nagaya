@@ -14,7 +14,7 @@ struct MoeMmArgs {
   QmmArgs q;
   MoeFfnArgs f;
 };
-__global__ void __launch_bounds__(kMkBlock) k_moe_mm(MoeMmArgs a) {
+__global__ void __launch_bounds__(kBlockThreads) k_moe_mm(MoeMmArgs a) {
   switch (a.which) {
     case kMmQmm: op_qmm(a.q, blockIdx.x, gridDim.x); break;
     case kMmQmmh: op_qmmh(a.q, blockIdx.x, gridDim.x); break;
@@ -23,10 +23,10 @@ __global__ void __launch_bounds__(kMkBlock) k_moe_mm(MoeMmArgs a) {
     default: HIP_TRAP(kTrapBadOp, kTrapFileMoeHip);
   }
 }
-__global__ void __launch_bounds__(kMkBlock) k_moe_router(MoeRouterArgs a) { op_moe_router(a, blockIdx.x, gridDim.x); }
-__global__ void __launch_bounds__(kMkBlock) k_moe_group(MoeGroupArgs a) { op_moe_group(a, blockIdx.x, gridDim.x); }
-__global__ void __launch_bounds__(kMkBlock) k_swiglu(SwigluArgs a) { op_swiglu(a, blockIdx.x, gridDim.x); }
-__global__ void __launch_bounds__(kMkBlock) k_moe_combine(MoeCombineArgs a) { op_moe_combine(a, blockIdx.x, gridDim.x); }
+__global__ void __launch_bounds__(kBlockThreads) k_moe_router(MoeRouterArgs a) { op_moe_router(a, blockIdx.x, gridDim.x); }
+__global__ void __launch_bounds__(kBlockThreads) k_moe_group(MoeGroupArgs a) { op_moe_group(a, blockIdx.x, gridDim.x); }
+__global__ void __launch_bounds__(kBlockThreads) k_swiglu(SwigluArgs a) { op_swiglu(a, blockIdx.x, gridDim.x); }
+__global__ void __launch_bounds__(kBlockThreads) k_moe_combine(MoeCombineArgs a) { op_moe_combine(a, blockIdx.x, gridDim.x); }
 
 template <class T>
 static T *dev(const void *h, size_t bytes) {
@@ -93,28 +93,28 @@ extern "C" int qwen38_moe(const float *x, uint64_t x_bytes, uint32_t t, const fl
     MoeMmArgs m{};
     m.which = fast && qmmh_type(q.type) ? kMmQmmh : kMmQmm;
     m.q = q;
-    k_moe_mm<<<G, kMkBlock>>>(m);
+    k_moe_mm<<<G, kBlockThreads>>>(m);
   };
   qmm(QmmArgs{q::F32, reinterpret_cast<const uint8_t *>(drouter), 4ull * kEmbd, kExperts, kEmbd, t, dx, kEmbd, nullptr,
               logits, kExperts, nullptr});
-  k_moe_router<<<G, kMkBlock>>>(MoeRouterArgs{logits, tidx, tw, t});
-  k_moe_group<<<G, kMkBlock>>>(MoeGroupArgs{tidx, t, cnt, off, asg, tok, igu, idn, fast});
+  k_moe_router<<<G, kBlockThreads>>>(MoeRouterArgs{logits, tidx, tw, t});
+  k_moe_group<<<G, kBlockThreads>>>(MoeGroupArgs{tidx, t, cnt, off, asg, tok, igu, idn, fast});
   MoeFfnArgs f{type_gate, type_up, type_down, dgate, dup, ddown, ldg, ldu, ldd, dx, gu, h, y, cnt, off, asg, tok, igu, idn,
                fast};
   MoeMmArgs mf{};
   mf.f = f;
   mf.which = kMmGu;
-  k_moe_mm<<<G, kMkBlock>>>(mf);
-  k_swiglu<<<G, kMkBlock>>>(SwigluArgs{gu, gu + kFf, 2 * kFf, 2 * kFf, h, kFf, A, kFf});
+  k_moe_mm<<<G, kBlockThreads>>>(mf);
+  k_swiglu<<<G, kBlockThreads>>>(SwigluArgs{gu, gu + kFf, 2 * kFf, 2 * kFf, h, kFf, A, kFf});
   mf.which = kMmDown;
-  k_moe_mm<<<G, kMkBlock>>>(mf);
+  k_moe_mm<<<G, kBlockThreads>>>(mf);
   qmm(QmmArgs{q::Q8_0, dsg, ldsh, kFfShared, kEmbd, t, dx, kEmbd, nullptr, sg, kFfShared, nullptr});
   qmm(QmmArgs{q::Q8_0, dsu, ldsh, kFfShared, kEmbd, t, dx, kEmbd, nullptr, su, kFfShared, nullptr});
-  k_swiglu<<<G, kMkBlock>>>(SwigluArgs{sg, su, kFfShared, kFfShared, sh, kFfShared, t, kFfShared});
+  k_swiglu<<<G, kBlockThreads>>>(SwigluArgs{sg, su, kFfShared, kFfShared, sh, kFfShared, t, kFfShared});
   qmm(QmmArgs{q::Q8_0, dsd, ldshd, kEmbd, kFfShared, t, sh, kFfShared, nullptr, sd, kEmbd, nullptr});
   qmm(QmmArgs{q::F32, reinterpret_cast<const uint8_t *>(dshg), 4ull * kEmbd, 1, kEmbd, t, dx, kEmbd, nullptr, sgt, 1,
               nullptr});
-  k_moe_combine<<<G, kMkBlock>>>(MoeCombineArgs{y, tidx, tw, sd, sgt, dout, t});
+  k_moe_combine<<<G, kBlockThreads>>>(MoeCombineArgs{y, tidx, tw, sd, sgt, dout, t});
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipDeviceSynchronize());
   HIP_CHECK(hipMemcpy(out, dout, sizeof(float) * t * kEmbd, hipMemcpyDeviceToHost));
@@ -140,8 +140,8 @@ extern "C" int qwen38_moe_route(const float *logits_host, uint32_t t, uint32_t f
   uint32_t *cnt = dev<uint32_t>(nullptr, 4 * kExperts), *off = dev<uint32_t>(nullptr, 4 * (kExperts + 1));
   uint32_t *asg = dev<uint32_t>(nullptr, 4 * A), *tok = dev<uint32_t>(nullptr, 4 * A);
   uint32_t *igu = dev<uint32_t>(nullptr, 4 * (kExperts + 1)), *idn = dev<uint32_t>(nullptr, 4 * (kExperts + 1));
-  k_moe_router<<<G, kMkBlock>>>(MoeRouterArgs{lg, tidx, tw, t});
-  k_moe_group<<<G, kMkBlock>>>(MoeGroupArgs{tidx, t, cnt, off, asg, tok, igu, idn, fast});
+  k_moe_router<<<G, kBlockThreads>>>(MoeRouterArgs{lg, tidx, tw, t});
+  k_moe_group<<<G, kBlockThreads>>>(MoeGroupArgs{tidx, t, cnt, off, asg, tok, igu, idn, fast});
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipDeviceSynchronize());
   HIP_CHECK(hipMemcpy(topk_idx, tidx, sizeof(int32_t) * A, hipMemcpyDeviceToHost));
@@ -158,7 +158,7 @@ extern "C" int qwen38_moe_route(const float *logits_host, uint32_t t, uint32_t f
 
 // ---- the expert down stage alone: tests/ops/test_tiles.py (bit identity of the tiled layouts), tools/qmm_bench.py ----
 namespace mk {
-__global__ void __launch_bounds__(kMkBlock) k_moe_relayout_iq4(RelayoutArgs a) { op_relayout_iq4nl(a, blockIdx.x, gridDim.x); }
+__global__ void __launch_bounds__(kBlockThreads) k_moe_relayout_iq4(RelayoutArgs a) { op_relayout_iq4nl(a, blockIdx.x, gridDim.x); }
 }  // namespace mk
 
 // op_moe_down over raw = all 512 experts' down matrices as stored in the GGUF (type IQ4_NL or Q8_0, [512][2560][row
@@ -201,7 +201,7 @@ static double moe_down_run(const char *op, uint32_t type, const void *raw, uint6
     HIP_CHECK(hipMalloc(&t, bytes));
     HIP_CHECK(hipMemset(t, 0xAB, bytes));
     const RelayoutArgs ra{w, t, kMoeDnRows * kExperts, kFf};
-    k_moe_relayout_iq4<<<1024, kMkBlock>>>(ra);
+    k_moe_relayout_iq4<<<1024, kBlockThreads>>>(ra);
     HIP_CHECK(hipGetLastError());
     HIP_CHECK(hipDeviceSynchronize());
     HIP_CHECK(hipFree(w));
@@ -239,7 +239,7 @@ static double moe_down_run(const char *op, uint32_t type, const void *raw, uint6
   double ms = 0;
   if (reps == 0) {
     m.f.down = w;
-    k_moe_mm<<<G, kMkBlock>>>(m);
+    k_moe_mm<<<G, kBlockThreads>>>(m);
     HIP_CHECK(hipGetLastError());
     HIP_CHECK(hipDeviceSynchronize());
     HIP_CHECK(hipMemcpy(y_host, y, sizeof(float) * uint64_t(A) * kEmbd, hipMemcpyDeviceToHost));
@@ -251,7 +251,7 @@ static double moe_down_run(const char *op, uint32_t type, const void *raw, uint6
     for (uint32_t i = 0; i <= reps; ++i) {
       if (i == 1) HIP_CHECK(hipEventRecord(e0));
       m.f.down = w + uint64_t(i % sets) * 10 * kMoeDnRows * ld;
-      k_moe_mm<<<G, kMkBlock>>>(m);
+      k_moe_mm<<<G, kBlockThreads>>>(m);
     }
     HIP_CHECK(hipEventRecord(e1));
     HIP_CHECK(hipGetLastError());
@@ -285,7 +285,7 @@ extern "C" double qwen38_moe_down_bench(uint32_t type, const void *raw, uint64_t
 
 // ---- the expert gate/up stage alone, for the prefetch bench (tools/moe_gu_bench.py) and tests ----
 namespace mk {
-__global__ void __launch_bounds__(kMkBlock) k_moe_relayout_iq3s(RelayoutArgs a) { op_relayout_iq3s(a, blockIdx.x, gridDim.x); }
+__global__ void __launch_bounds__(kBlockThreads) k_moe_relayout_iq3s(RelayoutArgs a) { op_relayout_iq3s(a, blockIdx.x, gridDim.x); }
 }  // namespace mk
 
 // op_moe_gu over raw = 512 experts' IQ3_S matrices as stored in the GGUF ([512][640][row bytes]); experts 0..255 are the
@@ -324,7 +324,7 @@ static double moe_gu_run(const char *op, const void *raw, uint64_t raw_bytes, co
     const uint64_t tbytes = q::row_bytes(q::IQ3_S_TILES, kEmbd) * kMoeGuRows * kExperts;  // 112 B a row-superblock, not 110
     HIP_CHECK(hipMalloc(&t, tbytes));
     HIP_CHECK(hipMemset(t, 0xAB, tbytes));
-    k_moe_relayout_iq3s<<<1024, kMkBlock>>>(RelayoutArgs{w, t, kMoeGuRows * kExperts, kEmbd});
+    k_moe_relayout_iq3s<<<1024, kBlockThreads>>>(RelayoutArgs{w, t, kMoeGuRows * kExperts, kEmbd});
     HIP_CHECK(hipGetLastError());
     HIP_CHECK(hipDeviceSynchronize());
     HIP_CHECK(hipFree(w));
@@ -365,7 +365,7 @@ static double moe_gu_run(const char *op, const void *raw, uint64_t raw_bytes, co
   if (reps == 0) {
     m.f.gate = w;
     m.f.up = w + half;
-    k_moe_mm<<<G, kMkBlock>>>(m);
+    k_moe_mm<<<G, kBlockThreads>>>(m);
     HIP_CHECK(hipGetLastError());
     HIP_CHECK(hipDeviceSynchronize());
     HIP_CHECK(hipMemcpy(gu_host, gu, sizeof(float) * uint64_t(A) * 2 * kMoeGuRows, hipMemcpyDeviceToHost));
@@ -378,7 +378,7 @@ static double moe_gu_run(const char *op, const void *raw, uint64_t raw_bytes, co
       if (i == 1) HIP_CHECK(hipEventRecord(e0));
       m.f.gate = w + uint64_t(i % sets) * 10 * kMoeGuRows * ld;
       m.f.up = m.f.gate + half;
-      k_moe_mm<<<G, kMkBlock>>>(m);
+      k_moe_mm<<<G, kBlockThreads>>>(m);
     }
     HIP_CHECK(hipEventRecord(e1));
     HIP_CHECK(hipGetLastError());

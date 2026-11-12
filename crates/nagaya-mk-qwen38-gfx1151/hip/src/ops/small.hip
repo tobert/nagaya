@@ -7,12 +7,12 @@
 #include "rt.h"
 
 namespace mk {
-__global__ void __launch_bounds__(kMkBlock) k_rms(RmsArgs a) { op_rms(a, blockIdx.x, gridDim.x); }
-__global__ void __launch_bounds__(kMkBlock) k_silu_scale(SiluScaleArgs a) { op_silu_scale(a, blockIdx.x, gridDim.x); }
-__global__ void __launch_bounds__(kMkBlock) k_hc_mix(HcMixArgs a) { op_hc_mix(a, blockIdx.x, gridDim.x); }
-__global__ void __launch_bounds__(kMkBlock) k_hc_combine(HcCombineArgs a) { op_hc_combine(a, blockIdx.x, gridDim.x); }
-__global__ void __launch_bounds__(kMkBlock) k_hc_combine_rms(HcCombineRmsArgs a) { op_hc_combine_rms(a, blockIdx.x, gridDim.x); }
-__global__ void __launch_bounds__(kMkBlock) k_qmm2(QmmArgs a) { op_qmm(a, blockIdx.x, gridDim.x); }
+__global__ void __launch_bounds__(kBlockThreads) k_rms(RmsArgs a) { op_rms(a, blockIdx.x, gridDim.x); }
+__global__ void __launch_bounds__(kBlockThreads) k_silu_scale(SiluScaleArgs a) { op_silu_scale(a, blockIdx.x, gridDim.x); }
+__global__ void __launch_bounds__(kBlockThreads) k_hc_mix(HcMixArgs a) { op_hc_mix(a, blockIdx.x, gridDim.x); }
+__global__ void __launch_bounds__(kBlockThreads) k_hc_combine(HcCombineArgs a) { op_hc_combine(a, blockIdx.x, gridDim.x); }
+__global__ void __launch_bounds__(kBlockThreads) k_hc_combine_rms(HcCombineRmsArgs a) { op_hc_combine_rms(a, blockIdx.x, gridDim.x); }
+__global__ void __launch_bounds__(kBlockThreads) k_qmm2(QmmArgs a) { op_qmm(a, blockIdx.x, gridDim.x); }
 
 template <class T>
 static T *up(const T *h, size_t n) {
@@ -43,20 +43,20 @@ extern "C" int qwen38_hc_pre(const float *h, uint32_t t, uint32_t e, uint32_t r,
   float *dz = up<float>(nullptr, size_t(t) * 4), *dinj = up<float>(nullptr, size_t(t) * 4);
 
   RmsArgs ra{dh, d4, dxn, d4, dg, t, 4, e, 1, 1e-6f};
-  k_rms<<<t * 4, kMkBlock>>>(ra);
+  k_rms<<<t * 4, kBlockThreads>>>(ra);
   QmmArgs qa{};
   qa = {q::Q8_0, dwd, ld_down, r, d4, t, dxn, d4, nullptr, ddown, r, nullptr};
-  k_qmm2<<<512, kMkBlock>>>(qa);
+  k_qmm2<<<512, kBlockThreads>>>(qa);
   SiluScaleArgs sa{ddown, dact, t * r, 0.25f};
-  k_silu_scale<<<64, kMkBlock>>>(sa);
+  k_silu_scale<<<64, kBlockThreads>>>(sa);
   qa = {q::Q8_0, dwu, ld_up, d4, r, t, dact, r, nullptr, dup, d4, nullptr};
-  k_qmm2<<<512, kMkBlock>>>(qa);
+  k_qmm2<<<512, kBlockThreads>>>(qa);
   if (dwi) {
     qa = {q::F32, reinterpret_cast<const uint8_t *>(dwi), uint64_t(d4) * 4, 4, d4, t, dxn, d4, nullptr, dz, 4, nullptr};
-    k_qmm2<<<64, kMkBlock>>>(qa);
+    k_qmm2<<<64, kBlockThreads>>>(qa);
   }
   HcMixArgs ma{dxn, dup, dmix, dwi ? dz : nullptr, dinj, t, e};
-  k_hc_mix<<<64, kMkBlock>>>(ma);
+  k_hc_mix<<<64, kBlockThreads>>>(ma);
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipDeviceSynchronize());
   HIP_CHECK(hipMemcpy(mixed_out, dmix, sizeof(float) * t * e, hipMemcpyDeviceToHost));
@@ -71,7 +71,7 @@ extern "C" int qwen38_hc_pre(const float *h, uint32_t t, uint32_t e, uint32_t r,
 extern "C" int qwen38_hc_combine(float *h, const float *out, const float *inject, uint32_t t, uint32_t e) {
   float *dh = up(h, size_t(t) * 4 * e), *dout = up(out, size_t(t) * e), *dinj = up(inject, size_t(t) * 4);
   HcCombineArgs a{dh, dout, dinj, t, e};
-  k_hc_combine<<<64, kMkBlock>>>(a);
+  k_hc_combine<<<64, kBlockThreads>>>(a);
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipDeviceSynchronize());
   HIP_CHECK(hipMemcpy(h, dh, sizeof(float) * t * 4 * e, hipMemcpyDeviceToHost));
@@ -88,10 +88,10 @@ extern "C" int qwen38_hc_combine_rms(const float *h, const float *out, const flo
   HcCombineArgs ca{dh, dout, dinj, t, e};
   RmsArgs ra{dh, 4 * e, dxn, 4 * e, dg, t, 4, e, 1, 1e-6f};
   if (fused) {
-    k_hc_combine_rms<<<grid, kMkBlock>>>(HcCombineRmsArgs{ca, ra});
+    k_hc_combine_rms<<<grid, kBlockThreads>>>(HcCombineRmsArgs{ca, ra});
   } else {
-    k_hc_combine<<<grid, kMkBlock>>>(ca);
-    k_rms<<<grid, kMkBlock>>>(ra);
+    k_hc_combine<<<grid, kBlockThreads>>>(ca);
+    k_rms<<<grid, kBlockThreads>>>(ra);
   }
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipDeviceSynchronize());

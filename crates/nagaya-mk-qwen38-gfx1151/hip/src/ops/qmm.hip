@@ -7,10 +7,10 @@
 
 namespace mk {
 
-__global__ void __launch_bounds__(kMkBlock) k_qmm(QmmArgs a) { op_qmm(a, blockIdx.x, gridDim.x); }
+__global__ void __launch_bounds__(kBlockThreads) k_qmm(QmmArgs a) { op_qmm(a, blockIdx.x, gridDim.x); }
 
 template <uint32_t T>
-__global__ void __launch_bounds__(kMkBlock) k_dequant(const uint8_t *w, uint64_t ldw, uint32_t rows, uint32_t k, float *out) {
+__global__ void __launch_bounds__(kBlockThreads) k_dequant(const uint8_t *w, uint64_t ldw, uint32_t rows, uint32_t k, float *out) {
   const uint32_t units = k / 32;
   const uint64_t total = uint64_t(rows) * units;
   for (uint64_t i = uint64_t(blockIdx.x) * blockDim.x + threadIdx.x; i < total; i += uint64_t(gridDim.x) * blockDim.x) {
@@ -42,13 +42,13 @@ extern "C" int qwen38_dequant(uint32_t type, const void *w_host, uint64_t w_byte
   HIP_CHECK(hipMemcpy(w, w_host, ldw * rows, hipMemcpyHostToDevice));
   const int grid = 256;
   switch (type) {
-    case q::Q8_0: k_dequant<q::Q8_0><<<grid, kMkBlock>>>(w, ldw, rows, k, out); break;
-    case q::Q6_K: k_dequant<q::Q6_K><<<grid, kMkBlock>>>(w, ldw, rows, k, out); break;
-    case q::IQ4_NL: k_dequant<q::IQ4_NL><<<grid, kMkBlock>>>(w, ldw, rows, k, out); break;
-    case q::IQ4_XS: k_dequant<q::IQ4_XS><<<grid, kMkBlock>>>(w, ldw, rows, k, out); break;
-    case q::IQ3_S: k_dequant<q::IQ3_S><<<grid, kMkBlock>>>(w, ldw, rows, k, out); break;
-    case q::F32: k_dequant<q::F32><<<grid, kMkBlock>>>(w, ldw, rows, k, out); break;
-    case q::BF16: k_dequant<q::BF16><<<grid, kMkBlock>>>(w, ldw, rows, k, out); break;
+    case q::Q8_0: k_dequant<q::Q8_0><<<grid, kBlockThreads>>>(w, ldw, rows, k, out); break;
+    case q::Q6_K: k_dequant<q::Q6_K><<<grid, kBlockThreads>>>(w, ldw, rows, k, out); break;
+    case q::IQ4_NL: k_dequant<q::IQ4_NL><<<grid, kBlockThreads>>>(w, ldw, rows, k, out); break;
+    case q::IQ4_XS: k_dequant<q::IQ4_XS><<<grid, kBlockThreads>>>(w, ldw, rows, k, out); break;
+    case q::IQ3_S: k_dequant<q::IQ3_S><<<grid, kBlockThreads>>>(w, ldw, rows, k, out); break;
+    case q::F32: k_dequant<q::F32><<<grid, kBlockThreads>>>(w, ldw, rows, k, out); break;
+    case q::BF16: k_dequant<q::BF16><<<grid, kBlockThreads>>>(w, ldw, rows, k, out); break;
     default: HIP_DIE("unknown quant type %u", type);
   }
   HIP_CHECK(hipGetLastError());
@@ -59,7 +59,7 @@ extern "C" int qwen38_dequant(uint32_t type, const void *w_host, uint64_t w_byte
   return 0;
 }
 
-static void launch_qmm(const QmmArgs &a, uint32_t grid) { k_qmm<<<grid, kMkBlock>>>(a); }
+static void launch_qmm(const QmmArgs &a, uint32_t grid) { k_qmm<<<grid, kBlockThreads>>>(a); }
 
 extern "C" int qwen38_qmm(uint32_t type, const void *w_host, uint64_t w_bytes, uint32_t n, uint32_t k, const float *x_host,
                       uint64_t x_bytes, uint32_t x_rows, const uint32_t *x_row_host, uint64_t x_row_bytes, uint32_t t,

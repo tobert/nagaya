@@ -58,7 +58,7 @@ void mk_launch_each(void *e, const Stage *ds, uint32_t n, LaunchResult *out) {
   *out = static_cast<Engine *>(e)->launch_each(ds, n);
 }
 // The most co-resident workgroups of the megakernel (rt.h max_coop_grid).
-int mk_max_coop_grid() { return max_coop_grid(mega_kernel(), kMkBlock, 0); }
+int mk_max_coop_grid() { return max_coop_grid(mega_kernel(), kBlockThreads, 0); }
 // The name of a control block status (rt.h status_name).
 const char *mk_status_name(uint32_t status) { return status_name(status); }
 }

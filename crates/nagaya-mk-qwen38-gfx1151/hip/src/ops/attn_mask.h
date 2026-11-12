@@ -71,9 +71,9 @@ __device__ __attribute__((always_inline)) inline bool attn_block_clear(const Att
 // blocks: 256 words) marking the selected clear blocks.
 __device__ __attribute__((always_inline)) inline void attn_select_masked_emit(const AttnSelectArgs &a, const AttnCellMask &m,
                                                                               uint32_t t) {
-  static_assert(kMkBlock == 256, "one histogram bin (and one 8-bit digit value) per thread");
+  static_assert(kBlockThreads == 256, "one histogram bin (and one 8-bit digit value) per thread");
   constexpr uint32_t kBitWords = model::kMaxContext / model::kIdxRatio / 32;
-  static_assert(kBitWords <= kMkBlock, "one selection word per thread to clear");
+  static_assert(kBitWords <= kBlockThreads, "one selection word per thread to clear");
   static_assert((256 + kWavesPerBlock + 8 + kBitWords) * 4 <= kLdsArenaBytes, "the masked selection's LDS must fit the arena");
   const uint32_t tid = mk_tid();
   const uint32_t n_vis = a.p0 + t + 1;
@@ -89,7 +89,7 @@ __device__ __attribute__((always_inline)) inline void attn_select_masked_emit(co
   if (nb > kBitWords * 32) HIP_TRAP(kTrapAttnSelect, kTrapFileAttn);
 
   uint32_t n_clear = 0;
-  for (uint32_t b = tid; b < nb; b += kMkBlock) n_clear += attn_block_clear(m, b, a.ratio) ? 1u : 0u;
+  for (uint32_t b = tid; b < nb; b += kBlockThreads) n_clear += attn_block_clear(m, b, a.ratio) ? 1u : 0u;
   uint32_t total;
   (void)wg_incl_scan(n_clear, wtot, total);
   n_clear = total;
@@ -102,7 +102,7 @@ __device__ __attribute__((always_inline)) inline void attn_select_masked_emit(co
     for (int shift = 24; shift >= 0; shift -= 8) {
       hist[tid] = 0;
       lds_sync();
-      for (uint32_t b = tid; b < nb; b += kMkBlock) {
+      for (uint32_t b = tid; b < nb; b += kBlockThreads) {
         if (!attn_block_clear(m, b, a.ratio)) continue;
         const uint32_t key = attn_score_key(scores[b]);
         if ((key & mask) == prefix) atomicAdd(&hist[(key >> shift) & 255u], 1u);
@@ -123,7 +123,7 @@ __device__ __attribute__((always_inline)) inline void attn_select_masked_emit(co
     }
     const uint32_t K = prefix, R = k;
     uint32_t carry_gt = 0, carry_eq = 0;
-    for (uint32_t c0 = 0; c0 < nb; c0 += kMkBlock) {
+    for (uint32_t c0 = 0; c0 < nb; c0 += kBlockThreads) {
       const uint32_t b = c0 + tid;
       uint32_t gt = 0, eq = 0;
       if (b < nb && attn_block_clear(m, b, a.ratio)) {
@@ -145,7 +145,7 @@ __device__ __attribute__((always_inline)) inline void attn_select_masked_emit(co
   // Emission: every visible cell in ascending order that is unmasked and either in the tail, in a straddling block, in a
   // selected clear block, or anywhere (dense).
   uint32_t out_n = 0;
-  for (uint32_t c0 = 0; c0 < n_vis; c0 += kMkBlock) {
+  for (uint32_t c0 = 0; c0 < n_vis; c0 += kBlockThreads) {
     const uint32_t c = c0 + tid;
     uint32_t in = 0;
     if (c < n_vis && !attn_cell_masked(m, c)) {
@@ -161,7 +161,7 @@ __device__ __attribute__((always_inline)) inline void attn_select_masked_emit(co
   }
   if (out_n == 0) HIP_TRAP(kTrapAttnNoSel, kTrapFileAttn);
   if (tid == 0) a.sel_count[t] = out_n;
-  for (uint32_t k = out_n + tid; k < a.max_sel; k += kMkBlock) sel[k] = -1;
+  for (uint32_t k = out_n + tid; k < a.max_sel; k += kBlockThreads) sel[k] = -1;
   lds_sync();  // picked and the scan words are rewritten by the next token's selection
 }
 
@@ -214,7 +214,7 @@ __device__ __attribute__((always_inline)) inline void attn_select_masked_item(co
   __syncthreads();
   if (a.block_scores_out) {
     float *out = a.block_scores_out + uint64_t(t) * a.max_nb;
-    for (uint32_t b = mk_tid(); b < nb; b += kMkBlock) out[b] = scores[b];
+    for (uint32_t b = mk_tid(); b < nb; b += kBlockThreads) out[b] = scores[b];
   }
   __syncthreads();
   attn_select_masked_emit(a, m, t);

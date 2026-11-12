@@ -11,7 +11,7 @@
 
 namespace mk::oracle {
 
-constexpr uint32_t kQmmRows = kMkBlock / kWave;  // 8, its own: the engine's tile may differ
+constexpr uint32_t kQmmRows = kBlockThreads / kWave;  // 8, its own: the engine's tile may differ
 constexpr uint32_t kQmmToks = 8;
 
 template <uint32_t T>

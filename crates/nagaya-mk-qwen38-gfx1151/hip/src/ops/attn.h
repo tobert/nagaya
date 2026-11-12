@@ -68,7 +68,7 @@
 
 namespace mk {
 
-constexpr uint32_t kWavesPerBlock = kMkBlock / kWave;  // 8
+constexpr uint32_t kWavesPerBlock = kBlockThreads / kWave;  // 8
 
 __device__ inline void rope_pair(float &a, float &b, float c, float s) {
   const float na = a * c - b * s;
@@ -258,10 +258,10 @@ __device__ __attribute__((always_inline)) inline void attn_select_emit(const Att
   int32_t *sel = a.sel + uint64_t(t) * a.max_sel;
   uint32_t out_n;
   if (select_count == nb) {  // dense: every complete block then the tail = cells 0..n_vis-1
-    for (uint32_t c = tid; c < n_vis; c += kMkBlock) sel[c] = int32_t(c);
+    for (uint32_t c = tid; c < n_vis; c += kBlockThreads) sel[c] = int32_t(c);
     out_n = n_vis;
   } else {  // sparse
-    static_assert(kMkBlock == 256, "one histogram bin (and one 8-bit digit value) per thread");
+    static_assert(kBlockThreads == 256, "one histogram bin (and one 8-bit digit value) per thread");
     uint32_t *hist = reinterpret_cast<uint32_t *>(lds_arena());
     uint32_t *wtot = hist + 256;
     uint32_t *bc = wtot + kWavesPerBlock;
@@ -270,7 +270,7 @@ __device__ __attribute__((always_inline)) inline void attn_select_emit(const Att
       for (int shift = 24; shift >= 0; shift -= 8) {
         hist[tid] = 0;
         lds_sync();
-        for (uint32_t b = tid; b < nb; b += kMkBlock) {
+        for (uint32_t b = tid; b < nb; b += kBlockThreads) {
           const uint32_t key = attn_score_key(scores[b]);
           if ((key & mask) == prefix) atomicAdd(&hist[(key >> shift) & 255u], 1u);
         }
@@ -293,7 +293,7 @@ __device__ __attribute__((always_inline)) inline void attn_select_emit(const Att
     }
     const uint32_t K = prefix, R = k;  // R >= 1 when select_count > 0 (the chosen bin held the k-th key)
     uint32_t carry_gt = 0, carry_eq = 0;
-    for (uint32_t c0 = 0; c0 < nb; c0 += kMkBlock) {
+    for (uint32_t c0 = 0; c0 < nb; c0 += kBlockThreads) {
       const uint32_t b = c0 + tid;
       uint32_t gt = 0, eq = 0;
       if (b < nb && select_count > 0) {
@@ -316,11 +316,11 @@ __device__ __attribute__((always_inline)) inline void attn_select_emit(const Att
     // The emission's own count must agree with the radix select's: else the two passes saw different keys.
     if (select_count > 0 && (carry_gt != above || carry_eq < R)) HIP_TRAP(kTrapAttnSelect, kTrapFileAttn);
     out_n = select_count * 4;
-    for (uint32_t c = tail_start + tid; c < n_vis; c += kMkBlock) sel[out_n + (c - tail_start)] = int32_t(c);
+    for (uint32_t c = tail_start + tid; c < n_vis; c += kBlockThreads) sel[out_n + (c - tail_start)] = int32_t(c);
     out_n += n_vis - tail_start;
   }
   if (tid == 0) a.sel_count[t] = out_n;
-  for (uint32_t k = out_n + tid; k < a.max_sel; k += kMkBlock) sel[k] = -1;
+  for (uint32_t k = out_n + tid; k < a.max_sel; k += kBlockThreads) sel[k] = -1;
 }
 
 // One complete block's pooled key, by one wave (lane = the wave's lane): the block's 4 raw index keys summed in ascending
@@ -393,7 +393,7 @@ __device__ __attribute__((always_inline)) inline void attn_select_item(const Att
   __syncthreads();
   if (a.block_scores_out) {
     float *out = a.block_scores_out + uint64_t(t) * a.max_nb;
-    for (uint32_t b = mk_tid(); b < nb; b += kMkBlock) out[b] = scores[b];
+    for (uint32_t b = mk_tid(); b < nb; b += kBlockThreads) out[b] = scores[b];
   }
   __syncthreads();
   attn_select_emit(a, t);
@@ -550,7 +550,7 @@ __device__ __attribute__((always_inline)) inline void attn_attend_item(const Att
   constexpr uint32_t kPl = kHd / kWave;
   constexpr uint32_t kGroup = model::kHeads / model::kKvHeads;
   static_assert(kGroup % kH == 0, "an item's heads share one KV head");
-  static_assert(kMkBlock == kHd, "the merge maps one thread to one output element");
+  static_assert(kBlockThreads == kHd, "the merge maps one thread to one output element");
   static_assert(kAttnSlices * (kHd + 2) * sizeof(float) <= kLdsArenaBytes, "the slices' partials must fit the arena");
   const uint32_t kvh = h0 / kGroup;
   float *part = reinterpret_cast<float *>(lds_arena());  // [slice][kHd] acc

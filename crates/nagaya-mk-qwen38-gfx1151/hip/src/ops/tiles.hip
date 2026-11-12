@@ -8,13 +8,13 @@
 
 namespace mk {
 
-__global__ void __launch_bounds__(kMkBlock) k_relayout_iq3s(RelayoutArgs a) { op_relayout_iq3s(a, blockIdx.x, gridDim.x); }
-__global__ void __launch_bounds__(kMkBlock) k_relayout_q8(RelayoutArgs a) { op_relayout_q8(a, blockIdx.x, gridDim.x); }
-__global__ void __launch_bounds__(kMkBlock) k_relayout_q6(RelayoutArgs a) { op_relayout_q6(a, blockIdx.x, gridDim.x); }
-__global__ void __launch_bounds__(kMkBlock) k_relayout_iq4(RelayoutArgs a) { op_relayout_iq4nl(a, blockIdx.x, gridDim.x); }
+__global__ void __launch_bounds__(kBlockThreads) k_relayout_iq3s(RelayoutArgs a) { op_relayout_iq3s(a, blockIdx.x, gridDim.x); }
+__global__ void __launch_bounds__(kBlockThreads) k_relayout_q8(RelayoutArgs a) { op_relayout_q8(a, blockIdx.x, gridDim.x); }
+__global__ void __launch_bounds__(kBlockThreads) k_relayout_q6(RelayoutArgs a) { op_relayout_q6(a, blockIdx.x, gridDim.x); }
+__global__ void __launch_bounds__(kBlockThreads) k_relayout_iq4(RelayoutArgs a) { op_relayout_iq4nl(a, blockIdx.x, gridDim.x); }
 
 // Every value of an IQ4_NL matrix from its tiles (thread = one row's unit).
-__global__ void __launch_bounds__(kMkBlock) k_tile_dequant_iq4(const uint8_t *tiled, uint32_t n, uint32_t k, float *out) {
+__global__ void __launch_bounds__(kBlockThreads) k_tile_dequant_iq4(const uint8_t *tiled, uint32_t n, uint32_t k, float *out) {
   const uint32_t units = k / 32;
   for (uint64_t i = uint64_t(blockIdx.x) * blockDim.x + threadIdx.x; i < uint64_t(n) * units; i += uint64_t(gridDim.x) * blockDim.x) {
     const uint32_t row = uint32_t(i / units), u = uint32_t(i % units);
@@ -25,7 +25,7 @@ __global__ void __launch_bounds__(kMkBlock) k_tile_dequant_iq4(const uint8_t *ti
 }
 
 // Every value of a Q6_K matrix from its tiles (thread = one row's unit).
-__global__ void __launch_bounds__(kMkBlock) k_tile_dequant_q6(const uint8_t *tiled, uint32_t n, uint32_t k, float *out) {
+__global__ void __launch_bounds__(kBlockThreads) k_tile_dequant_q6(const uint8_t *tiled, uint32_t n, uint32_t k, float *out) {
   const uint32_t units = k / 32;
   for (uint64_t i = uint64_t(blockIdx.x) * blockDim.x + threadIdx.x; i < uint64_t(n) * units; i += uint64_t(gridDim.x) * blockDim.x) {
     const uint32_t row = uint32_t(i / units), u = uint32_t(i % units);
@@ -36,7 +36,7 @@ __global__ void __launch_bounds__(kMkBlock) k_tile_dequant_q6(const uint8_t *til
 }
 
 // Every value of a Q8_0 matrix from its tiles (thread = one row's unit).
-__global__ void __launch_bounds__(kMkBlock) k_tile_dequant_q8(const uint8_t *tiled, uint32_t n, uint32_t k, float *out) {
+__global__ void __launch_bounds__(kBlockThreads) k_tile_dequant_q8(const uint8_t *tiled, uint32_t n, uint32_t k, float *out) {
   const uint32_t units = k / 32;
   for (uint64_t i = uint64_t(blockIdx.x) * blockDim.x + threadIdx.x; i < uint64_t(n) * units; i += uint64_t(gridDim.x) * blockDim.x) {
     const uint32_t row = uint32_t(i / units), u = uint32_t(i % units);
@@ -48,7 +48,7 @@ __global__ void __launch_bounds__(kMkBlock) k_tile_dequant_q8(const uint8_t *til
 }
 
 // Every value of the matrix from its tiles: thread (row, unit) finds the tile and the lane that decodes it.
-__global__ void __launch_bounds__(kMkBlock) k_tile_dequant_iq3s(const uint8_t *tiled, uint32_t n, uint32_t k, float *out) {
+__global__ void __launch_bounds__(kBlockThreads) k_tile_dequant_iq3s(const uint8_t *tiled, uint32_t n, uint32_t k, float *out) {
   const uint32_t nsb = k / 256, units = k / 32;
   for (uint64_t i = uint64_t(blockIdx.x) * blockDim.x + threadIdx.x; i < uint64_t(n) * units; i += uint64_t(gridDim.x) * blockDim.x) {
     const uint32_t row = uint32_t(i / units), u = uint32_t(i % units);
@@ -65,7 +65,7 @@ __global__ void __launch_bounds__(kMkBlock) k_tile_dequant_iq3s(const uint8_t *t
 // The only kernel in this TU that reaches the LDS arena. mode bit 0: tiles (else GGUF rows); bit 1: the exact kernel
 // (else the f16 path); bit 2: a dense-shape matrix, Q8_0 or Q6_K by a.type (QmmhDense, with a.ksplit slices; else IQ3_S on the MoE shape);
 // bit 3: the split-K sum instead of the matmul.
-__global__ void __launch_bounds__(kMkBlock) k_tile_qmm(QmmArgs a, uint32_t mode) {
+__global__ void __launch_bounds__(kBlockThreads) k_tile_qmm(QmmArgs a, uint32_t mode) {
   const bool tiled = mode & 1, exact = mode & 2, q8 = mode & 4;
   if (mode & 8) {
     op_qmm_ksum(a, blockIdx.x, gridDim.x);
@@ -109,7 +109,7 @@ extern "C" int qwen38_relayout_iq3s(const void *raw, uint64_t raw_bytes, uint32_
   HIP_CHECK(hipMalloc(&dst, dst_bytes));
   HIP_CHECK(hipMemcpy(src, raw, src_bytes, hipMemcpyHostToDevice));
   HIP_CHECK(hipMemcpy(dst, tiled_out, dst_bytes, hipMemcpyHostToDevice));
-  k_relayout_iq3s<<<256, kMkBlock>>>(RelayoutArgs{src, dst, n, k});
+  k_relayout_iq3s<<<256, kBlockThreads>>>(RelayoutArgs{src, dst, n, k});
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipDeviceSynchronize());
   HIP_CHECK(hipMemcpy(tiled_out, dst, dst_bytes, hipMemcpyDeviceToHost));
@@ -130,7 +130,7 @@ extern "C" int qwen38_tile_dequant_iq3s(const void *tiled, uint64_t tiled_bytes,
   HIP_CHECK(hipMalloc(&out, sizeof(float) * uint64_t(n) * k));
   HIP_CHECK(hipMemcpy(t, tiled, bytes, hipMemcpyHostToDevice));
   HIP_CHECK(hipMemset(out, 0xff, sizeof(float) * uint64_t(n) * k));
-  k_tile_dequant_iq3s<<<256, kMkBlock>>>(t, n, k, out);
+  k_tile_dequant_iq3s<<<256, kBlockThreads>>>(t, n, k, out);
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipDeviceSynchronize());
   HIP_CHECK(hipMemcpy(out_host, out, sizeof(float) * uint64_t(n) * k, hipMemcpyDeviceToHost));
@@ -157,7 +157,7 @@ extern "C" int qwen38_tile_qmm_iq3s(const void *raw, uint64_t raw_size, uint32_t
   HIP_CHECK(hipMemcpy(src, raw, raw_bytes, hipMemcpyHostToDevice));
   if (tiled) {
     HIP_CHECK(hipMalloc(&w, tiled_bytes));
-    k_relayout_iq3s<<<256, kMkBlock>>>(RelayoutArgs{src, w, n, k});
+    k_relayout_iq3s<<<256, kBlockThreads>>>(RelayoutArgs{src, w, n, k});
   } else {
     w = src;
   }
@@ -178,7 +178,7 @@ extern "C" int qwen38_tile_qmm_iq3s(const void *raw, uint64_t raw_size, uint32_t
   a.ldy = n;
   const uint32_t rows_i = exact ? kQmmRows : QmmhMoe::kRows, toks_i = exact ? kQmmToks : QmmhMoe::kToks;
   const uint32_t items = ((n + rows_i - 1) / rows_i) * ((t + toks_i - 1) / toks_i);
-  k_tile_qmm<<<grid ? grid : items, kMkBlock>>>(a, mode);
+  k_tile_qmm<<<grid ? grid : items, kBlockThreads>>>(a, mode);
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipDeviceSynchronize());
   HIP_CHECK(hipMemcpy(y_host, y, sizeof(float) * uint64_t(t) * n, hipMemcpyDeviceToHost));
@@ -206,7 +206,7 @@ extern "C" int qwen38_relayout_q8(const void *raw, uint64_t raw_bytes, uint32_t 
   HIP_CHECK(hipMalloc(&dst, bytes));
   HIP_CHECK(hipMemcpy(src, raw, bytes, hipMemcpyHostToDevice));
   HIP_CHECK(hipMemcpy(dst, tiled_out, bytes, hipMemcpyHostToDevice));
-  k_relayout_q8<<<256, kMkBlock>>>(RelayoutArgs{src, dst, n, k});
+  k_relayout_q8<<<256, kBlockThreads>>>(RelayoutArgs{src, dst, n, k});
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipDeviceSynchronize());
   HIP_CHECK(hipMemcpy(tiled_out, dst, bytes, hipMemcpyDeviceToHost));
@@ -227,7 +227,7 @@ extern "C" int qwen38_tile_dequant_q8(const void *tiled, uint64_t tiled_bytes, u
   HIP_CHECK(hipMalloc(&out, sizeof(float) * uint64_t(n) * k));
   HIP_CHECK(hipMemcpy(t, tiled, bytes, hipMemcpyHostToDevice));
   HIP_CHECK(hipMemset(out, 0xff, sizeof(float) * uint64_t(n) * k));
-  k_tile_dequant_q8<<<256, kMkBlock>>>(t, n, k, out);
+  k_tile_dequant_q8<<<256, kBlockThreads>>>(t, n, k, out);
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipDeviceSynchronize());
   HIP_CHECK(hipMemcpy(out_host, out, sizeof(float) * uint64_t(n) * k, hipMemcpyDeviceToHost));
@@ -258,7 +258,7 @@ extern "C" int qwen38_tile_qmm_q8(const void *raw, uint64_t raw_size, uint32_t n
   HIP_CHECK(hipMemcpy(src, raw, bytes, hipMemcpyHostToDevice));
   if (tiled) {
     HIP_CHECK(hipMalloc(&w, bytes));
-    k_relayout_q8<<<256, kMkBlock>>>(RelayoutArgs{src, w, n, k});
+    k_relayout_q8<<<256, kBlockThreads>>>(RelayoutArgs{src, w, n, k});
   } else {
     w = src;
   }
@@ -284,8 +284,8 @@ extern "C" int qwen38_tile_qmm_q8(const void *raw, uint64_t raw_size, uint32_t n
   a.ksplit = ksplit;
   a.part = part;
   const uint32_t G = grid ? grid : 1024;
-  k_tile_qmm<<<G, kMkBlock>>>(a, mode | 4);
-  if (ksplit > 1) k_tile_qmm<<<G, kMkBlock>>>(a, 8);
+  k_tile_qmm<<<G, kBlockThreads>>>(a, mode | 4);
+  if (ksplit > 1) k_tile_qmm<<<G, kBlockThreads>>>(a, 8);
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipDeviceSynchronize());
   HIP_CHECK(hipMemcpy(y_host, y, sizeof(float) * uint64_t(t) * n, hipMemcpyDeviceToHost));
@@ -312,7 +312,7 @@ extern "C" int qwen38_relayout_q6(const void *raw, uint64_t raw_bytes, uint32_t 
   HIP_CHECK(hipMalloc(&dst, bytes));
   HIP_CHECK(hipMemcpy(src, raw, bytes, hipMemcpyHostToDevice));
   HIP_CHECK(hipMemcpy(dst, tiled_out, bytes, hipMemcpyHostToDevice));
-  k_relayout_q6<<<256, kMkBlock>>>(RelayoutArgs{src, dst, n, k});
+  k_relayout_q6<<<256, kBlockThreads>>>(RelayoutArgs{src, dst, n, k});
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipDeviceSynchronize());
   HIP_CHECK(hipMemcpy(tiled_out, dst, bytes, hipMemcpyDeviceToHost));
@@ -333,7 +333,7 @@ extern "C" int qwen38_tile_dequant_q6(const void *tiled, uint64_t tiled_bytes, u
   HIP_CHECK(hipMalloc(&out, sizeof(float) * uint64_t(n) * k));
   HIP_CHECK(hipMemcpy(t, tiled, bytes, hipMemcpyHostToDevice));
   HIP_CHECK(hipMemset(out, 0xff, sizeof(float) * uint64_t(n) * k));
-  k_tile_dequant_q6<<<256, kMkBlock>>>(t, n, k, out);
+  k_tile_dequant_q6<<<256, kBlockThreads>>>(t, n, k, out);
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipDeviceSynchronize());
   HIP_CHECK(hipMemcpy(out_host, out, sizeof(float) * uint64_t(n) * k, hipMemcpyDeviceToHost));
@@ -364,7 +364,7 @@ extern "C" int qwen38_tile_qmm_q6(const void *raw, uint64_t raw_size, uint32_t n
   HIP_CHECK(hipMemcpy(src, raw, bytes, hipMemcpyHostToDevice));
   if (tiled) {
     HIP_CHECK(hipMalloc(&w, bytes));
-    k_relayout_q6<<<256, kMkBlock>>>(RelayoutArgs{src, w, n, k});
+    k_relayout_q6<<<256, kBlockThreads>>>(RelayoutArgs{src, w, n, k});
   } else {
     w = src;
   }
@@ -390,8 +390,8 @@ extern "C" int qwen38_tile_qmm_q6(const void *raw, uint64_t raw_size, uint32_t n
   a.ksplit = ksplit;
   a.part = part;
   const uint32_t G = grid ? grid : 1024;
-  k_tile_qmm<<<G, kMkBlock>>>(a, mode | 4);  // bit 2: the dense shape (the type is in a.type)
-  if (ksplit > 1) k_tile_qmm<<<G, kMkBlock>>>(a, 8);
+  k_tile_qmm<<<G, kBlockThreads>>>(a, mode | 4);  // bit 2: the dense shape (the type is in a.type)
+  if (ksplit > 1) k_tile_qmm<<<G, kBlockThreads>>>(a, 8);
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipDeviceSynchronize());
   HIP_CHECK(hipMemcpy(y_host, y, sizeof(float) * uint64_t(t) * n, hipMemcpyDeviceToHost));
@@ -418,7 +418,7 @@ extern "C" int qwen38_relayout_iq4nl(const void *raw, uint64_t raw_bytes, uint32
   HIP_CHECK(hipMalloc(&dst, bytes));
   HIP_CHECK(hipMemcpy(src, raw, bytes, hipMemcpyHostToDevice));
   HIP_CHECK(hipMemcpy(dst, tiled_out, bytes, hipMemcpyHostToDevice));
-  k_relayout_iq4<<<256, kMkBlock>>>(RelayoutArgs{src, dst, n, k});
+  k_relayout_iq4<<<256, kBlockThreads>>>(RelayoutArgs{src, dst, n, k});
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipDeviceSynchronize());
   HIP_CHECK(hipMemcpy(tiled_out, dst, bytes, hipMemcpyDeviceToHost));
@@ -439,7 +439,7 @@ extern "C" int qwen38_tile_dequant_iq4nl(const void *tiled, uint64_t tiled_bytes
   HIP_CHECK(hipMalloc(&out, sizeof(float) * uint64_t(n) * k));
   HIP_CHECK(hipMemcpy(t, tiled, bytes, hipMemcpyHostToDevice));
   HIP_CHECK(hipMemset(out, 0xff, sizeof(float) * uint64_t(n) * k));
-  k_tile_dequant_iq4<<<256, kMkBlock>>>(t, n, k, out);
+  k_tile_dequant_iq4<<<256, kBlockThreads>>>(t, n, k, out);
   HIP_CHECK(hipGetLastError());
   HIP_CHECK(hipDeviceSynchronize());
   HIP_CHECK(hipMemcpy(out_host, out, sizeof(float) * uint64_t(n) * k, hipMemcpyDeviceToHost));

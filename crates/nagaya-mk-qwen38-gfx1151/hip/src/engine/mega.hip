@@ -18,7 +18,7 @@ namespace mk {
 // the grid barrier) in its lane. The outputs don't depend on it.
 // amdgpu_waves_per_eu(8): the grid-80 design target (4 workgroups of 8 waves per WGP) given to the compiler, so
 // it schedules the whole kernel for <= 192 VGPRs; left to itself it took 201 with the f16 qmm inlined.
-__global__ void __launch_bounds__(kMkBlock) __attribute__((amdgpu_waves_per_eu(8))) k_mega(const Stage *__restrict__ stages, uint32_t n, Control *ctl, Barrier *bar,
+__global__ void __launch_bounds__(kBlockThreads) __attribute__((amdgpu_waves_per_eu(8))) k_mega(const Stage *__restrict__ stages, uint32_t n, Control *ctl, Barrier *bar,
                                                    uint32_t skip_barrier, EventRingView ev) {
   const bool events = ev.records != nullptr;
   // The barrier tail (docs/narrow.md N3, stage.h kSchedTail): when stage i + 1 carries the bit, the grid barrier after stage i

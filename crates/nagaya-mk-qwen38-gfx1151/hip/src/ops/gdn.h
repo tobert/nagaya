@@ -16,7 +16,7 @@
 // causal_conv1d_fn's F.conv1d is cross-correlation). The new conv_state_out is the window's last
 // 3 taps: a copy, never an arithmetic result, so it is exact (no rounding at all).
 //
-// op_gdn_core: item = value head p (0..47), one workgroup (kMkBlock = 256 threads) per item. The head's
+// op_gdn_core: item = value head p (0..47), one workgroup (kBlockThreads = 256 threads) per item. The head's
 // [128 (k), 128 (v)] recurrent state lives in registers, 64 floats per thread: thread t owns columns
 // c = t / 4 and c + 64, and within them the k-slice k = 4i + j (i = 0..31, j = t % 4), so the 4 lanes of a
 // quad together hold two whole columns. (Run 2's kernel gave each thread a whole column, 128 floats; that
@@ -73,7 +73,7 @@ __device__ inline void gdn_conv_item(const GdnConvArgs &a, uint32_t c) {
 }
 
 __device__ inline void op_gdn_conv(const GdnConvArgs &a, uint32_t wg, uint32_t nwg) {
-  for (uint32_t c = wg * kMkBlock + mk_tid(); c < model::kGdnConvDim; c += nwg * kMkBlock) gdn_conv_item(a, c);
+  for (uint32_t c = wg * kBlockThreads + mk_tid(); c < model::kGdnConvDim; c += nwg * kBlockThreads) gdn_conv_item(a, c);
 }
 
 // ---- stage 2/3/4: l2norm + the gated delta rule + the gated RMSNorm, fused per value head ----
@@ -98,8 +98,8 @@ __device__ inline float gdn_softplus(float x) { return x > 20.f ? x : log1pf(exp
 constexpr uint32_t kGdnQuad = 4;                                 // lanes per pair of S columns
 constexpr uint32_t kGdnKPerLane = model::kGdnKDim / kGdnQuad;    // 32 state rows per lane and column
 constexpr uint32_t kGdnColHalf = model::kGdnVDim / 2;            // a thread's columns: c and c + 64
-static_assert(kMkBlock == kGdnQuad * kGdnColHalf, "gdn core: one head per 256-thread workgroup");
-static_assert(kMkBlock == 2 * model::kGdnKDim, "gdn core: threads 0..127 take q's l2norm, 128..255 k's");
+static_assert(kBlockThreads == kGdnQuad * kGdnColHalf, "gdn core: one head per 256-thread workgroup");
+static_assert(kBlockThreads == 2 * model::kGdnKDim, "gdn core: threads 0..127 take q's l2norm, 128..255 k's");
 
 // (x0 + x1) + (x2 + x3) over a quad; every lane of the quad gets the same bits.
 __device__ inline float gdn_quad_sum(float x) {
@@ -110,8 +110,8 @@ __device__ inline float gdn_quad_sum(float x) {
 
 __device__ inline void gdn_core_item(const GdnCoreArgs &a, uint32_t p) {
   __shared__ float qkL[2][model::kGdnKDim];   // [0] = normalized, scaled q; [1] = normalized k
-  __shared__ float red_qk[kMkBlock / kWave];  // per-wave sums of squares: waves 0..3 q, 4..7 k
-  __shared__ float red_o[kMkBlock / kWave];   // per-wave sums of o^2
+  __shared__ float red_qk[kBlockThreads / kWave];  // per-wave sums of squares: waves 0..3 q, 4..7 k
+  __shared__ float red_o[kBlockThreads / kWave];   // per-wave sums of o^2
 
   const uint32_t tid = mk_tid(), w = tid / kWave;
   const uint32_t j = tid % kGdnQuad, c = tid / kGdnQuad;
@@ -184,7 +184,7 @@ __device__ inline void gdn_core_item(const GdnCoreArgs &a, uint32_t p) {
     __syncthreads();
     float tot = 0.f;
 #pragma unroll
-    for (uint32_t i = 0; i < kMkBlock / kWave; ++i) tot += red_o[i];
+    for (uint32_t i = 0; i < kBlockThreads / kWave; ++i) tot += red_o[i];
     if (j < 2) {
       const float o = j ? o1 : o0;
       const float rms = o * rsqrtf(tot / float(model::kGdnVDim) + model::kRmsEps);

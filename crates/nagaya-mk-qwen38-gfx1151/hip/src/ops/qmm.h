@@ -53,7 +53,7 @@ struct QmmArgs {
 constexpr uint32_t kXinPlain = 0, kXinSiluSum = 1, kXinSwigluSum = 2;
 constexpr uint32_t kYoutPlain = 0, kYoutHcMix = 1;
 
-constexpr uint32_t kQmmRows = kMkBlock / kWave;  // 8
+constexpr uint32_t kQmmRows = kBlockThreads / kWave;  // 8
 constexpr uint32_t kQmmToks = 8;
 
 
