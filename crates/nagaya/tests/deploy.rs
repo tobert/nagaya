@@ -714,6 +714,15 @@ fn the_b70host_profile_admits_on_the_probed_b70host() {
         .map(|term| term.bytes)
         .sum();
     println!("the two LFM3 models take {on_card_0} bytes of card 0");
+    // `lfm3-1` holds a long slot, and it fits card 1 beside the pinned embedding engine (engine-abi "Slot sizes").
+    let on_card_1: u64 = [&admitted.engines[7], &admitted.engines[11]]
+        .iter()
+        .flat_map(|engine| engine.limits.memory.mandatory.iter())
+        .filter(|term| term.tier == Tier::Device(0))
+        .map(|term| term.bytes)
+        .sum();
+    println!("lfm3-1 and the embedding engine take {on_card_1} bytes of card 1");
+    assert!(on_card_1 < 32 << 30, "{on_card_1}");
     assert!(on_card_0 < 32 << 30, "{on_card_0}");
     for engine in admitted.engines[2..7].iter().chain(&admitted.engines[8..9]) {
         assert!(engine.limits.capabilities.contains(&nagaya_abi::Capability::Image));
@@ -917,6 +926,15 @@ fn the_b70host_profile_names_lfm3_1_resident_on_card_one() {
     );
     assert!(!engine.pinned);
     let lfm3 = profile.engines.iter().find(|e| e.name == "lfm3").unwrap();
-    assert_eq!(engine.config, lfm3.config, "the same weights and slots as lfm3");
+    assert_eq!(
+        engine.config.get("model_dir"),
+        lfm3.config.get("model_dir"),
+        "the same weights as lfm3"
+    );
+    // Seven slots of the default size and one long slot (engine-abi "Slot sizes").
+    let slots = nagaya::lfm3::config(&engine.config).map(|config| config.slots);
+    if let Ok(slots) = slots {
+        assert_eq!(slots, [vec![32_768; 7], vec![262_144]].concat());
+    }
     assert_eq!(engine.family, lfm3.family);
 }

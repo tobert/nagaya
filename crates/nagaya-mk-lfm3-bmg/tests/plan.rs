@@ -33,7 +33,7 @@ fn both_checkpoints_hold_every_tensor_of_the_backbone_and_plan_alike() {
         assert_eq!(spec::weights_bytes(&b, &dir).unwrap(), want, "{which:?}");
         let config = Config {
             model_dir: dir,
-            slots: 2,
+            slots: vec![spec::SLOT_TOKENS; 2],
             max_block: 512,
         };
         let limits = spec::plan(&config).unwrap();
@@ -188,7 +188,7 @@ fn omni_plans_its_tower_and_the_text_model_has_none() {
         let dir = common::model_dir(which);
         let config = Config {
             model_dir: dir.clone(),
-            slots: 1,
+            slots: vec![spec::SLOT_TOKENS],
             max_block: 512,
         };
         let limits = spec::plan(&config).unwrap();

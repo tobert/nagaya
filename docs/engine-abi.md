@@ -1332,11 +1332,21 @@ Proposed by Claude Opus 5.5, 2026-11-06, for milestone 24 step 6. The text path 
 choice that the gates can check. Amy decides.
 
 - **The config.** The kind is `mk-lfm3-bmg`. Its config has three keys. `model_dir` names the model folder, and it
-  has no default, because one kind serves two models. `slots` is the count of slots. `max_block` is the feed block:
-  512 when the key is absent, and 1 to 512.
-- **One slot shape.** Every slot holds 32,768 positions (spec 11.11). Reason: one size is the simplest plan. The
-  split attention reads no slot size now ("The bits do not depend on the slot size"). Thus a second size needs no
-  change to the recipe.
+  has no default, because one kind serves two models. `slots` is a count of slots of 32,768 positions, or a list of
+  the positions of each slot. `max_block` is the feed block: 512 when the key is absent, and 1 to 512.
+- **Slot sizes.** Decided 2026-11-12 (Amy: "mixed slot sizes seems fine"). A slot holds 1 to 262,144 positions, the
+  `max_position_embeddings` of LFM3-1.7B. The list goes from short to long, and the engine refuses another order.
+  The host gives a job the lowest free slot that holds it (`slots::take`), so the order makes it the shortest. A
+  long job then takes a long slot, and a short job leaves it free while a short slot is free.
+  - Each slot charges its own bytes to the term `kv`. The 6 full layers take 24 KiB of each position, and the
+    sliding layers take fixed rings. A slot of 32,768 positions takes 868,859,904 bytes, and one of 262,144 takes
+    6,505,365,504.
+  - The buffers of a block hold its scores over the keys of the longest slot: 16 heads × 512 × the positions, in
+    F32. That is 1.07 GB for 32,768 positions and 8.6 GB for 262,144, in the term `work`.
+  - The split attention reads no slot size ("The bits do not depend on the slot size"). Thus a long slot gives the
+    bits of a short slot, and the recipe does not change. The card test `xe_feed` checks the bits and the quantum.
+  - The speech codec of Omni keeps its bound of 6 codec positions for each of 32,768 positions. A frame past it is
+    refused.
 - **The parts.** A conv layer has `conv.<ll>`, a fixed F32 part of 6 rows of 2,048 values, oldest first. An attention
   layer has `k.<ll>` and `v.<ll>`, F32 rows of 4 heads of 128. They are cells on the full layers and rings on the
   sliding layers. `ll` is the layer in two digits.

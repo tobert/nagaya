@@ -12,7 +12,7 @@ use nagaya_mk_lfm3_bmg::{codec, depth, frames};
 fn config(which: Which, slots: usize) -> Config {
     Config {
         model_dir: common::model_dir(which),
-        slots,
+        slots: vec![spec::SLOT_TOKENS; slots],
         max_block: 512,
     }
 }

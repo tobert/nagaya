@@ -26,9 +26,7 @@ use crate::audio::{self, AudioBufs, AudioWeights, Clip, MAX_CLIP_POSITIONS, Stag
 use crate::device::{Device, OnCard};
 use crate::media::{self, MAX_IMAGE_PATCHES, PATCH_ROW, SpanKind};
 use crate::model::{self, Batch, Bufs, Run, SlotMemory, bufs_bytes, scratch_floats};
-use crate::spec::{
-    self, Backbone, Block, Config, FAMILY, Held, LayerKind, Model, Part, RING_ROWS, SLOT_TOKENS, VisionBytes,
-};
+use crate::spec::{self, Backbone, Block, Config, FAMILY, Held, LayerKind, Model, Part, RING_ROWS, VisionBytes};
 use crate::spec::{LENS_TAP, MAX_SEGMENTS, RESIDUAL_TAP};
 use crate::vision::{self, Until, Vision, VisionBufs, VisionWeights};
 use crate::weights::{self, Count, Weights, f32_values};
@@ -294,7 +292,7 @@ impl Lfm3Engine {
             }
             None => None,
         };
-        let max_seq = SLOT_TOKENS;
+        let max_seq = config.max_seq();
         let bufs = Bufs::new(&mut |bytes| device.zeros(card, bytes), &b, config.max_block, max_seq);
         let tower = match (&vision, tower_weights) {
             (Some((v, _, _)), Some(w)) => Some(Tower {
@@ -327,7 +325,7 @@ impl Lfm3Engine {
         });
         let mut limits = spec::limits(&b, &config, weights_bytes, vision_bytes);
         limits.check()?;
-        let kv = config.slots as u64 * spec::slot_bytes(&b, SLOT_TOKENS);
+        let kv = config.slots_bytes(&b);
         let planned = weights_bytes
             + kv
             + bufs_bytes(&b, config.max_block, max_seq) as u64
@@ -342,7 +340,7 @@ impl Lfm3Engine {
         }
         // Omni adds the term `speech` after the terms of the backbone (engine-abi "The speech calls of LFM3").
         let speech = match b.model {
-            Model::Omni => Some(speech::Speech::open(&dir, card, &mut device, config.slots)?),
+            Model::Omni => Some(speech::Speech::open(&dir, card, &mut device, config.slots.len())?),
             Model::Text => None,
         };
         if let Some(speech) = &speech {

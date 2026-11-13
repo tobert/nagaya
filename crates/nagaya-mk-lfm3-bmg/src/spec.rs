@@ -38,9 +38,12 @@ pub const DEFAULT_MAX_BLOCK: usize = 512;
 /// The largest feed block. The spill of a ring holds one block (`RING_SPILL`).
 pub const MAX_BLOCK: usize = 512;
 
-/// The positions of each slot: the context of Omni's model card (spec 11.11, "The served LFM3 models"). Every slot has
-/// this one size, the simplest plan. The attention ops read no slot size, so a second size would give the same bits.
+/// The positions of a slot when the config gives a count of slots: the context of Omni's model card (spec 11.11, "The
+/// served LFM3 models"). The attention ops read no slot size, so each size gives the same bits.
 pub const SLOT_TOKENS: usize = 32_768;
+
+/// The most positions of one slot: `max_position_embeddings` of LFM3-1.7B (engine-abi "Slot sizes").
+pub const MAX_SLOT_TOKENS: usize = 262_144;
 
 /// The longest quantum in milliseconds (D8). It is a budget, not a measurement: the card test
 /// `the_longest_quantum_fits_its_bound` measures the last block of a full slot.
@@ -451,8 +454,8 @@ pub fn slot_bytes(b: &Backbone, seq: usize) -> u64 {
 pub struct Config {
     /// The model folder: `config.json`, `model.safetensors`, `tokenizer.json` and `chat_template.jinja`.
     pub model_dir: PathBuf,
-    /// The count of slots. Each slot holds `SLOT_TOKENS` positions.
-    pub slots: usize,
+    /// The positions of each slot, from short to long. Thus the lowest slot that holds a job is the shortest.
+    pub slots: Vec<usize>,
     /// The tokens of one block, and the feed block (engine-abi D11).
     pub max_block: usize,
 }
@@ -466,15 +469,37 @@ impl Config {
                 self.max_block
             ));
         }
-        if self.slots == 0 {
-            return Err("the config names no slot; give `slots`, the count of slots".to_owned());
+        if self.slots.is_empty() {
+            return Err("the config names no slot; give `slots`, a count of slots or a list of positions".to_owned());
+        }
+        if let Some(seq) = self.slots.iter().find(|seq| **seq == 0 || **seq > MAX_SLOT_TOKENS) {
+            return Err(format!(
+                "a slot of {seq} positions is outside 1 to {MAX_SLOT_TOKENS}, the positions of the model"
+            ));
+        }
+        if !self.slots.is_sorted() {
+            return Err(format!(
+                "the slots {:?} are not in order; list them from short to long, so that a job takes the shortest \
+                 slot that holds it",
+                self.slots
+            ));
         }
         Ok(())
     }
 
     /// The positions of each slot, in slot order.
     pub fn seqs(&self) -> Vec<usize> {
-        vec![SLOT_TOKENS; self.slots]
+        self.slots.clone()
+    }
+
+    /// The positions of the longest slot. The buffers of a block hold its keys.
+    pub fn max_seq(&self) -> usize {
+        self.slots.iter().copied().max().unwrap_or(0)
+    }
+
+    /// The device bytes of all the slots.
+    pub fn slots_bytes(&self, b: &Backbone) -> u64 {
+        self.slots.iter().map(|seq| slot_bytes(b, *seq)).sum()
     }
 }
 
@@ -526,9 +551,9 @@ pub struct VisionBytes {
 /// Omni declares tokens and rows: a segment of tokens alone is a text block, and the rows are its media (engine-abi
 /// "The LFM3 vision binding").
 pub fn limits(b: &Backbone, config: &Config, weights: u64, vision: Option<VisionBytes>) -> Limits {
-    let kv = config.slots as u64 * slot_bytes(b, SLOT_TOKENS);
-    let work = bufs_bytes(b, config.max_block, SLOT_TOKENS) as u64
-        + ring_device_bytes(SLOT_TOKENS)
+    let kv = config.slots_bytes(b);
+    let work = bufs_bytes(b, config.max_block, config.max_seq()) as u64
+        + ring_device_bytes(config.max_seq())
         + audio_bufs_bytes(b) as u64
         + vision.map_or(0, |v| v.work);
     let mut mandatory = vec![
@@ -663,7 +688,7 @@ pub fn plan(config: &Config) -> Result<Limits, String> {
     let mut limits = limits(&b, config, weights, vision);
     // Omni adds the term `speech` (engine-abi "The speech calls of LFM3").
     if b.model == Model::Omni {
-        let bytes = crate::frames::plan_bytes(&config.model_dir, config.slots)?;
+        let bytes = crate::frames::plan_bytes(&config.model_dir, config.slots.len())?;
         crate::frames::declare(&mut limits, bytes);
     }
     Ok(limits)

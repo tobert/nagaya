@@ -157,6 +157,10 @@ fn a_slot_counts_its_planes_and_its_conv_states() {
 }
 
 fn config(slots: usize) -> Config {
+    sized(vec![SLOT_TOKENS; slots])
+}
+
+fn sized(slots: Vec<usize>) -> Config {
     Config {
         model_dir: PathBuf::from("/lfm3"),
         slots,
@@ -205,6 +209,58 @@ fn a_config_outside_the_sizes_is_refused() {
     assert!(c.check().unwrap_err().contains("max_block"));
     c.max_block = 0;
     assert!(c.check().is_err());
+}
+
+/// A config can list the positions of each slot, from short to long (engine-abi "Slot sizes").
+#[test]
+fn a_list_of_slot_sizes_is_checked() {
+    let mixed = sized(vec![32_768, 32_768, 262_144]);
+    assert!(mixed.check().is_ok());
+    assert_eq!(mixed.seqs(), vec![32_768, 32_768, 262_144]);
+    assert_eq!(mixed.max_seq(), 262_144);
+    assert!(sized(vec![1, MAX_SLOT_TOKENS]).check().is_ok());
+    let none = sized(Vec::new()).check().unwrap_err();
+    assert!(none.contains("slots"), "{none}");
+    let zero = sized(vec![0, 32_768]).check().unwrap_err();
+    assert!(zero.contains("1 to 262144"), "{zero}");
+    let long = sized(vec![MAX_SLOT_TOKENS + 1]).check().unwrap_err();
+    assert!(long.contains("262145"), "{long}");
+    let down = sized(vec![65_536, 32_768]).check().unwrap_err();
+    assert!(down.contains("short to long"), "{down}");
+}
+
+/// Each slot charges its own bytes, and the buffers hold a block over the keys of the longest slot.
+#[test]
+fn mixed_slots_charge_each_slot_and_size_the_work_for_the_longest() {
+    let b = backbone();
+    let one = limits(&b, &config(1), 3_456_000_000, None);
+    let c = sized(vec![32_768, 32_768, 262_144]);
+    let l = limits(&b, &c, 3_456_000_000, None);
+    l.check().unwrap();
+    let long = slot_bytes(&b, 262_144);
+    // The full layers hold 24 KiB of each position, and the sliding layers hold rings of a fixed size.
+    assert_eq!(long, 6 * 2 * 262_144 * 2048 + 62_914_560 + 638_976);
+    assert_eq!(
+        l.slots,
+        vec![
+            SlotLimit {
+                bytes: 868_859_904,
+                count: 2,
+                tokens: 32_768
+            },
+            SlotLimit {
+                bytes: long,
+                count: 1,
+                tokens: 262_144
+            }
+        ]
+    );
+    let term = |l: &Limits, name: &str| l.memory.mandatory.iter().find(|t| t.name == name).unwrap().bytes;
+    assert_eq!(term(&l, "kv"), 2 * 868_859_904 + long);
+    // The scores of a block of 512 over 262,144 keys: 16 × 512 × 262,160 floats.
+    let scores = 16 * 512 * 262_160 * 4;
+    assert!(term(&l, "work") > scores, "{}", term(&l, "work"));
+    assert!(term(&l, "work") - term(&one, "work") >= scores - 16 * 512 * 32_784 * 4);
 }
 
 fn segment(slot: u32, from: u64, tokens: &[u32], logits: &[u64]) -> Segment {
