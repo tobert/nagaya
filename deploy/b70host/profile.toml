@@ -168,9 +168,9 @@ jlens = "/home/atobey/.local/share/nagaya/lens/lfm3.jlens.safetensors"
 # model on demand"), and its family table needs the snapshot folder. An SDXL engine plans 21 GB, so a load of an
 # image engine on card 1 names `lfm3-1` in `unload`.
 #
-# Seven slots hold 32,768 positions, and the last holds 262,144, the positions of the model (engine-abi "Slot sizes";
-# Amy, 2026-11-12: "mixed slot sizes seems fine"). A job takes the shortest free slot that holds it. The long slot
-# takes 6.5 GB, and a block of 512 over its keys takes 8.6 GB of scores.
+# Eight slots of 32,768 positions, as `lfm3` has. The engine takes a list of slot sizes (engine-abi "Slot sizes"),
+# but no slot here is longer. Decided 2026-11-14: the slot of 262,144 positions is out until its bound holds. On the
+# card, a block of 512 in that slot took 2,965 ms, and the engine declares 2,000 ms (`xe_feed`, `docs/perf.md`).
 [[engines]]
 name = "lfm3-1"
 kind = "mk-lfm3-bmg"
@@ -179,7 +179,7 @@ share = 1
 
 [engines.config]
 model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-1.7B/snapshots/0dc4268b561499c648c7ba7c9466bf3d8d01517a"
-slots = [32768, 32768, 32768, 32768, 32768, 32768, 32768, 262144]
+slots = 8
 
 [engines.family]
 model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-1.7B/snapshots/0dc4268b561499c648c7ba7c9466bf3d8d01517a"
