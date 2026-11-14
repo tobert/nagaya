@@ -976,8 +976,11 @@ __kernel void mk_persistent_interpreter(
         }
         else if (op == OP_ATTN_SCORES) {
             // c[h, t, j] = a[t, h, :] . k[j, h / (heads / kv), :] for n tokens and the key rows j
-            // of their tiles (see attn_row_floats); fields as OP_ATTN's. Work items: (head, tile
-            // of ATTN_TILE tokens, 32 keys).
+            // of their tiles (see attn_row_floats); fields as OP_ATTN's. Work items: (32 keys,
+            // head, tile of ATTN_TILE tokens). The keys are the slowest index, so the items that
+            // run at one time read the same key rows, and a long cache passes the card's cache
+            // one time and not one time for each (head, tile). The order of the items changes
+            // no bit: each item writes its own scores.
             __global const float* Q  = (__global const float*)task.a;
             __global const float* Kc = (__global const float*)task.b;
             __global float*       S  = (__global float*)task.c;
@@ -987,7 +990,7 @@ __kernel void mk_persistent_interpreter(
             uint ring = task.layer, k_height = kv_surface_rows(key_rows, ring);
             uint t_tiles = (N + ATTN_TILE - 1) / ATTN_TILE, k_pairs = (key_rows + 31) / 32;
             for (uint item = gsg; item < H * t_tiles * k_pairs; item += n_gsg) {
-                uint kp = item % k_pairs, tt = (item / k_pairs) % t_tiles, h = item / (k_pairs * t_tiles);
+                uint tt = item % t_tiles, h = (item / t_tiles) % H, kp = item / (t_tiles * H);
                 uint t0 = tt * ATTN_TILE, kvh = h / (H / KV);
                 uint2 span = attn_tile_keys(t0, N, p0, window, token_meta, lane);
                 uint j0 = kp * 32;

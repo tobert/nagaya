@@ -13,21 +13,21 @@ use nagaya_mk_bmg::ring::Ring;
 use nagaya_mk_bmg::tasks;
 use nagaya_mk_bmg::{EMBEDDINGGEMMA2_KERNEL, KERNEL_ENTRY};
 
-/// The SHA-256 of each binary, and the ocloc that makes them. The split attention of 2026-11-06 changed each one
-/// (engine-abi "The bits do not depend on the slot size"). The speech and image binaries hold the `-I` path of the
-/// kernels, so their hashes are of the checkout `~/src/nagaya`: a worktree gives other bytes.
+/// The SHA-256 of each binary, and the ocloc that makes them. The order of the work items of `OP_ATTN_SCORES`
+/// changed each one on 2026-11-14 (`docs/perf.md`, "The long slot"). The speech and image binaries hold the `-I` path
+/// of the kernels, so their hashes are of the checkout `~/src/nagaya`: a worktree gives other bytes.
 const BINARIES: [(&str, &str); 3] = [
     (
         "gemma4",
-        "bc2398b423ce95b3d837dd436ed79c751946218090c67ddbb5f4da318f0bc155",
+        "de22b4f6c295c7827d161827f5485dbc71f42dccab054fa00f80790ed8ff2158",
     ),
     (
         "qwen3tts",
-        "725bf441aefd1fe60672f0c56828a8bb6ef0967d2ce8b43be4d06c67075d4b9f",
+        "6be745b921c712f06a3348e2ca021040493a10dcfa61b598e796b80215437f69",
     ),
     (
         "sdxl",
-        "4d095df2d6d1d899f7dcf4ed2940fe3445eaad701d48eb24ee4e79afdc3073f1",
+        "7a8f675f3416cc66aefff9651c561586fa75c5af7acf29f9ca51bd9e46101b9a",
     ),
 ];
 const BINARIES_OCLOC: &str = "26.35.39758";

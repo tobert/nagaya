@@ -12,8 +12,8 @@ use nagaya_mk_bmg::protocol::*;
 use nagaya_mk_bmg::ring::Ring;
 use nagaya_mk_bmg::{KERNEL_ENTRY, QWEN3TTS_KERNEL};
 
-/// The SHA-256 of the Gemma 4 binary after the split attention of 2026-11-06, and the ocloc that makes it.
-const GEMMA4_SHA256: &str = "bc2398b423ce95b3d837dd436ed79c751946218090c67ddbb5f4da318f0bc155";
+/// The SHA-256 of the Gemma 4 binary after the new order of the score items of 2026-11-14, and the ocloc that makes it.
+const GEMMA4_SHA256: &str = "de22b4f6c295c7827d161827f5485dbc71f42dccab054fa00f80790ed8ff2158";
 const GEMMA4_OCLOC: &str = "26.35.39758";
 
 /// A small random source: xorshift64*.

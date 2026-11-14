@@ -198,6 +198,29 @@ lengths, as the difference for each block of 512. It holds the host time of a bl
 - The memory is the second limit. The plan of card 1 has 31.9 GB of its 32 GiB in use. A slot of 65,536 positions
   takes 1.74 GB of `kv`, and the scores of its block take 2.1 GB of `work`. A longer slot means fewer slots.
 
+**The cause of the bend, and its repair (2026-11-14).** An ignored test of `xe_lfm3_ops`
+measures each op on the card, on a cache of random values. These are its times for one layer and a block of 512:
+
+| Keys | Scores | Softmax | Sum of the values | The three, before | The three, after |
+|---|---|---|---|---|---|
+| 32,768 | 13.7 ms | 10.7 ms | 6.4 ms | 31.3 ms | 25.2 ms |
+| 65,536 | 74.2 ms | 22.0 ms | 13.2 ms | 107.3 ms | 55.6 ms |
+| 131,072 | 160.0 ms | 44.6 ms | 25.8 ms | 235.3 ms | 103.7 ms |
+| 262,144 | 351.4 ms | 88.0 ms | 52.2 ms | 493.9 ms | 208.0 ms |
+
+- `OP_ATTN_SCORES` took 71% of the time at 262,144 keys, and it grew by 5.4 from 32,768 keys to 65,536.
+- Its work items had the keys as the fastest index. Thus it read the whole key plane of a head one time for
+  each head and each tile of 16 tokens. That is 512 times in a layer. Past about 32,768 keys the plane does not
+  fit the cache of the card, and each of those reads came from memory.
+- Now the keys are the slowest index. The items that run at one time read the same key rows. At 262,144 keys the
+  op takes 66.4 ms where it took 351.4 ms.
+- An item computes what it computed before, so no bit changes. The kernel binaries change, so the identity of each
+  engine on the cards changes, and each held context fills again one time.
+- On the engine, the longest block of a slot of 262,144 positions takes 1,330 ms where it took 2,965 ms. The long
+  slot fits the bound of 2,000 ms, and it gives the bits of a short slot (`xe_feed`).
+- A cache of zeros gives times that are too short by a factor of 3. Measure with values.
+- What stays is the softmax and the sum of the values: 140 ms of 208 ms. They are passes over the scores.
+
 The owner expects that contexts of 32,768 positions are enough for now, and that 65,536 comes next. Places to start:
 
 - Measure the longest block at 65,536 positions first. It can fit the bound with no change.

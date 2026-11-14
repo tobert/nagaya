@@ -603,3 +603,82 @@ fn control_keeps_the_rows_for_a_vector_of_zeros() {
         assert_eq!(first_other_bits(&got, &h), None, "{op:?} {s}");
     }
 }
+
+/// A measurement, not a gate: the time of each op of the attention of a block of 512 at the end of a slot, by the
+/// count of keys, and the time of the attention of one token (`docs/perf.md`, "The long slot"). The cache holds
+/// one chunk of random values many times. Run it alone, with `--ignored --nocapture`.
+#[test]
+#[ignore = "a measurement that takes 9 GB of card memory"]
+fn the_time_of_each_attention_op_by_the_count_of_keys() {
+    let (h, kv, d, n) = (ATTN_H, ATTN_KV, ATTN_D, 512usize);
+    let cluster = L0Cluster::init(LFM3_KERNEL, KERNEL_ENTRY);
+    assert!(!cluster.cards.is_empty(), "no Level Zero card");
+    let mut card = Card {
+        ring: Ring::new(&cluster.cards[0], 1 << 25),
+        cluster,
+    };
+    let q = values(7, n * h * d, 0.3);
+    let chunk = values(8, 4096 * kv * d, 1.0);
+    for keys in [32_768usize, 65_536, 131_072, 262_144] {
+        let p0 = keys - n;
+        let qb = card.buf(&q);
+        let cb = Buf::zeros(card.card(), 2 * keys * kv * d * 4);
+        // 4,096 keys of random values, at each multiple of 4,096 rows of the two planes.
+        let chunk_bytes = chunk.len() * 4;
+        let stage = card.card().alloc_host_usm::<u8>(chunk_bytes);
+        // SAFETY: `stage` holds `chunk_bytes` bytes of host USM, and `chunk` is that long.
+        unsafe { std::ptr::copy_nonoverlapping(chunk.as_ptr() as *const u8, stage, chunk_bytes) };
+        for at in (0..2 * keys * kv * d * 4).step_by(chunk_bytes) {
+            // SAFETY: the cache holds a whole count of chunks.
+            let to = unsafe { cb.ptr.add(at) };
+            card.card()
+                .memcpy_sync(to as *mut c_void, stage as *const c_void, chunk_bytes);
+        }
+        card.card().free(stage as *mut c_void);
+        let sb = Buf::zeros(card.card(), tasks::score_floats(h as u32, n as u32, p0 as u32) * 4);
+        let ob = Buf::zeros(card.card(), n * h * d * 4);
+        let ops = tasks::attend_block(
+            qb.at(),
+            cb.at(),
+            sb.at(),
+            ob.at(),
+            n as u32,
+            h as u32,
+            kv as u32,
+            d as u32,
+            p0 as u32,
+            keys as u32,
+            0,
+        );
+        let mut line = format!("keys {keys:6}:");
+        // The first run of a buffer pays for its pages. Run the block one time before the measurement.
+        card.run(&ops);
+        for op in &ops {
+            let started = std::time::Instant::now();
+            card.run(std::slice::from_ref(op));
+            line += &format!(" op {} {:7.1} ms;", op.opcode, started.elapsed().as_secs_f64() * 1e3);
+        }
+        let started = std::time::Instant::now();
+        card.run(&ops);
+        line += &format!(" the block {:7.1} ms;", started.elapsed().as_secs_f64() * 1e3);
+        let one = tasks::attend_one(
+            qb.at(),
+            cb.at(),
+            ob.at(),
+            h as u32,
+            kv as u32,
+            d as u32,
+            keys as u32 - 1,
+            keys as u32,
+            0,
+        );
+        card.run(&one);
+        let started = std::time::Instant::now();
+        card.run(&one);
+        line += &format!(" one token {:6.2} ms", started.elapsed().as_secs_f64() * 1e3);
+        println!("{line}");
+        for b in [qb, cb, sb, ob] {
+            b.free(card.card());
+        }
+    }
+}
