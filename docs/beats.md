@@ -142,6 +142,10 @@ the places for that share, from the smallest change of code to the largest:
 - **Two voices at one time.** A merge can turn the keys of another member to the positions of the member's own last
   bar. Then two rows are at each position. No model saw this in training.
 - **Leader and follower.** With a coupling, the order of the members in a step has a meaning: who reads whom first.
+- **A pop.** At some steps, one member moves its latent row away from the mean row by one standard deviation of the
+  swarm. It is the opposite of the coupling, and it keeps the members apart.
+- **A little noise over time.** A small random share in each coupling, from a hash of the seed, the member and the
+  step. Thus the dance does not repeat, and a replay gives the same bits.
 
 Limits of the code today: a soft row shares no pass, and a pass with a tap has one segment. Thus only the coupling
 at the logits keeps the joined pass with no change of an engine.
@@ -159,6 +163,52 @@ beat. The test of a lesson: remove the coupling, and count the steps for which t
 
 The first trial: 8 members on `lfm3`, a coupling at the logits, and a share that follows the phase. With a share of
 0, each member gives the bits of its own generation.
+
+## The speed of a swarm
+
+Measured on 2026-11-14 on `lfm3`, on one B70 card, through the route of generations with `forks`. Each member wrote
+224 tokens. The rate is the difference of a run of 224 tokens and a run of 32 tokens.
+
+| Members | Steps each second | One step | Tokens each second |
+|---|---|---|---|
+| 1 | 92.1 | 10.9 ms | 92 |
+| 2 | 67.3 | 14.9 ms | 135 |
+| 4 | 43.7 | 22.9 ms | 175 |
+| 8 | 22.0 | 45.5 ms | 176 |
+
+8 members give no more tokens each second than 4. Nobody found the cause yet.
+
+The fastest beat follows from the step. The table gives it for one step on each part of a beat, and 60% of it:
+
+| Members | One step on each | Fastest beat | 60% of it |
+|---|---|---|---|
+| 8 | 16th note (4 for each beat) | 330 beats each minute | 198 |
+| 8 | 32nd note (8 for each beat) | 165 | 99 |
+| 8 | pulse (24 for each beat) | 55 | 33 |
+| 4 | 32nd note | 328 | 197 |
+| 4 | pulse | 109 | 66 |
+
+At 60%, a card works for 45.5 ms and rests for 30 ms in each step of 8 members.
+
+**A rest and the power state.** The file `act_freq` of a card reads 2,800 in a pass, and 0 from 20 ms after it. The
+table gives the time of a request of 8 members and 6 steps after a rest, as the median of 7 runs:
+
+| Rest | The request | More than no rest |
+|---|---|---|
+| 0 ms | 362 ms | |
+| 50 ms to 500 ms | 366 ms to 369 ms | 4 ms to 7 ms |
+| 1,000 ms | 372 ms | 10 ms |
+| 3,000 ms | 378 ms | 16 ms |
+
+Thus a rest costs the next step a few milliseconds, and a longer rest costs more. A beat that needs a step within
+1 ms of its time must start the step early by this cost, or keep the card awake.
+
+**To see the beat.** A rest of 30 ms in each step does not show in a monitor that samples each second. Two ways show
+it. Sample `act_freq` each 5 ms, because it reads 0 in each rest of 20 ms or more. Or put the steps in groups. Then
+some parts of each beat have a step, and the other parts are a rest of 200 ms or more.
+
+**What it needs.** A gate of the host at the quantum boundary, which is not built. A client can pace only whole
+requests, and the 6 steps above took 362 ms where 6 steps of a long run take 273 ms.
 
 ## The readout
 
