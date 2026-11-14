@@ -31,6 +31,7 @@ pub mod qwen38;
 pub mod qwen3tts;
 pub mod qwenimage21;
 pub mod reprofile;
+pub mod rows;
 pub mod sdxl;
 pub mod serving;
 pub mod signal;

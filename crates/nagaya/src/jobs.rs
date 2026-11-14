@@ -77,6 +77,12 @@ pub trait JobBody: Send {
         panic!("a {kind:?} quantum of this job is not a pass; its item must not be a Block")
     }
 
+    /// Prepare the end of the oldest pass that began, from the result that [`JobBody::end_pass`] gets next. The work
+    /// uses no engine, and it changes nothing that another body reads. The driver calls it for the bodies of one
+    /// shared pass at the same time, each on a row thread (spec 3.2, "The row threads"). A body keeps what it
+    /// prepared, and its `end_pass` gives the same result with it as with none. The default does nothing.
+    fn prepare_end(&mut self, _kind: Kind, _result: &Result<PassOut, PassError>) {}
+
     /// End the oldest pass that began, with what its last stage gave. The passes of one job end in order.
     fn end_pass(&mut self, kind: Kind, _result: Result<PassOut, PassError>, _engines: &mut [Box<dyn Engine>]) -> Ran {
         panic!("a {kind:?} quantum of this job is not a pass; its item must not be a Block")
@@ -427,6 +433,9 @@ impl GroupJobs {
     }
 }
 
+/// A body of a shared pass, with the result that its `end_pass` gets next.
+type PassEnd<'a> = (&'a mut Box<dyn JobBody>, &'a Result<PassOut, PassError>);
+
 /// Run one joined decode quantum of `jobs`, each with the place of its engine in `engines`. A body that can join
 /// gives its segment, and one pass runs the plain rows of each engine that share a control list, up to that engine's
 /// limit. Every other body runs alone. Each body gets its own rows. The results are in the order of `jobs` for the
@@ -455,7 +464,20 @@ pub fn run_joined_bodies(
         let engine = batch[0].1;
         let segments: Vec<Segment> = batch.iter().map(|(_, _, segment)| segment.clone()).collect();
         let result = engines[engine].pass(&segments, &[]);
-        for ((id, _, _), result) in batch.iter().zip(split(result, &segments)) {
+        let each = split(result, &segments);
+        // The host work of each row that uses no engine runs at the same time, so the card waits for the slowest
+        // row and not for their sum. A body of one pass is in one batch only.
+        let mut ends: Vec<PassEnd> = jobs
+            .iter_mut()
+            .filter_map(|(job, _, body)| {
+                let place = batch.iter().position(|(id, _, _)| id == job)?;
+                Some((body, &each[place]))
+            })
+            .collect();
+        assert_eq!(ends.len(), batch.len(), "a segment has its job");
+        crate::rows::each(&mut ends, |(body, result)| body.prepare_end(kind, result));
+        drop(ends);
+        for ((id, _, _), result) in batch.iter().zip(each) {
             let (_, _, body) = jobs
                 .iter_mut()
                 .find(|(job, _, _)| job == id)

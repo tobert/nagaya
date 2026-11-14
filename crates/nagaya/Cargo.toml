@@ -57,6 +57,8 @@ nagaya-text-toy = { version = "0.1.0", path = "../nagaya-text-toy", optional = t
 nagaya-sched = { version = "0.1.0", path = "../nagaya-sched" }
 nagaya-store = { version = "0.1.0", path = "../nagaya-store" }
 libc = "0.2.191"
+# The row threads (spec 3.2). The crate is in the tree already, through the tokenizers.
+rayon = "1.12.0"
 nagaya-telemetry = { version = "0.1.0", path = "../nagaya-telemetry", features = ["export"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"

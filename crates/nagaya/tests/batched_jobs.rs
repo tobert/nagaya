@@ -2,7 +2,8 @@
 //! step 5, engine-abi "LFM3", "Batched passes"). Each job gives its segment, one pass runs them all, and each job gets
 //! its own rows. A job that cannot join runs alone in the same quantum, and one job can fail alone.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::Duration;
 
 use nagaya::jobs::{GroupJobs, JobBody, JobSpec, Ran};
 use nagaya_abi::fake::FakeAlways;
@@ -84,6 +85,24 @@ impl Engine for Rows {
 /// What a job saw: the rows that each of its passes gave, as (slot, position).
 type Seen = Arc<Mutex<Vec<(f32, f32)>>>;
 
+/// Where the rows of one pass meet: the count of bodies that prepare the end of a pass now.
+#[derive(Default)]
+struct Meet {
+    inside: Mutex<usize>,
+    arrived: Condvar,
+}
+
+/// What a body does when the driver prepares the end of its pass.
+struct Prepares {
+    meet: Arc<Meet>,
+    /// The count of bodies that the body waits for, with itself.
+    members: usize,
+    /// The row that the body prepared, until its pass ends.
+    row: Option<Vec<u8>>,
+    /// True for each prepared row that met the rows of the other members in time.
+    met: Arc<Mutex<Vec<bool>>>,
+}
+
 /// A job of `steps` decode quanta on its own slot. Each quantum feeds one token at the next position.
 struct Decoder {
     slot: u32,
@@ -95,6 +114,8 @@ struct Decoder {
     fail_at: Option<usize>,
     done: usize,
     seen: Seen,
+    /// When it is set, the end of each pass must come after its preparation, with the same row.
+    prepares: Option<Prepares>,
 }
 
 impl Decoder {
@@ -158,8 +179,43 @@ impl JobBody for Decoder {
         Ok(vec![self.segment()])
     }
 
+    fn prepare_end(&mut self, _kind: Kind, result: &Result<PassOut, PassError>) {
+        let Some(prepares) = &mut self.prepares else {
+            return;
+        };
+        let out = result.as_ref().expect("the batch ran");
+        assert!(prepares.row.is_none(), "the driver prepared two ends before one end");
+        prepares.row = Some(out.outputs[0].bytes.clone());
+        let mut inside = prepares.meet.inside.lock().unwrap();
+        *inside += 1;
+        prepares.meet.arrived.notify_all();
+        // A driver that prepares the rows in turn never has all members inside at one time.
+        let (mut inside, wait) = prepares
+            .meet
+            .arrived
+            .wait_timeout_while(inside, Duration::from_secs(2), |inside| *inside < prepares.members)
+            .unwrap();
+        prepares.met.lock().unwrap().push(!wait.timed_out());
+        if wait.timed_out() {
+            *inside -= 1;
+        }
+    }
+
     fn end_pass(&mut self, _kind: Kind, result: Result<PassOut, PassError>, _engines: &mut [Box<dyn Engine>]) -> Ran {
-        self.took(result.expect("the batch ran"))
+        let out = result.expect("the batch ran");
+        if let Some(prepares) = &mut self.prepares {
+            let row = prepares
+                .row
+                .take()
+                .expect("the driver prepares the end of a shared pass");
+            assert_eq!(
+                row, out.outputs[0].bytes,
+                "the body prepared the row that its pass ends with"
+            );
+            // The last member to end its pass empties the meeting place for the next pass.
+            *prepares.meet.inside.lock().unwrap() = 0;
+        }
+        self.took(out)
     }
 }
 
@@ -173,6 +229,7 @@ fn decoder(slot: u32, steps: usize, joins: bool, fail_at: Option<usize>) -> (Dec
         fail_at,
         done: 0,
         seen: Arc::clone(&seen),
+        prepares: None,
     };
     (body, seen)
 }
@@ -220,6 +277,41 @@ fn the_decode_quanta_of_a_batching_engine_share_one_pass_and_each_job_gets_its_r
     assert_eq!(*passes.lock().unwrap(), [3, 3, 3, 3]);
     for (slot, s) in seen.iter().enumerate() {
         saw_its_own_rows(s, slot as u32, 4);
+    }
+}
+
+/// The driver prepares the ends of the rows of one pass at the same time, each on a row thread, before the first end
+/// (spec 3.2, "The row threads"). Then each pass ends in the order of its segments, as before.
+///
+/// Falsified by a driver that prepares the rows in turn: no row meets the others.
+#[test]
+fn the_rows_of_a_shared_pass_prepare_their_ends_at_the_same_time() {
+    let passes = Passes::default();
+    let mut engines: Vec<Box<dyn Engine>> = vec![Box::new(Rows::new(true, false, 8, &passes))];
+    let mut jobs = GroupJobs::new(0, ["lfm3"]);
+    let meet = Arc::new(Meet::default());
+    let met = Arc::new(Mutex::new(Vec::new()));
+    let mut seen = Vec::new();
+    for slot in 0..4 {
+        let (mut body, s) = decoder(slot, 3, true, None);
+        body.prepares = Some(Prepares {
+            meet: Arc::clone(&meet),
+            members: 4,
+            row: None,
+            met: Arc::clone(&met),
+        });
+        add(&mut jobs, body);
+        seen.push(s);
+    }
+    run_all(&mut jobs, &mut engines);
+    assert_eq!(*passes.lock().unwrap(), [4, 4, 4]);
+    assert_eq!(
+        *met.lock().unwrap(),
+        [true; 12],
+        "each row of each pass met the three others"
+    );
+    for (slot, s) in seen.iter().enumerate() {
+        saw_its_own_rows(s, slot as u32, 3);
     }
 }
 

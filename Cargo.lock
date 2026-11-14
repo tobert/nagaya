@@ -1212,6 +1212,7 @@ dependencies = [
  "nagaya-text-toy",
  "opentelemetry",
  "png",
+ "rayon",
  "safetensors",
  "serde",
  "serde_json",

@@ -237,7 +237,12 @@ pub(crate) struct GenerateThen {
     soft: Option<SoftRun>,
     /// The tokens of the reply when the request forces a text, in place of the samples.
     forced: Option<Vec<u32>>,
+    /// The draw that a row thread made from the next logit row, with its position (spec 3.2, "The row threads").
+    drawn: Option<(usize, Result<Drawn, ServiceError>)>,
 }
+
+/// The draw of one logit row: the token with its statistics, and the mix of a soft input.
+type Drawn = (nagaya_council::sampler::Pick, Option<Mix>);
 
 impl GenerateThen {
     /// Give each token of the span a soft input (docs/lab.md, "Soft inputs in a request"). A soft row is not a token,
@@ -392,9 +397,14 @@ impl GenerateThen {
         }
     }
 
-    /// Sample the next token from a logit row, and give it to the parser and to the stream.
-    fn sample(&mut self, row: &[f32]) -> Result<Want, ServiceError> {
-        let position = self.prompt.len() + self.latent_steps() + self.sampled.len();
+    /// The position of the next token of the reply. It is the counter of its draw (spec 11.2).
+    fn position(&self) -> usize {
+        self.prompt.len() + self.latent_steps() + self.sampled.len()
+    }
+
+    /// Draw the next token from a logit row. It changes nothing, so a row thread can do it before the pass ends.
+    fn draw(&self, row: &[f32]) -> Result<Drawn, ServiceError> {
+        let position = self.position();
         let failed = |error| ServiceError::internal(format!("the sample at position {position} failed: {error}"));
         let in_span = self.soft.as_ref().is_some_and(|run| match run.soft.plan.span {
             Span::All => true,
@@ -438,6 +448,23 @@ impl GenerateThen {
                     None,
                 ),
             },
+        };
+        Ok((chosen, mix))
+    }
+
+    /// Sample the next token from a logit row, and give it to the parser and to the stream.
+    fn sample(&mut self, row: &[f32]) -> Result<Want, ServiceError> {
+        let position = self.position();
+        let (chosen, mix) = match self.drawn.take() {
+            Some((at, drawn)) => {
+                // A draw of another position would give another token. Stop before the reply holds it (spec 8.5).
+                assert_eq!(
+                    at, position,
+                    "a row thread drew position {at}, and the reply is at {position}"
+                );
+                drawn?
+            }
+            None => self.draw(row)?,
         };
         if let Some(tracing) = &mut self.tracing {
             let residual = tracing
@@ -970,6 +997,14 @@ impl Then for GenerateThen {
     fn shared_pass(&mut self) {
         self.shared = true;
     }
+
+    fn prepare(&mut self, row: &[f32]) {
+        // Only the row that `next` samples as it is. A latent stage reads its row first, and a trace has no draw
+        // without its taps.
+        if matches!(self.stage, Stage::Sampling) && self.tracing.is_none() {
+            self.drawn = Some((self.position(), self.draw(row)));
+        }
+    }
 }
 
 /// A seed for a request that sends none. It comes from the hasher keys of the standard library, which the
@@ -1255,6 +1290,7 @@ impl Service {
             }),
             soft: None,
             forced: None,
+            drawn: None,
         };
         let parts = JobParts {
             shared: Arc::clone(&self.shared),

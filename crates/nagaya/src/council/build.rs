@@ -537,6 +537,11 @@ pub trait Then: Send + 'static {
     /// Hear that a decode row of the work shared its pass with the row of another job (spec 6.14, "No head from a
     /// shared pass"). The default does nothing.
     fn shared_pass(&mut self) {}
+
+    /// Prepare the next call of [`Then::next`], which gets `Got::Fed` with this row. The body calls it on a row
+    /// thread (spec 3.2, "The row threads"). The work keeps what it prepared, and `next` gives the same want with it
+    /// as with none. The default does nothing.
+    fn prepare(&mut self, _row: &[f32]) {}
 }
 
 /// No work after the build.
@@ -653,6 +658,8 @@ pub struct ContextBody<T: Then> {
     feeding: Option<Feeding>,
     /// The row that the last pass of the feed gave.
     row: Option<Vec<f32>>,
+    /// The row that `prepare_end` read from the pass that ends next.
+    prepared: Option<Vec<f32>>,
     /// The state that `Mark` kept, with the ledger charge of its bytes.
     mark: Option<Marked>,
     held: Vec<Option<ContentId>>,
@@ -732,6 +739,7 @@ impl<T: Then> ContextBody<T> {
             units: VecDeque::new(),
             feeding: None,
             row: None,
+            prepared: None,
             mark: None,
             held: Vec::new(),
             from: None,
@@ -1381,8 +1389,11 @@ impl<T: Then> ContextBody<T> {
                     "a pass over tokens {from} to {to} asked for one logit row and did not give exactly one"
                 )));
             };
-            let row = logit_row(&output.bytes, self.shared.vocab)
-                .map_err(|error| ServiceError::internal(format!("the pass over tokens {from} to {to}: {error}")))?;
+            let row = match self.prepared.take() {
+                Some(row) => row,
+                None => logit_row(&output.bytes, self.shared.vocab)
+                    .map_err(|error| ServiceError::internal(format!("the pass over tokens {from} to {to}: {error}")))?,
+            };
             self.row = Some(row);
             if self.feeding.as_ref().is_some_and(|feeding| feeding.tap) {
                 let mut taps = out.outputs.iter().filter(|output| output.name == RESIDUAL_TAP);
@@ -1824,6 +1835,35 @@ impl<T: Then> JobBody for ContextBody<T> {
                 Err(Ran::Failed)
             }
         }
+    }
+
+    fn prepare_end(&mut self, _kind: Kind, result: &Result<PassOut, PassError>) {
+        // Only the pass whose row `passed` gives to the work at once: the last pass of a plain feed. Each other
+        // pass, and each fault, stays with `passed`.
+        let Ok(out) = result else { return };
+        let plain = self
+            .feeding
+            .as_ref()
+            .is_some_and(|feeding| !feeding.tap && !feeding.lens);
+        let last = self.units.is_empty() && self.in_flight.len() == 1;
+        let gives = self
+            .in_flight
+            .front()
+            .is_some_and(|pending| pending.row && !pending.build);
+        if out.status != PassStatus::Ok || !plain || !last || !gives {
+            return;
+        }
+        let mut rows = out.outputs.iter().filter(|output| output.name == "logits");
+        let (Some(output), None) = (rows.next(), rows.next()) else {
+            return;
+        };
+        let Ok(row) = logit_row(&output.bytes, self.shared.vocab) else {
+            return;
+        };
+        if let Some(then) = &mut self.then {
+            then.prepare(&row);
+        }
+        self.prepared = Some(row);
     }
 
     fn end_pass(&mut self, _kind: Kind, result: Result<PassOut, PassError>, engines: &mut [Box<dyn Engine>]) -> Ran {
