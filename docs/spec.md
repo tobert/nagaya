@@ -486,6 +486,19 @@ thread priorities:
   (13.2) run on a bounded pool pinned to the remaining cores at `SCHED_BATCH`. Long CPU work yields between chunks
   to obey `max_quantum_ms`. On unified-memory machines (`gfx1151host` and `sm121host`), the scheduler pauses background CPU
   memory work during a GPU pass to protect GPU memory bandwidth.
+- **The row threads.** **Proposed** (Claude Fable 5.2, 2026-11-14). After a pass that several jobs share, each row
+  has host work that uses no engine. That work is the read of its logit row and the draw of its token. The thread
+  that ran the pass gives that work to its row threads, and it waits for all of them. Then it ends each job in the
+  order of the segments, as before.
+  - A thread that runs shared passes has 8 row threads (`nagaya-row-<index>`). They start at its first shared pass.
+  - A row thread keeps the CPU mask of the thread that started it. Thus the row threads of a device thread stay on
+    the CPUs of its card (3.2b).
+  - A row thread has the normal scheduling policy, not `SCHED_BATCH`. Reason: the card waits for this work.
+  - The draw of a row is the same function of the same inputs on each thread (11.2). Thus the bits do not change.
+  - Each call of an engine stays on the thread of its device.
+
+  Reason: one thread drew each row in turn while the card waited. With 8 rows and no filter, that was 22 ms of
+  each step of 46 ms (`docs/perf.md`).
 - **No pause on a discrete card.** A machine whose cards have their own memory, such as b70host, has no pause
   rule. A pass there reads GDDR6, not host memory. The host traffic of a
   pass is the residual and the uploads, about 11 MB for a block of mkviolet. A measurement under load can add a rule.
