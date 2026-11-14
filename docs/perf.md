@@ -29,6 +29,29 @@ One formula fits each cell to 0.3 ms: `T = p * a + n * b`.
 
 Thus three things make the step time, and each is a place to start.
 
+That table is of the build before the row threads (spec 3.2, "The row threads"). Since `c75285a`, the rows of a
+shared pass draw their tokens at the same time. The same measurement on that build, on 2026-11-14:
+
+| Members | Temperature 0.8, no filter | Temperature 0.8, `top_k` 64 | Greedy |
+|---|---|---|---|
+| 1 | 10.9 ms | 9.3 ms | 9.1 ms |
+| 2 | 13.0 ms | 11.5 ms | 11.3 ms |
+| 3 | 15.0 ms | 13.3 ms | 13.0 ms |
+| 4 | 17.0 ms | 15.1 ms | 14.9 ms |
+| 5 | 19.0 ms | 17.0 ms | 16.6 ms |
+| 6 | 20.9 ms | 18.7 ms | 18.3 ms |
+| 7 | 30.1 ms | 20.7 ms | 20.0 ms |
+| 8 | 24.9 ms | 22.4 ms | 22.0 ms |
+
+- With 8 members and no filter, a step takes 24.9 ms where it took 45.9 ms: 321 tokens each second, where it
+  gave 174.
+- With 4 members and no filter, a step takes 17.0 ms where it took 22.9 ms: 235 tokens each second, where it gave 175.
+- Each member now costs 1.8 ms to 2.0 ms with each sampler. The draw is not a part of that cost now. The slowest
+  draw of a step is a part of the fixed cost: about 2.1 ms with no filter.
+- One cell has two passes in a step: 7 members with no filter. Before, 7 cells had them. Section 1 is still open.
+- The bits did not change. 39 seeded replies of 1, 4 and 8 members gave the same text on the two builds. 22 greedy
+  replies gave one text, alone and in shared passes.
+
 ## 1. A step of one swarm runs as two passes
 
 The engine declares 8 segments in a pass (`crates/nagaya-mk-lfm3-bmg/src/spec.rs`, `MAX_SEGMENTS`). But `p` is 2 in
@@ -82,7 +105,8 @@ the tail of the distribution, so it is another request, not the same one faster.
 
 Changes that keep the bits, in the order of their size:
 
-- Run the members of a pass on the pool threads. The process has 30 of them. Each row is apart from the others.
+- Run the members of a pass on other threads. Each row is apart from the others. Done in `c75285a`: the row
+  threads. One member alone still draws on its device thread.
 - Sort the keys with a radix sort. The keys are `u64` and their order is total, so the order stays.
 - Keep the vectors of a job from one token to the next.
 - Compute the exponentials one time, if the two sums can keep their order.
@@ -123,8 +147,9 @@ holds the build of the task ring, the write of the ring, the launch and the wait
 
 ## What the numbers say about the card
 
-With 4 members and no filter, a step is 22.9 ms. The host sampler takes about 11 ms of it. Thus the card is idle for
-about half of each step at the full speed of today. The limit is one host thread, not the card.
+Before the row threads, a step of 4 members with no filter was 22.9 ms, and the host sampler took about 11 ms of
+it. Thus the card was idle for about half of each step. The limit was one host thread, not the card. With the row
+threads the same step is 17.0 ms. What the card does in the 2 ms of each member is not measured yet (section 3).
 
 A first guess of the gains for 8 members, each on top of the last. Each number is from the formula, not measured,
 but the second, which is measured:
@@ -136,6 +161,9 @@ but the second, which is measured:
 | A sampler at the cost of `top_k` 64 | 26.1 ms (25.9 ms measured with `top_k`) | 306 |
 | The members end on pool threads | about 21 ms | about 380 |
 | One head matmul, if it is most of the rest | about 16 ms | about 500 |
+
+The row threads took the place of the second and third rows, with no change of the sampler: 24.9 ms measured, 321
+tokens each second. The cost of each member that stays, about 2 ms, is the subject of section 3.
 
 ## The long slot
 
