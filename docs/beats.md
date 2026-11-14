@@ -210,6 +210,51 @@ some parts of each beat have a step, and the other parts are a rest of 200 ms or
 **What it needs.** A gate of the host at the quantum boundary, which is not built. A client can pace only whole
 requests, and the 6 steps above took 362 ms where 6 steps of a long run take 273 ms.
 
+## A plan at 120 beats each minute
+
+The owner chose 4 members and 120 beats each minute on 2026-11-14. The goal is not speed. It is to learn if a
+context can take a small bias from other players, as a performer does. A weak effect is enough at first.
+
+**The grid is the audio row.** LFM3 Omni has one grid of time in both directions:
+
+- Audio in is 16 kHz with a hop of 160 samples, and one position is 8 mel frames. Thus one audio row is 80 ms
+  (`crates/nagaya-text-lfm3/src/media/audio.rs`).
+- Audio out is 1,920 samples at 24 kHz for each frame. Thus one frame is 80 ms too (`docs/engine-abi.md`, "The speech
+  calls of LFM3").
+
+A step of 4 members is 22.9 ms. Two steps for each audio row give a step each 40 ms, and a card works 57% of the time.
+At 120 beats each minute, a bar of 4 beats is 2,000 ms: 25 audio rows and 50 steps. A beat is 6.25 rows, so only
+the bar is on the grid. At 125 beats each minute, a beat is 6 rows and 12 steps.
+
+**The quantum boundary.** A device thread takes one quantum from its channel, runs it, and sends the result to the
+group thread (`crates/nagaya/src/process/staged.rs`). The group thread then asks the scheduler for the next quantum.
+Between the result and the next quantum, no kernel runs, and the host holds each row. The gate goes there. The
+simplest form is a rule of the scheduler: a job with a clock is not ready before the time of its next step. The
+scheduler takes the time as an argument, so a test with no GPU checks the rule.
+
+**The host is the clock, and the card holds the score.** The megakernel of the B70 cards has no clock, so it cannot
+find the time of a step. A kernel that waits for a signal of the host keeps the card at work in each rest. Thus the
+host starts each step. But the data of a bar can be in device memory before the bar starts. That data is the audio
+rows, and the share and the offset of each step. Then a step sends no row to the card.
+
+**The buffer.** A lab route takes audio and a place on the grid. The audio encoder makes its rows, and a ring holds
+them by their row number. A step at row `r` reads a small share of a row of the ring.
+
+- A background track comes before its time. Thus a step at row `r` can read row `r + 1`. This is the anticipation
+  of a performer who knows the piece.
+- A live player comes after its time, by one row and the time of the encoder at least. A step then reads the past.
+- The frames that the swarm speaks are on the same grid. Thus they can go into the ring for the other players.
+
+**The control of a trial.** Feed the same rows in a random order. They have the same sound and no timing. An effect
+that stays with the random order is not an effect of the beat.
+
+Open for this plan:
+
+- The rows of the audio encoder are inputs of `lfm3-omni`. Nobody checked that `lfm3`, the text model, reads them.
+- Nobody checked that `lfm3-omni` joins the decode quanta of 4 members, or its step time.
+- The time of the audio encoder for one row is not measured.
+- Other jobs can run in a rest. Then a step starts late by up to one quantum of the other job.
+
 ## The readout
 
 A trace with the J-Lens shows a nudge before it changes a token (`docs/lab.md`, "`trace`"). One trace of `lfm3` on
@@ -228,8 +273,6 @@ read the J-Lens trace at each value. Then make the offset a function of the phas
 
 ## Open questions
 
-- The sample rate of the codec and the hop of the mel frames. Without them, the time of one frame and of one audio
-  position is not known.
 - The `trace` route serves the text passes of `lfm3-omni`. Does it take a pass with an audio part?
 - `lfm3-omni` has no J-Lens. The lens of `lfm3` is of other weights.
 - Only the text model declares `control`. Thus no control list runs on a pass of Omni.
