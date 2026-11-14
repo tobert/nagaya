@@ -172,12 +172,40 @@ The profile had a slot of 262,144 positions on `lfm3-1`. Its card test ran for t
 block of 512 tokens took 2,965 ms, and the engine declares a quantum of 2,000 ms at most. The last decode step took
 37 ms. The slot is out of the profile until the bound holds (Decided 2026-11-14).
 
+What failed is the time bound only. The cause is the size of the work. In each of the 6 full layers, a block
+writes its scores over each key of the slot (`tasks::score_floats`). The softmax and the sum of the values read
+them again.
+
+A first curve came through the live service on 2026-11-14. It is the time of a prefill of `lfm3-1` at 8 prompt
+lengths, as the difference for each block of 512. It holds the host time of a block too.
+
+| Positions before the block | Time of a block of 512 |
+|---|---|
+| about 6,000 | 121 ms |
+| about 10,000 | 139 ms |
+| about 14,500 | 182 ms |
+| about 19,000 | 182 ms |
+| about 23,000 | 200 ms |
+| about 28,000 | 242 ms |
+| 262,144 (card test) | 2,965 ms |
+
+- To 32,768 positions, a block costs about 100 ms and 5.5 ms for each 1,000 keys.
+- That line gives about 1,540 ms at 262,144 positions, and the card gave 2,965 ms. Thus the cost grows faster than
+  the keys in some part of the range. No measurement is there.
+- By both slopes, a block at 65,536 positions takes 460 ms to 680 ms. At 131,072 it takes 820 ms to 1,440 ms.
+  Thus both sizes can fit the bound of 2,000 ms with no change. A card test must show it.
+- A prefill of 29,961 tokens took 10.1 s. A decode step at 262,144 positions took 37 ms, where a short one takes 9 ms.
+- The memory is the second limit. The plan of card 1 has 31.9 GB of its 32 GiB in use. A slot of 65,536 positions
+  takes 1.74 GB of `kv`, and the scores of its block take 2.1 GB of `work`. A longer slot means fewer slots.
+
 The owner expects that contexts of 32,768 positions are enough for now, and that 65,536 comes next. Places to start:
 
 - Measure the longest block at 65,536 positions first. It can fit the bound with no change.
 - A block of fewer tokens for a long slot. The scores of a block are its tokens times the keys.
 - A bound that the engine declares for each slot size.
 - The scores of a block of 512 over 262,144 keys take 8.6 GB. A smaller block takes less.
+- An attention that keeps no scores: it reads the keys in tiles, and it keeps a running softmax. It cuts the time
+  and the 8.6 GB. It changes the order of the sums, so it changes the bits and the engine identity.
 
 ## Other open things from the same day
 
