@@ -552,7 +552,7 @@ pub struct VisionBytes {
 /// "The LFM3 vision binding").
 pub fn limits(b: &Backbone, config: &Config, weights: u64, vision: Option<VisionBytes>) -> Limits {
     let kv = config.slots_bytes(b);
-    let work = bufs_bytes(b, config.max_block, config.max_seq()) as u64
+    let work = bufs_bytes(b, config.max_block) as u64
         + ring_device_bytes(config.max_seq())
         + audio_bufs_bytes(b) as u64
         + vision.map_or(0, |v| v.work);

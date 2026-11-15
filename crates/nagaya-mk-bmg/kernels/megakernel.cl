@@ -105,6 +105,11 @@
 #define OP_SHORT_CONV       90
 #define OP_HEAD_GATE        91
 #define OP_CONTROL          92
+#define OP_ATTN_STREAM      93
+#define OP_ATTN_STREAM_SUM  94
+#define ATTN_STREAM_KEYS    128 // keys of one round of OP_ATTN_STREAM: a pair of key tiles for each of 4 subgroups
+#define ATTN_STREAM_ROUNDS  64  // the most rounds in one chunk of OP_ATTN_STREAM: 8,192 keys
+#define ATTN_STREAM_TEAM_FLOATS 2176 // the scratch of one team: probabilities [16][128], maxes [4][16], sums [4][16]
 // The speech ops of the LFM3 binary (kernels/lfm3_speech_ops.cl)
 #define OP_LFM3_GROUP_ATTN  120
 #define OP_LFM3_POLAR       121
@@ -506,6 +511,31 @@ inline uint attn_pv_segments(uint H, uint N, uint D, uint key_rows) {
     uint segs = (4096 + items - 1) / items;
     return max(1u, min(segs, (key_rows + 15) / 16 / 2));
 }
+
+#ifdef MK_LFM3
+// OP_ATTN_STREAM is multi-token attention with no score buffer. It cuts the keys of a block into chunks, and a
+// team of 4 subgroups takes (chunk, head, tile of ATTN_TILE tokens). The team walks its chunk in rounds of
+// ATTN_STREAM_KEYS keys. In a round each subgroup scores a pair of key tiles, the team shares the probabilities
+// through its scratch, and each subgroup adds them against 32 values of V. The team writes a max, a sum and an
+// output for each token, and OP_ATTN_STREAM_SUM merges the chunks.
+
+// The first key of a block's chunks: the lowest key that a token of the block reads, on the grid of the rounds.
+inline uint attn_stream_first(uint n, uint p0, uint window, __global const uint4* token_meta, uint lane) {
+    uint lo = 0xFFFFFFFFu;
+    for (uint t0 = 0; t0 < n; t0 += ATTN_TILE) lo = min(lo, attn_tile_keys(t0, n, p0, window, token_meta, lane).x);
+    return lo / ATTN_STREAM_KEYS * ATTN_STREAM_KEYS;
+}
+
+// Rounds in one chunk for a span of span_keys keys: about 1024 work items for a short span, two for each team,
+// and at most ATTN_STREAM_ROUNDS rounds. The count reads no slot size, so each slot size gives the same bits
+// (spec 6.7). `tasks::attn_stream_rounds` is the host's copy, and `tasks::attn_stream_scratch_floats` bounds
+// the scratch.
+inline uint attn_stream_rounds(uint H, uint N, uint span_keys) {
+    uint items = H * ((N + ATTN_TILE - 1) / ATTN_TILE);
+    uint want = (1024 + items - 1) / items;
+    return clamp((span_keys + ATTN_STREAM_KEYS - 1) / ATTN_STREAM_KEYS / want, 1u, (uint)ATTN_STREAM_ROUNDS);
+}
+#endif
 
 // Copies the plan's active experts and offsets into local memory for the work-group.
 inline void load_plan(__global const MoEPlan* P, __local uint* active, __local uint* offset, uint lid, uint lsize) {

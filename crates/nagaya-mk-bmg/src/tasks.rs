@@ -198,6 +198,90 @@ pub fn attend_block(
     ]
 }
 
+/// The keys of one round of `OP_ATTN_STREAM` (`ATTN_STREAM_KEYS`, megakernel.cl).
+pub const ATTN_STREAM_KEYS: u32 = 128;
+
+/// The most rounds in one chunk of `OP_ATTN_STREAM`, 8,192 keys (`ATTN_STREAM_ROUNDS`, megakernel.cl).
+pub const ATTN_STREAM_ROUNDS: u32 = 64;
+
+/// The floats of scratch of one team of `OP_ATTN_STREAM` (`ATTN_STREAM_TEAM_FLOATS`, megakernel.cl): the
+/// probabilities of one round for 16 tokens, then a max and a sum of each token for each of the 4 subgroups.
+pub const ATTN_STREAM_TEAM_FLOATS: usize = 16 * ATTN_STREAM_KEYS as usize + 2 * 4 * 16;
+
+/// The rounds in one chunk of `OP_ATTN_STREAM`, as `attn_stream_rounds` in `kernels/megakernel.cl` counts them. A
+/// block of `n` tokens of `heads` heads reads a span of `span_keys` keys, a multiple of 128. A short span has small
+/// chunks, so a small block still has about 1,024 work items, two for each team. The count reads no slot size, so
+/// each slot size gives the same bits for the same feed (spec 6.7).
+pub fn attn_stream_rounds(heads: u32, n: u32, span_keys: u32) -> u32 {
+    let items = heads * n.div_ceil(16);
+    let want = 1024u32.div_ceil(items);
+    (span_keys.div_ceil(ATTN_STREAM_KEYS) / want).clamp(1, ATTN_STREAM_ROUNDS)
+}
+
+/// The chunks of `OP_ATTN_STREAM` for the same block: each chunk holds `attn_stream_rounds` rounds.
+pub fn attn_stream_chunks(heads: u32, n: u32, span_keys: u32) -> u32 {
+    span_keys
+        .div_ceil(ATTN_STREAM_KEYS)
+        .div_ceil(attn_stream_rounds(heads, n, span_keys))
+}
+
+/// The floats of scratch that `OP_ATTN_STREAM` uses for a block of up to `max_block` tokens in a slot of `max_seq`
+/// positions. It writes two things:
+///
+/// - The partial sums: a max, a sum and an output of `d` values for each chunk, token and head. The chunks are at
+///   most `2 * (1024 / items + 1) + 2`, or one for each 8,192 keys of the slot. The items are at least
+///   `n * heads / 16`.
+/// - The scratch of each team: a team is 4 subgroups of the launch.
+pub fn attn_stream_scratch_floats(max_block: usize, heads: usize, d: usize, max_seq: usize) -> usize {
+    let rounds = max_seq.div_ceil(ATTN_STREAM_KEYS as usize) + 1;
+    let rows = max_block * heads;
+    let chunks_of_a_long_span = rounds / ATTN_STREAM_ROUNDS as usize + 3;
+    let partial = (d + 2) * (2 * (16384 + rows + 15 * heads) + rows * chunks_of_a_long_span);
+    partial.next_multiple_of(16) + crate::protocol::MEGAKERNEL_SUBGROUPS / 4 * ATTN_STREAM_TEAM_FLOATS
+}
+
+/// Attention of a block of `n` tokens at cache rows `p0..` with no score buffer (`OP_ATTN_STREAM`), then the merge of
+/// its chunks into `out`. The fields are those of `attend_block`. The result has other bits than `attend_block` has.
+#[allow(clippy::too_many_arguments)]
+pub fn attend_stream(
+    q: u64,
+    kv: u64,
+    out: u64,
+    n: u32,
+    heads: u32,
+    kv_heads: u32,
+    d: u32,
+    p0: u32,
+    max_seq: u32,
+    window: u32,
+) -> [MkTaskDescriptor; 2] {
+    assert!(
+        d == 128 && heads.is_multiple_of(kv_heads),
+        "OP_ATTN_STREAM takes heads of 128 values, and a whole count of heads for each KV head"
+    );
+    let base = MkTaskDescriptor {
+        m: heads | kv_heads << 16,
+        n,
+        k: d,
+        p0,
+        x: (max_seq as u64) << 32 | window as u64,
+        ..Default::default()
+    };
+    [
+        MkTaskDescriptor {
+            opcode: OP_ATTN_STREAM,
+            a: q,
+            b: kv,
+            ..base
+        },
+        MkTaskDescriptor {
+            opcode: OP_ATTN_STREAM_SUM,
+            c: out,
+            ..base
+        },
+    ]
+}
+
 /// The sampler of one row of `vocab` logits (`OP_SAMPLE`): `state` is the sampler state, `out` gets the id.
 #[allow(clippy::too_many_arguments)]
 pub fn sample(

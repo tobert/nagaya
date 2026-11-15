@@ -206,6 +206,56 @@ fn the_key_segments_need_no_slot_size_and_fit_the_scratch_bound() {
     assert_eq!(tasks::attn_pv_segments(16, 64, 256, 320), 8);
 }
 
+/// The attention with no score buffer gives each slot size the same bits (spec 6.7): the size of its chunks reads no
+/// slot size. The scratch bound holds for each block of up to 512 tokens, in a short slot and in the longest slot.
+///
+/// Falsified by a bound with `16384 + rows` and no factor of 2, and by a chunk of at most 128 rounds.
+#[test]
+fn the_chunks_of_the_stream_attention_need_no_slot_size_and_fit_the_scratch_bound() {
+    let teams = nagaya_mk_bmg::protocol::MEGAKERNEL_SUBGROUPS / 4 * tasks::ATTN_STREAM_TEAM_FLOATS;
+    for (heads, d) in [(16u32, 128u32), (32, 128), (8, 128)] {
+        for max_seq in [64u32, 4096, 32_768, 262_144] {
+            let bound = tasks::attn_stream_scratch_floats(512, heads as usize, d as usize, max_seq as usize);
+            for n in 1..=512u32.min(max_seq) {
+                // A span is a multiple of 128 keys, from the keys of one window to all the keys of the slot. The
+                // span of `worst` rounds has the most chunks of one round: one round less than two chunks for each
+                // item.
+                let worst = 128 * (2 * 1024u32.div_ceil(heads * n.div_ceil(16)) - 1);
+                for span in [128u32, 384, 896, 4096, 5000, 65_000, worst, max_seq + 127] {
+                    let span = (span.min(max_seq + 127) / 128 * 128).max(128);
+                    let rounds = tasks::attn_stream_rounds(heads, n, span);
+                    let chunks = tasks::attn_stream_chunks(heads, n, span);
+                    assert!((1..=tasks::ATTN_STREAM_ROUNDS).contains(&rounds));
+                    assert!(
+                        chunks * rounds * 128 >= span,
+                        "{chunks} chunks of {rounds} rounds for {span} keys"
+                    );
+                    let partial = (chunks * n * heads * (d + 2)) as usize;
+                    let need = partial.next_multiple_of(16) + teams;
+                    assert!(
+                        need <= bound,
+                        "{heads} heads of {d}, {n} tokens over {span} keys in a slot of {max_seq}: {chunks} chunks \
+                         of {rounds} rounds need {need} floats, past {bound}"
+                    );
+                }
+            }
+        }
+    }
+    // A block of 512 tokens of 16 heads has 512 items for each chunk, one for each team: 2 chunks of a short span,
+    // and the cap of a long one.
+    assert_eq!(tasks::attn_stream_rounds(16, 512, 2048), 8);
+    assert_eq!(tasks::attn_stream_chunks(16, 512, 2048), 2);
+    assert_eq!(tasks::attn_stream_rounds(16, 512, 262_144), 64);
+    assert_eq!(tasks::attn_stream_chunks(16, 512, 262_144), 32);
+}
+
+/// The teams of `OP_ATTN_STREAM` share 128 values of a head among 4 subgroups.
+#[test]
+#[should_panic(expected = "OP_ATTN_STREAM takes heads of 128 values")]
+fn attend_stream_refuses_a_head_of_another_size() {
+    tasks::attend_stream(1, 2, 3, 16, 16, 4, 64, 0, 4096, 0);
+}
+
 /// A call of `tasks::subsample` over 9 time rows of 128 mel rows, with `cin` channels in and 256 out.
 fn subsample(cin: u32, silu: bool) -> MkTaskDescriptor {
     tasks::subsample(0x10_0000, 0x20_0000, 0x30_0000, 0x40_0000, 9, 128, cin, 256, silu)

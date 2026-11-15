@@ -344,6 +344,12 @@ unsafe extern "C" {
 /// Work-groups per megakernel launch, one per Xe2 core.
 pub const MEGAKERNEL_GROUPS: u32 = 32;
 
+/// Work items of one work-group, in subgroups of 16.
+pub const MEGAKERNEL_GROUP_SIZE: u32 = 1024;
+
+const _: () =
+    assert!((MEGAKERNEL_GROUPS * MEGAKERNEL_GROUP_SIZE / 16) as usize == crate::protocol::MEGAKERNEL_SUBGROUPS);
+
 #[inline]
 pub fn check_ze(res: ze_result_t, msg: &str) {
     if res != ZE_RESULT_SUCCESS {
@@ -707,8 +713,8 @@ impl B70Card {
                 "zeCommandListAppendBarrier",
             );
             check_ze(
-                zeKernelSetGroupSize(self.kernel, 1024, 1, 1),
-                "zeKernelSetGroupSize(1024)",
+                zeKernelSetGroupSize(self.kernel, MEGAKERNEL_GROUP_SIZE, 1, 1),
+                "zeKernelSetGroupSize",
             );
 
             check_ze(

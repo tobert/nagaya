@@ -22,11 +22,20 @@ use crate::weights::{Weights, rounded};
 const SCRATCH_HEADS: usize = 16;
 
 /// The floats of the scratch of the ring for slots of up to `max_seq` positions. One-token attention keeps the chunks
-/// of 32 keys, each a max, a sum and an output of up to 512 values (`ATTN_CHUNK`, megakernel.cl). The split attention
-/// of a block keeps its partial sums (`tasks::attn_pv_scratch_floats`).
+/// of 32 keys, each a max, a sum and an output of up to 512 values (`ATTN_CHUNK`, megakernel.cl). The attention of a
+/// block of the backbone keeps the partial sums of its chunks and the scratch of its teams
+/// (`tasks::attn_stream_scratch_floats`). The split attention of the audio encoder and of the codec keeps its partial
+/// sums (`tasks::attn_pv_scratch_floats`).
 pub fn scratch_floats(max_seq: usize) -> usize {
     let one_token = SCRATCH_HEADS * (max_seq / 32 + 1) * (512 + 2);
-    one_token.max(tasks::attn_pv_scratch_floats(MAX_BLOCK, SCRATCH_HEADS, HEAD_DIM))
+    one_token
+        .max(tasks::attn_stream_scratch_floats(
+            MAX_BLOCK,
+            SCRATCH_HEADS,
+            HEAD_DIM,
+            max_seq,
+        ))
+        .max(tasks::attn_pv_scratch_floats(MAX_BLOCK, SCRATCH_HEADS, HEAD_DIM))
 }
 
 /// The activation buffers of a block of at most `max_block` tokens. Each row is one token.
@@ -53,8 +62,6 @@ pub struct Bufs {
     pub o: u64,
     /// The SwiGLU rows: `[n][intermediate]`.
     pub g: u64,
-    /// The scores of block attention: `heads` rows for each token, as long as the largest slot.
-    pub scores: u64,
     /// The logits of each logit row: `[MAX_LOGIT_ROWS][vocab_rows]`.
     pub logits: u64,
     /// The residual tap (spec 13.1): the residual after each layer at each logit row, `[MAX_LOGIT_ROWS][layers][hidden]`.
@@ -67,7 +74,7 @@ pub struct Bufs {
 
 impl Bufs {
     /// The buffers, each from `z`, which gives zeroed device memory of a byte count.
-    pub fn new(z: &mut dyn FnMut(usize) -> u64, b: &Backbone, max_block: usize, max_seq: usize) -> Self {
+    pub fn new(z: &mut dyn FnMut(usize) -> u64, b: &Backbone, max_block: usize) -> Self {
         let f = |values: usize| values * max_block * 4;
         Self {
             ids: z(max_block * 4),
@@ -81,11 +88,6 @@ impl Bufs {
             v: z(f(b.kv_row())),
             o: z(f(b.hidden)),
             g: z(f(b.intermediate)),
-            scores: z(tasks::score_floats(
-                b.heads as u32,
-                max_block as u32,
-                (max_seq - max_block.min(max_seq)) as u32,
-            ) * 4),
             logits: z(MAX_LOGIT_ROWS * b.vocab_rows * 4),
             taps: z(MAX_LOGIT_ROWS * b.layers.len() * b.hidden * 4),
             lens_h: z(b.layers.len() * b.hidden * 4),
@@ -95,7 +97,7 @@ impl Bufs {
 }
 
 /// The device bytes of the buffers, with no card: the plan (spec 2.4).
-pub fn bufs_bytes(b: &Backbone, max_block: usize, max_seq: usize) -> usize {
+pub fn bufs_bytes(b: &Backbone, max_block: usize) -> usize {
     let mut total = 0usize;
     Bufs::new(
         &mut |bytes| {
@@ -104,7 +106,6 @@ pub fn bufs_bytes(b: &Backbone, max_block: usize, max_seq: usize) -> usize {
         },
         b,
         max_block,
-        max_seq,
     );
     total
 }
@@ -330,10 +331,9 @@ pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskD
                 let mut attend: Vec<MkTaskDescriptor> = if n == 1 {
                     tasks::attend_one(bufs.q, base, bufs.y, heads, kv, d, pos0 as u32, slot.seq as u32, window).to_vec()
                 } else {
-                    tasks::attend_block(
+                    tasks::attend_stream(
                         bufs.q,
                         base,
-                        bufs.scores,
                         bufs.y,
                         n32,
                         heads,
@@ -613,7 +613,7 @@ mod tests {
     use super::*;
     use crate::spec::tests::backbone;
     use nagaya_mk_bmg::protocol::{
-        OP_ATTN, OP_ATTN_SCORES, OP_CONTROL, OP_COPY, OP_EMBED, OP_GEGLU, OP_MATMUL, OP_SHORT_CONV,
+        OP_ATTN, OP_ATTN_SCORES, OP_ATTN_STREAM, OP_CONTROL, OP_COPY, OP_EMBED, OP_GEGLU, OP_MATMUL, OP_SHORT_CONV,
     };
 
     fn weights(b: &Backbone) -> Weights {
@@ -652,7 +652,6 @@ mod tests {
             },
             b,
             512,
-            4096,
         )
     }
 
@@ -683,7 +682,7 @@ mod tests {
         );
         assert_eq!(t[0].opcode, OP_EMBED);
         assert_eq!(count(&t, OP_SHORT_CONV), 13);
-        assert_eq!(count(&t, OP_ATTN_SCORES), 11);
+        assert_eq!((count(&t, OP_ATTN_STREAM), count(&t, OP_ATTN_SCORES)), (11, 0));
         // Each conv layer: in_proj, out_proj, w2. Each attention layer: q, k, v, gate, o, w2. Then 3 heads.
         assert_eq!(count(&t, OP_MATMUL), 13 * 3 + 11 * 6 + 3);
         let heads: Vec<&MkTaskDescriptor> = t.iter().rev().take(3).collect();
@@ -1126,7 +1125,7 @@ mod tests {
     #[test]
     fn the_tap_buffer_holds_every_layer_of_each_logit_row() {
         let b = backbone();
-        let with = bufs_bytes(&b, 512, 4096);
+        let with = bufs_bytes(&b, 512);
         let bufs = bufs(&b);
         assert!(bufs.taps > bufs.logits);
         let mut sizes = Vec::new();
@@ -1137,7 +1136,6 @@ mod tests {
             },
             &b,
             512,
-            4096,
         );
         // The taps, then the normed rows and the logit rows of the lens of one logit row.
         assert_eq!(
@@ -1198,7 +1196,7 @@ mod tests {
                 lens: false,
             },
         );
-        assert_eq!((count(&one, OP_ATTN), count(&one, OP_ATTN_SCORES)), (11, 0));
+        assert_eq!((count(&one, OP_ATTN), count(&one, OP_ATTN_STREAM)), (11, 0));
         assert_eq!(count(&one, OP_COPY), 0);
         // A block of 100 at position 2000 crosses the end of the ring of 2048 rows in the 5 sliding layers.
         let wrap = pass(
@@ -1222,7 +1220,7 @@ mod tests {
         assert!(copies.iter().all(|task| task.n == 52 * 512));
         let rings: Vec<u32> = wrap
             .iter()
-            .filter(|task| task.opcode == OP_ATTN_SCORES)
+            .filter(|task| task.opcode == OP_ATTN_STREAM)
             .map(|task| task.layer)
             .collect();
         assert_eq!(rings, vec![0, 2048, 0, 2048, 0, 2048, 0, 2048, 0, 2048, 0]);

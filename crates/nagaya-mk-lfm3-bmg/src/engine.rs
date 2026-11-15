@@ -293,7 +293,7 @@ impl Lfm3Engine {
             None => None,
         };
         let max_seq = config.max_seq();
-        let bufs = Bufs::new(&mut |bytes| device.zeros(card, bytes), &b, config.max_block, max_seq);
+        let bufs = Bufs::new(&mut |bytes| device.zeros(card, bytes), &b, config.max_block);
         let tower = match (&vision, tower_weights) {
             (Some((v, _, _)), Some(w)) => Some(Tower {
                 bufs: VisionBufs::new(&mut |bytes| device.zeros(card, bytes), v, config.max_block),
@@ -328,7 +328,7 @@ impl Lfm3Engine {
         let kv = config.slots_bytes(&b);
         let planned = weights_bytes
             + kv
-            + bufs_bytes(&b, config.max_block, max_seq) as u64
+            + bufs_bytes(&b, config.max_block) as u64
             + spec::audio_bufs_bytes(&b) as u64
             + vision_bytes.map_or(0, |v| v.weights + v.work)
             + control.map_or(0, |(_, limit)| limit.table_bytes());

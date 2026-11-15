@@ -82,6 +82,14 @@ impl Card {
         Self { cluster, ring }
     }
 
+    /// A card whose ring has `scratch_floats` floats of scratch.
+    fn with_scratch(scratch_floats: usize) -> Self {
+        let cluster = L0Cluster::init(LFM3_KERNEL, KERNEL_ENTRY);
+        assert!(!cluster.cards.is_empty(), "no Level Zero card");
+        let ring = Ring::new(&cluster.cards[0], scratch_floats);
+        Self { cluster, ring }
+    }
+
     fn card(&self) -> &B70Card {
         &self.cluster.cards[0]
     }
@@ -386,6 +394,50 @@ fn attend_block_on_card(
     out
 }
 
+/// The scratch of the attention with no score buffer, for the blocks and the slots of these tests.
+fn stream_scratch() -> usize {
+    tasks::attn_stream_scratch_floats(512, ATTN_H, ATTN_D, 65_536)
+}
+
+/// Block attention with no score buffer (`OP_ATTN_STREAM`), with the inputs of `attend_block_on_card`. The card
+/// needs a ring with `stream_scratch()` floats.
+#[allow(clippy::too_many_arguments)]
+fn attend_stream_on_card(
+    card: &mut Card,
+    q: &[f32],
+    cache: &[f32],
+    n: usize,
+    p0: usize,
+    max_seq: usize,
+    ring: usize,
+    window: usize,
+) -> Vec<f32> {
+    let (h, kv, d) = (ATTN_H, ATTN_KV, ATTN_D);
+    let (qb, cb) = (card.buf(q), card.buf(cache));
+    let ob = Buf::zeros(card.card(), n * h * d * 4);
+    let mut ops = tasks::attend_stream(
+        qb.at(),
+        cb.at(),
+        ob.at(),
+        n as u32,
+        h as u32,
+        kv as u32,
+        d as u32,
+        p0 as u32,
+        max_seq as u32,
+        window as u32,
+    );
+    for op in &mut ops {
+        op.layer = ring as u32;
+    }
+    card.run(&ops);
+    let out = ob.read(card.card(), n * h * d);
+    for b in [qb, cb, ob] {
+        b.free(card.card());
+    }
+    out
+}
+
 /// One-token attention of the query `q` at position `p0` over a cache on the card. Returns `[h][d]`.
 fn attend_one_on_card(
     card: &mut Card,
@@ -502,6 +554,114 @@ fn a_ring_gives_the_bits_of_a_flat_cache_with_a_window_of_256() {
     );
 }
 
+/// The attention with no score buffer gives the reference of both kinds of layer. The block of 300 tokens has 19
+/// tiles of tokens and 3 chunks of 1 round, so each token merges several chunks.
+#[test]
+fn stream_attention_matches_the_reference_with_a_window_of_256() {
+    let mut card = Card::with_scratch(stream_scratch());
+    let fx = Fixture::load();
+    let (q, k, v) = attn_inputs();
+    let (h, kv, d, t) = (ATTN_H, ATTN_KV, ATTN_D, ATTN_T);
+    let max_seq = 320usize;
+    let flat = cache(&k, &v, kv, d, max_seq, 0, 0);
+    for (name, window) in ATTN_CASES {
+        let rows = fx.rows(name);
+        let want = fx.get(&format!("attention.{name}"));
+        let block = attend_stream_on_card(&mut card, &q, &flat, t, 0, max_seq, 0, window);
+        let got: Vec<f32> = rows
+            .iter()
+            .flat_map(|&r| block[r * h * d..(r + 1) * h * d].to_vec())
+            .collect();
+        let err = rel(&got, want);
+        println!("the {name} layers, no score buffer: relative error {err}");
+        assert!(err < 1e-5, "the {name} layers, no score buffer: relative error {err}");
+    }
+}
+
+/// A ring holds the same values as a flat cache at other rows, so the attention with no score buffer gives the same
+/// bits over both. The case is the case of `a_ring_gives_the_bits_of_a_flat_cache_with_a_window_of_256`.
+#[test]
+fn stream_attention_over_a_ring_gives_the_bits_of_a_flat_cache() {
+    let mut card = Card::with_scratch(stream_scratch());
+    let (h, kv, d, window) = (ATTN_H, ATTN_KV, ATTN_D, 256usize);
+    let (keys, n, p0) = (600usize, 32usize, 568usize);
+    let ring = 288usize;
+    let q = values(700, n * h * d, 1.0);
+    let k = values(701, keys * kv * d, 1.0);
+    let v = values(702, keys * kv * d, 1.0);
+    let max_seq = 608usize;
+    let flat = cache(&k, &v, kv, d, max_seq, 0, 0);
+    let ringed = cache(&k, &v, kv, d, ring + 1024, ring, keys - ring);
+    let a = attend_stream_on_card(&mut card, &q, &flat, n, p0, max_seq, 0, window);
+    let b = attend_stream_on_card(&mut card, &q, &ringed, n, p0, max_seq, ring, window);
+    assert_eq!(
+        first_other_bits(&b, &a),
+        None,
+        "the block over a ring differs from the flat cache"
+    );
+    let mut qp = vec![0.0f32; (p0 + n) * h * d];
+    qp[p0 * h * d..].copy_from_slice(&q);
+    let mut want = Vec::new();
+    for t in 0..n {
+        for head in 0..h {
+            want.extend(attend_row(&qp, &k, &v, p0 + t, head, h, kv, d, window));
+        }
+    }
+    let err = rel(&a, &want);
+    assert!(err < 1e-5, "the block over the window: relative error {err}");
+}
+
+/// The attention with no score buffer agrees with the attention of three ops over many keys, where each token
+/// merges many chunks. The cases: 24 chunks of 3 rounds, 3 chunks at the cap of 64 rounds, and a window in a flat
+/// cache whose first key is on no grid. A larger slot gives the same bits (spec 6.7). A run gives the same bits
+/// after another block used the scratch.
+#[test]
+fn stream_attention_of_many_chunks_agrees_with_the_attention_of_three_ops() {
+    let mut card = Card::with_scratch(stream_scratch());
+    let (h, kv, d) = (ATTN_H, ATTN_KV, ATTN_D);
+    let keys = 20_000usize;
+    let k = values(711, keys * kv * d, 1.0);
+    let v = values(712, keys * kv * d, 1.0);
+    let flat = cache(&k, &v, kv, d, keys, 0, 0);
+    let mut first = None;
+    for (n, end, window, rounds, chunks) in [
+        (40usize, 9_000usize, 0usize, 3u32, 24u32),
+        (512, 20_000, 0, 64, 3),
+        (37, 15_003, 256, 1, 4),
+        (40, 9_000, 0, 3, 24),
+    ] {
+        let p0 = end - n;
+        let lowest = if window > 0 { p0 + 1 - window } else { 0 };
+        let span = (end.div_ceil(128) * 128 - lowest / 128 * 128) as u32;
+        assert_eq!(
+            tasks::attn_stream_rounds(h as u32, n as u32, span),
+            rounds,
+            "{n} tokens to {end}"
+        );
+        assert_eq!(
+            tasks::attn_stream_chunks(h as u32, n as u32, span),
+            chunks,
+            "{n} tokens to {end}"
+        );
+        let q = values(710, n * h * d, 0.3);
+        let want = attend_block_on_card(&mut card, &q, &flat, n, p0, keys, 0, window);
+        let got = attend_stream_on_card(&mut card, &q, &flat, n, p0, keys, 0, window);
+        let err = rel(&got, &want);
+        println!("{n} tokens to {end}, window {window}: relative error {err} against the three ops");
+        assert!(err < 1e-5, "{n} tokens to {end}, window {window}: relative error {err}");
+        if (n, end) == (40, 9_000) {
+            // The same block in a slot of twice the positions: the value plane starts at another row.
+            let wide = cache(&k, &v, kv, d, 2 * keys, 0, 0);
+            let other = attend_stream_on_card(&mut card, &q, &wide, n, p0, 2 * keys, 0, window);
+            assert_eq!(first_other_bits(&other, &got), None, "a larger slot gives other bits");
+            match &first {
+                None => first = Some(got),
+                Some(before) => assert_eq!(first_other_bits(&got, before), None, "the second run gives other bits"),
+            }
+        }
+    }
+}
+
 #[test]
 fn head_gate_matches_the_reference_in_place() {
     let mut card = Card::open();
@@ -614,7 +774,7 @@ fn the_time_of_each_attention_op_by_the_count_of_keys() {
     let cluster = L0Cluster::init(LFM3_KERNEL, KERNEL_ENTRY);
     assert!(!cluster.cards.is_empty(), "no Level Zero card");
     let mut card = Card {
-        ring: Ring::new(&cluster.cards[0], 1 << 25),
+        ring: Ring::new(&cluster.cards[0], tasks::attn_stream_scratch_floats(n, h, d, 262_144)),
         cluster,
     };
     let q = values(7, n * h * d, 0.3);
@@ -675,7 +835,25 @@ fn the_time_of_each_attention_op_by_the_count_of_keys() {
         card.run(&one);
         let started = std::time::Instant::now();
         card.run(&one);
-        line += &format!(" one token {:6.2} ms", started.elapsed().as_secs_f64() * 1e3);
+        line += &format!(" one token {:6.2} ms;", started.elapsed().as_secs_f64() * 1e3);
+        let stream = tasks::attend_stream(
+            qb.at(),
+            cb.at(),
+            ob.at(),
+            n as u32,
+            h as u32,
+            kv as u32,
+            d as u32,
+            p0 as u32,
+            keys as u32,
+            0,
+        );
+        card.run(&stream);
+        for op in &stream {
+            let started = std::time::Instant::now();
+            card.run(std::slice::from_ref(op));
+            line += &format!(" op {} {:7.1} ms;", op.opcode, started.elapsed().as_secs_f64() * 1e3);
+        }
         println!("{line}");
         for b in [qb, cb, sb, ob] {
             b.free(card.card());

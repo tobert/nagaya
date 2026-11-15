@@ -195,8 +195,8 @@ fn the_limits_keep_the_feed_rule_and_the_terms() {
     assert_eq!(term("kv").bytes, 3 * 868_859_904);
     assert_eq!(term("kv").tier, Tier::Device(0));
     assert_eq!(term("pinned").tier, Tier::Host);
-    // The scores of a block of 512 over 32,768 keys are most of the work: 16 × 512 × 32,784 floats.
-    assert!(term("work").bytes > 16 * 512 * 32_784 * 4, "{}", term("work").bytes);
+    // The work holds no score buffer: the scores of a block of 512 over 32,768 keys are 16 × 512 × 32,784 floats.
+    assert!(term("work").bytes < 16 * 512 * 32_784 * 4, "{}", term("work").bytes);
 }
 
 #[test]
@@ -257,10 +257,12 @@ fn mixed_slots_charge_each_slot_and_size_the_work_for_the_longest() {
     );
     let term = |l: &Limits, name: &str| l.memory.mandatory.iter().find(|t| t.name == name).unwrap().bytes;
     assert_eq!(term(&l, "kv"), 2 * 868_859_904 + long);
-    // The scores of a block of 512 over 262,144 keys: 16 × 512 × 262,160 floats.
-    let scores = 16 * 512 * 262_160 * 4;
-    assert!(term(&l, "work") > scores, "{}", term(&l, "work"));
-    assert!(term(&l, "work") - term(&one, "work") >= scores - 16 * 512 * 32_784 * 4);
+    // The longest slot sizes the scratch of the ring, and no other part of the work reads a slot size.
+    let scratch = |max_seq: usize| (crate::model::scratch_floats(max_seq) * 4) as u64;
+    assert_eq!(
+        term(&l, "work") - term(&one, "work"),
+        scratch(262_144) - scratch(32_768)
+    );
 }
 
 fn segment(slot: u32, from: u64, tokens: &[u32], logits: &[u64]) -> Segment {

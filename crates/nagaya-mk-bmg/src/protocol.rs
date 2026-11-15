@@ -68,6 +68,12 @@ pub const OP_SCALE: u16 = 82;
 pub const OP_SHORT_CONV: u16 = 90;
 pub const OP_HEAD_GATE: u16 = 91;
 pub const OP_CONTROL: u16 = 92;
+pub const OP_ATTN_STREAM: u16 = 93;
+pub const OP_ATTN_STREAM_SUM: u16 = 94;
+
+/// The subgroups of one launch of the megakernel: 32 work-groups of 1,024 work items, in subgroups of 16
+/// (`level_zero::launch_megakernel`). `OP_ATTN_STREAM` keeps one score buffer for each subgroup.
+pub const MEGAKERNEL_SUBGROUPS: usize = 2048;
 
 /// The operation of one control item (engine-abi "Control vectors"). The value is the `p0` of `OP_CONTROL`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

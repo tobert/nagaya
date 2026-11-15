@@ -910,6 +910,9 @@ Now the count reads no slot size. The host gives the partial sums enough scratch
 2^21 plus the block's floats (`tasks::attn_pv_scratch_floats`). The new kernel gives a new identity, so each held
 context fills again once. An engine whose bits change with a slot size declares `geometry_key` instead.
 
+The attention of a block of the LFM3 backbone has no key segments. It cuts the keys into chunks
+(`attn_stream_rounds`), and the size of a chunk reads no slot size (`tasks::attn_stream_scratch_floats`).
+
 Two content ids under one recipe that cover the same positions have two possible causes. The engine did not
 reproduce its bits, or the recipe misses an input. The nagaya refuses to serve that recipe. It quarantines the
 conflicting entries and reports them. It never picks one. A person clears the refusal after the cause is known.
@@ -1341,10 +1344,13 @@ choice that the gates can check. Amy decides.
   - Each slot charges its own bytes to the term `kv`. The 6 full layers take 24 KiB of each position, and the
     sliding layers take fixed rings. A slot of 32,768 positions takes 868,859,904 bytes, and one of 262,144 takes
     6,505,365,504.
-  - The buffers of a block hold its scores over the keys of the longest slot: 16 heads × 512 × the positions, in
-    F32. That is 1.07 GB for 32,768 positions and 8.6 GB for 262,144, in the term `work`.
-  - The split attention reads no slot size ("The bits do not depend on the slot size"). Thus a long slot gives the
-    bits of a short slot, and the recipe does not change. The card test `xe_feed` checks the bits and the quantum.
+  - The buffers of a block hold no scores of the backbone since 2026-11-15. The attention of a block keeps a running
+    softmax over chunks of the keys (`OP_ATTN_STREAM`, `docs/perf.md`, "The long slot"). Before, the scores took
+    1.07 GB for 32,768 positions and 8.6 GB for 262,144.
+  - The longest slot sizes the scratch of the ring, and no other part of the term `work`. The scratch is 60 MB for
+    32,768 positions and 270 MB for 262,144.
+  - The attention of a block reads no slot size ("The bits do not depend on the slot size"). Thus a long slot gives
+    the bits of a short slot, and the recipe does not change. The card test `xe_feed` checks the bits and the quantum.
   - The speech codec of Omni keeps its bound of 6 codec positions for each of 32,768 positions. A frame past it is
     refused.
 - **The parts.** A conv layer has `conv.<ll>`, a fixed F32 part of 6 rows of 2,048 values, oldest first. An attention
