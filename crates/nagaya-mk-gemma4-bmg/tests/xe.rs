@@ -27,16 +27,9 @@ const COPY_PREFILL: &str = "7e59fa12bec4367c40e949607ce847beffc697173bf321995330
 const COPY_DECODE: &str = "a57cd4bcb32ccfafb02488aaa697dffeaf6250314ee53acf37eae7440364cee3";
 const COPY_BRANCHES: &str = "aa890327c6262a0aa41604c8e9f03119b3f05beb0f36bd5cdb70a573f78bb4d3";
 
-/// The PCI addresses of the `xe` cards, in PCI order: the order of the machine device ids (spec 2.1).
+/// The two cards of the test: the first two cards of `NAGAYA_TEST_CARDS`, stage 0 on the first.
 fn cards() -> Vec<String> {
-    let mut found: Vec<String> = std::fs::read_dir("/sys/bus/pci/drivers/xe")
-        .expect("the xe driver directory")
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .filter(|name| name.len() == 12 && name.as_bytes()[4] == b':')
-        .collect();
-    found.sort();
-    found
+    nagaya_mk_bmg::test_cards::cards(2)
 }
 
 static LOADED: OnceLock<Arc<Loaded>> = OnceLock::new();

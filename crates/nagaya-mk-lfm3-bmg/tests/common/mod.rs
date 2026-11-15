@@ -189,16 +189,9 @@ pub fn golden_tensors(name: &str) -> HashMap<String, Tensor> {
     out
 }
 
-/// The PCI addresses of the `xe` cards, in PCI order.
+/// The card of the test: the first card of `NAGAYA_TEST_CARDS`.
 pub fn cards() -> Vec<String> {
-    let mut found: Vec<String> = std::fs::read_dir("/sys/bus/pci/drivers/xe")
-        .expect("the xe driver directory")
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .filter(|name| name.len() == 12 && name.as_bytes()[4] == b':')
-        .collect();
-    found.sort();
-    found
+    nagaya_mk_bmg::test_cards::cards(1)
 }
 
 /// The relative L2 error of `got` against `want`.

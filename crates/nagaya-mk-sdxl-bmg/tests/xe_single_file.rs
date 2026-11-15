@@ -53,7 +53,7 @@ fn step(engine: &mut SdxlEngine) -> Vec<f32> {
 #[test]
 fn the_single_file_names_the_model_and_gives_the_unet_bits_of_the_folder() {
     let Some((dir, file)) = paths() else { return };
-    let card = std::env::var("SDXL_CARD").unwrap_or_else(|_| "0000:03:00.0".to_owned());
+    let card = nagaya_mk_bmg::test_cards::card();
     let folder = {
         let mut engine = SdxlEngine::open(Config::folder(dir.clone()), &card).unwrap();
         step(&mut engine)

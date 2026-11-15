@@ -7,6 +7,8 @@
 //! `cargo test --release -p nagaya --features xe --test xe_embeddings -- --test-threads=1 --nocapture`.
 #![cfg(feature = "xe")]
 
+mod card_support;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -52,6 +54,7 @@ fn directory(variable: &str) -> Option<PathBuf> {
 
 /// Gemma 4 on devices 0 and 1, and EmbeddingGemma 2 resident and pinned on device 1, as on b70host.
 fn profile(gemma: &std::path::Path, embedder: &std::path::Path) -> PlacementProfile {
+    card_support::need_devices_0_and_1();
     let (gemma, embedder) = (gemma.display(), embedder.display());
     PlacementProfile::parse(&format!(
         "[[engines]]\nname = \"gemma\"\nkind = \"mk-gemma4-bmg\"\ndevices = [0, 1]\nshare = 1\n\

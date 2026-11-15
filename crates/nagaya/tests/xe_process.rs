@@ -7,6 +7,8 @@
 //! `cargo test --release -p nagaya --features xe --test xe_process -- --test-threads=1 --nocapture`.
 #![cfg(feature = "xe")]
 
+mod card_support;
+
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -48,6 +50,7 @@ fn checkpoint() -> Option<PathBuf> {
 
 /// The profile of b70host: the engine on machine devices 0 and 1, the B70 cards, and a budget for each card.
 fn profile(dir: &std::path::Path) -> PlacementProfile {
+    card_support::need_devices_0_and_1();
     let dir = dir.display();
     PlacementProfile::parse(&format!(
         "[[engines]]\nname = \"gemma\"\nkind = \"mk-gemma4-bmg\"\ndevices = [0, 1]\nshare = 1\n\

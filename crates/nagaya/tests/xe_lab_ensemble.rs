@@ -7,6 +7,8 @@
 //! `cargo test --release -p nagaya --features xe --test xe_lab_ensemble -- --test-threads=1 --nocapture`.
 #![cfg(feature = "xe")]
 
+mod card_support;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -42,9 +44,10 @@ fn directory(variable: &str) -> Option<PathBuf> {
 
 /// `LFM3-1.7B` resident on device 0, with four slots, as in `xe_lab_trace.rs`.
 fn profile(dir: &Path) -> PlacementProfile {
+    let card = card_support::device();
     let dir = dir.display();
     PlacementProfile::parse(&format!(
-        "[[engines]]\nname = \"lfm3\"\nkind = \"mk-lfm3-bmg\"\ndevices = [0]\nshare = 1\n\
+        "[[engines]]\nname = \"lfm3\"\nkind = \"mk-lfm3-bmg\"\ndevices = [{card}]\nshare = 1\n\
          [engines.config]\nmodel_dir = \"{dir}\"\nslots = 4\n\
          [engines.family]\nmodel_dir = \"{dir}\"\n\
          [[budgets]]\ntiers = [\"device(0)\"]\nbytes = 34359738368\n\

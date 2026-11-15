@@ -76,16 +76,14 @@ struct Card {
 
 impl Card {
     fn open() -> Self {
-        let cluster = L0Cluster::init(LFM3_KERNEL, KERNEL_ENTRY);
-        assert!(!cluster.cards.is_empty(), "no Level Zero card");
+        let cluster = L0Cluster::init_test(LFM3_KERNEL, KERNEL_ENTRY);
         let ring = Ring::new(&cluster.cards[0], 8 << 20);
         Self { cluster, ring }
     }
 
     /// A card whose ring has `scratch_floats` floats of scratch.
     fn with_scratch(scratch_floats: usize) -> Self {
-        let cluster = L0Cluster::init(LFM3_KERNEL, KERNEL_ENTRY);
-        assert!(!cluster.cards.is_empty(), "no Level Zero card");
+        let cluster = L0Cluster::init_test(LFM3_KERNEL, KERNEL_ENTRY);
         let ring = Ring::new(&cluster.cards[0], scratch_floats);
         Self { cluster, ring }
     }
@@ -771,8 +769,7 @@ fn control_keeps_the_rows_for_a_vector_of_zeros() {
 #[ignore = "a measurement that takes 9 GB of card memory"]
 fn the_time_of_each_attention_op_by_the_count_of_keys() {
     let (h, kv, d, n) = (ATTN_H, ATTN_KV, ATTN_D, 512usize);
-    let cluster = L0Cluster::init(LFM3_KERNEL, KERNEL_ENTRY);
-    assert!(!cluster.cards.is_empty(), "no Level Zero card");
+    let cluster = L0Cluster::init_test(LFM3_KERNEL, KERNEL_ENTRY);
     let mut card = Card {
         ring: Ring::new(&cluster.cards[0], tasks::attn_stream_scratch_floats(n, h, d, 262_144)),
         cluster,

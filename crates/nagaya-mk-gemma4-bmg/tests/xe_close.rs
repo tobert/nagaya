@@ -18,16 +18,9 @@ use nagaya_mk_gemma4_bmg::spec::Config;
 /// drop left 196,608 bytes above the driver's own.
 const SLACK: u64 = 1 << 20;
 
-/// The PCI addresses of the `xe` cards, in PCI order.
+/// The two cards of the test: the first two cards of `NAGAYA_TEST_CARDS`, stage 0 on the first.
 fn cards() -> Vec<String> {
-    let mut found: Vec<String> = std::fs::read_dir("/sys/bus/pci/drivers/xe")
-        .expect("the xe driver directory")
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .filter(|name| name.len() == 12 && name.as_bytes()[4] == b':')
-        .collect();
-    found.sort();
-    found
+    nagaya_mk_bmg::test_cards::cards(2)
 }
 
 /// The device bytes of this process on every `xe` card: the sum of `drm-total-vram0` over its DRM fds.

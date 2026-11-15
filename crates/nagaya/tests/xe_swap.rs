@@ -7,6 +7,8 @@
 //! `cargo test --release -p nagaya --features xe --test xe_swap -- --test-threads=1 --nocapture`.
 #![cfg(feature = "xe")]
 
+mod card_support;
+
 use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
@@ -115,6 +117,7 @@ impl Factory for Closing {
 
 /// The profile of b70host, and the fake on demand on machine device 1.
 fn profile(dir: &std::path::Path) -> PlacementProfile {
+    card_support::need_devices_0_and_1();
     let dir = dir.display();
     PlacementProfile::parse(&format!(
         "[[engines]]\nname = \"gemma\"\nkind = \"mk-gemma4-bmg\"\ndevices = [0, 1]\nshare = 1\n\

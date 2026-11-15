@@ -63,7 +63,7 @@ fn a_drop_frees_the_device_memory_of_each_open() {
     if common::absent() {
         return;
     }
-    let cluster = L0Cluster::init(QWEN3TTS_KERNEL, KERNEL_ENTRY);
+    let cluster = L0Cluster::init_test(QWEN3TTS_KERNEL, KERNEL_ENTRY);
     let card = &cluster.cards[0];
     let mut ring = Ring::new(card, 1);
     ring.set(&[]);

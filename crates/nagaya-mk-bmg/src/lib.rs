@@ -20,6 +20,7 @@ pub mod protocol;
 pub mod ring;
 pub mod safetensors;
 pub mod tasks;
+pub mod test_cards;
 
 /// The kernel binary of the Gemma 4 engine for `bmg-g31`, from `kernels/megakernel.cl`.
 #[cfg(feature = "xe")]

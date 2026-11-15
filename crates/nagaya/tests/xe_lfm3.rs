@@ -6,6 +6,8 @@
 //! `cargo test --release -p nagaya --features xe --test xe_lfm3 -- --test-threads=1 --nocapture`.
 #![cfg(feature = "xe")]
 
+mod card_support;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -44,9 +46,10 @@ fn directory(variable: &str) -> Option<PathBuf> {
 /// store holds the control vectors (spec 11.12) and the media of Omni, and gogi's suite asks a server with such a model
 /// for objects. Each model gets its own process.
 fn profile(name: &str, dir: &Path) -> PlacementProfile {
+    let card = card_support::device();
     let dir = dir.display();
     PlacementProfile::parse(&format!(
-        "[[engines]]\nname = \"{name}\"\nkind = \"mk-lfm3-bmg\"\ndevices = [0]\nshare = 1\n\
+        "[[engines]]\nname = \"{name}\"\nkind = \"mk-lfm3-bmg\"\ndevices = [{card}]\nshare = 1\n\
          [engines.config]\nmodel_dir = \"{dir}\"\nslots = 1\n\
          [engines.family]\nmodel_dir = \"{dir}\"\n\
          [[budgets]]\ntiers = [\"device(0)\"]\nbytes = 34359738368\n\

@@ -827,6 +827,14 @@ impl L0Cluster {
         Self { driver, cards }
     }
 
+    /// Open the one card of a card test: the first card of `NAGAYA_TEST_CARDS` (`test_cards`). It opens no other card,
+    /// so the test runs beside a nagaya that serves from the other cards.
+    pub fn init_test(kernel_bin: &[u8], kernel_name: &str) -> Self {
+        let address = crate::test_cards::card();
+        Self::init_at(kernel_bin, kernel_name, std::slice::from_ref(&address))
+            .unwrap_or_else(|error| panic!("the card {address} of {}: {error}", crate::test_cards::VARIABLE))
+    }
+
     /// The PCI address of each card of the first driver, in the order of `zeDeviceGet`. It opens no card.
     pub fn addresses() -> Vec<String> {
         devices(driver()).into_iter().map(|(_, pci)| pci).collect()

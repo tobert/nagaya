@@ -1192,6 +1192,7 @@ dependencies = [
  "nagaya-abi",
  "nagaya-council",
  "nagaya-ledger",
+ "nagaya-mk-bmg",
  "nagaya-mk-embeddinggemma2-bmg",
  "nagaya-mk-gemma4-bmg",
  "nagaya-mk-lfm3-bmg",

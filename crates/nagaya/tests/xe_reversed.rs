@@ -6,6 +6,8 @@
 //! `cargo test --release -p nagaya --features xe --test xe_reversed -- --test-threads=1 --nocapture`.
 #![cfg(feature = "xe")]
 
+mod card_support;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -45,6 +47,7 @@ fn checkpoint() -> Option<PathBuf> {
 
 /// The profile of b70host with Gemma 4 alone, on `devices` in this order.
 fn profile(dir: &Path, devices: &str) -> PlacementProfile {
+    card_support::need_devices_0_and_1();
     let dir = dir.display();
     PlacementProfile::parse(&format!(
         "[[engines]]\nname = \"gemma\"\nkind = \"mk-gemma4-bmg\"\ndevices = {devices}\nshare = 1\n\

@@ -7,6 +7,8 @@
 //! `cargo test --release -p nagaya --features xe --test xe_lfm3_media -- --test-threads=1 --nocapture`.
 #![cfg(feature = "xe")]
 
+mod card_support;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -72,9 +74,10 @@ fn golden() -> Option<PathBuf> {
 
 /// Omni resident on device 0, with one slot and an object store, as step 9 puts it on b70host.
 fn profile(dir: &Path) -> PlacementProfile {
+    let card = card_support::device();
     let dir = dir.display();
     PlacementProfile::parse(&format!(
-        "[[engines]]\nname = \"lfm3-omni\"\nkind = \"mk-lfm3-bmg\"\ndevices = [0]\nshare = 1\n\
+        "[[engines]]\nname = \"lfm3-omni\"\nkind = \"mk-lfm3-bmg\"\ndevices = [{card}]\nshare = 1\n\
          [engines.config]\nmodel_dir = \"{dir}\"\nslots = 1\n\
          [engines.family]\nmodel_dir = \"{dir}\"\n\
          [[budgets]]\ntiers = [\"device(0)\"]\nbytes = 34359738368\n\

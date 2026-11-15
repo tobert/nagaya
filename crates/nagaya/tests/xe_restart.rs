@@ -10,6 +10,8 @@
 
 mod fd_support;
 
+mod card_support;
+
 use std::collections::BTreeMap;
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixDatagram;
@@ -46,6 +48,7 @@ fn checkpoint() -> Option<PathBuf> {
 }
 
 fn profile(dir: &std::path::Path) -> PlacementProfile {
+    card_support::need_devices_0_and_1();
     let dir = dir.display();
     PlacementProfile::parse(&format!(
         "[[engines]]\nname = \"gemma\"\nkind = \"mk-gemma4-bmg\"\ndevices = [0, 1]\nshare = 1\n\

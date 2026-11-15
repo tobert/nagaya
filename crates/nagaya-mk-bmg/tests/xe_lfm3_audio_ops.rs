@@ -69,8 +69,7 @@ struct Card {
 
 impl Card {
     fn open() -> Self {
-        let cluster = L0Cluster::init(LFM3_KERNEL, KERNEL_ENTRY);
-        assert!(!cluster.cards.is_empty(), "no Level Zero card");
+        let cluster = L0Cluster::init_test(LFM3_KERNEL, KERNEL_ENTRY);
         let ring = Ring::new(&cluster.cards[0], 1 << 20);
         Self { cluster, ring }
     }

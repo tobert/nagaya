@@ -83,5 +83,7 @@ tempfile = "3"
 # The tests of the lab route `trace` read its object.
 safetensors = "0.8.0"
 nagaya-store = { path = "../nagaya-store", features = ["testing"] }
+# The card tests read their cards from `NAGAYA_TEST_CARDS` (`nagaya_mk_bmg::test_cards`).
+nagaya-mk-bmg = { path = "../nagaya-mk-bmg" }
 nagaya-telemetry = { path = "../nagaya-telemetry", features = ["testing"] }
 opentelemetry = "0.31.0"

@@ -16,7 +16,7 @@ fn the_time_of_each_op_of_a_unet_step_at_1024() {
         eprintln!("skipped: set SDXL_MODEL_DIR");
         return;
     };
-    let card = std::env::var("SDXL_CARD").unwrap_or_else(|_| "0000:03:00.0".to_owned());
+    let card = nagaya_mk_bmg::test_cards::card();
     let mut engine = SdxlEngine::open(Config::folder(dir), &card).unwrap();
     let size = UnetSize {
         images: 1,

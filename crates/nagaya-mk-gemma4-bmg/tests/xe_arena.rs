@@ -15,16 +15,9 @@ use nagaya_mk_gemma4_bmg::engine::{LoadError, Loaded, open};
 use nagaya_mk_gemma4_bmg::spec::{Config, arena_parts};
 use sha2::{Digest, Sha256};
 
-/// The PCI addresses of the `xe` cards, in PCI order.
+/// The two cards of the test: the first two cards of `NAGAYA_TEST_CARDS`, stage 0 on the first.
 fn cards() -> Vec<String> {
-    let mut found: Vec<String> = std::fs::read_dir("/sys/bus/pci/drivers/xe")
-        .expect("the xe driver directory")
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .filter(|name| name.len() == 12 && name.as_bytes()[4] == b':')
-        .collect();
-    found.sort();
-    found
+    nagaya_mk_bmg::test_cards::cards(2)
 }
 
 /// The cold load that the tests share, and its time in ms. The weights of one load fill most of both cards.

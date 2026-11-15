@@ -14,7 +14,7 @@ use nagaya_mk_embeddinggemma2_bmg::{Config, EmbeddingGemma2Engine};
 const GATE: f64 = 1e-4;
 
 fn open() -> EmbeddingGemma2Engine {
-    let card = common::cards()[1].clone();
+    let card = common::cards()[0].clone();
     EmbeddingGemma2Engine::open(
         Config {
             model_dir: common::model_dir(),

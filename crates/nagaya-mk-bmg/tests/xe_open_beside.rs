@@ -74,7 +74,7 @@ fn work(address: String, begin: Instant, ready: Arc<AtomicBool>, stop: Arc<Atomi
 /// Run card A, open card B with `open` in the middle, and give the median launch of card A, the longest launch of card
 /// A that overlaps the open, and the time of the open.
 fn beside(open: impl FnOnce() -> L0Cluster) -> (Duration, Duration, Duration) {
-    let addresses = L0Cluster::addresses();
+    let addresses = nagaya_mk_bmg::test_cards::cards(2);
     assert!(
         addresses.len() >= 2,
         "the test needs two cards, and the driver has {}",
@@ -110,10 +110,13 @@ fn beside(open: impl FnOnce() -> L0Cluster) -> (Duration, Duration, Duration) {
 
 #[test]
 fn an_open_of_one_card_does_not_stall_the_launches_of_another_card() {
-    let other = L0Cluster::addresses()[1].clone();
-    // The old open made a context, queues and the module on every card, then dropped the others. Print it to compare.
-    let (median, longest, took) = beside(|| L0Cluster::init(SDXL_KERNEL, KERNEL_ENTRY));
-    eprintln!("open of every card: {took:?}; card A median launch {median:?}, longest beside the open {longest:?}");
+    let other = nagaya_mk_bmg::test_cards::cards(2).remove(1);
+    // The old open made a context, queues and the module on every card, then dropped the others. Print the open of
+    // both cards of the test to compare.
+    let both = nagaya_mk_bmg::test_cards::cards(2);
+    let (median, longest, took) =
+        beside(|| L0Cluster::init_at(SDXL_KERNEL, KERNEL_ENTRY, &both).expect("both cards open"));
+    eprintln!("open of both cards: {took:?}; card A median launch {median:?}, longest beside the open {longest:?}");
     let (median, longest, took) =
         beside(|| L0Cluster::init_at(SDXL_KERNEL, KERNEL_ENTRY, &[other]).expect("card B opens"));
     eprintln!("open of card B only: {took:?}; card A median launch {median:?}, longest beside the open {longest:?}");
@@ -151,7 +154,7 @@ fn open_and_upload(address: String, bytes: usize) -> L0Cluster {
 
 #[test]
 fn an_upload_of_gigabytes_to_one_card_does_not_stall_the_launches_of_another_card() {
-    let other = L0Cluster::addresses()[1].clone();
+    let other = nagaya_mk_bmg::test_cards::cards(2).remove(1);
     let gb: usize = std::env::var("XE_UPLOAD_GB")
         .ok()
         .map(|value| value.parse().expect("XE_UPLOAD_GB is a whole number of GB"))

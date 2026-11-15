@@ -111,8 +111,7 @@ struct Card {
 
 impl Card {
     fn open() -> Self {
-        let cluster = L0Cluster::init(EMBEDDINGGEMMA2_KERNEL, KERNEL_ENTRY);
-        assert!(!cluster.cards.is_empty(), "no Level Zero card");
+        let cluster = L0Cluster::init_test(EMBEDDINGGEMMA2_KERNEL, KERNEL_ENTRY);
         let ring = Ring::new(&cluster.cards[0], 1);
         Self { cluster, ring }
     }

@@ -13,7 +13,7 @@ fn the_conformance_suite_passes_on_the_card() {
     if common::absent() {
         return;
     }
-    let card = common::cards()[1].clone();
+    let card = common::cards()[0].clone();
     let suite = run_all(&mut || {
         EmbeddingGemma2Engine::open(
             Config {

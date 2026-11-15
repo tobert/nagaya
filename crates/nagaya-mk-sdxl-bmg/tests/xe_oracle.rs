@@ -39,7 +39,7 @@ fn model_dir() -> Option<PathBuf> {
 
 /// The PCI address of the first B70 card.
 fn card_address() -> String {
-    std::env::var("SDXL_CARD").unwrap_or_else(|_| "0000:03:00.0".to_owned())
+    nagaya_mk_bmg::test_cards::card()
 }
 
 /// NCHW to pixel-major: [b][c][h][w] to [b][h][w][c].

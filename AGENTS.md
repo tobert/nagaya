@@ -218,6 +218,9 @@ An agent may also stop and start the web app on b70host (`python3 tools/nagaya_w
 - Each engine reads its checkpoint folder from a variable with no default ("Tests that need a model file").
 - Run the card tests of a crate with one thread, for example:
   `cargo test -p nagaya-mk-gemma4-bmg --tests --features xe -- --test-threads=1`.
+- A card test opens only the cards that `NAGAYA_TEST_CARDS` names: PCI addresses with `,` between them. The variable
+  has no default, and a test of Gemma 4 needs two cards. Name only a card that no engine of the active profile
+  names. Such a test can run with the unit active (Decided 2026-11-15).
 - The reference Python of each oracle runs on the CPU. Do not run it with a GPU job.
 - A video part needs the feature `video` and ffmpeg's libraries. The deploy of b70host builds with
   `--features xe,video`.

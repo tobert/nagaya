@@ -105,9 +105,10 @@ pub fn model_dir() -> PathBuf {
     model_dir_configured().expect("the test must call `absent` first")
 }
 
-/// Both cards, with the megakernel loaded.
+/// The two cards of `NAGAYA_TEST_CARDS`, with the megakernel loaded.
 pub fn cluster() -> L0Cluster {
-    L0Cluster::init(MEGAKERNEL_BIN, MEGAKERNEL_ENTRY)
+    let cards = nagaya_mk_bmg::test_cards::cards(2);
+    L0Cluster::init_at(MEGAKERNEL_BIN, MEGAKERNEL_ENTRY, &cards).expect("the two cards of the test open")
 }
 
 /// A reference file of tools/gemma4_reference.py.
