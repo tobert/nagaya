@@ -2346,6 +2346,12 @@ line says `evidence unavailable (not read before a decode quantum)` (`evidence::
 names the kind of the quantum, the kind of request and the engine. `Start::machine` gives the process a machine with a
 fixed tree of files for a test.
 
+**A refused job is not a failed quantum.** **Proposed** by Claude Fable 5.2, 2026-11-15. A job that finds no free
+slot ends in its first quantum, and its caller gets `busy` (11.3c). A request of several replies then runs that reply
+again (11.15). The engine and the machine did nothing wrong, so the group thread logs no failure line and reads no
+evidence for it. Reason: on 2026-11-15 a request of 8 forks on an engine of 4 slots gave 8 replies, and the log held 4
+failure lines at the level `error` for each such request. The body reports `Ran::Refused`, and the job ends as failed.
+
 Evidence never hides its failure. A counter that cannot be read, or that went back, is named in the line as
 `evidence unavailable`. The failure is logged all the same. The sources are `/proc/meminfo`, `/proc/vmstat`,
 `/sys/class/kfd/kfd/proc/<pid>/stats_*/evicted_ms` and `/sys/class/drm/card*/device/mem_info_gtt_used`. The GTT is
