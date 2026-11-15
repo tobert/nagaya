@@ -103,7 +103,8 @@ fn the_plan_of_each_model_fits_one_card_with_no_card() {
             .filter(|term| term.tier == Tier::Device(0))
             .map(|term| term.bytes)
             .sum();
-        assert!(device > 5 << 30 && device < 8 << 30, "{variable}: {device} bytes");
+        // The weights, two slots of 868,859,904 bytes, and the work, which holds no score buffer of the backbone.
+        assert!(device > 4 << 30 && device < 7 << 30, "{variable}: {device} bytes");
     }
 }
 
