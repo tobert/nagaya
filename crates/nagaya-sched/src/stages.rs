@@ -769,7 +769,7 @@ impl StageScheduler {
         if job.state.is_terminal() {
             return;
         }
-        if outcome == Completion::Failed {
+        if outcome.ends_the_job() {
             job.state = JobState::Failed;
             job.items.clear();
             self.flights.remove(&job.id);

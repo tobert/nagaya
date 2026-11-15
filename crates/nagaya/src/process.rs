@@ -2113,6 +2113,8 @@ impl Ports {
 
     /// End the release of a device, and load each resident engine of `profile` that names it and that is not loaded
     /// (spec 3.3b). An engine on demand stays unloaded. A device that is not released changes nothing.
+    ///
+    /// A load that a group refuses ends the reclaim: the device stays released, and the engines before it stay loaded.
     pub fn reclaim_device(
         &self,
         device: nagaya_abi::DeviceId,
@@ -2121,23 +2123,31 @@ impl Ports {
         if !profile.engines.iter().any(|entry| entry.devices.contains(&device)) {
             return Err(LoadError::NoDevice(device));
         }
-        let was_released = self
+        let held = self
             .released
             .lock()
             .expect("the released devices are poisoned")
-            .remove(&device)
-            .is_some();
-        if !was_released {
+            .remove(&device);
+        let Some(held) = held else {
             return Ok(DeviceReply::Already);
-        }
+        };
         let mut loaded = Vec::new();
         for entry in &profile.engines {
             let resident = entry.residency == crate::profile::Residency::Resident;
             if !entry.devices.contains(&device) || !resident {
                 continue;
             }
-            if let LoadReply::Started { .. } = self.load(&entry.name)? {
-                loaded.push(entry.name.clone());
+            match self.load(&entry.name) {
+                Ok(LoadReply::Started { .. }) => loaded.push(entry.name.clone()),
+                Ok(LoadReply::Already(_)) => {}
+                Err(error) => {
+                    // The device stays released, so the next reclaim tries the load again.
+                    self.released
+                        .lock()
+                        .expect("the released devices are poisoned")
+                        .insert(device, held);
+                    return Err(error);
+                }
             }
         }
         Ok(if loaded.is_empty() {

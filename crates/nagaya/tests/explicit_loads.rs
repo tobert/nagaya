@@ -654,3 +654,35 @@ fn a_release_or_a_reclaim_of_a_device_that_no_engine_names_is_refused() {
     assert_eq!(process.release_device(7, &profile), Err(LoadError::NoDevice(7)));
     assert_eq!(process.reclaim_device(7, &profile), Err(LoadError::NoDevice(7)));
 }
+
+/// A reclaim whose load is refused leaves the device released, so the next reclaim tries again and does not answer
+/// that nothing is left to do (kaibo review of 2026-11-15).
+///
+/// Falsified by a reclaim that ends the release before its loads: the second reclaim is `Already`.
+#[test]
+fn a_reclaim_whose_load_is_refused_keeps_the_device_released() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, _log) = start(directory.path());
+    let profile = profile_sized(600);
+    assert_eq!(
+        process.release_device(0, &profile),
+        Ok(DeviceReply::Started(names(&["chat"])))
+    );
+    swapped(&process);
+    // A profile in which `voice` is resident too. The two engines do not fit the device together.
+    let mut both = profile.clone();
+    both.engines[1].residency = Residency::Resident;
+    for attempt in 0..2 {
+        let refused = process.reclaim_device(0, &both);
+        assert!(
+            matches!(&refused, Err(LoadError::InTheWay { engine, .. }) if engine == "voice"),
+            "attempt {attempt}: {refused:?}"
+        );
+        if attempt == 0 {
+            swapped(&process);
+        }
+    }
+    // The reclaim by the active profile ends the release: `chat` is loaded, and `voice` stays on demand.
+    assert_eq!(process.reclaim_device(0, &profile), Ok(DeviceReply::Already));
+    assert!(matches!(process.load("chat"), Ok(LoadReply::Already(_))));
+}

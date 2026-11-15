@@ -201,6 +201,7 @@ impl ObservedScheduler {
                     span.record("outcome", "failed");
                     span.record("otel.status_code", "ERROR")
                 }
+                Completion::Refused => span.record("outcome", "refused"),
             };
         }
     }

@@ -158,6 +158,16 @@ pub enum Completion {
     Done,
     /// The quantum failed.
     Failed,
+    /// The job was refused before it did work, for example because no slot was free. The job ends as failed, and
+    /// the quantum is not an error.
+    Refused,
+}
+
+impl Completion {
+    /// True when the quantum ends its job as failed.
+    pub fn ends_the_job(self) -> bool {
+        matches!(self, Completion::Failed | Completion::Refused)
+    }
 }
 
 /// One event for the scheduler.
@@ -379,7 +389,7 @@ impl Scheduler {
                 if job.state == JobState::Failed {
                     continue;
                 }
-                if outcome == Completion::Failed {
+                if outcome.ends_the_job() {
                     job.state = JobState::Failed;
                     job.quanta.clear();
                 } else if job.cancel_requested {

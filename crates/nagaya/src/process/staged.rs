@@ -1449,6 +1449,9 @@ impl StagedJobs {
                     span.record("outcome", "failed");
                     span.record("otel.status_code", "ERROR");
                 }
+                Completion::Refused => {
+                    span.record("outcome", "refused");
+                }
             }
         }
     }
@@ -1511,7 +1514,8 @@ impl StagedJobs {
                     .expect("a job that ran a quantum is running");
                 Completion::Done
             }
-            Ran::Failed | Ran::Refused => Completion::Failed,
+            Ran::Failed => Completion::Failed,
+            Ran::Refused => Completion::Refused,
             Ran::Cancelled => {
                 // The quantum ran to its end. The cancel takes effect when it completes (spec 5.9).
                 self.event(StageEvent::Cancel {

@@ -855,6 +855,7 @@ keeps the rules of "Explicit layout" and adds no key to the profile.
   reclaim. The device keeps its budget and its thread, and it runs no work.
 - `POST /nagaya/v1/devices/{id}/reclaim` ends the release, and it loads each resident engine that names the device.
   The reply is a 202 with `{"device", "load"}`. A device that is not released gives a 200.
+- A reclaim whose load is refused leaves the device released. The next reclaim tries the load again.
 - A release refuses a device that holds a pinned engine, or an engine without `close`: a 409 that names the engine.
   A pinned engine leaves only by a profile `PUT`, as before.
 - The release is not stored. The next start of the process loads the resident engines, as the profile says. Thus a
@@ -2352,8 +2353,10 @@ fixed tree of files for a test.
 **A refused job is not a failed quantum.** Decided 2026-11-15, proposed by Claude Fable 5.2. A job that finds no free
 slot ends in its first quantum, and its caller gets `busy` (11.3c). A request of several replies then runs that reply
 again (11.15). The engine and the machine did nothing wrong, so the group thread logs no failure line and reads no
-evidence for it. It logs one line at the level `info` that starts with `job refused` (`evidence::refused`). The body
-reports `Ran::Refused`, and the job ends as failed.
+evidence for it. It logs one line at the level `info` that starts with `job refused` (`evidence::refused`).
+
+The body reports `Ran::Refused`, and the job ends as failed. Its quantum span has the outcome `refused` and no error
+status.
 
 Reason: on 2026-11-15 a request of 8 forks on an engine of 4 slots gave 8 replies. For each such request, the log
 held 4 failure lines at the level `error`.

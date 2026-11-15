@@ -394,7 +394,8 @@ impl GroupJobs {
                     .expect("a job that ran a quantum is running");
                 Completion::Done
             }
-            Ran::Failed | Ran::Refused => Completion::Failed,
+            Ran::Failed => Completion::Failed,
+            Ran::Refused => Completion::Refused,
             Ran::Cancelled => {
                 // The quantum ran to its end. A cancel of a running job takes effect when it completes (spec 5.9).
                 self.event(Event::Cancel {

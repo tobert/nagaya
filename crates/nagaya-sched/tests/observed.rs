@@ -224,6 +224,35 @@ fn a_failed_quantum_marks_its_span_as_an_error() {
     );
 }
 
+/// A refused job is not a failed quantum (spec 9.6): its span has the outcome `refused` and no error status, and the
+/// job ends as failed.
+#[test]
+fn a_refused_quantum_ends_its_job_and_its_span_is_no_error() {
+    let capture = Capture::start(Vec::new());
+    let scheduler = arrive(observed(), 0, job(1, Class::Batch, 0, 0, &[Kind::Copy, Kind::Prefill]));
+    let (scheduler, _) = admit(scheduler, 1, 1);
+    let scheduler = step(
+        scheduler,
+        Event::Complete {
+            now_ms: 9,
+            duration_ms: 8,
+            outcome: Completion::Refused,
+        },
+    );
+    let spans = capture.spans();
+    let span = spans
+        .iter()
+        .find(|span| span.name == "nagaya.quantum")
+        .expect("a quantum span");
+    assert_eq!(attribute(span, "outcome").as_deref(), Some("refused"));
+    assert!(
+        !matches!(span.status, opentelemetry::trace::Status::Error { .. }),
+        "{:?}",
+        span.status
+    );
+    let _ = scheduler;
+}
+
 #[test]
 fn a_pass_with_two_segments_counts_one_quantum_and_the_wait_of_its_lead_segment() {
     let capture = Capture::start(Vec::new());

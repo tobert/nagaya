@@ -141,3 +141,27 @@ Amy decided the nine design gaps in an interview on the same day:
 
 Claude also renamed the `admission` capability to `pass_check`, so "admission" names only the ledger's check. Check
 strength is one enum: `full`, `spot` or `none`.
+
+## 2026-11-15: kaibo consults on the work of 2026-11-14 and 2026-11-15
+
+Two consults on the cast `gemini` (explorer `gemini-flash-latest`, synth `gemini-pro-latest`), another model family
+than the one that wrote the changes. A consult on the cast `gpt` did not end: its account had no credits.
+
+The first consult read the attention with no score buffer (`OP_ATTN_STREAM`, `kernels/lfm3_ops.cl`). It found no
+defect in the barriers, the team scratch, the softmax, the masks, the scratch bound and the determinism.
+
+| # | Finding | What we did |
+|---|---|---|
+| 1 | The x coordinate of each 2D block read is in elements, and the extension takes bytes | Not a defect. The three ops use the same form, and both forms match the reference to 2e-6 on the card |
+| 2 | A block read of 16 rows passes the end of a ring that is not a multiple of 16 rows | No change. The first key is on a grid of 128, and the ring of the engine has 2,048 rows. The op states the rule, and no host check holds it for another caller |
+
+The second consult read the row threads, the release of a device and the refused job. It found the row threads
+sound: the position check, the state between the draw and its use, and the pool threads.
+
+| # | Finding | What we did |
+|---|---|---|
+| 3 | A reclaim ended the release before its loads. After a refused load, the next reclaim answered that nothing was left | Repaired: the device stays released, and the next reclaim tries again. A test showed the defect first |
+| 4 | A refused job ended as `Completion::Failed`, so its span had the status ERROR | Repaired: `Completion::Refused`, with the span outcome `refused` and no error status |
+
+Not read by a review: the test cards, the change of the Gemma 4 engine to its two cards, and the profile changes.
+
