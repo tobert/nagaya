@@ -221,14 +221,48 @@ measures each op on the card, on a cache of random values. These are its times f
 - A cache of zeros gives times that are too short by a factor of 3. Measure with values.
 - What stays is the softmax and the sum of the values: 140 ms of 208 ms. They are passes over the scores.
 
-The owner expects that contexts of 32,768 positions are enough for now, and that 65,536 comes next. Places to start:
+**The attention with no score buffer (2026-11-15).** The backbone of LFM3 now runs the attention of a block as
+`OP_ATTN_STREAM` and `OP_ATTN_STREAM_SUM` (`kernels/lfm3_ops.cl`). The three ops stay for the other engines, and for
+the audio encoder and the codec of LFM3, whose keys have a small bound.
 
-- Measure the longest block at 65,536 positions first. It can fit the bound with no change.
-- A block of fewer tokens for a long slot. The scores of a block are its tokens times the keys.
-- A bound that the engine declares for each slot size.
-- The scores of a block of 512 over 262,144 keys take 8.6 GB. A smaller block takes less.
-- An attention that keeps no scores: it reads the keys in tiles, and it keeps a running softmax. It cuts the time
-  and the 8.6 GB. It changes the order of the sums, so it changes the bits and the engine identity.
+- A team of 4 subgroups takes a chunk of keys, a head and a tile of 16 tokens. It walks the chunk in rounds of 128
+  keys. In a round each subgroup scores 32 keys, and the team shares the probabilities of the round. Then each
+  subgroup adds them against 32 of the 128 values of V.
+- The shared probabilities of a round are 8 KB for each team, 4.5 MB for the card. They stay in the cache of the
+  card, so no pass over a score buffer reads memory.
+- A team keeps a running max and sum of each token, and it writes them with its output for each chunk. The second
+  op merges the chunks in their order. A chunk has at most 8,192 keys.
+- The size of a chunk reads the block and its keys, and no slot size. Thus each slot size gives the same bits.
+
+These are the times of one layer and a block of 512, from the same ignored test:
+
+| Keys | The three ops | No score buffer |
+|---|---|---|
+| 32,768 | 24.8 ms | 19.7 ms |
+| 65,536 | 56.1 ms | 38.7 ms |
+| 131,072 | 101.6 ms | 76.1 ms |
+| 262,144 | 205.0 ms | 147.0 ms |
+
+- On the engine, the longest block of a slot of 262,144 positions takes 1,072 ms where it took 1,330 ms (`xe_feed`).
+  At 32,768 positions it takes 206 ms where it took 230 ms.
+- The term `work` of 8 slots of 32,768 positions is 135 MB, where the scores alone took 1.07 GB. With a slot of
+  262,144 positions it is 345 MB, where the scores took 8.6 GB.
+- The sums have another order, so the bits changed, and the identity of each LFM3 engine changed. The logits of the
+  five oracle prompts follow the reference as before. The largest gap of the top 64 logits is 2.5e-5.
+- A first form failed, and its cause is a rule for the next op. Each subgroup kept the scores of its chunk in a
+  buffer of its own, 128 KB. The 2,048 buffers did not fit the cache, and each subgroup read its buffer 4 times.
+  The op took 651 ms at 262,144 keys. The arithmetic alone takes about 80 ms of it.
+- Thus an op must keep the state that its subgroups read again inside the cache of the card. The team form does
+  it: 4 subgroups read one small buffer at the same time, where one subgroup read a large buffer 4 times.
+
+What is open for long slots:
+
+- The profile holds no long slot. The time bound holds and the scores are gone, so the limit is the term `kv`.
+  That is 6.5 GB for a slot of 262,144 positions, and 1.74 GB for one of 65,536.
+- The team form is not tuned. Its arithmetic takes about 80 ms of the 147 ms at 262,144 keys. The rest is the
+  exponentials, the barriers of each round, and the reads of the keys.
+- A decode step at 262,144 positions takes 39 ms, where a short one takes 9 ms to 13 ms. One-token attention keeps
+  its own form.
 
 ## Other open things from the same day
 
