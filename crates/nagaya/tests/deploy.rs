@@ -4,9 +4,9 @@
 //! The admission of the b70host profile plans from the Gemma 4 checkpoint. That test skips when `GEMMA4_MODEL_DIR`
 //! is not set, and fails then with `NAGAYA_REQUIRE_MODELS=1` (AGENTS "Tests that need a model file").
 //!
-//! Since 2026-11-15 the b70host profile serves from one card, and nine tests of the profile of two cards are
-//! ignored. A test must not depend on the layout of one machine (AGENTS, milestone 31 step 4). Rewrite each one to
-//! read a profile of its own, or remove it.
+//! A test must not depend on the layout of one machine (AGENTS, milestone 31 step 4). The admission test of the
+//! b70host profile reads no engine name and no count. The eight tests that named the engines of the lab layout
+//! of two cards are gone since 2026-11-15.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -278,70 +278,6 @@ fn the_b70host_config_binds_mkviolets_address_and_ignores_the_igpu() {
     assert_eq!(config.ignore_devices, vec!["0000:80:00.0".to_owned()]);
 }
 
-#[test]
-#[ignore = "it reads the two-card profile of b70host (4c02b39); rewrite it or remove it (milestone 31 step 4)"]
-fn the_b70host_profile_names_the_gemma4_engine_on_both_cards() {
-    let profile = b70host_profile();
-    assert_eq!(
-        profile.engines.len(),
-        12,
-        "gemma, the speech engine, five image engines on demand, the pinned embedding engine, inpaint-0 and the two \
-         LFM3 models"
-    );
-    let engine = &profile.engines[0];
-    // Amy, 2026-11-06 (milestone 24): Gemma 4 goes on demand, and it loads only through the load routes.
-    assert_eq!(engine.residency, Residency::OnDemand);
-    assert_eq!(engine.kind, nagaya::gemma4::KIND);
-    assert_eq!(engine.devices, vec![0, 1], "stage 0 on device 0, stage 1 on device 1");
-    // mkviolet serves one slot of 4096 positions and one of 65,536, with blocks of 512 (mkviolet `src/main.rs`).
-    let slots: Vec<i64> = engine.config["slots"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|slot| slot.as_integer().unwrap())
-        .collect();
-    assert_eq!(slots, vec![4096, 65_536]);
-    assert_eq!(engine.config["max_block"].as_integer(), Some(512));
-    assert!(
-        !engine.config.contains_key("model_dir") && !engine.family.contains_key("model_dir"),
-        "the checkpoint comes from GEMMA4_MODEL_DIR in the unit"
-    );
-    // Spec 4.1: one budget for each card, and one for host memory.
-    let tiers: Vec<Vec<TierSpec>> = profile.budgets.iter().map(|budget| budget.tiers.clone()).collect();
-    assert_eq!(
-        tiers,
-        vec![
-            vec![TierSpec::from(Tier::Device(0))],
-            vec![TierSpec::from(Tier::Device(1))],
-            vec![TierSpec::from(Tier::Host)],
-        ]
-    );
-    let inventory = FileProbe::new(repo().join("crates/nagaya/tests/fixtures/probe/b70host"))
-        .probe()
-        .unwrap();
-    for (budget, id) in profile.budgets.iter().zip([0, 1]) {
-        let device = inventory.device(id).unwrap();
-        assert!(
-            budget.bytes <= device.memory_bytes,
-            "the budget of device {id} is {} bytes; the card has {} bytes",
-            budget.bytes,
-            device.memory_bytes
-        );
-    }
-    let host = profile.budgets[2].bytes;
-    assert!(
-        host + FLOOR <= inventory.host_bytes,
-        "the host budget is {host} bytes; host memory is {} bytes and the floor is {FLOOR} bytes",
-        inventory.host_bytes
-    );
-    let store = profile.store.expect("an engine needs a [store] table (spec 4.1a)");
-    assert!(store.nvme > 0);
-    assert!(
-        store.host.unwrap() < host,
-        "the store's host budget fits inside the host budget"
-    );
-}
-
 /// The Gemma 4 plan with no card, as the factory of the `xe` build plans. A deploy test opens no engine.
 struct PlanOnly;
 
@@ -460,114 +396,6 @@ fn checkpoint() -> Option<PathBuf> {
     }
 }
 
-#[test]
-#[ignore = "it reads the two-card profile of b70host (4c02b39); rewrite it or remove it (milestone 31 step 4)"]
-fn the_b70host_profile_names_the_speech_engine_on_demand_on_card_one() {
-    // Amy, 2026-10-24: the speech engine swaps in on demand, and the profile chooses its card (milestone 17). Amy,
-    // 2026-11-06 (milestone 24): card 1 holds the image engines, the embedding engine and speech.
-    let profile = b70host_profile();
-    let engine = &profile.engines[1];
-    assert_eq!(
-        (engine.name.as_str(), engine.kind.as_str()),
-        ("voice", nagaya::qwen3tts::KIND)
-    );
-    assert_eq!(engine.devices, vec![1]);
-    assert_eq!(engine.residency, Residency::OnDemand);
-    assert!(
-        !engine.pinned,
-        "a client unloads the speech engine (spec 3.3a, \"Explicit layout\")"
-    );
-    assert!(
-        engine.family.is_empty(),
-        "an on-demand engine serves no council model (spec 3.3a)"
-    );
-    let config = nagaya::qwen3tts::config(&{
-        // The checkpoint comes from QWEN3TTS_MODEL_DIR in the unit, so the check gives the table a directory.
-        let mut table = engine.config.clone();
-        assert!(
-            !table.contains_key("model_dir"),
-            "the checkpoint comes from QWEN3TTS_MODEL_DIR in the unit"
-        );
-        table.insert(
-            "model_dir".to_owned(),
-            toml::Value::String(std::env::temp_dir().display().to_string()),
-        );
-        table
-    })
-    .unwrap();
-    assert_eq!(
-        (
-            config.slots,
-            config.max_frames,
-            config.max_prompt,
-            config.frames_per_quantum
-        ),
-        (2, 1500, 512, 8)
-    );
-}
-
-#[test]
-#[ignore = "it reads the two-card profile of b70host (4c02b39); rewrite it or remove it (milestone 31 step 4)"]
-fn the_b70host_profile_names_an_image_engine_on_demand_on_each_card() {
-    // Amy, 2026-10-27: "one model per card", and each engine is its own served model (spec 11.9).
-    let profile = b70host_profile();
-    assert_eq!(
-        profile.engines.len(),
-        12,
-        "the image engines follow gemma and the speech engine"
-    );
-    for (engine, (name, device)) in profile.engines[2..4].iter().zip([("sdxl-0", 0), ("sdxl-1", 1)]) {
-        assert_eq!((engine.name.as_str(), engine.kind.as_str()), (name, nagaya::sdxl::KIND));
-        assert_eq!(engine.devices, vec![device]);
-        assert_eq!(engine.residency, Residency::OnDemand);
-        assert!(
-            !engine.pinned,
-            "{name}: a client unloads an image engine (spec 3.3a, \"Explicit layout\")"
-        );
-        assert!(
-            engine.config.is_empty() && engine.family.is_empty(),
-            "{name}: the checkpoint comes from SDXL_MODEL_DIR in the unit, and clip_skip is 2"
-        );
-    }
-}
-
-#[test]
-#[ignore = "it reads the two-card profile of b70host (4c02b39); rewrite it or remove it (milestone 31 step 4)"]
-fn the_b70host_profile_names_pony_on_card_zero_and_autismmix_on_card_one() {
-    // Amy, 2026-10-28: Pony V6 and AutismMix from Civitai, beside SDXL base, one engine on each card. The profile
-    // names the files; this test checks only their form.
-    let profile = b70host_profile();
-    assert_eq!(profile.engines.len(), 12);
-    // Amy, 2026-10-29: SDXL-Lightning 4-step, a single file on card 0, shares that card with pony-0 (spec 11.9a).
-    let singles = [("pony-0", 0), ("autismmix-1", 1), ("lightning-0", 0)];
-    for (engine, (name, device)) in profile.engines[4..7].iter().zip(singles) {
-        assert_eq!((engine.name.as_str(), engine.kind.as_str()), (name, nagaya::sdxl::KIND));
-        assert_eq!(engine.devices, vec![device]);
-        assert_eq!(engine.residency, Residency::OnDemand);
-        assert!(!engine.pinned, "{name}");
-        assert!(
-            !engine.config.contains_key("model_dir") && !engine.family.contains_key("model_dir"),
-            "{name}: the tokenizer comes from SDXL_MODEL_DIR in the unit"
-        );
-        let config = nagaya::sdxl::config(&{
-            let mut table = engine.config.clone();
-            table.insert("model_dir".to_owned(), toml::Value::String("/sdxl".to_owned()));
-            table
-        })
-        .unwrap();
-        let file = config
-            .checkpoint
-            .unwrap_or_else(|| panic!("{name} names a single file"));
-        assert!(
-            file.is_absolute() && file.extension().is_some_and(|ext| ext == "safetensors"),
-            "{name}: {}",
-            file.display()
-        );
-        // Pony asks for "clip skip 2", the penultimate layer. `clip_skip` counts as A1111 does, so that is the default.
-        assert!(engine.family.is_empty(), "{name}: the default clip_skip 2");
-    }
-}
-
 /// True when each single file that the profile names exists. Without one, the test skips; a machine that does not
 /// hold the files is normal (AGENTS.md, "Tests that need a model file").
 fn named_checkpoints(profile: &PlacementProfile) -> bool {
@@ -588,106 +416,7 @@ fn named_checkpoints(profile: &PlacementProfile) -> bool {
     false
 }
 
-/// The embedding engine is resident and pinned on card 1 (spec 11.10, 3.3a "Explicit layout").
 #[test]
-#[ignore = "it reads the two-card profile of b70host (4c02b39); rewrite it or remove it (milestone 31 step 4)"]
-fn the_b70host_profile_names_the_pinned_embedding_engine_on_card_one() {
-    let profile = b70host_profile();
-    let engine = &profile.engines[7];
-    assert_eq!(
-        (engine.name.as_str(), engine.kind.as_str()),
-        ("embeddinggemma-2", nagaya::embeddinggemma2::KIND)
-    );
-    assert_eq!(engine.devices, vec![1]);
-    assert_eq!(engine.residency, Residency::Resident);
-    assert!(engine.pinned, "no load and no unload removes the embedding engine");
-    assert!(
-        engine.config.is_empty() && engine.family.is_empty(),
-        "the checkpoint comes from EMBEDDINGGEMMA2_MODEL_DIR in the unit"
-    );
-}
-
-/// The 9-channel inpainting UNet on card 1, on demand (milestone 20 step 7, spec 11.9b "The 9-channel UNet"). Its key
-/// `model_dir` names the inpainting folder, and its family reads the tokenizer from `SDXL_MODEL_DIR` in the unit.
-#[test]
-#[ignore = "it reads the two-card profile of b70host (4c02b39); rewrite it or remove it (milestone 31 step 4)"]
-fn the_b70host_profile_names_the_inpainting_engine_on_demand_on_card_one() {
-    let profile = b70host_profile();
-    let engine = &profile.engines[8];
-    assert_eq!(
-        (engine.name.as_str(), engine.kind.as_str()),
-        ("inpaint-0", nagaya::sdxl::KIND)
-    );
-    assert_eq!(engine.devices, vec![1]);
-    assert_eq!(engine.residency, Residency::OnDemand);
-    assert!(!engine.pinned);
-    assert!(
-        engine.family.is_empty(),
-        "the tokenizer comes from SDXL_MODEL_DIR, and clip_skip is the default"
-    );
-    let config = nagaya::sdxl::config(&engine.config).unwrap();
-    assert_eq!(config.checkpoint, None, "the inpainting UNet is a diffusers folder");
-    assert!(
-        config.model_dir.is_absolute() && config.model_dir.ends_with("115134f363124c53c7d878647567d04daf26e41e"),
-        "inpaint-0 names snapshot 115134f of the inpainting folder: {}",
-        config.model_dir.display()
-    );
-}
-
-/// Amy, 2026-11-06 (milestone 24): both LFM3 models are resident on card 0 of b70host. Each engine name is its
-/// served name (spec 11.11), and each config and family table names its snapshot folder.
-#[test]
-#[ignore = "it reads the two-card profile of b70host (4c02b39); rewrite it or remove it (milestone 31 step 4)"]
-fn the_b70host_profile_names_both_lfm3_models_resident_on_card_zero() {
-    let profile = b70host_profile();
-    assert_eq!(
-        profile.engines.len(),
-        12,
-        "the two LFM3 models of card 0 follow inpaint-0"
-    );
-    for (engine, (name, repo, snapshot)) in profile.engines[9..].iter().zip([
-        (
-            "lfm3-omni",
-            "models--LiquidAI--LFM3-Omni-2B",
-            "21d75123f86c1f7ffb4bef1ea202710c4e7ebe67",
-        ),
-        (
-            "lfm3",
-            "models--LiquidAI--LFM3-1.7B",
-            "0dc4268b561499c648c7ba7c9466bf3d8d01517a",
-        ),
-    ]) {
-        assert_eq!((engine.name.as_str(), engine.kind.as_str()), (name, nagaya::lfm3::KIND));
-        assert_eq!(engine.devices, vec![0], "{name}");
-        assert_eq!(engine.residency, Residency::Resident, "{name}");
-        assert!(!engine.pinned, "{name}: a load of an image engine on card 0 unloads it");
-        for table in [&engine.config, &engine.family] {
-            let dir = std::path::PathBuf::from(table["model_dir"].as_str().unwrap());
-            assert!(dir.is_absolute(), "{name}: the loader does not expand `~`");
-            assert!(
-                dir.ends_with(format!("{repo}/snapshots/{snapshot}")),
-                "{name}: {}",
-                dir.display()
-            );
-        }
-        // Eight slots, so a batched decode pass can hold eight contexts (milestone 27).
-        assert_eq!(engine.config["slots"].as_integer(), Some(8), "{name}");
-    }
-    // The J-Lens of LFM3-1.7B, fitted on b70host's CPU (milestone 26 step 5, docs/lab.md). Omni has none yet.
-    let lab = |i: usize| profile.engines[i].lab.clone();
-    assert!(lab(9).is_empty(), "lfm3-omni names no lens");
-    let jlens = std::path::PathBuf::from(lab(10)["jlens"].as_str().expect("lfm3 names its J-Lens"));
-    assert_eq!(lab(10).len(), 1, "the table has one key");
-    assert!(jlens.is_absolute(), "the loader does not expand `~`");
-    assert!(
-        jlens.ends_with(".local/share/nagaya/lens/lfm3.jlens.safetensors"),
-        "{}",
-        jlens.display()
-    );
-}
-
-#[test]
-#[ignore = "it reads the two-card profile of b70host (4c02b39); rewrite it or remove it (milestone 31 step 4)"]
 fn the_b70host_profile_admits_on_the_probed_b70host() {
     // The start path up to the open: the probe, the ignored iGPU, the plan and the ledger.
     if checkpoint().is_none()
@@ -715,56 +444,34 @@ fn the_b70host_profile_admits_on_the_probed_b70host() {
     // The admission runs the start rules that need no card: the plans, the ledger and the residency (spec 3.3a).
     let profile = b70host_profile();
     let admitted = admit(&profile, &registry, &inventory, &mut Ledger::new()).expect("b70host admits");
-    assert_eq!(admitted.engines.len(), 12);
+    assert_eq!(admitted.engines.len(), profile.engines.len());
     check_served_names(&profile, &admitted.engines);
-    // Both LFM3 models are resident on card 0 at the start (milestone 24): their terms fit the card together. A term
-    // names a group index (spec 2.4), so the sum reads only the two engines of card 0, not `lfm3-1` of card 1.
-    let on_card_0: u64 = admitted.engines[9..11]
-        .iter()
-        .flat_map(|engine| engine.limits.memory.mandatory.iter())
-        .filter(|term| term.tier == Tier::Device(0))
-        .map(|term| term.bytes)
-        .sum();
-    println!("the two LFM3 models take {on_card_0} bytes of card 0");
-    // `lfm3-1` holds four long slots, and it fits card 1 beside the pinned embedding engine.
-    let on_card_1: u64 = [&admitted.engines[7], &admitted.engines[11]]
-        .iter()
-        .flat_map(|engine| engine.limits.memory.mandatory.iter())
-        .filter(|term| term.tier == Tier::Device(0))
-        .map(|term| term.bytes)
-        .sum();
-    println!("lfm3-1 and the embedding engine take {on_card_1} bytes of card 1");
-    assert!(on_card_1 < 32 << 30, "{on_card_1}");
-    assert!(on_card_0 < 32 << 30, "{on_card_0}");
-    for engine in admitted.engines[2..7].iter().chain(&admitted.engines[8..9]) {
-        assert!(engine.limits.capabilities.contains(&nagaya_abi::Capability::Image));
+    // What the engines that load at the start take of each device. A term names a place in the device list of its
+    // engine (spec 2.4). The test reads no engine name and no count, so a new layout needs no change here.
+    let mut at_start: std::collections::BTreeMap<u32, u64> = std::collections::BTreeMap::new();
+    for (placement, engine) in profile.engines.iter().zip(&admitted.engines) {
+        if placement.residency != Residency::Resident {
+            continue;
+        }
+        for term in &engine.limits.memory.mandatory {
+            if let Tier::Device(place) = term.tier {
+                *at_start.entry(placement.devices[place as usize]).or_default() += term.bytes;
+            }
+        }
     }
-    assert!(
-        admitted.engines[7]
-            .limits
-            .capabilities
-            .contains(&nagaya_abi::Capability::Embedding)
-    );
-    // The resident engines take memory at the start: gemma on both cards, and the embedding engine beside it on card 1.
-    let unassigned = admitted.admission.unassigned.clone();
-    println!("unassigned at the start: {unassigned:?}");
-    assert!(
-        admitted.engines[1]
-            .limits
-            .capabilities
-            .contains(&nagaya_abi::Capability::Speech)
-    );
-    let limits = &admitted.engines[0].limits;
-    for tier in [Tier::Device(0), Tier::Device(1), Tier::Host] {
-        let bytes: u64 = limits
-            .memory
-            .mandatory
+    for (device, bytes) in &at_start {
+        let budget = profile
+            .budgets
             .iter()
-            .filter(|term| term.tier == tier)
-            .map(|term| term.bytes)
-            .sum();
-        println!("{tier:?}: {bytes} bytes of mandatory terms");
+            .find(|budget| budget.tiers.iter().any(|tier| tier.0 == Tier::Device(*device)))
+            .unwrap_or_else(|| panic!("device {device} has a budget"));
+        println!(
+            "device {device}: {bytes} bytes at the start, of a budget of {}",
+            budget.bytes
+        );
+        assert!(*bytes <= budget.bytes, "device {device}: {bytes} bytes at the start");
     }
+    println!("unassigned at the start: {:?}", admitted.admission.unassigned);
 }
 
 /// Check the served names of the start (spec 2.3): each LFM3 engine serves its engine name, both in the profile check
@@ -811,9 +518,6 @@ fn check_served_names(profile: &PlacementProfile, admitted: &[nagaya::admission:
     sorted.sort_unstable();
     sorted.dedup();
     assert_eq!(sorted.len(), names.len(), "two engines serve one name: {names:?}");
-    for name in ["lfm3-omni", "lfm3", "lfm3-1"] {
-        assert!(names.iter().any(|served| served == name), "{name} is served");
-    }
 }
 
 #[test]
@@ -917,38 +621,4 @@ fn the_address_wait_passes_a_present_address_and_fails_an_absent_one() {
         message.contains("192.0.2.1"),
         "the message names the address: {message}"
     );
-}
-
-/// Amy, 2026-11-10 (milestone 29): a second `LFM3-1.7B` on card 1, so a swarm runs on both cards. It is its own
-/// served model, and it reads the snapshot folder of `lfm3`. It is resident, because the process refuses a text model
-/// on demand with a `family` table (`admission.rs`): the start of 12:49 on 2026-11-10 failed with exit 3.
-#[test]
-#[ignore = "it reads the two-card profile of b70host (4c02b39); rewrite it or remove it (milestone 31 step 4)"]
-fn the_b70host_profile_names_lfm3_1_resident_on_card_one() {
-    let profile = b70host_profile();
-    let engine = profile.engines.last().unwrap();
-    assert_eq!(
-        (engine.name.as_str(), engine.kind.as_str()),
-        ("lfm3-1", nagaya::lfm3::KIND)
-    );
-    assert_eq!(engine.devices, vec![1]);
-    assert_eq!(
-        engine.residency,
-        Residency::Resident,
-        "a text model on demand is not built"
-    );
-    assert!(!engine.pinned);
-    let lfm3 = profile.engines.iter().find(|e| e.name == "lfm3").unwrap();
-    assert_eq!(
-        engine.config.get("model_dir"),
-        lfm3.config.get("model_dir"),
-        "the same weights as lfm3"
-    );
-    // Four slots of the longest size, and no short slot: `lfm3` on card 0 holds the short contexts (engine-abi
-    // "Slot sizes").
-    let slots = nagaya::lfm3::config(&engine.config).map(|config| config.slots);
-    if let Ok(slots) = slots {
-        assert_eq!(slots, vec![262_144; 4]);
-    }
-    assert_eq!(engine.family, lfm3.family);
 }

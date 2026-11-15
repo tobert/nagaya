@@ -3,10 +3,10 @@
 # `crates/nagaya/src/profile.rs`.
 #
 # One card serves, and one card is free. Decided 2026-11-15: card 1 (0000:08:00.0, device 1) holds an image model, the
-# embedding model and LFM3-Omni, each loaded at the start. No engine names card 0 (0000:03:00.0, device 0), so the
-# nagaya gives it no budget, no thread and no work (spec 2.1), and a card test can run on it while the unit is
-# active. Device 2 is the ignored iGPU. The profile of two cards, with Gemma 4, the other image models, the speech
-# engine and two text models of LFM3, is the file of `4c02b39` in the history.
+# embedding model and LFM3-Omni, each loaded at the start. Card 0 (0000:03:00.0, device 0) holds no engine at the
+# start, so it runs no work, and a card test can run on it while the unit is active. Gemma 4 is on demand on both
+# cards: while it is loaded, card 0 is not free. Device 2 is the ignored iGPU. The profile of two cards, with the
+# other image models, the speech engine and two text models of LFM3, is the file of `4c02b39` in the history.
 
 # AutismMix, a Pony merge of SDXL, as a single file from Civitai. The SDXL engine reads Stability's tensor names
 # (docs/spec.md 11.9, the single file), and its CLIP tokenizer comes from `SDXL_MODEL_DIR` of the unit. It plans
@@ -48,6 +48,23 @@ slots = 4
 
 [engines.family]
 model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-Omni-2B/snapshots/21d75123f86c1f7ffb4bef1ea202710c4e7ebe67"
+
+# Gemma 4 on the two cards (docs/engine-abi.md "How mkviolet maps"): stage 0 on device 0, and stage 1 on device 1.
+# It is on demand, and it loads only through the load routes (spec 3.3b). It does not fit beside the image model and
+# LFM3-Omni on card 1, so its load names both in `unload`:
+# `POST /nagaya/v1/engines/gemma/load` with `{"unload": ["autismmix-1", "lfm3-omni"]}`. A load of each of the two
+# names `gemma` in `unload` again. The checkpoint folder comes from the unit's environment (`GEMMA4_MODEL_DIR`).
+[[engines]]
+name = "gemma"
+kind = "mk-gemma4-bmg"
+devices = [0, 1]
+share = 1
+residency = "on_demand"
+
+# One slot of 4,096 positions and one of 65,536. The block is 512 tokens, the default of the engine.
+[engines.config]
+slots = [4096, 65536]
+max_block = 512
 
 # One budget for each card's device memory, and one for host memory (spec 4.1). Each B70 has 32 GiB of GDDR6
 # (BAR 2 of `resource`, spec 2.1). The budget of a card is all of it: the device has no safety floor.
