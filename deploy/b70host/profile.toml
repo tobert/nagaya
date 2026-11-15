@@ -73,10 +73,12 @@ model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-1.7B/sna
 jlens = "/home/atobey/.local/share/nagaya/lens/lfm3.jlens.safetensors"
 
 # Gemma 4 on the two cards (docs/engine-abi.md "How mkviolet maps"): stage 0 on device 0, and stage 1 on device 1.
-# It is on demand, and it loads only through the load routes (spec 3.3b). It does not fit beside the image model and
-# LFM3-Omni on card 1, so its load names both in `unload`:
-# `POST /nagaya/v1/engines/gemma/load` with `{"unload": ["autismmix-1", "lfm3-omni"]}`. A load of each of the two
-# names `gemma` in `unload` again. A refusal names each other engine that is in the way. The checkpoint folder comes from the unit's environment (`GEMMA4_MODEL_DIR`).
+# It is on demand, and it loads only through the load routes (spec 3.3b). It does not fit beside the other engines
+# that are not pinned, so its load names them in `unload`:
+# `POST /nagaya/v1/engines/gemma/load` with `{"unload": ["autismmix-1", "lfm3-omni", "lfm3"]}`. The way back is a
+# load of `lfm3` with `{"unload": ["gemma"]}`, then a load of each of the other two. A load that does not fit is
+# refused, and the refusal names each engine in the way. A swap waits for the jobs that run on its engines. The
+# checkpoint folder comes from the unit's environment (`GEMMA4_MODEL_DIR`).
 [[engines]]
 name = "gemma"
 kind = "mk-gemma4-bmg"
