@@ -143,16 +143,11 @@ fn start_pinned(directory: &std::path::Path, pinned: bool) -> (Process, Log) {
     start_with(directory, pinned, &Arc::default())
 }
 
-fn start_with(directory: &std::path::Path, pinned: bool, refuse: &Arc<AtomicBool>) -> (Process, Log) {
-    let log: Log = Arc::default();
-    let mut registry = Registry::new();
-    registry.register(
-        "counted",
-        Box::new(CountedFactory(Arc::clone(&log), Arc::clone(refuse))),
-    );
+/// The profile of the fixture: a resident engine `chat`, pinned or not, and an engine `voice` on demand.
+fn profile(pinned: bool) -> PlacementProfile {
     let mut chat = engine("chat", Residency::Resident);
     chat.pinned = pinned;
-    let profile = PlacementProfile {
+    PlacementProfile {
         engines: vec![chat, engine("voice", Residency::OnDemand)],
         budgets: vec![
             BudgetSpec {
@@ -170,7 +165,17 @@ fn start_with(directory: &std::path::Path, pinned: bool, refuse: &Arc<AtomicBool
             interval_copies: 0,
             objects: None,
         }),
-    };
+    }
+}
+
+fn start_with(directory: &std::path::Path, pinned: bool, refuse: &Arc<AtomicBool>) -> (Process, Log) {
+    let log: Log = Arc::default();
+    let mut registry = Registry::new();
+    registry.register(
+        "counted",
+        Box::new(CountedFactory(Arc::clone(&log), Arc::clone(refuse))),
+    );
+    let profile = profile(pinned);
     let inventory = Inventory {
         devices: vec![Device {
             id: 0,
@@ -470,4 +475,85 @@ fn a_get_of_a_load_route_is_a_404() {
     let council = council(&process);
     let (status, _) = send(&council, "GET", "/nagaya/v1/engines/voice/load");
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// A council with the load ports of `process`, and with a main loop that answers the active profile.
+fn council_with_profile(process: &Process, profile: PlacementProfile) -> Arc<Council> {
+    let (calls, asked) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        while let Ok(call) = asked.recv() {
+            if let nagaya::reprofile::ProfileCall::Get(reply) = call {
+                let _ = reply.send(profile.clone());
+            }
+        }
+    });
+    let council = Council::new(Vec::new(), None).unwrap();
+    Arc::new(council.with_loads(process.ports()).with_profile(calls))
+}
+
+/// The routes of a device (spec 3.3b, "The release of a device"). A release is a 202 that names the engines that
+/// unload. Then a load of an engine of the device is a 409, and a reclaim is a 202 that names the engines that load.
+///
+/// Falsified by a route that does not hold the device: the load of `voice` is a 202.
+#[test]
+fn a_release_is_a_202_then_a_load_is_a_409_and_a_reclaim_is_a_202() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, _log) = start(directory.path());
+    let council = council_with_profile(&process, profile(false));
+    let (status, body) = post(&council, "/nagaya/v1/devices/0/release");
+    assert_eq!(
+        (status, &body),
+        (StatusCode::ACCEPTED, &json!({"device": 0, "unload": ["chat"]}))
+    );
+    swapped(&process);
+    let (status, body) = post(&council, "/nagaya/v1/engines/voice/load");
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["param"], "name");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("device 0") && message.contains("/nagaya/v1/devices/0/reclaim"),
+        "{message}"
+    );
+    let (status, body) = post(&council, "/nagaya/v1/devices/0/release");
+    assert_eq!(
+        (status, &body),
+        (StatusCode::OK, &json!({"device": 0, "status": "released"}))
+    );
+    let (status, body) = post(&council, "/nagaya/v1/devices/0/reclaim");
+    assert_eq!(
+        (status, &body),
+        (StatusCode::ACCEPTED, &json!({"device": 0, "load": ["chat"]}))
+    );
+    swapped(&process);
+    let (status, body) = post(&council, "/nagaya/v1/devices/0/reclaim");
+    assert_eq!(
+        (status, &body),
+        (StatusCode::OK, &json!({"device": 0, "status": "in use"}))
+    );
+}
+
+/// A release of a device with a loaded pinned engine is a 409 that names the engine, and a device that no engine
+/// names is a 404 that names `id`.
+#[test]
+fn a_release_of_a_pinned_device_is_a_409_and_an_unknown_device_is_a_404() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start_pinned(directory.path(), true);
+    let council = council_with_profile(&process, profile(true));
+    let (status, body) = post(&council, "/nagaya/v1/devices/0/release");
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["param"], "name");
+    assert!(
+        body["error"]["message"].as_str().unwrap().contains("`chat` is pinned"),
+        "{body}"
+    );
+    assert_eq!(log_of(&log), ["open:chat"]);
+    for path in [
+        "/nagaya/v1/devices/7/release",
+        "/nagaya/v1/devices/7/reclaim",
+        "/nagaya/v1/devices/x/release",
+    ] {
+        let (status, body) = post(&council, path);
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
+        assert_eq!(body["error"]["param"], "id", "{path}");
+    }
 }

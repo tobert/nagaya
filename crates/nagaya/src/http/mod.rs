@@ -6,6 +6,7 @@
 
 mod cluster;
 mod compose;
+mod devices;
 pub mod embeddings;
 mod errors;
 mod extensions;

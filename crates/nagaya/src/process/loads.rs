@@ -99,6 +99,16 @@ pub enum LoadReply {
     Already(EngineState),
 }
 
+/// The answer to a release or a reclaim of a device (spec 3.3b, "The release of a device").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeviceReply {
+    /// The groups planned the swaps: the engines that unload for a release, or that load for a reclaim, in the
+    /// order of the profile.
+    Started(Vec<String>),
+    /// No swap is necessary. The device has the state that the call asks for.
+    Already,
+}
+
 /// Why a load or an unload did not start (spec 3.3b). Nothing changed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LoadError {
@@ -123,6 +133,16 @@ pub enum LoadError {
         /// The pinned engines that stay loaded.
         pinned: Vec<String>,
     },
+    /// The engine names a released device, which takes no load until a reclaim (spec 3.3b, "The release of a
+    /// device").
+    Released {
+        /// The engine that does not load.
+        engine: String,
+        /// The released device.
+        device: nagaya_abi::DeviceId,
+    },
+    /// No engine of the profile names the device, so it has nothing to release (spec 3.3b).
+    NoDevice(nagaya_abi::DeviceId),
     /// The process is stopping and takes no new work (spec 10.3 step 1).
     Stopping,
     /// The group thread stopped.
@@ -145,6 +165,15 @@ impl std::fmt::Display for LoadError {
                 "engine `{name}` has no `close`, so a swap cannot unload it; change the profile, which restarts"
             ),
             LoadError::BadUnload(why) => write!(formatter, "{why}; name other loaded engines of the same group"),
+            LoadError::Released { engine, device } => write!(
+                formatter,
+                "engine `{engine}` names device {device}, which is released; reclaim the device first with \
+                 POST /nagaya/v1/devices/{device}/reclaim"
+            ),
+            LoadError::NoDevice(device) => write!(
+                formatter,
+                "no engine of the profile names device {device}; the profile names the devices of each engine"
+            ),
             LoadError::Busy(why) => write!(formatter, "nothing changed: {why}; send the load again when it ends"),
             LoadError::InTheWay {
                 engine,

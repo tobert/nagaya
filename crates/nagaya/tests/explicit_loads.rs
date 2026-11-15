@@ -9,7 +9,7 @@ use nagaya::admission::{Factory, GroupDevice, OpenError, PlanError, Registry};
 use nagaya::inventory::{Device, Inventory};
 use nagaya::jobs::{JobBody, JobSpec, Ran};
 use nagaya::notify::EngineState;
-use nagaya::process::{Event, LoadError, LoadReply, Process, Start};
+use nagaya::process::{DeviceReply, Event, LoadError, LoadReply, Process, Start};
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, Residency, StoreSpec, TierSpec};
 use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{
@@ -127,14 +127,16 @@ fn start(directory: &std::path::Path) -> (Process, Log) {
 
 /// As [`start`], with weights of `voice_bytes` for `voice`.
 fn start_sized(directory: &std::path::Path, voice_bytes: i64) -> (Process, Log) {
-    let log: Log = Arc::default();
-    let mut registry = Registry::new();
-    registry.register("counted", Box::new(CountedFactory(Arc::clone(&log))));
+    start_profile(directory, profile_sized(voice_bytes))
+}
+
+/// The profile of [`start_sized`].
+fn profile_sized(voice_bytes: i64) -> PlacementProfile {
     let mut voice = engine("voice", Residency::OnDemand);
     voice
         .config
         .insert("bytes".to_owned(), toml::Value::Integer(voice_bytes));
-    let profile = PlacementProfile {
+    PlacementProfile {
         engines: vec![engine("chat", Residency::Resident), voice],
         budgets: vec![
             BudgetSpec {
@@ -152,7 +154,14 @@ fn start_sized(directory: &std::path::Path, voice_bytes: i64) -> (Process, Log) 
             interval_copies: 0,
             objects: None,
         }),
-    };
+    }
+}
+
+/// Start a process of `profile` on one device, and wait for its opens.
+fn start_profile(directory: &std::path::Path, profile: PlacementProfile) -> (Process, Log) {
+    let log: Log = Arc::default();
+    let mut registry = Registry::new();
+    registry.register("counted", Box::new(CountedFactory(Arc::clone(&log))));
     let inventory = Inventory {
         devices: vec![Device {
             id: 0,
@@ -545,4 +554,103 @@ fn a_load_during_a_planned_swap_waits_for_that_swap() {
     );
     assert_eq!(swapped(&process), (names(&["chat"]), names(&["voice"])));
     assert_eq!(swapped(&process), (names(&["voice"]), Vec::new()));
+}
+
+/// A release unloads each loaded engine of the device, and the device takes no load until a reclaim (spec 3.3b, "The
+/// release of a device"). A reclaim loads the resident engines, and it loads no engine on demand.
+///
+/// Falsified by a release that keeps no mark: the load of `voice` starts. Falsified by a reclaim that loads each
+/// engine of the device: `voice` loads too.
+#[test]
+fn a_release_unloads_the_engines_of_a_device_and_a_reclaim_loads_the_resident_ones() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, log) = start_sized(directory.path(), 100);
+    let profile = profile_sized(100);
+    assert_eq!(
+        process.release_device(0, &profile),
+        Ok(DeviceReply::Started(names(&["chat"])))
+    );
+    assert_eq!(swapped(&process), (names(&["chat"]), Vec::new()));
+    let ports = process.ports();
+    assert_eq!(ports.engine_state("chat"), Some(EngineState::Unloaded));
+    for name in ["voice", "chat"] {
+        assert_eq!(
+            process.load(name),
+            Err(LoadError::Released {
+                engine: name.to_owned(),
+                device: 0
+            }),
+            "{name}"
+        );
+    }
+    // A second release has nothing to unload.
+    assert_eq!(process.release_device(0, &profile), Ok(DeviceReply::Already));
+    assert_eq!(
+        process.reclaim_device(0, &profile),
+        Ok(DeviceReply::Started(names(&["chat"])))
+    );
+    assert_eq!(swapped(&process), (Vec::new(), names(&["chat"])));
+    assert_eq!(ports.engine_state("chat"), Some(EngineState::Ready));
+    assert_eq!(ports.engine_state("voice"), Some(EngineState::Unloaded));
+    assert_eq!(log_of(&log), ["open:chat", "close:chat", "open:chat"]);
+    // The device takes a load again, and a second reclaim changes nothing.
+    assert_eq!(process.reclaim_device(0, &profile), Ok(DeviceReply::Already));
+    process.load("voice").unwrap();
+    assert_eq!(swapped(&process), (Vec::new(), names(&["voice"])));
+}
+
+/// A release unloads an engine on demand that is loaded, and a reclaim does not load it again.
+#[test]
+fn a_release_unloads_a_loaded_engine_on_demand_and_a_reclaim_leaves_it_unloaded() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, _log) = start_sized(directory.path(), 100);
+    let profile = profile_sized(100);
+    process.load("voice").unwrap();
+    swapped(&process);
+    assert_eq!(
+        process.release_device(0, &profile),
+        Ok(DeviceReply::Started(names(&["chat", "voice"])))
+    );
+    swapped(&process);
+    swapped(&process);
+    assert_eq!(
+        process.reclaim_device(0, &profile),
+        Ok(DeviceReply::Started(names(&["chat"])))
+    );
+    swapped(&process);
+    assert_eq!(process.ports().engine_state("voice"), Some(EngineState::Unloaded));
+}
+
+/// A pinned engine leaves only by a profile change, so a release refuses its device, and nothing changes.
+///
+/// Falsified by a release that unloads first: `voice` is unloaded when the refusal comes.
+#[test]
+fn a_release_refuses_a_device_with_a_loaded_pinned_engine_and_changes_nothing() {
+    let directory = tempfile::tempdir().unwrap();
+    // The pinned engine is the last of the profile, so a release that unloads in order meets `voice` first.
+    let mut profile = profile_sized(100);
+    profile.engines.swap(0, 1);
+    profile.engines[1].pinned = true;
+    let (process, _log) = start_profile(directory.path(), profile.clone());
+    process.load("voice").unwrap();
+    swapped(&process);
+    assert_eq!(
+        process.release_device(0, &profile),
+        Err(LoadError::Pinned("chat".to_owned()))
+    );
+    let ports = process.ports();
+    assert_eq!(ports.engine_state("chat"), Some(EngineState::Ready));
+    assert_eq!(ports.engine_state("voice"), Some(EngineState::Ready));
+    // The device is not released: a load of a loaded engine is a 200 as before.
+    assert!(matches!(process.load("voice"), Ok(LoadReply::Already(_))));
+}
+
+/// A device that no engine of the profile names has nothing to release.
+#[test]
+fn a_release_or_a_reclaim_of_a_device_that_no_engine_names_is_refused() {
+    let directory = tempfile::tempdir().unwrap();
+    let (process, _log) = start(directory.path());
+    let profile = profile_sized(600);
+    assert_eq!(process.release_device(7, &profile), Err(LoadError::NoDevice(7)));
+    assert_eq!(process.reclaim_device(7, &profile), Err(LoadError::NoDevice(7)));
 }

@@ -32,7 +32,7 @@ use crate::profile::{EnginePlacement, PlacementProfile, Residency};
 use crate::signal::SignalFlag;
 use in_place::{Exit, Member, Unloaded};
 use loads::Ask;
-pub use loads::{EngineStates, LoadError, LoadReply};
+pub use loads::{DeviceReply, EngineStates, LoadError, LoadReply};
 
 mod handoff;
 mod in_place;
@@ -1225,6 +1225,7 @@ impl Start {
             accepting,
             failure: Arc::new(Mutex::new(None)),
             states,
+            released: Released::default(),
             stopped: false,
         })
     }
@@ -1909,6 +1910,8 @@ pub struct Ports {
     failure: Arc<Mutex<Option<String>>>,
     /// The state of each engine (spec 3.3b).
     states: EngineStates,
+    /// The released devices, each with the engines that it holds (spec 3.3b, "The release of a device").
+    released: Released,
 }
 
 impl Ports {
@@ -2042,7 +2045,106 @@ impl Ports {
 
     /// Load an engine after the engines of `unload` unload, as [`Process::load_with`] does.
     pub fn load_with(&self, engine: &str, unload: &[String]) -> Result<LoadReply, LoadError> {
+        let released = self.released.lock().expect("the released devices are poisoned");
+        let held = released
+            .iter()
+            .find(|(_, names)| names.iter().any(|name| name == engine));
+        if let Some((&device, _)) = held {
+            return Err(LoadError::Released {
+                engine: engine.to_owned(),
+                device,
+            });
+        }
+        drop(released);
         self.ask(engine, loads::Asking::Load(unload.to_vec()))
+    }
+
+    /// Release a device (spec 3.3b, "The release of a device"): unload each loaded engine of `profile` that names it,
+    /// and refuse each load of such an engine until [`Ports::reclaim_device`]. `profile` is the active profile.
+    ///
+    /// A device with a loaded pinned engine is refused, and nothing changes. An unload that a group refuses ends the
+    /// release: the device is not released, and the engines before it stay unloaded.
+    pub fn release_device(
+        &self,
+        device: nagaya_abi::DeviceId,
+        profile: &PlacementProfile,
+    ) -> Result<DeviceReply, LoadError> {
+        let on_device: Vec<&EnginePlacement> = profile
+            .engines
+            .iter()
+            .filter(|entry| entry.devices.contains(&device))
+            .collect();
+        if on_device.is_empty() {
+            return Err(LoadError::NoDevice(device));
+        }
+        let loaded: Vec<&EnginePlacement> = on_device
+            .iter()
+            .copied()
+            .filter(|entry| !matches!(self.states.get(&entry.name), None | Some(EngineState::Unloaded)))
+            .collect();
+        if let Some(pinned) = loaded.iter().find(|entry| entry.pinned) {
+            return Err(LoadError::Pinned(pinned.name.clone()));
+        }
+        let names: Vec<String> = on_device.iter().map(|entry| entry.name.clone()).collect();
+        self.released
+            .lock()
+            .expect("the released devices are poisoned")
+            .insert(device, names);
+        let mut unloaded = Vec::new();
+        for entry in &loaded {
+            match self.unload(&entry.name) {
+                Ok(LoadReply::Started { .. }) => unloaded.push(entry.name.clone()),
+                Ok(LoadReply::Already(_)) => {}
+                Err(error) => {
+                    self.released
+                        .lock()
+                        .expect("the released devices are poisoned")
+                        .remove(&device);
+                    return Err(error);
+                }
+            }
+        }
+        Ok(if unloaded.is_empty() {
+            DeviceReply::Already
+        } else {
+            DeviceReply::Started(unloaded)
+        })
+    }
+
+    /// End the release of a device, and load each resident engine of `profile` that names it and that is not loaded
+    /// (spec 3.3b). An engine on demand stays unloaded. A device that is not released changes nothing.
+    pub fn reclaim_device(
+        &self,
+        device: nagaya_abi::DeviceId,
+        profile: &PlacementProfile,
+    ) -> Result<DeviceReply, LoadError> {
+        if !profile.engines.iter().any(|entry| entry.devices.contains(&device)) {
+            return Err(LoadError::NoDevice(device));
+        }
+        let was_released = self
+            .released
+            .lock()
+            .expect("the released devices are poisoned")
+            .remove(&device)
+            .is_some();
+        if !was_released {
+            return Ok(DeviceReply::Already);
+        }
+        let mut loaded = Vec::new();
+        for entry in &profile.engines {
+            let resident = entry.residency == crate::profile::Residency::Resident;
+            if !entry.devices.contains(&device) || !resident {
+                continue;
+            }
+            if let LoadReply::Started { .. } = self.load(&entry.name)? {
+                loaded.push(entry.name.clone());
+            }
+        }
+        Ok(if loaded.is_empty() {
+            DeviceReply::Already
+        } else {
+            DeviceReply::Started(loaded)
+        })
     }
 
     /// Unload an engine, as [`Process::unload`] does.
@@ -2163,8 +2265,13 @@ pub struct Process {
     failure: Arc<Mutex<Option<String>>>,
     /// The state of each engine (spec 3.3b).
     states: EngineStates,
+    /// The released devices. The process keeps them in memory only, so a start releases none (spec 3.3b).
+    released: Released,
     stopped: bool,
 }
+
+/// The released devices, each with the names of the engines that the profile named on it at the release.
+type Released = Arc<Mutex<BTreeMap<nagaya_abi::DeviceId, Vec<String>>>>;
 
 impl Process {
     /// Send an admission request to the ledger thread and wait for its answer.
@@ -2210,7 +2317,26 @@ impl Process {
             accepting: Arc::clone(&self.accepting),
             failure: Arc::clone(&self.failure),
             states: self.states.clone(),
+            released: Arc::clone(&self.released),
         }
+    }
+
+    /// Release a device, as [`Ports::release_device`] does.
+    pub fn release_device(
+        &self,
+        device: nagaya_abi::DeviceId,
+        profile: &PlacementProfile,
+    ) -> Result<DeviceReply, LoadError> {
+        self.ports().release_device(device, profile)
+    }
+
+    /// Reclaim a device, as [`Ports::reclaim_device`] does.
+    pub fn reclaim_device(
+        &self,
+        device: nagaya_abi::DeviceId,
+        profile: &PlacementProfile,
+    ) -> Result<DeviceReply, LoadError> {
+        self.ports().reclaim_device(device, profile)
     }
 
     /// Load the engine with this name by a swap on its group thread (spec 3.3b). It waits until the group plans the

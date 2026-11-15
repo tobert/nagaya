@@ -259,7 +259,7 @@ async fn ask(council: Arc<Council>, id: RequestId, name: String, load: Option<Ve
 }
 
 /// The failure of a load or an unload that did not start (spec 3.3b).
-fn refusal(error: &LoadError) -> Failure {
+pub(super) fn refusal(error: &LoadError) -> Failure {
     let message = format!("nothing changed: {error}");
     let named = |status, kind, param: &str| {
         let mut failure = Failure::new(status, kind, message.clone());
@@ -268,6 +268,9 @@ fn refusal(error: &LoadError) -> Failure {
     };
     match error {
         LoadError::Unknown(_) => named(StatusCode::NOT_FOUND, ErrorType::NotFound, "name"),
+        LoadError::NoDevice(_) => named(StatusCode::NOT_FOUND, ErrorType::NotFound, "id"),
+        // A released device takes no load until a reclaim (spec 3.3b, "The release of a device").
+        LoadError::Released { .. } => named(StatusCode::CONFLICT, ErrorType::InvalidRequest, "name"),
         // gogi has no type for a conflict, so the 409 is an invalid request (spec 3.3b).
         LoadError::Pinned(_) | LoadError::NoClose(_) | LoadError::InTheWay { .. } | LoadError::Busy(_) => {
             named(StatusCode::CONFLICT, ErrorType::InvalidRequest, "name")

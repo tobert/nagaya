@@ -52,6 +52,7 @@ pub fn routes() -> Router<Arc<Council>> {
         .merge(super::extensions::routes())
         .merge(super::objects::routes())
         .merge(super::loads::routes())
+        .merge(super::devices::routes())
         .merge(super::profile::routes())
         .merge(super::cluster::routes())
         .merge(super::lab::routes())
