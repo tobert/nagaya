@@ -117,7 +117,8 @@ impl Loaded {
         })?;
         // The family library hashes the file in the same way (spec 12.3).
         let tokenizer_hash = nagaya_text_gemma4::tokenizer::sha256_of(&bytes);
-        let cluster = L0Cluster::init(MEGAKERNEL_BIN, MEGAKERNEL_ENTRY);
+        // Only the two cards of the group: a card of another engine, or of a card test, gets no context from this load.
+        let cluster = L0Cluster::init_at(MEGAKERNEL_BIN, MEGAKERNEL_ENTRY, pci).map_err(other)?;
         let found = cluster.cards_at(pci).map_err(other)?;
         let cards = [found[0], found[1]];
         if let Some(stored) = &stored {

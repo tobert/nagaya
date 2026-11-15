@@ -816,17 +816,6 @@ unsafe impl Send for L0Cluster {}
 unsafe impl Sync for L0Cluster {}
 
 impl L0Cluster {
-    /// Open every card of the first driver.
-    pub fn init(kernel_bin: &[u8], kernel_name: &str) -> Self {
-        let driver = driver();
-        let cards = devices(driver)
-            .into_iter()
-            .enumerate()
-            .map(|(idx, (dev, pci_address))| open_card(driver, idx, dev, pci_address, kernel_bin, kernel_name))
-            .collect();
-        Self { driver, cards }
-    }
-
     /// Open the one card of a card test: the first card of `NAGAYA_TEST_CARDS` (`test_cards`). It opens no other card,
     /// so the test runs beside a nagaya that serves from the other cards.
     pub fn init_test(kernel_bin: &[u8], kernel_name: &str) -> Self {

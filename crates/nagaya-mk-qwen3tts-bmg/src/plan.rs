@@ -67,7 +67,7 @@ pub fn weights_bytes(config: &Config) -> Result<u64, String> {
 /// The device bytes of the ring and of the cluster on the card.
 fn ring_bytes() -> u64 {
     let scoreboard = (MAX_TASKS_PER_CARD + 1) * 4;
-    // `L0Cluster::init` takes the wake buffer and the device copy of the ring.
+    // `L0Cluster::init_at` takes the wake buffer and the device copy of the ring.
     let cluster = 128 + MAX_TASKS_PER_CARD * 64;
     (SCRATCH_FLOATS * 4 + scoreboard + cluster) as u64
 }

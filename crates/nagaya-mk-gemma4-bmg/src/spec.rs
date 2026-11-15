@@ -254,7 +254,7 @@ pub fn limits(config: &Config, weights: [u64; 2]) -> Limits {
     limits
 }
 
-/// The device bytes that `L0Cluster::init` takes on each card: the wake buffer and the device copy of the ring.
+/// The device bytes that `L0Cluster::init_at` takes on each card: the wake buffer and the device copy of the ring.
 fn cluster_device_bytes() -> u64 {
     (128 + crate::protocol::MAX_TASKS_PER_CARD * 64) as u64
 }
