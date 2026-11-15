@@ -29,6 +29,9 @@ pub enum Ran {
     First(Vec<Kind>),
     /// The quantum failed. The job ends, and the body has told its caller why.
     Failed,
+    /// The body refused its job before it did work: no slot was free, and the body has told its caller `busy`. The
+    /// job ends as failed, and the log gets no failure line (spec 9.6, "A refused job is not a failed quantum").
+    Refused,
     /// The quantum ran, and the body cancels its job, for example because its client went away. The job ends as
     /// cancelled (spec 5.9).
     Cancelled,
@@ -360,6 +363,13 @@ impl GroupJobs {
                     .expect("a job of the joined quantum is running");
                 continue;
             }
+            if matches!(ran, Ran::Refused) {
+                self.scheduler
+                    .state_mut()
+                    .fail_running(id)
+                    .expect("a job of the joined quantum is running");
+                continue;
+            }
             self.apply(id, ran);
         }
         self.finished = Some((duration_ms, Completion::Done));
@@ -383,7 +393,7 @@ impl GroupJobs {
                     .expect("a job that ran a quantum is running");
                 Completion::Done
             }
-            Ran::Failed => Completion::Failed,
+            Ran::Failed | Ran::Refused => Completion::Failed,
             Ran::Cancelled => {
                 // The quantum ran to its end. A cancel of a running job takes effect when it completes (spec 5.9).
                 self.event(Event::Cancel {

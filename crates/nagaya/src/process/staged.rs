@@ -1495,7 +1495,7 @@ impl StagedJobs {
                     .expect("a job that ran a quantum is running");
                 Completion::Done
             }
-            Ran::Failed => Completion::Failed,
+            Ran::Failed | Ran::Refused => Completion::Failed,
             Ran::Cancelled => {
                 // The quantum ran to its end. The cancel takes effect when it completes (spec 5.9).
                 self.event(StageEvent::Cancel {

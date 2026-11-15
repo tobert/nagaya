@@ -1804,8 +1804,10 @@ impl<T: Then> JobBody for ContextBody<T> {
         match result {
             Ok(ran) => ran,
             Err(error) => {
+                // A job that found no free slot did no work: its caller tries again (spec 11.15).
+                let refused = matches!(error, ServiceError::Busy(_));
                 self.send(Err(error));
-                Ran::Failed
+                if refused { Ran::Refused } else { Ran::Failed }
             }
         }
     }

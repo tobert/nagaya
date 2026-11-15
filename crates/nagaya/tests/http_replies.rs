@@ -188,6 +188,23 @@ fn a_request_with_more_forks_than_slots_runs_its_forks_as_the_slots_come_free() 
     }
 }
 
+/// A fork that waits for a slot is a refused job, not a failed quantum (spec 9.6): the log holds no failure line.
+///
+/// Falsified by a context body that reports `Ran::Failed` for `busy`: the log holds a line for each fork that waited.
+#[test]
+fn a_fork_that_waits_for_a_slot_logs_no_failed_quantum() {
+    let lines = nagaya_telemetry::testing::log_lines(|| {
+        let f = slow(2, &ControlLog::default());
+        let council = council(&f);
+        let body = request(&context("Write a plan."), 3);
+        let (status, several) = generate(&council, &with(body, "forks", json!(4)));
+        assert_eq!(status, StatusCode::OK, "{several}");
+        assert_eq!(several["replies"].as_array().unwrap().len(), 4);
+    });
+    let failed: Vec<&String> = lines.iter().filter(|line| line.starts_with("quantum failed")).collect();
+    assert!(failed.is_empty(), "{failed:?}");
+}
+
 /// When no reply of a request gets a slot, the request is `busy`, as a plain generation is (spec 11.3c): the request
 /// has no reply of its own to wait for.
 ///

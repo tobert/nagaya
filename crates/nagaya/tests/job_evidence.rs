@@ -115,6 +115,15 @@ fn a_quantum_that_succeeds_logs_no_failure() {
     assert!(lines.is_empty(), "{lines:?}");
 }
 
+/// A job that finds no free slot is refused (spec 9.6, "A refused job is not a failed quantum"). The job ends, and the
+/// log holds no failure line.
+#[test]
+fn a_refused_job_ends_and_logs_no_failure() {
+    let root = tempfile::tempdir().unwrap();
+    let lines = failure_lines(root.path(), Kind::Copy, || Ran::Refused, true);
+    assert!(lines.is_empty(), "{lines:?}");
+}
+
 #[test]
 fn a_decode_quantum_reads_no_counters_and_a_failure_of_it_says_so() {
     let root = tempfile::tempdir().unwrap();
