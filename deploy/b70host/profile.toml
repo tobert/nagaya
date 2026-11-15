@@ -1,110 +1,31 @@
 # The placement profile of b70host (docs/spec.md 2.4). The nagaya reads the accepted profile from
 # `<store_dir>/profile.toml`, so docs/deploy.md says to copy this file there once. The loader is
-# `crates/nagaya/src/profile.rs`, and `crates/nagaya/tests/deploy.rs` reads this file.
+# `crates/nagaya/src/profile.rs`.
+#
+# One card serves, and one card is free. Decided 2026-11-15: card 1 (0000:08:00.0, device 1) holds an image model, the
+# embedding model and LFM3-Omni, each loaded at the start. No engine names card 0 (0000:03:00.0, device 0), so the
+# nagaya gives it no budget, no thread and no work (spec 2.1), and a card test can run on it while the unit is
+# active. Device 2 is the ignored iGPU. The profile of two cards, with Gemma 4, the other image models, the speech
+# engine and two text models of LFM3, is the file of `4c02b39` in the history.
 
-# The Gemma 4 engine on the two B70 cards (docs/engine-abi.md "How mkviolet maps"). Machine devices 0 and 1 are the
-# cards at 0000:03:00.0 and 0000:08:00.0; device 2 is the ignored iGPU (spec 2.1). Stage 0 runs on device 0, and
-# stage 1 on device 1. The checkpoint directory comes from the unit's environment (`GEMMA4_MODEL_DIR`), and not from
-# this table, as the shards of the Qwen3.8 engine do on gfx1151host.
-[[engines]]
-name = "gemma"
-kind = "mk-gemma4-bmg"
-devices = [0, 1]
-share = 1
-# Amy, 2026-11-06 (milestone 24): Gemma 4 goes on demand, and it loads only through the load routes (spec 3.3b). Its
-# load names the engines that it must unload.
-residency = "on_demand"
-
-# The slots that mkviolet serves (mkviolet `src/main.rs`: `MAX_SEQ`, `GEN_SEQ`): one of 4,096 positions and one of
-# 65,536. The block is mkviolet's `MAX_BLOCK`, 512 tokens, and the engine's default.
-[engines.config]
-slots = [4096, 65536]
-max_block = 512
-
-# The Qwen3-TTS VoiceDesign engine on card 1 (milestone 17, docs/spec.md 11.8). Amy, 2026-11-06 (milestone 24): card 1
-# holds the image engines, the embedding engine and speech, so the engine moved from card 0. It is on demand: a load route or a
-# profile `PUT` loads it, and only an unload removes it (spec 3.3a, "Explicit layout"). Its plan gives 5,645,096,644
-# bytes on its card: 4,321,971,520 of weights, 1,223,336,064 for two slots, and 99,789,060 of work. Card 1 has about
-# 2.3 GB beside gemma, so a load names gemma in `unload`, and a client loads gemma again after it. The
-# checkpoint comes from the unit's environment (`QWEN3TTS_MODEL_DIR`).
-[[engines]]
-name = "voice"
-kind = "qwen3tts-bmg"
-devices = [1]
-share = 1
-residency = "on_demand"
-
-# Two requests at once, each of at most 1,500 frames (120 s of audio) after a prompt of at most 512 positions. One
-# quantum makes at most 8 frames (640 ms of audio).
-[engines.config]
-slots = 2
-max_frames = 1500
-max_prompt = 512
-frames_per_quantum = 8
-
-# An SDXL base 1.0 engine on each card (milestone 18, docs/spec.md 11.9). Each one is its own served image model, with
-# the name of its engine. Each plans 21,018,307,972 bytes: 14,243,390,464 on its card for the weights and their BF16
-# planes, 6,707,675,524 on its card for the activations of 4 images of 1.5 MP, and 67,241,984 of host memory. Thus
-# neither one loads beside gemma, and a load names gemma in `unload`. The two load together, and the speech engine
-# fits beside sdxl-0. An engine stays loaded until a client unloads it (spec 3.3a, "Explicit layout"). The checkpoint
-# comes from the unit's environment (`SDXL_MODEL_DIR`), and `clip_skip` is 2, the default of the family.
-[[engines]]
-name = "sdxl-0"
-kind = "mk-sdxl-bmg"
-devices = [0]
-share = 1
-residency = "on_demand"
-
-[[engines]]
-name = "sdxl-1"
-kind = "mk-sdxl-bmg"
-devices = [1]
-share = 1
-residency = "on_demand"
-
-# Pony Diffusion V6 XL on card 0 and AutismMix (its Pony merge) on card 1, each a single file from Civitai (Amy,
-# 2026-10-28). The SDXL engine reads Stability's tensor names (docs/spec.md 11.9, the single file), and its CLIP
-# tokenizer still comes from `SDXL_MODEL_DIR`. Each plans the 21,018,307,972 bytes of SDXL base. Pony V6 asks for "clip
-# skip 2" on its Civitai page, the penultimate layer. `clip_skip` counts as A1111 does (docs/spec.md 11.9a), so 2 is
-# the default of the family, and the entries have no family table.
-[[engines]]
-name = "pony-0"
-kind = "mk-sdxl-bmg"
-devices = [0]
-share = 1
-residency = "on_demand"
-
-[engines.config]
-checkpoint = "/home/atobey/models/sdxl/ponyDiffusionV6XL_v6StartWithThisOne.safetensors"
-
+# AutismMix, a Pony merge of SDXL, as a single file from Civitai. The SDXL engine reads Stability's tensor names
+# (docs/spec.md 11.9, the single file), and its CLIP tokenizer comes from `SDXL_MODEL_DIR` of the unit. It plans
+# 21,018,307,972 bytes: 14,243,390,464 on its card for the weights and their BF16 planes, 6,707,675,524 on its card
+# for the activations of 4 images of 1.5 MP, and 67,241,984 of host memory. `clip_skip` is 2, the default of the
+# family (docs/spec.md 11.9a), so the entry has no family table. It is resident, so each start loads it.
 [[engines]]
 name = "autismmix-1"
 kind = "mk-sdxl-bmg"
 devices = [1]
 share = 1
-residency = "on_demand"
 
 [engines.config]
 checkpoint = "/home/atobey/models/sdxl/autismmixSDXL_autismmixPony.safetensors"
 
-# SDXL-Lightning 4-step on card 0, a single file of ByteDance's checkpoint in Stability's layout (Amy, 2026-10-29). It
-# takes `spacing` "trailing", the Euler samplers, and CFG 1.0 in its requests (docs/spec.md 11.9a). It shares card 0
-# with pony-0, and it has no family table: `clip_skip` 2 is the default of the family.
-[[engines]]
-name = "lightning-0"
-kind = "mk-sdxl-bmg"
-devices = [0]
-share = 1
-residency = "on_demand"
-
-[engines.config]
-checkpoint = "/home/atobey/models/sdxl/sdxl_lightning_4step.safetensors"
-
-# EmbeddingGemma 2 on card 1 (milestone 19, docs/spec.md 11.10), the served embedding model `embeddinggemma-2` for
-# the semantic search of kaijutsu. It is resident and pinned, so no load and no unload removes it (spec 3.3a,
-# "Explicit layout"). A swap of gemma moves it for a few seconds. It plans 542,005,248 bytes of weights and the work
-# of one input of 2048 tokens on card 1, and 67,241,984 bytes of host memory. Card 1 is the card with fewer image
-# engines (spec 11.10). The checkpoint comes from the unit's environment (`EMBEDDINGGEMMA2_MODEL_DIR`).
+# EmbeddingGemma 2 (docs/spec.md 11.10), the served embedding model `embeddinggemma-2` for the semantic search of a
+# client. It is resident and pinned, so no load and no unload removes it (spec 3.3a, "Explicit layout"). It plans
+# 542,005,248 bytes of weights and the work of one input of 2048 tokens on its card, and 67,241,984 bytes of host
+# memory. The checkpoint comes from the unit's environment (`EMBEDDINGGEMMA2_MODEL_DIR`).
 [[engines]]
 name = "embeddinggemma-2"
 kind = "mk-embeddinggemma2-bmg"
@@ -112,83 +33,24 @@ devices = [1]
 share = 1
 pinned = true
 
-# The SDXL inpainting UNet with 9 input channels on card 1 (milestone 20, docs/spec.md 11.9b), the served image model
-# `inpaint-0`. Its weights are diffusers' `stable-diffusion-xl-1.0-inpainting-0.1`, snapshot 115134f, with the VAE
-# that the folder ships (11.9, Amy 2026-11-02). It plans 14,243,419,392 bytes of weights and 6,711,607,684 of
-# activations on its card, and 67,241,984 of host memory. Thus it does not load beside gemma, and it is on demand.
-# The family reads the tokenizer from `SDXL_MODEL_DIR` in the unit, so the entry has no family table.
-[[engines]]
-name = "inpaint-0"
-kind = "mk-sdxl-bmg"
-devices = [1]
-share = 1
-residency = "on_demand"
-
-[engines.config]
-model_dir = "/home/atobey/.cache/huggingface/hub/models--diffusers--stable-diffusion-xl-1.0-inpainting-0.1/snapshots/115134f363124c53c7d878647567d04daf26e41e"
-
-# LFM3-Omni-2B and LFM3-1.7B, resident on card 0 (milestone 24, docs/spec.md 11.11; Amy, 2026-11-06). Each engine
-# name is its served name. One kind serves both, so each config names its snapshot folder. Each slot holds 32,768
-# positions. A load of an image engine on card 0 names these two in `unload`. The nagaya does not check a model
-# license: the user accepts it at the download (Amy, 2026-11-06).
+# LFM3-Omni-2B (docs/spec.md 11.11). The engine name is the served name. One kind serves both models of LFM3, so the
+# config names the snapshot folder. Four slots of 32,768 positions: the model card gives a context of 32K tokens.
+# The nagaya does not check a model license: the user accepts it at the download.
 [[engines]]
 name = "lfm3-omni"
 kind = "mk-lfm3-bmg"
-devices = [0]
-share = 1
-
-[engines.config]
-model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-Omni-2B/snapshots/21d75123f86c1f7ffb4bef1ea202710c4e7ebe67"
-slots = 8
-
-[engines.family]
-model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-Omni-2B/snapshots/21d75123f86c1f7ffb4bef1ea202710c4e7ebe67"
-
-[[engines]]
-name = "lfm3"
-kind = "mk-lfm3-bmg"
-devices = [0]
-share = 1
-
-[engines.config]
-model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-1.7B/snapshots/0dc4268b561499c648c7ba7c9466bf3d8d01517a"
-slots = 8
-
-[engines.family]
-model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-1.7B/snapshots/0dc4268b561499c648c7ba7c9466bf3d8d01517a"
-
-# The J-Lens of LFM3-1.7B (docs/lab.md, "The rules of the J-Lens"): `tools/lfm3_jlens_fit.py` fitted it on this CPU
-# over 100 prompts, from 2026-11-08 11:46 to 2026-11-09 04:31. The file is 193 MB, F16, outside the ledger.
-[engines.lab]
-jlens = "/home/atobey/.local/share/nagaya/lens/lfm3.jlens.safetensors"
-
-# A second LFM3-1.7B on card 1, so a swarm runs 16 contexts on both cards (milestone 29; Amy, 2026-11-10: "over time
-# I'm wondering if swarms could run on both cards"). It is its own served model, because a served name is the id of
-# one model in the cluster (milestone 23). It is resident: a text model on demand is not built (admission.rs, "a text
-# model on demand"), and its family table needs the snapshot folder. An SDXL engine plans 21 GB, so a load of an
-# image engine on card 1 names `lfm3-1` in `unload`.
-#
-# Four slots of 262,144 positions, the longest that the model takes (engine-abi "Slot sizes"). Decided 2026-11-15:
-# `lfm3` on card 0 keeps the eight short contexts, and `lfm3-1` holds the long ones. A slot takes 6,505,365,504 bytes
-# of `kv`. The longest block of 512 in such a slot takes 1,072 ms, and the engine declares 2,000 ms (`xe_feed`,
-# `docs/perf.md`, "The long slot"). Thus a swarm has 8 contexts on card 0 and 4 on card 1.
-[[engines]]
-name = "lfm3-1"
-kind = "mk-lfm3-bmg"
 devices = [1]
 share = 1
 
 [engines.config]
-model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-1.7B/snapshots/0dc4268b561499c648c7ba7c9466bf3d8d01517a"
-slots = [262144, 262144, 262144, 262144]
+model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-Omni-2B/snapshots/21d75123f86c1f7ffb4bef1ea202710c4e7ebe67"
+slots = 4
 
 [engines.family]
-model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-1.7B/snapshots/0dc4268b561499c648c7ba7c9466bf3d8d01517a"
+model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-Omni-2B/snapshots/21d75123f86c1f7ffb4bef1ea202710c4e7ebe67"
 
 # One budget for each card's device memory, and one for host memory (spec 4.1). Each B70 has 32 GiB of GDDR6
-# (BAR 2 of `resource`, spec 2.1). The budget of a card is all of it: the device has no safety floor. The plan of
-# this profile gives 29,964,945,932 bytes of mandatory terms on device 0 and 31,889,794,060 on device 1, and
-# 1,515,343,872 in host memory (`crates/nagaya/tests/deploy.rs`, 2026-10-21). Card 1 has about 2.3 GB left.
+# (BAR 2 of `resource`, spec 2.1). The budget of a card is all of it: the device has no safety floor.
 
 [[budgets]]
 tiers = ["device(0)"]

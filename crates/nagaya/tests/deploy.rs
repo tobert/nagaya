@@ -3,6 +3,10 @@
 //!
 //! The admission of the b70host profile plans from the Gemma 4 checkpoint. That test skips when `GEMMA4_MODEL_DIR`
 //! is not set, and fails then with `NAGAYA_REQUIRE_MODELS=1` (AGENTS "Tests that need a model file").
+//!
+//! Since 2026-11-15 the b70host profile serves from one card, and nine tests of the profile of two cards are
+//! ignored. A test must not depend on the layout of one machine (AGENTS, milestone 31 step 4). Rewrite each one to
+//! read a profile of its own, or remove it.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -275,6 +279,7 @@ fn the_b70host_config_binds_mkviolets_address_and_ignores_the_igpu() {
 }
 
 #[test]
+#[ignore = "it reads the two-card profile of b70host (4c02b39); rewrite it or remove it (milestone 31 step 4)"]
 fn the_b70host_profile_names_the_gemma4_engine_on_both_cards() {
     let profile = b70host_profile();
     assert_eq!(
@@ -456,6 +461,7 @@ fn checkpoint() -> Option<PathBuf> {
 }
 
 #[test]
+#[ignore = "it reads the two-card profile of b70host (4c02b39); rewrite it or remove it (milestone 31 step 4)"]
 fn the_b70host_profile_names_the_speech_engine_on_demand_on_card_one() {
     // Amy, 2026-10-24: the speech engine swaps in on demand, and the profile chooses its card (milestone 17). Amy,
     // 2026-11-06 (milestone 24): card 1 holds the image engines, the embedding engine and speech.
@@ -501,6 +507,7 @@ fn the_b70host_profile_names_the_speech_engine_on_demand_on_card_one() {
 }
 
 #[test]
+#[ignore = "it reads the two-card profile of b70host (4c02b39); rewrite it or remove it (milestone 31 step 4)"]
 fn the_b70host_profile_names_an_image_engine_on_demand_on_each_card() {
     // Amy, 2026-10-27: "one model per card", and each engine is its own served model (spec 11.9).
     let profile = b70host_profile();
@@ -525,6 +532,7 @@ fn the_b70host_profile_names_an_image_engine_on_demand_on_each_card() {
 }
 
 #[test]
+#[ignore = "it reads the two-card profile of b70host (4c02b39); rewrite it or remove it (milestone 31 step 4)"]
 fn the_b70host_profile_names_pony_on_card_zero_and_autismmix_on_card_one() {
     // Amy, 2026-10-28: Pony V6 and AutismMix from Civitai, beside SDXL base, one engine on each card. The profile
     // names the files; this test checks only their form.
@@ -582,6 +590,7 @@ fn named_checkpoints(profile: &PlacementProfile) -> bool {
 
 /// The embedding engine is resident and pinned on card 1 (spec 11.10, 3.3a "Explicit layout").
 #[test]
+#[ignore = "it reads the two-card profile of b70host (4c02b39); rewrite it or remove it (milestone 31 step 4)"]
 fn the_b70host_profile_names_the_pinned_embedding_engine_on_card_one() {
     let profile = b70host_profile();
     let engine = &profile.engines[7];
@@ -601,6 +610,7 @@ fn the_b70host_profile_names_the_pinned_embedding_engine_on_card_one() {
 /// The 9-channel inpainting UNet on card 1, on demand (milestone 20 step 7, spec 11.9b "The 9-channel UNet"). Its key
 /// `model_dir` names the inpainting folder, and its family reads the tokenizer from `SDXL_MODEL_DIR` in the unit.
 #[test]
+#[ignore = "it reads the two-card profile of b70host (4c02b39); rewrite it or remove it (milestone 31 step 4)"]
 fn the_b70host_profile_names_the_inpainting_engine_on_demand_on_card_one() {
     let profile = b70host_profile();
     let engine = &profile.engines[8];
@@ -627,6 +637,7 @@ fn the_b70host_profile_names_the_inpainting_engine_on_demand_on_card_one() {
 /// Amy, 2026-11-06 (milestone 24): both LFM3 models are resident on card 0 of b70host. Each engine name is its
 /// served name (spec 11.11), and each config and family table names its snapshot folder.
 #[test]
+#[ignore = "it reads the two-card profile of b70host (4c02b39); rewrite it or remove it (milestone 31 step 4)"]
 fn the_b70host_profile_names_both_lfm3_models_resident_on_card_zero() {
     let profile = b70host_profile();
     assert_eq!(
@@ -676,6 +687,7 @@ fn the_b70host_profile_names_both_lfm3_models_resident_on_card_zero() {
 }
 
 #[test]
+#[ignore = "it reads the two-card profile of b70host (4c02b39); rewrite it or remove it (milestone 31 step 4)"]
 fn the_b70host_profile_admits_on_the_probed_b70host() {
     // The start path up to the open: the probe, the ignored iGPU, the plan and the ledger.
     if checkpoint().is_none()
@@ -911,6 +923,7 @@ fn the_address_wait_passes_a_present_address_and_fails_an_absent_one() {
 /// served model, and it reads the snapshot folder of `lfm3`. It is resident, because the process refuses a text model
 /// on demand with a `family` table (`admission.rs`): the start of 12:49 on 2026-11-10 failed with exit 3.
 #[test]
+#[ignore = "it reads the two-card profile of b70host (4c02b39); rewrite it or remove it (milestone 31 step 4)"]
 fn the_b70host_profile_names_lfm3_1_resident_on_card_one() {
     let profile = b70host_profile();
     let engine = profile.engines.last().unwrap();

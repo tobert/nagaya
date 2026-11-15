@@ -34,8 +34,8 @@ a common host for our megakernels. The code began with the first Qwen3.8 engine 
   2026-11-01, `qwen-image-fusal` is resident, and the Qwen3.8 engine is on demand (`docs/deploy.md`, "The layout of
   gfx1151host").
 - Since 11:01 on 2026-10-23, `nagaya.service` serves council v2 on `198.51.100.10:8091` on b70host's two B70 cards.
-  `gemma` and `embeddinggemma-2` are resident. `voice`, `sdxl-0`, `sdxl-1`, `pony-0`, `autismmix-1`, `lightning-0`
-  and `inpaint-0` are on demand (`deploy/b70host/profile.toml`).
+  Since 2026-11-15 one card serves: `autismmix-1`, `embeddinggemma-2` and `lfm3-omni` are resident on card 1, and
+  no engine names card 0 (`deploy/b70host/profile.toml`).
 - Milestones 1 to 20 and 22 are done (`docs/history.md`, `AGENTS.md`). Milestone 21 waits, and milestone 23 is next.
 - `docs/deploy.md` tells how to run the nagaya on each machine.
 
