@@ -844,6 +844,28 @@ on demand" of 2026-10-24.
 - **Any node.** Decided 2026-11-02 (Amy, by interview). A load or an unload of an engine on any node goes to the node
   that holds the engine.
 
+**The release of a device.** **Proposed** by Claude Fable 5.2, 2026-11-15. The owner asked for a route that unloads
+a card, so a card test runs on it while the other cards serve. Reason for each choice: it is the simplest one that
+keeps the rules of "Explicit layout" and adds no key to the profile.
+
+- `POST /nagaya/v1/devices/{id}/release` unloads each loaded engine whose device list names the device. No engine
+  loads. An engine with stages on two devices unloads whole. The reply is a 202 with `{"device", "unload"}`: the id,
+  then the engines that unload, in the order of the swap. A device with no loaded engine gives a 200.
+- A released device takes no load. A load of an engine that names it is a 409 that names the device, until a
+  reclaim. The device keeps its budget and its thread, and it runs no work.
+- `POST /nagaya/v1/devices/{id}/reclaim` ends the release, and it loads each resident engine that names the device.
+  The reply is a 202 with `{"device", "load"}`. A device that is not released gives a 200.
+- A release refuses a device that holds a pinned engine, or an engine without `close`: a 409 that names the engine.
+  A pinned engine leaves only by a profile `PUT`, as before.
+- The release is not stored. The next start of the process loads the resident engines, as the profile says. Thus a
+  crash does not leave a device empty, and the profile gets no new key.
+- An unknown id is a 404 `not_found` that names `id`. An ignored device is a 409: it has no work to release (2.1).
+- The identity shows each engine of the device as `unloaded`. The gossip key `inventory` marks the device
+  `released: true`, so a person and a test can read it.
+- The query `host` names the node, as for a load ("The node of a load route").
+- A card test names its cards in `NAGAYA_TEST_CARDS` (`AGENTS.md`). It does not read the release. A later step can
+  make the test refuse a card that is not released.
+
 **The node of a load route.** Decided 2026-11-02 (Amy, by interview), proposed by Claude Opus 5.5, 2026-11-02. Reason:
 an engine name is unique only in one profile (2.4), so two nodes can each have an engine `gemma`. A load must name one
 engine.
