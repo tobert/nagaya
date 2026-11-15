@@ -1162,13 +1162,15 @@ impl StagedJobs {
         } else {
             body.ended(JobState::Cancelled);
         }
+        // A refused job ends as failed, and it is not a failed quantum (spec 9.6).
+        let refused = matches!(ran, Ran::Refused);
         let outcome = if self.bodies.contains_key(&job) {
             self.apply(job, ran)
         } else {
             Completion::Done
         };
         if let Some(running) = running {
-            if outcome == Completion::Failed {
+            if outcome == Completion::Failed && !refused {
                 self.log_failure(running.engine, kind, running.request, running.watch);
             }
             self.end_quantum(running.engine, kind, running.class, ms, outcome, running.span);

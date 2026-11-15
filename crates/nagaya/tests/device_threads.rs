@@ -871,3 +871,64 @@ fn the_telemetry_of_a_job_on_the_group_thread_names_the_engine_of_the_job() {
     telemetry_support::wait_for_jobs(&capture, 2);
     telemetry_support::assert_own_engines(&capture, &["wide", "left"], &["wide", "left"]);
 }
+
+/// A body that ends its job in its first quantum with `outcome`.
+struct Ends {
+    outcome: Ran,
+    done: Sender<()>,
+}
+
+impl JobBody for Ends {
+    fn unavailable(&mut self, engine: &str, state: nagaya::notify::EngineState) {
+        panic!("engine `{engine}` is {}, and this test keeps it ready", state.as_str());
+    }
+
+    fn run(&mut self, _kind: Kind, _engines: &mut [Box<dyn Engine>]) -> Ran {
+        let _ = self.done.send(());
+        self.outcome.clone()
+    }
+}
+
+/// The failure lines of the log for one job of `left`, whose quantum runs on the device thread of card 0 and ends
+/// with `outcome`.
+fn failure_lines_on_a_device_thread(outcome: Ran) -> Vec<String> {
+    let directory = tempfile::tempdir().unwrap();
+    let lines = nagaya_telemetry::testing::log_lines(|| {
+        let (mut process, _log, _) = start([Residency::OnDemand; 3], 1 << 20, directory.path());
+        load(&process, "left");
+        let (done, done_rx) = mpsc::channel();
+        let spec = JobSpec {
+            class: Class::Interactive,
+            priority: 0,
+            deadline: None,
+            first: Kind::Copy,
+            engine: LEFT,
+            body: Box::new(Ends { outcome, done }),
+        };
+        process.submit_job(0, spec).unwrap();
+        done_rx.recv_timeout(Duration::from_secs(5)).expect("the job ran");
+        // The stop joins the threads, so each line is written when it returns.
+        process.stop(Duration::from_secs(5), &nagaya::signal::SignalFlag::new());
+    });
+    lines
+        .into_iter()
+        .filter(|line| line.starts_with("quantum failed"))
+        .collect()
+}
+
+/// A refused job on a device thread logs no failure line (spec 9.6, "A refused job is not a failed quantum"), and a
+/// failed one logs its line. The live service of 2026-11-15 logged a line for each fork that waited for a slot.
+///
+/// Falsified by a driver that logs each job that ends as failed: the refused job has one line.
+#[test]
+fn a_refused_job_on_a_device_thread_logs_no_failure_and_a_failed_job_logs_one() {
+    let failed = failure_lines_on_a_device_thread(Ran::Failed);
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert!(
+        failed[0].contains("copy quantum") && failed[0].contains("engine left"),
+        "{}",
+        failed[0]
+    );
+    let refused = failure_lines_on_a_device_thread(Ran::Refused);
+    assert!(refused.is_empty(), "{refused:?}");
+}

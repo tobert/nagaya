@@ -88,6 +88,8 @@ fn tree(root: &Path, stall: u64) {
 struct BadPass {
     root: std::path::PathBuf,
     done: mpsc::Sender<()>,
+    /// What the body reports after the pass.
+    outcome: Ran,
 }
 
 impl JobBody for BadPass {
@@ -109,11 +111,11 @@ impl JobBody for BadPass {
         // The kernel counted five compactions stalls while the pass ran.
         tree(&self.root, 15);
         let _ = self.done.send(());
-        Ran::Failed
+        self.outcome.clone()
     }
 }
 
-fn failure_lines(root: &Path) -> Vec<String> {
+fn failure_lines(root: &Path, outcome: Ran) -> Vec<String> {
     let directory = tempfile::tempdir().unwrap();
     let mut registry = Registry::new();
     registry.register("simple", Box::new(Simple));
@@ -150,6 +152,7 @@ fn failure_lines(root: &Path) -> Vec<String> {
                     body: Box::new(BadPass {
                         root: root.to_owned(),
                         done: done_tx,
+                        outcome,
                     }),
                 },
             )
@@ -168,7 +171,7 @@ fn failure_lines(root: &Path) -> Vec<String> {
 fn a_fake_pass_that_fails_logs_the_change_of_the_counters() {
     let root = tempfile::tempdir().unwrap();
     tree(root.path(), 10);
-    let lines = failure_lines(root.path());
+    let lines = failure_lines(root.path(), Ran::Failed);
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(
         lines[0].contains("prefill quantum of a job request on engine one"),
@@ -182,7 +185,17 @@ fn a_fake_pass_that_fails_logs_the_change_of_the_counters() {
 fn a_machine_without_the_files_still_logs_the_failure() {
     let root = tempfile::tempdir().unwrap();
     // The body writes the tree during the pass, so the read before the quantum finds no file.
-    let lines = failure_lines(root.path());
+    let lines = failure_lines(root.path(), Ran::Failed);
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(lines[0].contains("evidence unavailable"), "{}", lines[0]);
+}
+
+/// A refused job is not a failed quantum (spec 9.6): the process logs no failure line for it. The live service of
+/// 2026-11-15 still logged the line after the first repair, because this driver had its own check.
+#[test]
+fn a_refused_job_logs_no_failure_in_the_process() {
+    let root = tempfile::tempdir().unwrap();
+    tree(root.path(), 10);
+    let lines = failure_lines(root.path(), Ran::Refused);
+    assert!(lines.is_empty(), "{lines:?}");
 }
