@@ -257,8 +257,8 @@ These are the times of one layer and a block of 512, from the same ignored test:
 
 What is open for long slots:
 
-- The profile holds no long slot. The time bound holds and the scores are gone, so the limit is the term `kv`.
-  That is 6.5 GB for a slot of 262,144 positions, and 1.74 GB for one of 65,536.
+- Since 2026-11-15 the profile gives `lfm3-1` four slots of 262,144 positions, and `lfm3` keeps eight short ones.
+  The limit of a long slot is the term `kv`: 6.5 GB for 262,144 positions, and 1.74 GB for 65,536.
 - The team form is not tuned. Its arithmetic takes about 80 ms of the 147 ms at 262,144 keys. The rest is the
   exponentials, the barriers of each round, and the reads of the keys.
 - A decode step at 262,144 positions takes 39 ms, where a short one takes 9 ms to 13 ms. One-token attention keeps
