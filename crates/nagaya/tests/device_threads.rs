@@ -912,7 +912,7 @@ fn failure_lines_on_a_device_thread(outcome: Ran) -> Vec<String> {
     });
     lines
         .into_iter()
-        .filter(|line| line.starts_with("quantum failed"))
+        .filter(|line| line.starts_with("quantum failed") || line.starts_with("job refused"))
         .collect()
 }
 
@@ -930,5 +930,11 @@ fn a_refused_job_on_a_device_thread_logs_no_failure_and_a_failed_job_logs_one() 
         failed[0]
     );
     let refused = failure_lines_on_a_device_thread(Ran::Refused);
-    assert!(refused.is_empty(), "{refused:?}");
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert!(refused[0].starts_with("job refused: copy quantum"), "{}", refused[0]);
+    assert!(
+        refused[0].contains("engine left") && !refused[0].ends_with("level=error"),
+        "{}",
+        refused[0]
+    );
 }

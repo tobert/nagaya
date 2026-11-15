@@ -508,6 +508,15 @@ pub fn failed_unwatched(failure: &str) -> String {
     line
 }
 
+/// Log a refused job, and give the line (spec 9.6, "A refused job is not a failed quantum").
+///
+/// The job found no free slot, and its caller tries again. The line has the level `info`, and it reads no evidence.
+pub fn refused(what: &str) -> String {
+    let line = format!("job refused: {what}; no slot was free, and its caller tries again");
+    tracing::info!("{line}");
+    line
+}
+
 /// The counters from before a quantum.
 pub struct Watch {
     machine: Machine,

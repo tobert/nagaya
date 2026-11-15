@@ -284,16 +284,17 @@ impl GroupJobs {
             None => body.run(quantum.kind, engines),
         };
         let duration_ms = started.elapsed().as_millis() as u64;
-        if matches!(ran, Ran::Failed) {
+        if matches!(ran, Ran::Failed | Ran::Refused) {
             let failure = format!(
                 "{} quantum of a {} request on engine {}",
                 format!("{:?}", quantum.kind).to_lowercase(),
                 body.request(),
                 self.names[self.engines[&id]]
             );
-            match watch {
-                Some(watch) => watch.failed(&failure),
-                None => evidence::failed_unwatched(&failure),
+            match (&ran, watch) {
+                (Ran::Refused, _) => evidence::refused(&failure),
+                (_, Some(watch)) => watch.failed(&failure),
+                (_, None) => evidence::failed_unwatched(&failure),
             };
         }
         let outcome = self.apply(id, ran);

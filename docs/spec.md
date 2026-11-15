@@ -486,10 +486,10 @@ thread priorities:
   (13.2) run on a bounded pool pinned to the remaining cores at `SCHED_BATCH`. Long CPU work yields between chunks
   to obey `max_quantum_ms`. On unified-memory machines (`gfx1151host` and `sm121host`), the scheduler pauses background CPU
   memory work during a GPU pass to protect GPU memory bandwidth.
-- **The row threads.** **Proposed** (Claude Fable 5.2, 2026-11-14). After a pass that several jobs share, each row
-  has host work that uses no engine. That work is the read of its logit row and the draw of its token. The thread
-  that ran the pass gives that work to its row threads, and it waits for all of them. Then it ends each job in the
-  order of the segments, as before.
+- **The row threads.** Decided 2026-11-15 (proposed by Claude Fable 5.2, 2026-11-14). After a pass that several
+  jobs share, each row has host work that uses no engine. That work is the read of its logit row and the draw of its
+  token. The thread that ran the pass gives that work to its row threads, and it waits for all of them. Then it ends
+  each job in the order of the segments, as before.
   - A thread that runs shared passes has 8 row threads (`nagaya-row-<index>`). They start at its first shared pass.
   - A row thread keeps the CPU mask of the thread that started it. Thus the row threads of a device thread stay on
     the CPUs of its card (3.2b).
@@ -844,7 +844,7 @@ on demand" of 2026-10-24.
 - **Any node.** Decided 2026-11-02 (Amy, by interview). A load or an unload of an engine on any node goes to the node
   that holds the engine.
 
-**The release of a device.** **Proposed** by Claude Fable 5.2, 2026-11-15. The owner asked for a route that unloads
+**The release of a device.** Decided 2026-11-15, proposed by Claude Fable 5.2. The owner asked for a route that unloads
 a card, so a card test runs on it while the other cards serve. Reason for each choice: it is the simplest one that
 keeps the rules of "Explicit layout" and adds no key to the profile.
 
@@ -865,7 +865,8 @@ keeps the rules of "Explicit layout" and adds no key to the profile.
 - The release holds the engines that the profile names on the device at that time. An engine that a later profile
   `PUT` adds to the device is not held.
 - Not built: the query `host`, and a mark of the release in the gossip key `inventory`. The routes act on the node
-  that gets the request.
+  that gets the request. Decided 2026-11-15: these routes get no forward. A client reads the HTTP address of each
+  node from `GET /nagaya/v1/cluster`, which gossip fills, and it calls the node that holds the device.
 - A card test names its cards in `NAGAYA_TEST_CARDS` (`AGENTS.md`). It does not read the release.
 
 **The node of a load route.** Decided 2026-11-02 (Amy, by interview), proposed by Claude Opus 5.5, 2026-11-02. Reason:
@@ -2348,10 +2349,11 @@ line says `evidence unavailable (not read before a decode quantum)` (`evidence::
 names the kind of the quantum, the kind of request and the engine. `Start::machine` gives the process a machine with a
 fixed tree of files for a test.
 
-**A refused job is not a failed quantum.** **Proposed** by Claude Fable 5.2, 2026-11-15. A job that finds no free
+**A refused job is not a failed quantum.** Decided 2026-11-15, proposed by Claude Fable 5.2. A job that finds no free
 slot ends in its first quantum, and its caller gets `busy` (11.3c). A request of several replies then runs that reply
 again (11.15). The engine and the machine did nothing wrong, so the group thread logs no failure line and reads no
-evidence for it. The body reports `Ran::Refused`, and the job ends as failed.
+evidence for it. It logs one line at the level `info` that starts with `job refused` (`evidence::refused`). The body
+reports `Ran::Refused`, and the job ends as failed.
 
 Reason: on 2026-11-15 a request of 8 forks on an engine of 4 slots gave 8 replies. For each such request, the log
 held 4 failure lines at the level `error`.

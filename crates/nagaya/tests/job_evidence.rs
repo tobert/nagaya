@@ -85,7 +85,7 @@ fn failure_lines(root: &Path, first: Kind, outcome: fn() -> Ran, files: bool) ->
     assert_eq!(runs.load(Ordering::SeqCst), 1);
     lines
         .into_iter()
-        .filter(|line| line.starts_with("quantum failed"))
+        .filter(|line| line.starts_with("quantum failed") || line.starts_with("job refused"))
         .collect()
 }
 
@@ -116,12 +116,18 @@ fn a_quantum_that_succeeds_logs_no_failure() {
 }
 
 /// A job that finds no free slot is refused (spec 9.6, "A refused job is not a failed quantum"). The job ends, and the
-/// log holds no failure line.
+/// log holds no failure line. It holds one line at the level `info`.
 #[test]
-fn a_refused_job_ends_and_logs_no_failure() {
+fn a_refused_job_ends_and_logs_one_info_line_and_no_failure() {
     let root = tempfile::tempdir().unwrap();
     let lines = failure_lines(root.path(), Kind::Copy, || Ran::Refused, true);
-    assert!(lines.is_empty(), "{lines:?}");
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(lines[0].starts_with("job refused: copy quantum"), "{}", lines[0]);
+    assert!(
+        lines[0].contains("engine toy") && !lines[0].ends_with("level=error"),
+        "{}",
+        lines[0]
+    );
 }
 
 #[test]

@@ -1170,7 +1170,9 @@ impl StagedJobs {
             Completion::Done
         };
         if let Some(running) = running {
-            if outcome == Completion::Failed && !refused {
+            if refused {
+                self.log_refusal(running.engine, kind, running.request);
+            } else if outcome == Completion::Failed {
                 self.log_failure(running.engine, kind, running.request, running.watch);
             }
             self.end_quantum(running.engine, kind, running.class, ms, outcome, running.span);
@@ -1204,8 +1206,10 @@ impl StagedJobs {
             None => Ran::Cancelled,
         };
         let duration_ms = started.elapsed().as_millis() as u64;
-        if matches!(ran, Ran::Failed) {
-            self.log_failure(engine, quantum.kind, request, watch);
+        match ran {
+            Ran::Failed => self.log_failure(engine, quantum.kind, request, watch),
+            Ran::Refused => self.log_refusal(engine, quantum.kind, request),
+            _ => {}
         }
         let outcome = self.apply(quantum.job, ran);
         self.end_quantum(engine, quantum.kind, quantum.class, duration_ms, outcome, span);
@@ -1447,6 +1451,16 @@ impl StagedJobs {
                 }
             }
         }
+    }
+
+    /// Log a refused job at the level `info` (spec 9.6).
+    fn log_refusal(&self, engine: usize, kind: Kind, request: &'static str) {
+        evidence::refused(&format!(
+            "{} quantum of a {} request on engine {}",
+            kind_label(kind),
+            request,
+            self.names[engine]
+        ));
     }
 
     fn log_failure(&self, engine: usize, kind: Kind, request: &'static str, watch: Option<Watch>) {
