@@ -606,6 +606,10 @@ def main() -> None:
             chat_err.append({**c, **chat_refusal(e)})
             continue
         chat_out.append({**c, "escaped": escaped, "text": tok.unescape(escaped), "ids": ids})
+    dump_cases(OUT / "jinja.json", header, {"sweep": pystr_sweep(), "methods": run_cases(Template, method_cases()),
+                                           "formats": run_cases(Template, format_cases()),
+                                           "tests": run_cases(Template, test_cases()),
+                                           "undefined": run_cases(Template, undefined_cases())})
     # The filters of the template engine that the chat template uses, on their own.
     from service.template import _tojson
     tojson = []
