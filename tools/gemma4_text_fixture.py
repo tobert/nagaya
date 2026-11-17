@@ -14,6 +14,8 @@ reference venv:
 
     PYTHONDONTWRITEBYTECODE=1 nice -n 10 ~/.venvs/nagaya-ref/bin/python -I tools/gemma4_text_fixture.py \
         [--model DIR] [--template FILE] [--out DIR]
+
+--model defaults to GEMMA4_MODEL_DIR. One of them must name the checkpoint folder.
 """
 import argparse
 import hashlib
@@ -25,7 +27,6 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_MODEL = Path(os.environ.get("GEMMA4_MODEL_DIR", Path.home() / "src/mkviolet/checkpoints/gemma-4-26B-A4B"))
 DEFAULT_TEMPLATE = ROOT / "crates/nagaya-text-gemma4/assets/gemma4_chat_template.jinja"
 DEFAULT_OUT = ROOT / "crates/nagaya-text-gemma4/tests/fixtures"
 
@@ -186,10 +187,12 @@ def sha256(path):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
+    parser.add_argument("--model", type=Path, default=os.environ.get("GEMMA4_MODEL_DIR"))
     parser.add_argument("--template", type=Path, default=DEFAULT_TEMPLATE)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     args = parser.parse_args()
+    if args.model is None:
+        parser.error("no checkpoint folder: neither --model nor GEMMA4_MODEL_DIR names one. Give the folder of the Gemma 4 checkpoint.")
 
     import jinja2
     import tokenizers

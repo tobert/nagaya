@@ -1,16 +1,18 @@
 # SPDX-License-Identifier: MIT
 """Make the oracle fixture for the Gemma 4 family (spec 8.3, "The Gemma 4 oracle", Proposed).
 
-The tool runs mkviolet's reference on the CPU (`tools/gemma4_reference.py`). The reference is HF transformers' own
+The tool runs the reference of `tools/gemma4_reference.py` on the CPU. The reference is HF transformers' own
 Gemma 4 layers in f32, run one layer at a time over the checkpoint. For each fixed prompt the tool records the token
 ids and, for the last position, the top-64 logits (ids and f32 values) and the logsumexp over the vocabulary. The
 format is the format of the Qwen3.8 fixture (`tools/oracle_fixture.py`).
 
-The tool reads mkviolet and the checkpoint, and it never writes into either. Each prompt runs the reference in its own
+The tool reads the checkpoint, and it never writes into it. Each prompt runs the reference in its own
 process, which writes its tensors into a temporary directory. Run it with the reference venv and no GPU job:
 
     PYTHONDONTWRITEBYTECODE=1 nice -n 19 ionice -c3 ~/.venvs/nagaya-ref/bin/python -I tools/gemma4_oracle_fixture.py \
-        OUT.json [--model DIR] [--mkviolet DIR] [--layers N]
+        OUT.json [--model DIR] [--layers N]
+
+--model defaults to GEMMA4_MODEL_DIR. One of them must name the checkpoint folder.
 
 With --layers N the reference stops after N layers and gives no logits. That run checks only the plumbing.
 """
@@ -29,8 +31,7 @@ sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parent.parent
 TOP = 64
-DEFAULT_MODEL = Path(os.environ.get("GEMMA4_MODEL_DIR", Path.home() / "src/mkviolet/checkpoints/gemma-4-26B-A4B"))
-DEFAULT_MKVIOLET = Path.home() / "src/mkviolet"
+REFERENCE = ROOT / "tools/gemma4_reference.py"
 TEMPLATE = ROOT / "crates/nagaya-text-gemma4/assets/gemma4_chat_template.jinja"
 
 
@@ -54,10 +55,11 @@ def chat_prompt():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("out")
-    parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
-    parser.add_argument("--mkviolet", type=Path, default=DEFAULT_MKVIOLET)
+    parser.add_argument("--model", type=Path, default=os.environ.get("GEMMA4_MODEL_DIR"))
     parser.add_argument("--layers", type=int, default=None)
     args = parser.parse_args()
+    if args.model is None:
+        parser.error("no checkpoint folder: neither --model nor GEMMA4_MODEL_DIR names one. Give the folder of the Gemma 4 checkpoint.")
 
     import torch
     import transformers
@@ -75,7 +77,6 @@ def main():
         ("long", long, "prose " + author),
         ("longer", longer, "prose " + author),
     ]
-    reference = args.mkviolet / "tools/gemma4_reference.py"
     started = time.time()
     entries = []
     vocab = None
@@ -86,7 +87,7 @@ def main():
             if not ids or ids[0] != bos:
                 ids = [bos] + ids
             out = Path(scratch) / f"{name}.safetensors"
-            command = [sys.executable, "-I", str(reference), "--model", str(args.model), "--out", str(out),
+            command = [sys.executable, "-I", str(REFERENCE), "--model", str(args.model), "--out", str(out),
                        "--ids", ",".join(map(str, ids))]
             if args.layers is not None:
                 command += ["--layers", str(args.layers)]
@@ -112,7 +113,7 @@ def main():
         "vocab": vocab,
         "transformers": transformers.__version__,
         "torch": torch.__version__,
-        "reference_sha": hashlib.sha256(reference.read_bytes()).hexdigest()[:16],
+        "reference_sha": hashlib.sha256(REFERENCE.read_bytes()).hexdigest()[:16],
         "tokenizer_sha256": hashlib.sha256((args.model / "tokenizer.json").read_bytes()).hexdigest(),
         "seconds": round(time.time() - started),
         "prompts": entries,
