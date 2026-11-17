@@ -1,7 +1,7 @@
 //! The files of the golden tests, and the rule for a machine that has no copy of them.
 //!
-//! The tests are mkviolet's `src/golden.rs`. Each check is its own test file, so it runs in its own process: device
-//! memory is free only when the process exits, and two engines do not fit on the cards (mkviolet `golden.rs`).
+//! The tests are the golden checks of the first Gemma 4 engine. Each check is its own test file, so it runs in its own
+//! process: device memory is free only when the process exits, and two engines do not fit on the cards.
 //!
 //! An absent file skips the test, as for the Qwen3.8 GGUF (AGENTS "Tests that need a model file"). The variable
 //! `NAGAYA_REQUIRE_MODELS=1` makes an absent file fail the test. A path that exists but is not readable fails it.

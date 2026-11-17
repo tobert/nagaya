@@ -1,7 +1,6 @@
 //! The model folders of the tests, and the rule for a machine that has no copy of them.
 //!
-//! Amy, 2026-10-21: "adjust the tests so they don't break our tests when we don't have a model downloaded locally.
-//! we won't replicate all models to all machines so this state is normal." An absent folder skips the test. The
+//! A machine does not hold every model, so this state is normal. An absent folder skips the test. The
 //! variables `LFM3_OMNI_MODEL_DIR` and `LFM3_MODEL_DIR` name the folders, and the code holds no default path
 //! (AGENTS.md). The variable `NAGAYA_REQUIRE_MODELS=1` makes an absent folder fail the test. Only absence skips.
 #![allow(dead_code)]

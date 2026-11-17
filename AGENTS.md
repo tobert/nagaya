@@ -111,7 +111,7 @@ The nagaya is a Cargo workspace in Rust. It has engines for two targets:
 - The spec is the contract. When the code and a doc do not agree, stop and report. Do not choose one.
 - When two docs do not agree, or a doc leaves a choice open, do not guess in code. Write the simplest choice into the
   doc with the mark **Proposed**, your reason, and your model name. Commit it alone, then continue. Amy decides later.
-  When she accepts it, write it as a rule with the mark "Decided <date>" (spec, header).
+  When she accepts it, remove the mark and the model name. Git keeps the history of the rule (spec, header).
 - Engines that we build give the same bits for the same identity and inputs. A change that moves bits changes the
   engine identity, and the commit message says so.
 - Do not edit other repositories. The exception is gogi (Amy, 2026-10-30). An agent may edit it on a branch, merge
@@ -131,8 +131,8 @@ The crates live in directories under `crates/`. Use these crates:
 | `nagaya-mk-qwen38-gfx1151` | the Qwen3.8 engine: its HIP code in `hip/`, the FFI binding, and the `Engine` trait on top | ABI "How the Qwen3.8 engine maps" |
 | `nagaya-mk-hip` | the shared HIP ops of gfx1151: hipBLASLt with the plan table, the kernels of Qwen-Image | 12.1 |
 | `nagaya-mk-qwenimage21-gfx1151` | the Qwen-Image 2.1 engine on gfx1151: the encoder, the transformer, the VAE | 11.9c |
-| `nagaya-mk-bmg` | the megakernel interpreter of the B70 cards: Level Zero, the task protocol, the kernel source, one binary per engine | ABI "How mkviolet maps" |
-| `nagaya-mk-gemma4-bmg` | the Gemma 4 engine: Level Zero, the OpenCL C kernels, and the host code; a card needs `xe` | ABI "How mkviolet maps" |
+| `nagaya-mk-bmg` | the megakernel interpreter of the B70 cards: Level Zero, the task protocol, the kernel source, one binary per engine | ABI "How the Gemma 4 engine maps" |
+| `nagaya-mk-gemma4-bmg` | the Gemma 4 engine: Level Zero, the OpenCL C kernels, and the host code; a card needs `xe` | ABI "How the Gemma 4 engine maps" |
 | `nagaya-council` | council v2 logic with no I/O: the family interface, the sampler, request checks | 11 |
 | `nagaya-jinja` | the Jinja interpreter of the chat templates, with the results of Python's jinja2 | 11.3 |
 | `nagaya-text-qwen38` | the Qwen3.8 family library: tokenizer, templates, detokenizer, reply parser | 11.3, 11.3a |
@@ -294,7 +294,7 @@ get ran sometimes, perhaps just a bump in our AGENTS.md"
   Then an absent file fails the test.
 - Do this at least before each merge that touches the crates of that model.
 - gfx1151host holds the Qwen3.8 GGUF at the default path of `NAGAYA_QWEN38_GGUF`.
-- b70host holds Gemma 4 in `~/src/mkviolet/checkpoints/gemma-4-26B-A4B`. The `xe` tests of
+- b70host holds Gemma 4 in `~/models/gemma-4-26B-A4B`. The `xe` tests of
   `nagaya-mk-gemma4-bmg` and the tests of `nagaya-text-gemma4` read it from `GEMMA4_MODEL_DIR`. The variable has no
   default, so the tests of `nagaya-text-gemma4` skip when it is unset.
 - Those tests also read HF reference files from `target/gemma4-golden` or `GEMMA4_GOLDEN_DIR`. Write them with

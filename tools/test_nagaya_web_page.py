@@ -214,7 +214,7 @@ class Markup(unittest.TestCase):
         self.assertIn('<input id="chat-topp" type="number" min="0.01" max="1" step="0.01" placeholder="off">', page)
 
     def test_the_instructions_of_a_tab_are_behind_its_help_button_and_long_hints_are_tooltips(self):
-        # Amy, 2026-11-11: "there's too much instruction text on the page, pls move to tooltips and/or help buttons".
+        # The instructions of a tab are behind its help button, and a long hint is a tooltip, so the page stays short.
         page = WEB.joinpath("index.html").read_text()
         self.assertNotIn('<p class="note">', page)
         sections = re.findall(r'<section id="(\w+)">(.*?)</section>', page, re.S)
@@ -960,7 +960,7 @@ class Page(unittest.TestCase):
         self.assertIn('objects/blake3:' + "f" * 64 + '" target="_blank" title="blake3:' + "f" * 64, out["log"])
         self.assertIn(">ffffffff</a>", out["log"])
         self.assertIn(">aaaaaaaa</a>", out["log"])
-        # The next turn sends the spoken reply back as its text and its audio (spec 11.11, "Read it back"), and no
+        # The next turn sends the spoken reply back as its text and its audio (spec 11.11, "Assistant audio"), and no
         # output asks for text only.
         second = out["second"]
         self.assertNotIn("output", second)

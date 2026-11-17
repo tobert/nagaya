@@ -234,7 +234,7 @@ mod tests {
         assert!(number.message.contains("`checkpoint`"), "{}", number.message);
     }
 
-    /// `clip_skip` counts as A1111 does: 2 is the penultimate layer (spec 11.9a, Decided 2026-10-29).
+    /// `clip_skip` counts as A1111 does: 2 is the penultimate layer (spec 11.9a).
     #[test]
     fn the_family_table_takes_clip_skip_2_or_3_with_the_default_2() {
         assert_eq!(family_config(&table("model_dir = \"/sdxl\"")).unwrap().1, 2);

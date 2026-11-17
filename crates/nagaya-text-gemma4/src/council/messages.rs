@@ -1,11 +1,12 @@
-//! The messages and the tools of a gogi context, in the shape that Google's template reads (mkviolet `held.rs`).
+//! The messages and the tools of a gogi context, in the shape that Google's template reads.
 
 use gogi_proto::context::Tool;
 use gogi_proto::message::{Message, Role};
 use nagaya_jinja::Json;
 use serde_json::{Map, Value};
 
-/// What the library writes before the content of a failed tool result. mkviolet gives the template the map
+/// What the library writes before the content of a failed tool result. The first Gemma 4 engine gave the template the
+/// map
 /// `{"error": content}`, and the template refuses a map in Python's jinja2 (spec 11.3, "A failed tool result").
 pub(crate) const ERROR_PREFIX: &str = "Error: ";
 

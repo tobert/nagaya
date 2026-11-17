@@ -1,5 +1,5 @@
-"""The prompts of the bin packing task, and the parse of a program from a reply. The text of each prompt is the text of
-the first trials (docs/swarm-ideas.md), so a run of a recipe compares with them."""
+"""The prompts of the bin packing task, and the parse of a program from a reply. The text of each prompt is fixed, so
+two runs of a recipe compare."""
 import ast
 import re
 

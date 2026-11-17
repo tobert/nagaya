@@ -26,7 +26,7 @@ pub const KIND_AUDIO: u32 = 2;
 pub const KIND_RUN: u32 = 3;
 
 /// The kind of the speech of an `assistant` audio part in a record: the codes of its frames, the end frame last
-/// (spec 11.11, "Read it back").
+/// (spec 11.11, "Assistant audio").
 pub const KIND_CODES: u32 = 4;
 
 /// The kind of a latent span in a record: rows of the width of the residual that take the place of the embedding rows

@@ -1,7 +1,7 @@
 //! The LFM3 family library for the council (spec 11.3, 11.3a, 11.11): nagaya's family interface on this crate.
 //!
 //! A context renders with the chat template of the model folder (`crate::chat`). A decision puts a spec, a case and
-//! a letter menu after the context. This is mkviolet's rendering (`src/template.rs`) in LFM3's ChatML form, as the
+//! a letter menu after the context. This is the rendering of the first Gemma 4 engine in LFM3's ChatML form, as the
 //! Qwen3.8 library writes it:
 //!
 //! ```text
@@ -160,7 +160,7 @@ pub struct Lfm3Family {
     template_id: String,
     /// The reader of the objects of this machine. A family without one refuses each media part.
     objects: Option<Arc<dyn Objects>>,
-    /// The codes of the speech outputs of the service, for an `assistant` audio part (spec 11.11, "Read it back").
+    /// The codes of the speech outputs of the service, for an `assistant` audio part (spec 11.11, "Assistant audio").
     codes: std::sync::OnceLock<Arc<dyn nagaya_council::family::OutputCodes>>,
     /// The prepared videos of the last few video parts, by content id. A render, its rows and a read each need them,
     /// and a decode is slow.
@@ -574,9 +574,9 @@ impl Lfm3Family {
     }
 
     /// The media type of a part in its recipe item (tag 9). A video part also names the versions of the decoder,
-    /// because a new decoder can give other rows from the same bytes (spec 11.11, Decided 2026-11-08).
+    /// because a new decoder can give other rows from the same bytes (spec 11.11).
     pub(crate) fn recipe_mime(&self, part: &MediaPart) -> String {
-        // The speech of an assistant part enters the recipe as its codes do (spec 11.11, "Read it back").
+        // The speech of an assistant part enters the recipe as its codes do (spec 11.11, "Assistant audio").
         if part.kind == MediaKind::AudioOut
             && let Ok(codes) = self.output_codes(part)
         {
@@ -671,7 +671,7 @@ impl Lfm3Family {
     }
 
     /// The codes of the speech of an `assistant` audio part, with the end frame: the kept codes of its output. A part
-    /// whose codes the service does not hold is a 404 that names it (spec 11.11, "Read it back").
+    /// whose codes the service does not hold is a 404 that names it (spec 11.11, "Assistant audio").
     fn output_codes(&self, part: &MediaPart) -> Result<Vec<u32>, FamilyError> {
         let param = part_param(part);
         let codes = self
@@ -991,7 +991,7 @@ pub fn media_record(first: usize, rows: &crate::media::MediaRows) -> Vec<u8> {
         crate::media::MediaRows::Audio(audio) => (2u32, [audio.frames, 0, 0, 0]),
         // A run of a clip: the frames of the whole clip, and the first encoder row of the run (spec 11.11).
         crate::media::MediaRows::Run(run) => (3u32, [run.clip.frames, run.start, 0, 0]),
-        // Speech: 12 codes for each frame (spec 11.11, "Read it back").
+        // Speech: 12 codes for each frame (spec 11.11, "Assistant audio").
         crate::media::MediaRows::Codes(_) => (4u32, [crate::media::SPEECH_CODES, 0, 0, 0]),
     };
     let word = |value: usize| u32::try_from(value).expect("a shape of a media part fits in 32 bits");

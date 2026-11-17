@@ -1,7 +1,6 @@
 //! The model file of the tests, and the rule for a machine that has no copy of it.
 //!
-//! Amy, 2026-10-21: "adjust the tests so they don't break our tests when we don't have a model downloaded locally.
-//! we won't replicate all models to all machines so this state is normal." An absent file skips the test.
+//! A machine does not hold every model, so this state is normal. An absent file skips the test.
 //! The variable `NAGAYA_REQUIRE_MODELS=1` makes an absent file fail the test. Only absence skips.
 #![allow(dead_code)]
 

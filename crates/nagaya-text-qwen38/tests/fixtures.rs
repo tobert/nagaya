@@ -20,8 +20,8 @@ fn all_fixtures_come_from_one_run_of_one_reference() {
     }
 }
 
-/// The convention of the crates is 1 MB. These fixtures were at 99.99% of it, and the paths of the reference in their
-/// headers took them past it. Decided 2026-11-17: 2 MB for this crate, as for the op fixtures of the Qwen3.8 engine.
+/// The convention of the crates is 1 MB. These fixtures hold the full repository paths of the reference in each header,
+/// which took them past it, so the limit of this crate is 2 MB, as for the op fixtures of the Qwen3.8 engine.
 #[test]
 fn the_fixtures_stay_small() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");

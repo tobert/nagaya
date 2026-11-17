@@ -1,8 +1,8 @@
 //! The council reads of the LFM3 family: the plans of a plain read and of a queue read, and the raw read.
 //!
-//! This is the read code of the Qwen3.8 library (`nagaya-text-qwen38`, `council/read.rs`), a port of mkviolet's
-//! `src/template.rs`, with the tokens of LFM3. Where gogi's contract and mkviolet disagree, gogi wins. Each place has
-//! a comment with the word "gogi".
+//! This is the read code of the Qwen3.8 library (`nagaya-text-qwen38`, `council/read.rs`), a port of the template of
+//! the first Gemma 4 engine, with the tokens of LFM3. Where gogi's contract and that engine disagree, gogi wins. Each
+//! place has a comment with the word "gogi".
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -24,7 +24,8 @@ use super::{Kind, Lfm3Family, refusal};
 use crate::tokenizer::{Tokenizer, check_text};
 use nagaya_jinja::Json;
 
-/// The words that end the case turn of a plain read. The question and its letter follow, as in mkviolet.
+/// The words that end the case turn of a plain read. The question and its letter follow, as in the first Gemma 4
+/// engine.
 const ANSWER: &str = "Answer to question";
 
 // ---------------------------------------------------------------- the raw read
@@ -99,7 +100,7 @@ fn letter(j: usize) -> char {
     char::from(b'A' + u8::try_from(j).expect("an option position is below the letters"))
 }
 
-/// The spec layer: the text of the user turn that holds the spec. This is `spec_block` of mkviolet.
+/// The spec layer: the text of the user turn that holds the spec.
 fn spec_layer(spec: &Spec) -> Result<Layer, FamilyError> {
     let mut l = Layer::default();
     if !spec.instructions.is_empty() {
@@ -153,7 +154,7 @@ fn spec_layer(spec: &Spec) -> Result<Layer, FamilyError> {
 }
 
 /// The suffix that asks question `number` (counting from 1): ` N (stem):`, where the stem is the first sentence of
-/// the question. This puts the question's own words next to its answer (mkviolet `question_suffix`).
+/// the question. This puts the question's own words next to its answer.
 fn question_suffix(number: usize, instructions: &str) -> String {
     let stem = match instructions.find(". ") {
         Some(i) => &instructions[..=i],
@@ -345,7 +346,7 @@ fn plain_plan(
     case_media: &[ObjectRef],
 ) -> Result<Box<dyn ReadPlan>, FamilyError> {
     let spec = spec_layer(input.spec)?;
-    // The label goes in the case turn too, as in mkviolet.
+    // The label goes in the case turn too, as in the first Gemma 4 engine.
     let case_turn = format!("{}:\n{}", input.spec.input_label, input.case);
     let mut control_text = hits_of(family, "spec", &spec.client);
     control_text.extend(family.hits("spec", &input.spec.input_label));
@@ -394,8 +395,8 @@ fn plain_plan(
     }
     Ok(Box::new(PlainPlan {
         prefix,
-        // gogi: the hash covers the text that the read was conditioned on. mkviolet hashes the label of the head.
-        // With media, it covers the id of each object of the read too (spec 11.11, "Media in a decision").
+        // gogi: the hash covers the text that the read was conditioned on. The first Gemma 4 engine hashed the label of
+        // the head. With media, it covers the id of each object of the read too (spec 11.11, "Media in a decision").
         rendered_hash: hash_of_read(family, input, &escaped, case_media)?,
         steps,
         cursor: Cursor::new(),
@@ -571,7 +572,7 @@ struct QueuePlan {
 
 /// The names of the properties of `answers` in the queue tool's schema, in the order of the schema. The template
 /// writes the keys of an object in the order it gets them, so this is the order that the model writes them in.
-/// (mkviolet sorts by question id, because Gemma 4's template sorts keys.)
+/// (The first Gemma 4 engine sorted by question id, because Gemma 4's template sorts keys.)
 fn answer_keys(c: &Context) -> Vec<&str> {
     let Some(tool) = queue_tool(c) else {
         return Vec::new();

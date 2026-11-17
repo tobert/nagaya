@@ -391,7 +391,7 @@ pub trait Family: Send + Sync {
     /// questions is [`FamilyError::Client`].
     fn decision_read(&self, input: &DecisionInput<'_>) -> Result<Box<dyn ReadPlan>, FamilyError>;
 
-    /// Read the codes of the outputs of this service for an `assistant` audio part (spec 11.11, "Read it back"). A
+    /// Read the codes of the outputs of this service for an `assistant` audio part (spec 11.11, "Assistant audio"). A
     /// family that does not speak ignores them.
     fn read_codes(&self, _codes: std::sync::Arc<dyn OutputCodes>) {}
 

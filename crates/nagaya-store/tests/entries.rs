@@ -3136,7 +3136,7 @@ fn a_park_of_pins_reports_a_park_with_no_room() {
     assert_eq!(store.entries()[&id].tier, Tier::Host);
 }
 
-// A host victim moves to NVMe (spec 6.9, "A host victim moves to NVMe", Decided 2026-11-01).
+// A host victim moves to NVMe (spec 6.9, "A host victim moves to NVMe").
 
 fn host_put(store: &mut Store, snapshot: &Snapshot, recipe: RecipeId, now_ms: u64) -> Result<ContentId, StoreError> {
     try_put(store, snapshot, recipe, None, 1, Tier::Host, now_ms)

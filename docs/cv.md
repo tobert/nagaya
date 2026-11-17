@@ -35,7 +35,7 @@ A **control vector** is a set of vectors, one for each layer that it touches, wi
 each. It is a state object (ontology "State object"): it has a content id and belongs to one model. Spec 6.12 and 13.1
 call the same thing a "steering vector". llama.cpp calls it a control vector, and so does this doc.
 
-**Proposed** (Claude Opus 5.5, 2026-11-06): use the term "control vector" in the ontology, spec 6.12 and spec 13.1.
+Use the term "control vector" in the ontology, spec 6.12 and spec 13.1.
 Reason: it names the file and its strengths together, and llama.cpp uses that name. Amy decides.
 
 ## What it does
@@ -72,7 +72,7 @@ at runtime gives three things that other weights do not:
 These parts exist now:
 
 - **The hook point.** A stage boundary is a residual at a layer (engine-abi D1). The Gemma 4 engine sends the
-  residual after layer 14 through host memory (engine-abi "How mkviolet maps", `stages`).
+  residual after layer 14 through host memory (engine-abi "How the Gemma 4 engine maps", `stages`).
 - **The recipe slot.** The root recipe has an item for lab state, tag 4 (spec 6.2). The code hashes it in
   `recipe_root` (`crates/nagaya-store/src/lib.rs:457-475`). No caller gives a lab state yet.
 - **The rule.** Spec 6.12 says that a steered result never has a plain recipe. Spec 13.1 says that a steering
@@ -101,7 +101,7 @@ There are two places to choose a control vector. They have different costs.
 2. **In the request.** The request names a control vector by content id, and the strengths. Each request with new
    strengths starts a new root recipe, with no prefix reuse.
 
-**Proposed** (Claude Opus 5.5, 2026-11-06): build choice 1 first. Leave choice 2 as a design. Reason: choice 1 needs
+Build choice 1 first. Leave choice 2 as a design. Reason: choice 1 needs
 no change to the council v2 contract. Its cache rule is the rule of a served model today. Amy decides.
 
 A request route needs a contract in gogi first (spec 11.1). mkviolet `docs/06-council-jlens-extensions.md` drafted
@@ -144,7 +144,7 @@ The last two rows show how the tools meet. A J-Lens finds a concept at a layer. 
 vector that pushes that concept, which a control vector applies. Thus a lens and a control vector share the format of
 a vector for each layer.
 
-**Proposed** (Claude Opus 5.5, 2026-11-06): design one engine hook, "the residual after layer `l`", for both taps and
+Design one engine hook, "the residual after layer `l`", for both taps and
 control vectors. An engine declares the layers where it supports the hook. Reason: one op, one test and one
 declaration serve both tools. Amy decides.
 

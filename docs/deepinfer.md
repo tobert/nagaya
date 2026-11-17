@@ -148,7 +148,7 @@ Proposed: the inventory probe in 2.1 takes a root path, and its tests use fixed 
 sm121host. DeepInfer assumes one vendor for each machine and records no links between devices. Our inventory keeps the
 measured edges of the tier graph (ontology "Tier").
 
-### 6. One directory of kernels for each vendor (spec 14)
+### 6. One directory of kernels for each vendor
 
 **Decided:** not this layout. Each engine crate already serves one vendor and device. Adopted instead: one
 reference for each model family is the oracle for every engine of that family (spec 8.3).

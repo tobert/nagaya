@@ -2,8 +2,7 @@
 # `deploy/b70host/nagaya.service` points NAGAYA_CONFIG at this file. The loader (`crates/nagaya/src/bootstrap.rs`)
 # refuses an unknown key. `crates/nagaya/tests/deploy.rs` reads this file.
 
-# The HTTP address of mkviolet's service (Amy, 2026-10-21). The nagaya takes it, so it and mkviolet.service must never
-# run together.
+# The HTTP address on the tailnet.
 http_bind = "198.51.100.10:8091"
 
 # The gossip address: a UDP port on the same tailnet address, next to the HTTP port (spec 2.3). No socket used 8092 on

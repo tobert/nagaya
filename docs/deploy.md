@@ -166,9 +166,8 @@ If a change makes the sum larger than the pool, the process refuses the profile 
 shortfall in bytes. Then raise the pool in `profile.toml`, or lower `store.host`. Keep the pool 12 GiB below
 `MemTotal`.
 
-**Two engines on gfx1151host.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-11-01, for milestone 22 step 8
-(`AGENTS.md`, "Pool"). Reason: Amy chose to keep Qwen3.8 and Qwen-Image loaded while gfx1151host only serves, and the measures
-below leave no room for the old store budget.
+**Two engines on gfx1151host.** Reason: Amy chose to keep Qwen3.8 and Qwen-Image loaded while gfx1151host only serves, and the
+measures below leave no room for the old store budget.
 
 - The pool stays 112 GiB, and the floor of spec 4.7 stays 12 GiB.
 - The store's host budget goes from 16 GiB to 2 GiB. The NVMe budget stays 50 GiB, so a parked context still has a
@@ -184,7 +183,7 @@ below leave no room for the old store budget.
 - Before a large build on gfx1151host, unload `qwen-image-fusal` with `POST /nagaya/v1/engines/qwen-image-fusal/unload`
   (spec 3.3b), or stop the nagaya.
 
-**The layout of gfx1151host.** Decided 2026-11-01 (Amy, by interview). Qwen-Image is the resident engine, and the Qwen3.8
+**The layout of gfx1151host.** Qwen-Image is the resident engine, and the Qwen3.8
 engine is on demand. Amy: "current goal for nagaya is to have loaded what it's instructed to have loaded. so if we load
 both on gfx1151host, it's intentional. if we can't do it we can't do it, and only one stays". The API manages the swaps.
 
@@ -291,7 +290,7 @@ checkpoint, so run it with `GEMMA4_MODEL_DIR` set.
 - The profile puts `embeddinggemma-2` of kind `mk-embeddinggemma2-bmg` on device 1. It is resident and pinned (spec
   11.10).
 - The unit sets `QWEN3TTS_MODEL_DIR` to the Qwen3-TTS checkpoint in the Hugging Face cache.
-- The unit sets `GEMMA4_MODEL_DIR` to `~/src/mkviolet/checkpoints/gemma-4-26B-A4B`. The engine and the family read
+- The unit sets `GEMMA4_MODEL_DIR` to `~/models/gemma-4-26B-A4B`. The engine and the family read
   the checkpoint there.
 - The unit sets no Level Zero variable. `ZE_AFFINITY_MASK` would hide a card, and the engine finds its cards by PCI
   address.

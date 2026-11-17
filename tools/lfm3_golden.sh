@@ -90,7 +90,7 @@
 #   (torchcodec), <n>.resized_rgb [2k, h, w, 3] u8, <n>.pixel_values [k*h/16*w/16, 1536], <n>.grid_thw [1, 3],
 #   <n>.rows [k*h*w/1024, 2048]. av also: samples [S] (16 kHz mono), mel [128, T], audio_rows [A, 2048].
 # audio_out.safetensors, lfm3-omni.audio_out.json (--stages audio-out, not in the default; after speech): the TTS run
-#   of speech.safetensors as an assistant audio part (spec 11.11, "Read it back"). ids [P] with one <|audio_out|> for
+#   of speech.safetensors as an assistant audio part (spec 11.11, "Assistant audio"). ids [P] with one <|audio_out|> for
 #   each frame and the end frame; codes [F, 12] without the end frame; rows [F + 1, 2048] the summed codebook rows.
 # lfm3.latent.safetensors (--stages latent, not in the default): the latent gate of LFM3-1.7B (docs/lab.md,
 #   "`latent` and `merge`"). The prompt is LATENT_PROMPT of the tool, as one user message with thinking off. S = 16.

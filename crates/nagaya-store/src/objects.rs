@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ContentId;
 
-/// The largest object: 8 GiB (spec 6.15, Amy 2026-10-25), or half the budget when that is less.
+/// The largest object: 8 GiB (spec 6.15), or half the budget when that is less.
 pub const OBJECT_BYTES_MAX: u64 = 8 << 30;
 
 /// The name of the index file.

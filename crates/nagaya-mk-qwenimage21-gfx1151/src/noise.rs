@@ -1,7 +1,7 @@
 //! The random stream of the image engines (spec 11.9, engine-abi "Image"), as the SDXL engine has it
 //! (`nagaya-mk-sdxl-bmg`, `noise.rs`). Spec 11.9c gives the start latent of Qwen-Image from this stream. Each value is
 //! a function of the seed, the image, the step, the purpose and its index, so the image of seed `s` does not depend
-//! on the other images of its slot. A seed from another tool does not give that tool's image (Decided 2026-10-28).
+//! on the other images of its slot. A seed from another tool does not give that tool's image.
 
 /// What a draw is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

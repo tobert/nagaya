@@ -2,14 +2,14 @@
 
 The fit is Anthropic's reference, `jacobian-lens` (Gurnee et al., 2026), imported from a clone at
 ~/src/research/jacobian-lens or $JLENS_SRC. The model is transformers with the checkpoint's own code, in float32
-with eager attention, as tools/lfm3_reference.py loads it. Do not run it with a GPU job. Amy, 2026-11-08: the fit
-runs on the CPU of b70host.
+with eager attention, as tools/lfm3_reference.py loads it. Do not run it with a GPU job. The fit
+runs on the CPU.
 
   ~/.venvs/nagaya-lfm3-ref/bin/python -I tools/lfm3_jlens_fit.py --model "$LFM3_MODEL_DIR" \
       --corpus prompts.json --weight-hash blake3:… --out lfm3.jlens.safetensors [--n 100]
 
---corpus is a JSON list of prose paragraphs. gmk's corpus is the WikiText-103 paragraphs of more than 700
-characters, at gfx1151host:/tank/ml/gmk/jlens/corpus/prompts.json. The tool takes the first --n of one fixed permutation,
+--corpus is a JSON list of prose paragraphs. The first J-Lens fit, of Gemma 4 12B, used the WikiText-103
+paragraphs of more than 700 characters. The tool takes the first --n of one fixed permutation,
 so a larger --n resumes the checkpoint. --weight-hash is the `weight_hash` of the served model in
 `GET /council/v2/identity`. The route refuses a lens of other weights.
 
@@ -40,7 +40,7 @@ ALIGN = 4096
 
 
 def detok(text):
-    """WikiText's spacing back to prose, as gmk's fit does: ' , ' to ', ', '( x )' to '(x)', '1 @,@ 000' to
+    """WikiText's spacing back to prose, as the first J-Lens fit does: ' , ' to ', ', '( x )' to '(x)', '1 @,@ 000' to
     '1,000'."""
     text = re.sub(r" @(.)@ ", r"\1", text)
     text = re.sub(r" ([,.;:!?)\]}]|'s|'t|'re|'ve|'ll|'d|n't)", r"\1", text)

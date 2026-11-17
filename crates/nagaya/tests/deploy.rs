@@ -531,7 +531,7 @@ fn the_b70host_unit_reads_its_config_and_the_checkpoint_and_hides_no_card() {
         .expect("the unit sets NAGAYA_CONFIG under the repository");
     assert_eq!(config, "deploy/b70host/nagaya.toml");
     assert!(repo().join(config).is_file(), "the file that the unit names exists");
-    assert!(environment.contains(&"GEMMA4_MODEL_DIR=%h/src/mkviolet/checkpoints/gemma-4-26B-A4B"));
+    assert!(environment.contains(&"GEMMA4_MODEL_DIR=%h/models/gemma-4-26B-A4B"));
     assert!(environment.contains(
         &"QWEN3TTS_MODEL_DIR=%h/.cache/huggingface/hub/models--Qwen--Qwen3-TTS-12Hz-1.7B-VoiceDesign/snapshots/\
           5ecdb67327fd37bb2e042aab12ff7391903235d3"

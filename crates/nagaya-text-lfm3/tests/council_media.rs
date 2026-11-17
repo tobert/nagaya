@@ -273,7 +273,7 @@ fn a_part_that_the_family_cannot_read_is_a_client_error_that_names_it() {
         }
     }
     // An assistant audio part reads the codes of its output, and a clip that is no output of the service has none:
-    // a 404 that names the part (spec 11.11, "Read it back", Amy 2026-11-08).
+    // a 404 that names the part (spec 11.11, "Assistant audio").
     let spoken = context(json!({"thinking": false, "messages": [
         {"role": "user", "content": "Say hi."},
         {"role": "assistant", "content": [{"type": "object", "id": CLIP, "mime": "audio/wav"}]},
@@ -690,7 +690,7 @@ impl nagaya_council::family::OutputCodes for Book {
 /// The id of the spoken output of the test.
 const SPOKEN: &str = "blake3:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
-/// An assistant audio part reads the codes of its output (spec 11.11, "Read it back"): a position for each frame and
+/// An assistant audio part reads the codes of its output (spec 11.11, "Assistant audio"): a position for each frame and
 /// the end frame, the ids of the reference, and a 404 that names the part when the service holds no codes.
 #[test]
 fn an_assistant_audio_part_reads_the_codes_of_its_output() {

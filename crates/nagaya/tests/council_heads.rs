@@ -1,4 +1,4 @@
-//! The head of a cut reply (spec 11.3c, "Sealed head") with the Qwen3.8 family: its real tokenizer and chat template
+//! The head of a cut reply (spec 11.3c) with the Qwen3.8 family: its real tokenizer and chat template
 //! from the GGUF, on the fake engine. The engine is scripted, so a test knows the reply. No GPU runs.
 
 mod council_support;
@@ -111,8 +111,8 @@ fn generate(f: &Fixture, value: &Value, max_tokens: u32) -> GenerationDone {
 
 const QUESTION: &str = "In two sentences, why do snapshots of model state help an agent?";
 
-/// senpai's live check on 8090: a reply cut inside its thinking, sent back closed with `content: ""` and then a user
-/// message, fed all of the reply again (kept 19 of 76).
+/// A reply cut inside its thinking, sent back closed with `content: ""` and then a user
+/// message, must not feed all of the reply again.
 #[test]
 fn a_reply_cut_inside_its_thinking_and_sent_back_closed_starts_from_its_head() {
     if qwen_model::absent() {
@@ -213,8 +213,8 @@ fn a_dry_run_renders_its_context_once() {
     assert_eq!(renders.load(Ordering::SeqCst), 1);
 }
 
-/// senpai's timing on 8090: an 18k-token context with an assistant message took 132 ms for a dry run, and 42 ms
-/// without it. The test prints the times of a host dry run, best of three, with the real tokenizer.
+/// The time of a dry run of a long context with an assistant message. The test prints the times of a host dry run, best
+/// of three, with the real tokenizer.
 #[test]
 fn a_long_context_with_an_assistant_message_costs_what_one_without_it_costs() {
     if qwen_model::absent() {

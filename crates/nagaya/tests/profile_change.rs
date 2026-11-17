@@ -119,8 +119,8 @@ fn engine(name: &str, residency: Residency) -> EnginePlacement {
     }
 }
 
-/// A resident engine `chat` and an on-demand engine `voice` on one device of `device_bytes`. With 1000 bytes they do not
-/// fit together; with 2000 they do.
+/// A resident engine `chat` and an on-demand engine `voice` on one device of `device_bytes`. With 1000 bytes they do
+/// not fit together; with 2000 they do.
 fn profile(device_bytes: u64) -> PlacementProfile {
     PlacementProfile {
         engines: vec![
@@ -434,7 +434,7 @@ fn hold_chat(main: &Main) -> Sender<()> {
     gate
 }
 
-/// A PUT while a swap waits is a 409 busy, and nothing changes (spec 3.3a, Decided 2026-10-30). A budget checked
+/// A PUT while a swap waits is a 409 busy, and nothing changes (spec 3.3a). A budget checked
 /// beside the waiting swap could refuse the engines after it.
 #[test]
 fn a_put_while_a_swap_waits_is_busy() {
@@ -574,7 +574,7 @@ fn a_context_of_a_removed_engine_is_refused_during_a_change() {
     assert!(ports.failure().is_none(), "{:?}", ports.failure());
 }
 
-/// A PUT while a swap that only unloads drains is busy too (spec 3.3a, Decided 2026-10-30).
+/// A PUT while a swap that only unloads drains is busy too (spec 3.3a).
 #[test]
 fn a_put_during_an_unload_drain_is_busy() {
     let mut main = Main::new();

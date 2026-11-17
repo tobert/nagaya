@@ -100,7 +100,7 @@ fn the_last_drop_frees_the_weights_and_the_next_open_gives_the_same_logits() {
             Some(want) => assert!(&bytes == want, "round {round}: the logits differ from the first open"),
         }
     }
-    // Each close leaves the same residue: the runtime, the pass host and the C++ engine (Amy, 2026-11-01). A close
+    // Each close leaves the same residue: the runtime, the pass host and the C++ engine. A close
     // that leaks a part of the weights makes the residue grow from round to round.
     for (what, values) in [
         ("the process", after_drop.iter().map(|x| x.0).collect::<Vec<u64>>()),

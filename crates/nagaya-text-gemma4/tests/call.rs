@@ -1,4 +1,4 @@
-//! The body of a Gemma 4 tool call (mkviolet `tool_calls_parse_strings_numbers_nesting_and_fail_loudly`).
+//! The body of a Gemma 4 tool call.
 
 use nagaya_text_gemma4::call::parse_tool_call;
 use serde_json::{Value, json};

@@ -740,8 +740,8 @@ fn an_unload_on_card_0_does_not_delay_a_job_on_card_1() {
     assert_eq!(process.ports().engine_state("left"), Some(EngineState::Unloaded));
 }
 
-/// An engine of both cards opens on the group thread, not on a device thread (spec 3.3a: Amy accepted that stall).
-/// The engine of a device thread stays loaded there, because the load does not name it (spec 3.3a, "No moves").
+/// An engine of both cards opens on the group thread, not on a device thread (spec 3.3a). The other jobs of the group
+/// wait. The engine of a device thread stays loaded there, because the load does not name it (spec 3.3a, "No moves").
 #[test]
 fn an_engine_of_both_cards_swaps_on_the_group_thread() {
     let directory = tempfile::tempdir().unwrap();

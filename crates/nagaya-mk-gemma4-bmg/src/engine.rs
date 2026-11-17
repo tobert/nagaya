@@ -1,4 +1,4 @@
-//! The `Engine` trait on the Gemma 4 copy, with two stages (engine-abi D1, "How mkviolet maps").
+//! The `Engine` trait on the Gemma 4 copy, with two stages (engine-abi D1, "How the Gemma 4 engine maps").
 //!
 //! [`Loaded`] holds the cards and the weights. [`Gemma4`] is one engine on them: its slots, its work buffers and its
 //! two stages. Several engines can share one `Loaded`, as the conformance gates need. Stage 0 runs layers 0-14 on

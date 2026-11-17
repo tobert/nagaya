@@ -97,6 +97,32 @@ Step 2 does each row. A row changes no bits unless its last column says so.
 | `deploy/gfx1151host/`, `deploy/b70host/` | deploy, tests, docs | names by hardware, for example `deploy/strix-halo/` and `deploy/b70-pair/` | a profile copy at the next deploy |
 | `sm121host` | the cluster tests | a made-up peer, for example `node-c` | none |
 
+## Progress of step 2
+
+The code of the B70 engines has no old name since 2026-11-17 (`a4184f7` to `a48bce6`):
+
+- Done: the snapshot format, the test names, the headings of engine-abi and the Gemma 4 fixture tools.
+- Done: the checkpoint folder of the unit, and each comment of the B70 engines and the family libraries.
+- Waits for step 3: the prose of the docs.
+- Waits for step 4: the address test of `deploy.rs` and its comment.
+- On the Strix Halo machine: the build fixtures of the Qwen3.8 crate, `megakernel.service`, and the Qwen3.8
+  reference. Also `tools/mk_dequant_digests.cpp` in comments, and the name of the diffusers reference.
+
+## The files that stay private
+
+The owner decided on 2026-11-17 that these files stay in this archive, out of the public tree. Step 8 leaves them out
+of the new root commit. No public file cites them.
+
+- `docs/history.md`: the record of milestones 1 to 30.
+- `docs/cv.md`: the trials of control vectors. Its rules are in spec 11.12.
+- `docs/reviews.md`, `docs/perf.md`, `docs/beats.md`, `docs/swarm-ideas.md`: research notes and review records.
+- `docs/prior-art.md`, `docs/deepinfer.md`: notes on other projects. The spec names ds4-recipe and DeepInfer where a
+  rule came from them.
+- `docs/scrub.md`: this file.
+
+`AGENTS.md` is the instruction file of the agents. It holds the milestones, the lab and the history of decisions.
+Step 7 writes a public version of it, or step 8 leaves it out.
+
 ## Open
 
 - **The checkout path is in four kernel binaries.** The binaries of Qwen3-TTS, SDXL, EmbeddingGemma 2 and LFM3

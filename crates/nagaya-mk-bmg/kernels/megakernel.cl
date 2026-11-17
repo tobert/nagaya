@@ -1,4 +1,4 @@
-// mkviolet: per-card task interpreter for Gemma 4 26B-A4B and EmbeddingGemma 2 on Arc Pro B70.
+// The task interpreter of one card, for Gemma 4 26B-A4B and EmbeddingGemma 2 on Arc Pro B70.
 // Compiled offline by build.rs: ocloc compile -file kernels/megakernel.cl -device bmg-g31 -options "-cl-std=CL3.0"
 //
 // Launched as 32 work-groups (one per Xe2 core) of 1024 work-items (64 subgroups of 16). Every

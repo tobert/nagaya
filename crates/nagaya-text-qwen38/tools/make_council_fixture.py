@@ -137,7 +137,7 @@ def main() -> None:
         context_cases.append({"context": name, **text, **digest(ids), "boundaries": bounds,
                               "gen_sha256": sha(gen_ids)})
 
-    # The text of a spec layer, as `spec_block` of the Gemma 4 engine writes it.
+    # The text of a spec layer, as the first Gemma 4 engine wrote it.
     def spec_text(spec: dict) -> str:
         t = ""
         if spec["instructions"]:

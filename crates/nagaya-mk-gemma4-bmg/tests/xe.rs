@@ -20,9 +20,10 @@ use nagaya_mk_gemma4_bmg::spec::{self, Config};
 use nagaya_store::{EngineFacts, Put, Reason, Restored, Store, Tier, recipe_root, snapshot_from_engine};
 use sha2::{Digest, Sha256};
 
-/// The hashes of the logits for the plan of `copy_plan`. The copy of mkviolet gave the first hashes, before the trait
-/// (`1d9e1b6`). The split attention of 2026-11-06 changed them, because its count of key segments reads no slot size
-/// now (engine-abi "The bits do not depend on the slot size"). The golden tests against transformers passed after it.
+/// The hashes of the logits for the plan of `copy_plan`. The copy of the first Gemma 4 engine gave the first hashes,
+/// before the trait. The split attention of 2026-11-06 changed them, because its count of key segments reads no slot
+/// size now (engine-abi "The bits do not depend on the slot size"). The golden tests against transformers passed after
+/// it.
 const COPY_PREFILL: &str = "7e59fa12bec4367c40e949607ce847beffc697173bf3219953301573a0f22fb8";
 const COPY_DECODE: &str = "a57cd4bcb32ccfafb02488aaa697dffeaf6250314ee53acf37eae7440364cee3";
 const COPY_BRANCHES: &str = "aa890327c6262a0aa41604c8e9f03119b3f05beb0f36bd5cdb70a573f78bb4d3";
@@ -383,7 +384,7 @@ fn the_same_feed_gives_the_same_bits_in_each_slot_size() {
     );
 }
 
-/// A write that mkviolet asserts on comes back refused, and a refused pass or write changes nothing.
+/// A write that the first engine asserted on comes back refused, and a refused pass or write changes nothing.
 ///
 /// Falsified by a cells write that takes a ring's rows at a later position in a short slot.
 #[test]
@@ -500,7 +501,7 @@ fn argmax(bytes: &[u8]) -> u32 {
 }
 
 /// Not a check: decode and a prefill of 4096 tokens in blocks of 512 through the two stage threads, as the nagaya runs
-/// them. mkviolet's numbers: 46.9 tokens/s for decode, and 1376 ms for the prefill.
+/// them. The numbers of the first engine: 46.9 tokens/s for decode, and 1376 ms for the prefill.
 /// `cargo test --release -p nagaya-mk-gemma4-bmg --features xe --test xe -- --ignored --nocapture profile_stage_threads`
 #[test]
 #[ignore = "profile: not a check; run it alone"]

@@ -49,7 +49,7 @@ fn shell() -> Value {
 
 // ---------------------------------------------------------------- contexts and boundaries
 
-/// The cuts of mkviolet's `cuts_fall_where_a_prefix_renders_the_same`. The call keeps its thinking, and the text
+/// The cuts fall where a prefix renders the same. The call keeps its thinking, and the text
 /// answer loses its thinking before the later user message, so its boundary drops.
 #[test]
 fn a_boundary_drops_where_the_template_drops_the_thinking() {
@@ -125,7 +125,8 @@ fn the_generation_prompt_opens_the_thinking_or_closes_it() {
     }
 }
 
-/// Python's jinja2 refuses mkviolet's map `{"error": ...}` for a failed result, so the library writes a prefix.
+/// Python's jinja2 refuses the map `{"error": ...}` of the first Gemma 4 engine for a failed result, so the library
+/// writes a prefix.
 #[test]
 fn a_failed_tool_result_renders_with_its_prefix() {
     if absent() {
@@ -308,9 +309,9 @@ highest.\nA. easy\nB. hard\n\nQuestion 3. Is this true? It is safe.\nNo writes.\
 const CASE_LAYER: &str =
     "<|turn>user\ncommand:\nrm -rf /tmp/x<turn|>\n<|turn>model\n<|channel>thought\n<channel|>Answer to question";
 
-/// A plain read with no context has mkviolet's layout: `<bos>`, the spec turn, the case turn and the questions.
+/// A plain read with no context has the council layout: `<bos>`, the spec turn, the case turn and the questions.
 #[test]
-fn a_plain_read_has_the_layout_of_mkviolet() {
+fn a_plain_read_has_the_council_layout() {
     if absent() {
         return;
     }
@@ -325,7 +326,7 @@ fn a_plain_read_has_the_layout_of_mkviolet() {
     let mut plan = family().decision_read(&input).unwrap();
     let prefix = plan.prefix().to_vec();
     assert_eq!(text(&prefix), format!("<bos>{SPEC_LAYER}{CASE_LAYER}"));
-    // Template text with markers on, client text with them off, piece by piece, as mkviolet tokenizes.
+    // Template text with markers on, client text with them off, piece by piece, as the first Gemma 4 engine tokenized.
     assert_eq!(prefix[..2], [special("<bos>"), special("<|turn>")]);
     let (steps, sha) = drive(plan.as_mut(), &[]);
     assert_eq!(steps.len(), 2);
@@ -409,7 +410,7 @@ fn queue_context(thinking: bool) -> Context {
 }
 
 /// A queue read gives the case as the result of the queue call, and reads each answer of the next call in the order
-/// of the question ids, after the likeliest letter of the one before (mkviolet `queue_reads`).
+/// of the question ids, after the likeliest letter of the one before.
 #[test]
 fn a_queue_read_writes_the_next_call_in_the_form_of_the_template() {
     if absent() {

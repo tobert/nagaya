@@ -1,7 +1,7 @@
 //! The host checks of the op tests: no GPU and no feature. They hold the generator and the fixture files.
 //!
-//! The generator in `tests/ops/inputs.rs` must give what `tools/op_fixtures.py` gives, and the fixtures must come from one
-//! run of one revision of the reference and stay small.
+//! The generator in `tests/ops/inputs.rs` must give what `tools/op_fixtures.py` gives, and the fixtures must come from
+//! one run of one revision of the reference and stay small.
 
 #[path = "ops/fixture.rs"]
 mod fixture;
@@ -102,7 +102,8 @@ fn all_fixtures_come_from_one_run_of_one_reference() {
     }
 }
 
-/// Each fixture file is read by a test, and each test reads a file that exists. The test finds the reads in the sources.
+/// Each fixture file is read by a test, and each test reads a file that exists. The test finds the reads in the
+/// sources.
 #[test]
 fn the_groups_on_disk_are_the_groups_that_the_tests_load() {
     let tests = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
@@ -183,8 +184,7 @@ fn each_group_names_the_source_files_it_reads() {
 }
 
 /// The convention of the crates is 1 MB. The op fixtures hold the expected outputs of 20 test files of the reference,
-/// and they were 1.2 MB before the tiles group. Proposed (Claude Sonnet 5.5, 2026-10-22): 2 MB for this crate. Amy
-/// decides.
+/// so the limit of this crate is 2 MB.
 #[test]
 fn the_fixtures_stay_small() {
     let total: u64 = std::fs::read_dir(fixture::directory())

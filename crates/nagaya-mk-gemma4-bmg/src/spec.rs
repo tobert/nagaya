@@ -1,4 +1,5 @@
-//! The limits, the parts and the rules of the Gemma 4 engine that need no card (engine-abi "How mkviolet maps").
+//! The limits, the parts and the rules of the Gemma 4 engine that need no card (engine-abi "How the Gemma 4 engine
+//! maps").
 //!
 //! `plan` reads `config.json` and the tensor headers of the checkpoint. It reads no weight bytes. The checks of a
 //! pass, of a part call and of a fit are plain functions here, so the host tests cover them.
@@ -23,19 +24,19 @@ use crate::sharding::Checkpoint;
 /// The engine kind in a placement profile (AGENTS "Layout": kind, model, target).
 pub const KIND: &str = "mk-gemma4-bmg";
 
-/// The model name of the identity. Clients of mkviolet use it (`council_server.rs:39`).
+/// The model name of the identity. Clients of the first Gemma 4 engine used it, so it did not change.
 pub const MODEL: &str = "gemma-4-26b-a4b";
 
 /// The family library that the engine needs (spec 11.3).
 pub const FAMILY: &str = "gemma4";
 
-/// The feed block when the config names none: mkviolet's `MAX_BLOCK` (`main.rs:35`).
+/// The feed block when the config names none, as in the first Gemma 4 engine.
 pub const DEFAULT_MAX_BLOCK: usize = 512;
 
 /// The most positions in one slot. The measured `MAX_QUANTUM_MS` holds up to this size.
 pub const MAX_SLOT_TOKENS: usize = 65_536;
 
-/// The longest stage quantum, in milliseconds (D8). See `MAX_QUANTUM_MS` in engine-abi "mkviolet's limits".
+/// The longest stage quantum, in milliseconds (D8). See `max_quantum_ms` in engine-abi "The first Gemma 4 binding".
 pub const MAX_QUANTUM_MS: u32 = 2_000;
 
 /// The bytes of one residual row between the stages: `HIDDEN` f32 values.
@@ -129,7 +130,7 @@ pub fn row_floats(l: usize) -> usize {
     layer_geom(l).kv_heads * layer_geom(l).head_dim
 }
 
-/// The parts of a state (engine-abi "mkviolet's parts"): `k.<ll>` and `v.<ll>` for each layer.
+/// The parts of a state (engine-abi "The parts of the Gemma 4 engine"): `k.<ll>` and `v.<ll>` for each layer.
 pub fn parts() -> Vec<PartLimits> {
     (0..NUM_LAYERS)
         .flat_map(|l| {
@@ -578,7 +579,7 @@ mod tests {
         assert_eq!(limits.parts[3].shape, vec![8, 256]);
         assert_eq!(limits.parts[29].stage, 0);
         assert_eq!(limits.parts[30].stage, 1);
-        // A token costs 450,560 bytes in all parts (engine-abi "mkviolet's parts").
+        // A token costs 450,560 bytes in all parts (engine-abi "The parts of the Gemma 4 engine").
         let per_token: u64 = limits
             .parts
             .iter()
@@ -729,7 +730,7 @@ mod tests {
     }
 
     /// A ring holds the last 4,096 positions of a long slot, and a short slot holds every position (engine-abi
-    /// "mkviolet's parts").
+    /// "The parts of the Gemma 4 engine").
     #[test]
     fn a_ring_holds_the_last_positions_of_a_long_slot() {
         assert_eq!(base(4096, 0, 4000, 4000), 0);
@@ -745,7 +746,7 @@ mod tests {
 
     /// A fit follows `KvSnapshot::join`: a ring needs the window, everything else needs every position.
     #[test]
-    fn a_fit_follows_the_join_of_mkviolet() {
+    fn a_fit_follows_the_join_of_the_held_rows() {
         let span = |start, end| CoverageSpan { part: 0, start, end };
         assert_eq!(fits(4096, 0, &span(0, 4096)), Ok(()));
         assert!(fits(4096, 0, &span(0, 4097)).is_err());

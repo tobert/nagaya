@@ -1,4 +1,4 @@
-//! The body of a Gemma 4 tool call, the text between `<|tool_call>` and `<tool_call|>` (mkviolet `parse_tool_call`).
+//! The body of a Gemma 4 tool call, the text between `<|tool_call>` and `<tool_call|>`.
 //!
 //! A body is `call:NAME{key:VALUE,...}`. A string is `<|"|>...<|"|>`. A key is a bare word, or a quoted string.
 

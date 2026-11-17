@@ -543,7 +543,7 @@ def main() -> None:
         "nul_bytes": [b"a\x00b"],
         "bom": [b"\xef\xbb\xbfa"],
         # CPython emits the replacement character at once for a prefix that no byte can finish. The three cases pin
-        # that timing (senpai's review of milestone 11, finding F2).
+        # that timing.
         "invalid_prefix_e4_41": [b"\xe4A"],
         "invalid_prefix_e0_80": [b"\xe0\x80"],
         "invalid_prefix_f0_90_41": [b"\xf0\x90A"],

@@ -389,7 +389,7 @@ impl Ledger {
         }
 
         // The charges that live now stay charged. A later release finds its charge, and the unassigned bytes stay
-        // true. Decided by senpai 2026-10-20 night (vetoable); see spec 4.2 "Staging".
+        // true (spec 4.2, "Staging").
         let mut live = vec![0u128; profile.budgets.len()];
         for (engine, count) in &self.contexts {
             if *count == 0 {

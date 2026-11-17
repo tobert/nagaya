@@ -161,7 +161,8 @@ impl Default for SampleDefaults {
 }
 
 impl ServiceConfig {
-    /// A config with the default limits: mkviolet's decision limits (gogi "Identity, limits, capabilities").
+    /// A config with the default limits: the decision limits of the first Gemma 4 engine (gogi "Identity, limits,
+    /// capabilities").
     pub fn new(model: &str, engine: &str) -> Self {
         Self {
             model: model.to_owned(),

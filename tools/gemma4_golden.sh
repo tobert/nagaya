@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Writes the HF reference files that the golden tests of nagaya-mk-gemma4-bmg read.
 #
-# The token ids are fixed in the crate's tests/fixtures. mkviolet's tools/golden.sh made them from its prompts.
-# Do not run it with a GPU job (AGENTS "mkviolet on b70host").
+# The token ids are fixed in the crate's tests/fixtures. The first Gemma 4 engine made them from its prompts.
+# Do not run it with a GPU job.
 #
 #   GEMMA4_MODEL_DIR=<checkpoint> REF_PYTHON=~/.venvs/nagaya-ref/bin/python tools/gemma4_golden.sh
 #

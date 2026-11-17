@@ -645,7 +645,7 @@ impl Lfm3Engine {
                 // The encoder writes every row of the clip into its own rows. A copy then takes the rows of this
                 // block to their place in the media rows of the tower, as the tower writes an image's rows. A run of
                 // a clip takes its rows from the run's first row of the clip (spec 11.11, "The video of a request").
-                // The frames of an assistant audio part (spec 11.11, "Read it back"): each row is the sum of the 12
+                // The frames of an assistant audio part (spec 11.11, "Assistant audio"): each row is the sum of the 12
                 // codebook rows of its frame, as the speech loop feeds a frame. The host turns the codes of the block's
                 // frames into rows of the table, and 12 embeds of the block's frames sum them into the media rows.
                 SpanKind::Latent { .. } => unreachable!("latent rows take their place above"),

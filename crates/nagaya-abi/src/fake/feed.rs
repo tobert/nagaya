@@ -1,9 +1,10 @@
 //! The fake engine with a feed rule, in one stage or in two (engine-abi D1, D11).
 //!
-//! Its bits depend on the token count of a pass, as mkviolet's do. Each layer keeps one cells part, and the row at a
-//! position is a hash of the row before it, the input of the layer, the position, and the tokens of the pass. The
-//! residual between two stages is the output of the last layer of the first stage. Thus the bits of a state depend
-//! only on its tokens and on the split of the tokens into passes. One stage and two stages give the same bits.
+//! Its bits depend on the token count of a pass, as the bits of the Gemma 4 engine do. Each layer keeps one cells part,
+//! and the row at a position is a hash of the row before it, the input of the layer, the position, and the tokens of
+//! the pass. The residual between two stages is the output of the last layer of the first stage. Thus the bits of a
+//! state depend only on its tokens and on the split of the tokens into passes. One stage and two stages give the same
+//! bits.
 
 use std::collections::BTreeMap;
 
