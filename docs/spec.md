@@ -305,7 +305,7 @@ gossip alone (11.1a). Thus gossip must hold each served model, the HTTP address 
 - **The sizes.** An identity of the B70 machine with nine served models has 4,524 bytes. The largest entry has 738
   bytes (`embeddinggemma-2`). Each engine has its own key, so a key holds one entry, far below 8192 bytes.
 - The largest value of a node is `profile:active`. The profile of the B70 machine, with nine engines, is 1,791 bytes as
-  compact JSON (`deploy/b70host/profile.toml`, without its comments).
+  compact JSON (`deploy/b70-pair/profile.toml`, without its comments).
 - **A value that does not fit.** At the start, a value of `engine:<name>` or `server` past 8192 bytes refuses the
   start (exit 3). The message names the key and its size. After the start, it stops the process (8.5).
 - Reason for the stop: a served model that no peer sees is a silent fallback.
@@ -1304,7 +1304,7 @@ The NVMe tier makes room by its own rules. The put removes a victim that a park 
 - a victim with no room on NVMe.
 
 Reason: with two engines on the Strix Halo machine, the host tier is 2 GiB (`docs/deploy.md`, "Two engines on
-gfx1151host"). The Qwen3.8 engine's snapshots of about 135 MB can leave the tier before a client reads them again. The
+one GPU"). The Qwen3.8 engine's snapshots of about 135 MB can leave the tier before a client reads them again. The
 NVMe tier has 50 GiB. A refused put still changes nothing: the store checks the room before it parks a
 victim.
 
@@ -2090,7 +2090,7 @@ job from an HTTP request starts a trace of its own today. A test shows the paren
   engine. `GroupJobs` holds the engine of each job, so the name is known.
 - The joined name above stays for what belongs to the whole group, such as the heartbeat of the group thread.
 - Reason: a group can hold many engines. Group 0 of the B70 machine has nine engines, from `gemma` to `inpaint-0`
-  (`deploy/b70host/profile.toml`). With the joined name, each job has the same long name, and a metric cannot tell
+  (`deploy/b70-pair/profile.toml`). With the joined name, each job has the same long name, and a metric cannot tell
   the engines apart.
 
 Built. `GroupJobs` and the jobs of a staged group take the names of the engines in profile order. A job
@@ -2370,10 +2370,10 @@ the scheduler stays a pure recorder of metrics and spans.
 **10.1 systemd.** The unit is `Type=notify`. The process sends `READY=1` when every engine in the profile has
 opened, passed its canary, and woken its pinned state. `STATUS=` gives the state of each engine.
 
-**One unit file for each machine.** The unit of the Strix Halo machine is `deploy/nagaya.service`. The unit of the
-B70 machine is `deploy/b70host/nagaya.service`, next to its config and profile.
-Reason: the units differ in the engine variables, the cargo feature of the build and the OTLP line. One shared unit
-needs a drop-in file on each machine, and a drop-in is not in the repository.
+**One unit file for each machine.** The unit of the Strix Halo example is `deploy/strix-halo/nagaya.service`. The unit
+of the B70 example is `deploy/b70-pair/nagaya.service`, next to its config and profile. Reason: the units differ in the
+engine variables, the cargo feature of the build and the OTLP line. One shared unit needs a drop-in file on each
+machine, and a drop-in is not in the repository.
 
 When `<store_dir>/profile.toml` does not exist, the process starts with an empty profile. An empty profile is valid,
 because a machine with no engine can serve as a coordinator or hold a store tier (2.1). A process with an empty
@@ -2458,7 +2458,7 @@ Built: the process side (`crates/nagaya/src/arena.rs`, `crates/nagaya/src/proces
 Gemma 4 engine, with its head slab (`Loaded::attach`). A cold `Loaded::load` takes about 7.1 s, and an attach from
 the 31 slabs takes about 1.2 s (`tests/xe_arena.rs`, release build). A process restart takes about 7.1 s to
 `READY=1` cold and 1.2 s hot (`crates/nagaya/tests/xe_restart.rs`). The unit of the B70 machine sets
-`FileDescriptorStoreMax=512` (`deploy/b70host/nagaya.service`). The Qwen3.8 engine exports no arena yet.
+`FileDescriptorStoreMax=512` (`deploy/b70-pair/nagaya.service`). The Qwen3.8 engine exports no arena yet.
 
 **10.3 Stop.** On SIGTERM, the nagaya does these steps:
 
@@ -4133,7 +4133,7 @@ as the diffusers reference does.
   14.10 GiB. The VAE decoder adds less than 1 GiB in bf16. The scratch of a slot is a mandatory term (engine-abi
   "Core").
 - The scratch of the largest slot is 7 GiB. `examples/measure.rs` measured it on the Strix Halo machine
-  (`crates/nagaya-mk-qwenimage21-gfx1151/src/plan.rs:136-140`). `docs/deploy.md`, "Two engines on gfx1151host", gives the
+  (`crates/nagaya-mk-qwenimage21-gfx1151/src/plan.rs:136-140`). `docs/deploy.md`, "Two engines on one GPU", gives the
   pool.
 
 **The LoRA fold.** Reason: a LoRA of the profile is part of the weights of the variant. A fold costs nothing at each

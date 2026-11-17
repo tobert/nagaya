@@ -168,8 +168,8 @@ The nagaya runs on two machines of Amy's lab today. `docs/deploy.md` tells how t
 profiles are in `deploy/`.
 
 - **gfx1151host** has the gfx1151. Qwen-Image is resident, and Qwen3.8 is on demand under the engine name `qwen38`.
-- **b70host** has two B70 cards. Its profile is `deploy/b70host/profile.toml`. Its iGPU (gfx1036) drives the
-  display: do not run work on it.
+- **b70host** has two B70 cards. Its profile is a copy of `deploy/b70-pair/profile.toml`, in the store directory. Its
+  iGPU (gfx1036) drives the display: do not run work on it.
 
 The rules for a GPU test, on each machine:
 
@@ -186,8 +186,8 @@ The rules for a GPU test, on each machine:
 - Do not mutate a pointer or a size that a kernel reads. Such a mutant faulted a card on 2026-11-07.
 - In a container with no systemd, ask your reviewer to check the unit.
 
-An agent may also stop and start the web app on b70host (`python3 tools/nagaya_web.py --host <address>`, port
-8096). Write each restart in `signoff.md`.
+An agent may also stop and start the web app on b70host (`python3 tools/nagaya_web.py --host <address> --seed
+http://<address>:8091`, port 8096). `signoff.md` gives the address. Write each restart in `signoff.md`.
 
 #### The Qwen3.8 engine on gfx1151
 
