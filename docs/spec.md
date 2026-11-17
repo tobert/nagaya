@@ -3104,9 +3104,11 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
 
 - A raw read, a decision read and a generation are each one job for each context. The job builds the context, as a
   build does, and its work goes on in the same slot. When the store holds the head, the job restores it.
-- A decision read feeds the prefix of its plan once. The first question that starts after the prefix keeps a copy of
-  the state in memory. Each later question of that kind writes the copy back into the slot first. A raw read does
-  the same for each suffix after the first.
+- A decision read feeds the prefix of its plan once. A plan can say that its prefix ends at a boundary. Then the
+  job builds the prefix with the context, and the store holds its head (11.11, "The plain read of the LFM3
+  family"). The first question that starts after the prefix keeps a copy of the state in memory. Each later
+  question of that kind writes the copy back into the slot first. A raw read does the same for each suffix after
+  the first.
 - The usage of a read counts the tokens that it fed: the shared prefix once, and no letter after the last question.
   gogi-fake counts the prefix once for each question, and the last letter of a queue read. Both keep
   `kept + fed = prompt`.
@@ -4582,8 +4584,8 @@ above leave these choices open, and each one is the simplest choice that a fake 
 Reason: gogi reads `case_media` "with the case in order", and a decision context is a context. Each choice below is
 the simplest one that the suite and a fake can check.
 
-- **The case.** In a plain read, the case turn is one user message. It holds the label and the case as one text
-  part, then each object of `case_media` in its order, as object parts.
+- **The case.** In a plain read, the case turn is one user message. It holds each object of `case_media` in its
+  order, as object parts, then the label and the case as one text part ("The plain read of the LFM3 family").
 - **The context.** A decision context may hold media parts. The build reads them as a build of that context does.
 - **The rows.** The family prepares the rows of each span of the read's text, and the job feeds them by position, as
   a build does. A count of positions comes from the header of the object, as in a rendering.
@@ -4592,6 +4594,33 @@ the simplest one that the suite and a fake can check.
 - **A queue read.** Its case is the result of a call, so it holds no media. A `case_media` of a queue read, or a media
   part in its context, is a 400 that names it.
 - A family with no media refuses `case_media` with a 400 that names `case_media[0]`, as the check of objects does.
+
+**The plain read of the LFM3 family.** **Proposed** (Claude Fable 5.2).
+Reason: a trial of 2026-11-17 on both LFM3 models. The layout of the first Gemma 4 engine puts every question in one
+spec turn. With it, a spec of 4 questions gave 236 right answers of 324 on 9 images, and 229 of 324 on 9 text cases.
+One question in each read gave 324 of 324 and 321 of 324.
+
+The owner chose the shape: the case first, one question in each read, and a held head after the case. The words of
+each turn are the proposal.
+
+- **The case turn.** The read puts one user message after the context. It holds each object of `case_media` in its
+  order, then one text part: the label, `:`, a line feed and the case.
+- **The head of the case.** The end of the case turn is a boundary. The job builds through it, as a build does, so
+  the store holds a head there. A later decision with the same context and the same case starts from that head. This
+  is true for each spec and each question, because the case turn holds no text of the spec.
+- **The question turn.** Each asked question is a user message of its own after the case turn. It holds the
+  instructions of the spec and a blank line, when the spec has instructions. Then it holds this line, a blank line,
+  and the question with its lettered options:
+  `Answer this question about the <label> with the letter of one option, as "Answer: X".`
+- **The read.** The question turn ends with the prompt of the template for thinking off, then `Answer:`. The letter
+  token has a leading space.
+- **Each question alone.** Each question starts from the head of the case. No question sees another question or its
+  answer. A narrowed question keeps its letters, as before.
+- **The hash.** `rendered_hash` covers the text through the case turn, then the text of each question turn in the
+  order of the asked questions. With media, the id of each object of the read follows, as before.
+- **The room.** The job asks for a slot that holds the context, the case turn and the longest question turn.
+- **A queue read** does not change.
+- The Qwen3.8 library and the Gemma 4 library keep the old layout. The trial did not run on them.
 
 **The generation modes.** Reason: gogi's `output` already names a reply
 with an object (gogi "Outputs"), so no new member is needed.
