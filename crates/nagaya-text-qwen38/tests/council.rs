@@ -763,7 +763,7 @@ fn all_asked(spec: &Spec) -> Vec<Asked> {
 
 /// The plain reads of the fixture: the tokens of the case and of each question suffix, from the reference's tokenizer.
 #[test]
-fn a_plain_read_has_the_tokens_of_the_layout_of_mkviolet() {
+fn a_plain_read_has_the_tokens_of_the_council_layout() {
     if common::absent() {
         return;
     }

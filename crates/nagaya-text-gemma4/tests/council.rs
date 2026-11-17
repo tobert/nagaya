@@ -308,9 +308,9 @@ highest.\nA. easy\nB. hard\n\nQuestion 3. Is this true? It is safe.\nNo writes.\
 const CASE_LAYER: &str =
     "<|turn>user\ncommand:\nrm -rf /tmp/x<turn|>\n<|turn>model\n<|channel>thought\n<channel|>Answer to question";
 
-/// A plain read with no context has mkviolet's layout: `<bos>`, the spec turn, the case turn and the questions.
+/// A plain read with no context has the council layout: `<bos>`, the spec turn, the case turn and the questions.
 #[test]
-fn a_plain_read_has_the_layout_of_mkviolet() {
+fn a_plain_read_has_the_council_layout() {
     if absent() {
         return;
     }
@@ -325,7 +325,7 @@ fn a_plain_read_has_the_layout_of_mkviolet() {
     let mut plan = family().decision_read(&input).unwrap();
     let prefix = plan.prefix().to_vec();
     assert_eq!(text(&prefix), format!("<bos>{SPEC_LAYER}{CASE_LAYER}"));
-    // Template text with markers on, client text with them off, piece by piece, as mkviolet tokenizes.
+    // Template text with markers on, client text with them off, piece by piece, as the first Gemma 4 engine tokenized.
     assert_eq!(prefix[..2], [special("<bos>"), special("<|turn>")]);
     let (steps, sha) = drive(plan.as_mut(), &[]);
     assert_eq!(steps.len(), 2);

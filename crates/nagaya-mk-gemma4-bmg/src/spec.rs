@@ -745,7 +745,7 @@ mod tests {
 
     /// A fit follows `KvSnapshot::join`: a ring needs the window, everything else needs every position.
     #[test]
-    fn a_fit_follows_the_join_of_mkviolet() {
+    fn a_fit_follows_the_join_of_the_held_rows() {
         let span = |start, end| CoverageSpan { part: 0, start, end };
         assert_eq!(fits(4096, 0, &span(0, 4096)), Ok(()));
         assert!(fits(4096, 0, &span(0, 4097)).is_err());
