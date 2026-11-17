@@ -291,7 +291,7 @@ checkpoint, so run it with `GEMMA4_MODEL_DIR` set.
 - The profile puts `embeddinggemma-2` of kind `mk-embeddinggemma2-bmg` on device 1. It is resident and pinned (spec
   11.10).
 - The unit sets `QWEN3TTS_MODEL_DIR` to the Qwen3-TTS checkpoint in the Hugging Face cache.
-- The unit sets `GEMMA4_MODEL_DIR` to `~/src/mkviolet/checkpoints/gemma-4-26B-A4B`. The engine and the family read
+- The unit sets `GEMMA4_MODEL_DIR` to `~/models/gemma-4-26B-A4B`. The engine and the family read
   the checkpoint there.
 - The unit sets no Level Zero variable. `ZE_AFFINITY_MASK` would hide a card, and the engine finds its cards by PCI
   address.
