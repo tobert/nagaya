@@ -80,6 +80,8 @@ write the name of the thing in the nagaya:
 - "Megakernel" stays. It is the ontology's term for an engine that runs a model's pass as one kernel.
 - `mk` stays in crate names as the kind "megakernel engine" ("Layout"). Decided 2026-11-11. This is the one
   meaning of `mk` in the nagaya.
+- `mk` also stays in the internal names of a megakernel, such as `MK_LFM3` and `mk_persistent_interpreter`. The
+  interface of the exokernel does not show them. Decided 2026-11-17.
 - Each identifier that carries the name of an old project gets a new name, in the C++ and HIP code too. Decided
   2026-11-11: the repository is private and all the code is here, so make the names as good as they can be.
   The Qwen3.8 engine has its new names since 2026-11-12: `QWEN38_SHARDS`, `HIP_CHECK`, `namespace qwen38`, and the
@@ -445,6 +447,7 @@ Do the steps in this order. Each step ends with the checks green.
 1. **Inventory.** Count each class of detail, and list its files. The classes are old names, people and roles,
    host names, addresses and home paths. They are also license headers, and fixtures that come from model files.
    Write a table of each old identifier and its new name. Amy reads the table and answers the open questions.
+   Done on 2026-11-17 in `docs/scrub.md`, which goes at step 8.
 2. **Code names.** Remove the old names from comments, test names, identifiers, variables, profiles and the C++
    and HIP code. Do the Qwen3.8 engine first, on gfx1151host, with the `hip` tests and the oracle bench. Do the names
    that change a digest last, in one deploy window on each machine. Tell the kaijutsu session before the served
