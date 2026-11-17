@@ -1,6 +1,7 @@
 // The ops of the LFM3 vision tower (milestone 24 step 7). megakernel.cl includes this file inside the loop of
 // mk_persistent_interpreter when MK_LFM3 is defined, beside lfm3_ops.cl, so these branches see its locals. The tower
-// also uses OP_MATMUL, OP_RMSNORM, OP_GEGLU (SwiGLU in this binary), OP_BIATTN, OP_LAYERNORM, OP_BIAS and OP_GELU.
+// also uses OP_MATMUL, OP_RMSNORM, OP_GEGLU (SwiGLU in this binary), OP_LAYERNORM, OP_BIAS and OP_GELU. Its attention
+// is OP_VISION_ATTN. OP_BIATTN stays in the binary: the gate of OP_VISION_ATTN compares the two.
 //
 // The rows of an image are its patches in the order of the merge blocks of 2 by 2 patches, and the blocks go across
 // first (image_processing_lfm3_vl.py:186). Row r of a frame of grid_w patches across is patch r % 4 of block r / 4.
@@ -77,5 +78,103 @@
                     }
                 }
                 Y[(ulong)r * D + d] = BCX[(ulong)r * 3 * D + D + d] * acc;
+            }
+        }
+        else if (op == OP_VISION_ATTN) {
+            // The attention of the tower: OP_BIATTN with every key, and the same bits. The fields are OP_BIATTN's, with
+            // k = 0 and p0 = D of at most 64. OP_BIATTN reads each key row and each value row one time for each query
+            // row and head, with 2 * D / 16 loads. The loads are its cost, and the rows of a large image do not stay
+            // in the cache of the card.
+            //
+            // Here one subgroup takes a tile of VISION_ATTN_TILE query rows of one head. It reads the key rows and the
+            // value rows of 8 keys with D / 16 block reads each, one time for the tile. The arithmetic of each query
+            // row is OP_BIATTN's, in key order: the dot in 16 lanes, the online softmax, and the sums of the values.
+            // The max, the sum and the two exponentials of query row i of the tile are in lane i of one vector.
+            __global const float* Q = (__global const float*)task.a;
+            __global const float* Kr = (__global const float*)task.b;
+            __global const float* V = (__global const float*)task.x;
+            __global float* C = (__global float*)task.c;
+            uint N = task.n, H = task.m & 0xFFFFu, KV = task.m >> 16, D = task.p0;
+            uint per = D / 16, group = H / KV;
+            float scale = task.layer ? as_float(task.layer) : 1.0f;
+            uint tiles = (N + VISION_ATTN_TILE - 1) / VISION_ATTN_TILE;
+            // The tiles of one head are next to each other, so the subgroups that run at one time read the same rows.
+            for (uint item = gsg; item < H * tiles; item += n_gsg) {
+                uint h = item / tiles, t0 = (item % tiles) * VISION_ATTN_TILE, g = h / group;
+                float qv[VISION_ATTN_TILE][4], acc[VISION_ATTN_TILE][4];
+                _Pragma("unroll") for (uint i = 0; i < VISION_ATTN_TILE; i++) {
+                    // A tile past the last row reads the last row again, and it writes nothing for it.
+                    uint t = min(t0 + i, N - 1);
+                    __global const float* q = Q + ((ulong)t * H + h) * D;
+                    _Pragma("unroll") for (uint r = 0; r < 4; r++) {
+                        qv[i][r] = r < per ? q[lane + 16 * r] : 0.0f;
+                        acc[i][r] = 0.0f;
+                    }
+                }
+                // Lane i holds the max and the sum of query row i.
+                float mx = -INFINITY, l = 0.0f;
+                for (uint s0 = 0; s0 < N; s0 += 8) {
+                    // The 8 keys from y0 hold the keys from s0. The last 8 keys of the plane start before s0 when N is
+                    // no multiple of 8, so no read goes past the plane. Fewer than 8 keys are read one row at a time.
+                    uint y0 = N >= 8 ? min(s0, N - 8) : 0;
+                    // Lane i of sc[j] is the score of query row i with key y0 + j.
+                    float sc[8];
+                    {
+                        float kb[8][4];
+                        _Pragma("unroll") for (uint r = 0; r < 4; r++) {
+                            uint rows[8];
+                            _Pragma("unroll") for (uint j = 0; j < 8; j++) rows[j] = 0;
+                            if (r < per && N >= 8) {
+                                intel_sub_group_2d_block_read_32b_8r16x1c((__global void*)Kr, KV * D * 4, N, KV * D * 4, (int2)(g * D + 16 * r, y0), rows);
+                            } else if (r < per) {
+                                _Pragma("unroll") for (uint j = 0; j < 8; j++)
+                                    rows[j] = as_uint(Kr[((ulong)min(j, N - 1) * KV + g) * D + lane + 16 * r]);
+                            }
+                            _Pragma("unroll") for (uint j = 0; j < 8; j++) kb[j][r] = as_float(rows[j]);
+                        }
+                        _Pragma("unroll") for (uint j = 0; j < 8; j++) {
+                            float score = 0.0f;
+                            _Pragma("unroll") for (uint i = 0; i < VISION_ATTN_TILE; i++) {
+                                float dot = 0.0f;
+                                _Pragma("unroll") for (uint r = 0; r < 4; r++) if (r < per) dot += qv[i][r] * kb[j][r];
+                                dot = sub_group_reduce_add(dot) * scale;
+                                score = lane == i ? dot : score;
+                            }
+                            sc[j] = score;
+                        }
+                    }
+                    float vb[8][4];
+                    _Pragma("unroll") for (uint r = 0; r < 4; r++) {
+                        uint rows[8];
+                        _Pragma("unroll") for (uint j = 0; j < 8; j++) rows[j] = 0;
+                        if (r < per && N >= 8) {
+                            intel_sub_group_2d_block_read_32b_8r16x1c((__global void*)V, KV * D * 4, N, KV * D * 4, (int2)(g * D + 16 * r, y0), rows);
+                        } else if (r < per) {
+                            _Pragma("unroll") for (uint j = 0; j < 8; j++)
+                                rows[j] = as_uint(V[((ulong)min(j, N - 1) * KV + g) * D + lane + 16 * r]);
+                        }
+                        _Pragma("unroll") for (uint j = 0; j < 8; j++) vb[j][r] = as_float(rows[j]);
+                    }
+                    _Pragma("unroll") for (uint j = 0; j < 8; j++) {
+                        uint s = y0 + j;
+                        if (s >= s0 && s < N) {
+                            float mnew = fmax(mx, sc[j]);
+                            float corr = exp(mx - mnew), p = exp(sc[j] - mnew);
+                            l = l * corr + p;
+                            mx = mnew;
+                            _Pragma("unroll") for (uint i = 0; i < VISION_ATTN_TILE; i++) {
+                                float ci = sub_group_broadcast(corr, i), pi = sub_group_broadcast(p, i);
+                                _Pragma("unroll") for (uint r = 0; r < 4; r++) if (r < per) acc[i][r] = acc[i][r] * ci + pi * vb[j][r];
+                            }
+                        }
+                    }
+                }
+                _Pragma("unroll") for (uint i = 0; i < VISION_ATTN_TILE; i++) {
+                    if (t0 + i < N) {
+                        float li = sub_group_broadcast(l, i);
+                        __global float* out = C + ((ulong)(t0 + i) * H + h) * D;
+                        _Pragma("unroll") for (uint r = 0; r < 4; r++) if (r < per) out[lane + 16 * r] = acc[i][r] / li;
+                    }
+                }
             }
         }

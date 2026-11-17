@@ -102,11 +102,11 @@ impl Vision {
             "a divisor of hidden_size",
         )?;
         let head_dim = hidden / heads;
-        // OP_BIATTN takes heads of 16 to 512 values in 16s.
+        // OP_VISION_ATTN takes heads of 16 to 64 values in 16s.
         want(
             "vision_config.hidden_size",
-            (16..=512).contains(&head_dim) && head_dim.is_multiple_of(16),
-            "heads of 16 to 512 values in 16s",
+            (16..=64).contains(&head_dim) && head_dim.is_multiple_of(16),
+            "heads of 16 to 64 values in 16s",
         )?;
         want(
             "vision_config.num_key_value_heads",
@@ -576,7 +576,7 @@ pub fn tower(
                     v.theta,
                 ));
                 let scale = (v.head_dim as f32).powf(-0.5);
-                t.push(tasks::biattn(q, k, vv, bufs.y, n32, heads, kv, d, 0, scale));
+                t.push(tasks::vision_attn(q, k, vv, bufs.y, n32, heads, kv, d, scale));
                 t.push(tasks::matmul(bufs.y, lw.o, bufs.x, n32, h32, heads * d, true));
             }
         }
@@ -682,7 +682,7 @@ pub fn place(v: &Vision, bufs: &VisionBufs, x: u64, rows: Range<usize>) -> MkTas
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nagaya_mk_bmg::protocol::{OP_BIATTN, OP_COPY, OP_MATMUL, OP_VISION_CONV, OP_VISION_ROPE};
+    use nagaya_mk_bmg::protocol::{OP_COPY, OP_MATMUL, OP_VISION_ATTN, OP_VISION_CONV, OP_VISION_ROPE};
 
     pub(crate) fn vision() -> Vision {
         Vision::parse(include_str!("../tests/fixtures/lfm3-omni.config.json"), 2048).unwrap()
@@ -786,7 +786,12 @@ mod tests {
         );
         refused(
             &|c| c["vision_config"]["num_attention_heads"] = 128.into(),
-            "heads of 16 to 512",
+            "heads of 16 to 64",
+        );
+        // 8 heads of 128 values: OP_VISION_ATTN keeps 64 values of a head.
+        refused(
+            &|c| c["vision_config"]["num_attention_heads"] = 8.into(),
+            "heads of 16 to 64",
         );
         refused(
             &|c| c["projector_hidden_act"] = "gelu_pytorch_tanh".into(),
@@ -813,10 +818,10 @@ mod tests {
         );
         assert_eq!(count(&t, OP_VISION_CONV), 8);
         assert_eq!(count(&t, OP_VISION_ROPE), 12);
-        assert_eq!(count(&t, OP_BIATTN), 6);
+        assert_eq!(count(&t, OP_VISION_ATTN), 6);
         // patchifier; each conv layer in_proj, out_proj, w2; each attention layer q, k, v, out, w2; two linears.
         assert_eq!(count(&t, OP_MATMUL), 1 + 8 * 3 + 6 * 5 + 2);
-        let attn = t.iter().find(|task| task.opcode == OP_BIATTN).unwrap();
+        let attn = t.iter().find(|task| task.opcode == OP_VISION_ATTN).unwrap();
         assert_eq!((attn.n, attn.m, attn.p0), (468, 16 | 8 << 16, 64));
         assert_eq!(f32::from_bits(attn.layer), 0.125);
         let rope = t.iter().find(|task| task.opcode == OP_VISION_ROPE).unwrap();

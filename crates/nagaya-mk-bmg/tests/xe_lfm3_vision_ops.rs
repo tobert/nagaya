@@ -231,6 +231,49 @@ fn biattn_attends_to_every_patch_of_an_image() {
     }
 }
 
+/// The attention of the tower gives the bits of `OP_BIATTN` with every key. The grids are a small one, one whose
+/// count of patches is no multiple of the tile, the two images of the oracle, and a large one. The heads have 64 values
+/// and 16 values, and the scales are 1/8 and 1.
+#[test]
+fn vision_attn_gives_the_bits_of_biattn() {
+    let mut card = Card::open();
+    let grids = [(2usize, 2usize), (2, 5), (14, 22), (18, 26), (48, 64)];
+    for (case, (gh, gw)) in grids.iter().enumerate() {
+        for (d, scale) in [(D, (D as f32).powf(-0.5)), (16, 1.0)] {
+            let n = gh * gw;
+            let seed = 1000 + 10 * case as u64 + d as u64;
+            // Large scores, so a new max of the softmax is rare after the first keys, and small ones.
+            let q = values(seed, n * HEADS * d, if case % 2 == 0 { 1.0 } else { 6.0 });
+            let k = values(seed + 1, n * KV * d, 1.0);
+            let v = values(seed + 2, n * KV * d, 1.0);
+            let (qb, kb, vb) = (card.buf(&q), card.buf(&k), card.buf(&v));
+            let old = Buf::zeros(card.card(), n * HEADS * d * 4);
+            let new = Buf::zeros(card.card(), n * HEADS * d * 4);
+            let (n32, h32, kv32, d32) = (n as u32, HEADS as u32, KV as u32, d as u32);
+            card.run(&[
+                tasks::biattn(qb.at(), kb.at(), vb.at(), old.at(), n32, h32, kv32, d32, 0, scale),
+                tasks::vision_attn(qb.at(), kb.at(), vb.at(), new.at(), n32, h32, kv32, d32, scale),
+            ]);
+            let want = old.read(card.card(), n * HEADS * d);
+            let got = new.read(card.card(), n * HEADS * d);
+            assert!(want.iter().any(|x| *x != 0.0), "{gh} by {gw}: OP_BIATTN wrote nothing");
+            if let Some(i) = first_other_bits(&got, &want) {
+                panic!(
+                    "{gh} by {gw}, heads of {d}: row {} head {} value {} is {:e} and OP_BIATTN gives {:e}",
+                    i / (HEADS * d),
+                    i / d % HEADS,
+                    i % d,
+                    got[i],
+                    want[i]
+                );
+            }
+            for b in [qb, kb, vb, old, new] {
+                b.free(card.card());
+            }
+        }
+    }
+}
+
 /// A measurement, not a gate: the time of the ops of the tower by the size of the grid, on random values. A layer of
 /// the tower with attention runs the attention one time, and 4 products of the size of `q`. A conv layer runs the
 /// convolution one time and the product `in_proj`. Run it alone, with `--ignored --nocapture`.
@@ -260,7 +303,7 @@ fn the_time_of_each_op_of_the_tower_by_the_size_of_the_grid() {
         let scale = (D as f32).powf(-0.5);
         let ops = [
             (
-                "attention",
+                "OP_BIATTN",
                 tasks::biattn(
                     qb.at(),
                     kb.at(),
@@ -271,6 +314,20 @@ fn the_time_of_each_op_of_the_tower_by_the_size_of_the_grid() {
                     KV as u32,
                     D as u32,
                     0,
+                    scale,
+                ),
+            ),
+            (
+                "attention of the tower",
+                tasks::vision_attn(
+                    qb.at(),
+                    kb.at(),
+                    vb.at(),
+                    yb.at(),
+                    n32,
+                    HEADS as u32,
+                    KV as u32,
+                    D as u32,
                     scale,
                 ),
             ),
