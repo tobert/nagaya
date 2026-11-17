@@ -24,9 +24,9 @@ use super::{Kind, Lfm3Family, refusal};
 use crate::tokenizer::{Tokenizer, check_text};
 use nagaya_jinja::Json;
 
-/// The words that end the case turn of a plain read. The question and its letter follow, as in the first Gemma 4
-/// engine.
-const ANSWER: &str = "Answer to question";
+/// The words that follow the question turn of a plain read. The letter of the answer follows them (spec 11.11, "The
+/// plain read of the LFM3 family").
+const ANSWER: &str = "Answer:";
 
 // ---------------------------------------------------------------- the raw read
 
@@ -100,67 +100,56 @@ fn letter(j: usize) -> char {
     char::from(b'A' + u8::try_from(j).expect("an option position is below the letters"))
 }
 
-/// The spec layer: the text of the user turn that holds the spec.
-fn spec_layer(spec: &Spec) -> Result<Layer, FamilyError> {
+/// The question layer: the text of the user turn that asks one question of the spec (spec 11.11, "The plain read of
+/// the LFM3 family"). The turn holds no other question, so the model reads one menu of letters.
+fn question_layer(spec: &Spec, question: usize) -> Result<Layer, FamilyError> {
+    let q = &spec.questions[question];
     let mut l = Layer::default();
     if !spec.instructions.is_empty() {
         l.content(&spec.instructions);
         l.lit("\n\n");
     }
-    l.lit("Answer each question below about the ");
+    l.lit("Answer this question about the ");
     l.content(&spec.input_label);
-    l.lit(" in the next message. Answer question N with the letter of one option, as \"Answer to question N: X\".\n");
-    for (i, q) in spec.questions.iter().enumerate() {
-        l.lit(&format!("\nQuestion {}. ", i + 1));
-        match &q.kind {
-            QuestionKind::Choice { options } => {
-                l.content(&q.instructions);
+    l.lit(" with the letter of one option, as \"Answer: X\".\n\n");
+    match &q.kind {
+        QuestionKind::Choice { options } => {
+            l.content(&q.instructions);
+            l.lit("\n");
+            for (j, (option, means)) in options.iter().enumerate() {
+                l.lit(&format!("{}. ", letter(j)));
+                l.content(option);
+                l.lit(": ");
+                l.content(means);
                 l.lit("\n");
-                for (j, (option, means)) in options.iter().enumerate() {
-                    l.lit(&format!("{}. ", letter(j)));
-                    l.content(option);
-                    l.lit(": ");
-                    l.content(means);
-                    l.lit("\n");
-                }
             }
-            QuestionKind::Score { levels } => {
-                l.content(&q.instructions);
-                l.lit(" The options run from lowest to highest.\n");
-                for (j, level) in levels.iter().enumerate() {
-                    l.lit(&format!("{}. ", letter(j)));
-                    l.content(level);
-                    l.lit("\n");
-                }
+        }
+        QuestionKind::Score { levels } => {
+            l.content(&q.instructions);
+            l.lit(" The options run from lowest to highest.\n");
+            for (j, level) in levels.iter().enumerate() {
+                l.lit(&format!("{}. ", letter(j)));
+                l.content(level);
+                l.lit("\n");
             }
-            QuestionKind::Noul { criteria } => {
-                l.lit("Is this true? ");
-                l.content(&q.instructions);
-                if let Some(c) = criteria {
-                    l.lit("\n");
-                    l.content(c);
-                }
-                l.lit("\nA. yes\nB. no\n");
+        }
+        QuestionKind::Noul { criteria } => {
+            l.lit("Is this true? ");
+            l.content(&q.instructions);
+            if let Some(c) = criteria {
+                l.lit("\n");
+                l.content(c);
             }
-            QuestionKind::Text { .. } => {
-                return Err(FamilyError::internal(format!(
-                    "question {} is a text question, which this server cannot ask. The spec should have been refused.",
-                    q.id
-                )));
-            }
+            l.lit("\nA. yes\nB. no\n");
+        }
+        QuestionKind::Text { .. } => {
+            return Err(FamilyError::internal(format!(
+                "question {} is a text question, which this server cannot ask. The spec should have been refused.",
+                q.id
+            )));
         }
     }
     Ok(l)
-}
-
-/// The suffix that asks question `number` (counting from 1): ` N (stem):`, where the stem is the first sentence of
-/// the question. This puts the question's own words next to its answer.
-fn question_suffix(number: usize, instructions: &str) -> String {
-    let stem = match instructions.find(". ") {
-        Some(i) => &instructions[..=i],
-        None => instructions,
-    };
-    format!(" {number} ({}):", stem.trim())
 }
 
 /// The control text of the pieces, found at `place`.
@@ -328,7 +317,7 @@ fn context_messages(
 
 // ---------------------------------------------------------------- a plain read
 
-/// A read with no queue: each question is read after the same text.
+/// A read with no queue: the case turn is the prefix, and each question is read in a turn of its own after it.
 struct PlainPlan {
     prefix: Vec<u32>,
     rendered_hash: String,
@@ -345,26 +334,28 @@ fn plain_plan(
     input: &DecisionInput<'_>,
     case_media: &[ObjectRef],
 ) -> Result<Box<dyn ReadPlan>, FamilyError> {
-    let spec = spec_layer(input.spec)?;
-    // The label goes in the case turn too, as in the first Gemma 4 engine.
-    let case_turn = format!("{}:\n{}", input.spec.input_label, input.case);
-    let mut control_text = hits_of(family, "spec", &spec.client);
-    control_text.extend(family.hits("spec", &input.spec.input_label));
-    control_text.extend(family.hits("case", input.case));
+    let label = &input.spec.input_label;
+    let case_turn = format!("{label}:\n{}", input.case);
+    let mut control_text = Vec::new();
+    if !input.spec.instructions.is_empty() {
+        control_text.extend(family.hits("spec", &input.spec.instructions));
+    }
+    control_text.extend(family.hits("spec", label));
 
     let (mut messages, tools) = context_messages(family, input, true)?;
-    messages.push(turn_json("user", &spec.text));
-    // spec 11.11, "Media in a decision": the case media follow the case text in the case turn, in order.
+    // spec 11.11, "The plain read of the LFM3 family": the case media come first in the case turn, in order.
     let case_message = Message {
         content: Some(Content::Parts(
-            std::iter::once(Part::Text {
-                text: case_turn.clone(),
-            })
-            .chain(case_media.iter().map(|o| Part::Object {
-                id: o.id.clone(),
-                mime: o.mime.clone(),
-            }))
-            .collect(),
+            case_media
+                .iter()
+                .map(|o| Part::Object {
+                    id: o.id.clone(),
+                    mime: o.mime.clone(),
+                })
+                .chain(std::iter::once(Part::Text {
+                    text: case_turn.clone(),
+                }))
+                .collect(),
         )),
         ..Message::user("")
     };
@@ -373,31 +364,39 @@ fn plain_plan(
         true => turn_json("user", &case_turn),
         false => message_json(&case_message, case_index, true)?,
     });
-    // A read closes the thinking, so the case turn ends with the prompt of the template for thinking off.
-    let rendered = family.run(&messages, &tools, false, true)?;
-    let escaped = format!("{}{ANSWER}", rendered.escaped);
-    let base = family.encode(&escaped)?;
+    // The prefix ends with the case turn, so its end is a boundary and the store can hold a head there.
+    let closed = family.run(&messages, &tools, false, false)?.escaped;
+    let base = family.encode(&closed)?;
     let (prefix, media) = expand_read(family, input, &base, case_index, case_media)?;
 
     let mut steps = Vec::new();
+    let mut read_text = closed.clone();
     for a in input.asked {
-        let q = &input.spec.questions[a.question];
-        let suffix = family.escaped(&question_suffix(a.question + 1, &q.instructions))?;
-        let ids = family.encode(&format!("{escaped}{suffix}"))?;
-        // The suffix must go on from the tokens of the case, so that the model state is the same.
-        if !ids.starts_with(&base) {
+        let layer = question_layer(input.spec, a.question)?;
+        // The instructions and the label are in each turn. Their hits are reported once, above.
+        let own = &layer.client[usize::from(!input.spec.instructions.is_empty()) + 1..];
+        control_text.extend(hits_of(family, "spec", own));
+        let mut with = messages.clone();
+        with.push(turn_json("user", &layer.text));
+        // A read closes the thinking, so the question turn ends with the prompt of the template for thinking off.
+        let escaped = format!("{}{ANSWER}", family.run(&with, &tools, false, true)?.escaped);
+        let ids = family.encode(&escaped)?;
+        // The question turn must go on from the tokens of the case, so that the model state is the same.
+        let Some(turn) = escaped.strip_prefix(closed.as_str()).filter(|_| ids.starts_with(&base)) else {
             return Err(FamilyError::internal(
-                "the question suffix changes the tokens of the case. The rendering has a token border it cannot keep.",
+                "the question turn changes the tokens of the case. The rendering has a token border it cannot keep.",
             ));
-        }
+        };
+        read_text.push_str(turn);
         let feed = ids[base.len()..].to_vec();
         steps.push((feed, a.options.iter().map(|&j| family.letters[j]).collect()));
     }
+    control_text.extend(family.hits("case", input.case));
     Ok(Box::new(PlainPlan {
         prefix,
-        // gogi: the hash covers the text that the read was conditioned on. The first Gemma 4 engine hashed the label of
-        // the head. With media, it covers the id of each object of the read too (spec 11.11, "Media in a decision").
-        rendered_hash: hash_of_read(family, input, &escaped, case_media)?,
+        // gogi: the hash covers the text that the read was conditioned on: the text through the case turn, then each
+        // question turn. With media, it covers the id of each object of the read too (spec 11.11).
+        rendered_hash: hash_of_read(family, input, &read_text, case_media)?,
         steps,
         cursor: Cursor::new(),
         control_text,
@@ -435,10 +434,10 @@ fn expand_read(
     }
     for (i, object) in case_media.iter().enumerate() {
         let param = format!("case_media[{i}]");
-        let kind = media_kind(true, Role::User, case_index, i + 1, &object.mime).map_err(|e| rename(e, &param))?;
+        let kind = media_kind(true, Role::User, case_index, i, &object.mime).map_err(|e| rename(e, &param))?;
         let part = MediaPart {
             message: case_index,
-            part: i + 1,
+            part: i,
             kind,
             id: object.id.clone(),
             mime: object.mime.clone(),
@@ -523,6 +522,14 @@ impl ReadPlan for PlainPlan {
 
     fn media(&self) -> Vec<MediaInput> {
         self.media.clone()
+    }
+
+    fn prefix_is_head(&self) -> bool {
+        true
+    }
+
+    fn room(&self) -> usize {
+        self.steps.iter().map(|(feed, _)| feed.len()).max().unwrap_or(0)
     }
 
     fn control_text(&self) -> &[ControlHit] {

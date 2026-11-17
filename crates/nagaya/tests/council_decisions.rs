@@ -80,6 +80,12 @@ struct Run {
 /// A direct run of the toy plan on the fake engine. Each step that continues from the prefix builds the context
 /// again and feeds the prefix again.
 fn direct(value: Option<&Value>, case: &str, ask: Option<&[String]>) -> Run {
+    direct_with(value, case, ask, false)
+}
+
+/// A direct run as [`direct`]. With `head`, the run seals the state after the prefix, as a job does when the plan
+/// names its prefix a head. The fake engine gives other rows after a seal.
+fn direct_with(value: Option<&Value>, case: &str, ask: Option<&[String]>, head: bool) -> Run {
     let family = ToyFamily::new();
     let spec = parse_spec(&spec_json(), &SpecRules::default()).unwrap();
     let asked = asked(&spec, ask, None).unwrap();
@@ -101,6 +107,12 @@ fn direct(value: Option<&Value>, case: &str, ask: Option<&[String]>) -> Run {
         if !prefix.is_empty() {
             for chunk in prefix.chunks(64) {
                 run.feed(chunk, false);
+            }
+            if head {
+                nagaya_abi::Engine::seal(&mut run.engine)
+                    .unwrap()
+                    .seal(nagaya_abi::State::Slot(0))
+                    .unwrap();
             }
         }
         run
@@ -431,4 +443,160 @@ fn a_decision_past_its_timeout_is_a_timeout_and_frees_its_slot() {
     f.service
         .decide(&request(&id, &contexts, json!({"timeout_ms": 60_000})))
         .unwrap();
+}
+
+/// The toy family with a plan whose prefix ends at a head, as the plain read of the LFM3 family does (spec 11.11).
+struct CaseHead {
+    toy: ToyFamily,
+}
+
+/// The toy plan, with a prefix that the caller builds and holds.
+struct HeadPlan(Box<dyn nagaya_council::family::ReadPlan>);
+
+impl nagaya_council::family::ReadPlan for HeadPlan {
+    fn prefix(&self) -> &[u32] {
+        self.0.prefix()
+    }
+
+    fn control_text(&self) -> &[nagaya_council::family::ControlHit] {
+        self.0.control_text()
+    }
+
+    fn advance(&mut self, last: Option<&[f64]>) -> Result<Advance, nagaya_council::family::FamilyError> {
+        self.0.advance(last)
+    }
+
+    fn prefix_is_head(&self) -> bool {
+        true
+    }
+}
+
+impl Family for CaseHead {
+    fn render(
+        &self,
+        context: &Context,
+        generation_prompt: bool,
+    ) -> Result<nagaya_council::family::Rendering, nagaya_council::family::FamilyError> {
+        self.toy.render(context, generation_prompt)
+    }
+
+    fn decision_read(
+        &self,
+        input: &DecisionInput<'_>,
+    ) -> Result<Box<dyn nagaya_council::family::ReadPlan>, nagaya_council::family::FamilyError> {
+        Ok(Box::new(HeadPlan(self.toy.decision_read(input)?)))
+    }
+
+    fn raw_read(
+        &self,
+        letters: &[String],
+        suffixes: &[String],
+    ) -> Result<nagaya_council::family::RawRead, nagaya_council::family::FamilyError> {
+        self.toy.raw_read(letters, suffixes)
+    }
+
+    fn reply_parser(
+        &self,
+        start: nagaya_council::family::ReplyStart,
+        tools: &[gogi_proto::context::Tool],
+    ) -> Result<Box<dyn nagaya_council::family::ReplyParser>, nagaya_council::family::FamilyError> {
+        self.toy.reply_parser(start, tools)
+    }
+
+    fn tokenize(&self, text: &str) -> Result<Vec<u32>, nagaya_council::family::FamilyError> {
+        self.toy.tokenize(text)
+    }
+
+    fn tokenize_special(&self, text: &str) -> Result<Vec<u32>, nagaya_council::family::FamilyError> {
+        self.toy.tokenize_special(text)
+    }
+
+    fn detokenize(&self, tokens: &[u32]) -> Result<String, nagaya_council::family::FamilyError> {
+        self.toy.detokenize(tokens)
+    }
+
+    fn pieces(&self, tokens: &[u32]) -> Result<Vec<String>, nagaya_council::family::FamilyError> {
+        self.toy.pieces(tokens)
+    }
+
+    fn template_id(&self) -> &str {
+        self.toy.template_id()
+    }
+
+    fn vocab_size(&self) -> usize {
+        self.toy.vocab_size()
+    }
+
+    fn thinks(&self) -> bool {
+        self.toy.thinks()
+    }
+}
+
+/// A plan can name its prefix a head (spec 11.11, "The plain read of the LFM3 family"). Then the job builds the
+/// prefix with the context, the store holds its head, and a second decision on the same case feeds only its
+/// questions. The numbers are those of a decision that feeds the prefix after the build.
+#[test]
+fn a_prefix_that_is_a_head_is_built_and_held_and_the_next_decision_keeps_it() {
+    let headed = || {
+        Fixture::with_family(
+            TermFactory::toy(),
+            std::sync::Arc::new(CaseHead { toy: ToyFamily::new() }),
+            1 << 20,
+            None,
+            ServiceConfig::new("toy", council_support::ENGINE),
+        )
+    };
+    for contexts in [vec![plain("Commands wait in a queue.")], Vec::new()] {
+        let plain_first = decide(&Fixture::new(), &contexts, json!({}));
+        let f = headed();
+        let first = decide(&f, &contexts, json!({}));
+        // The numbers are those of a run that seals the state after the prefix, and then reads each question.
+        let run = direct_with(contexts.first(), "rm -rf build", None, true);
+        assert_eq!(
+            raw(&first),
+            vec![run.letters.clone()],
+            "the job seals the head of the prefix"
+        );
+        assert_eq!(
+            first.usage, plain_first.usage,
+            "the first decision feeds the same tokens"
+        );
+        assert_eq!(
+            first.reads[0].snapshot, plain_first.reads[0].snapshot,
+            "the read names the head of its context"
+        );
+        assert_eq!(first.reads[0].rendered_hash, plain_first.reads[0].rendered_hash);
+        // The second decision keeps the context and the prefix: it feeds the steps of the questions only.
+        let family = ToyFamily::new();
+        let spec = parse_spec(&spec_json(), &SpecRules::default()).unwrap();
+        let asked = asked(&spec, None, None).unwrap();
+        let ctx = contexts.first().map(context);
+        let rendering = ctx.as_ref().map(|c| family.render(c, false).unwrap());
+        let input = DecisionInput {
+            context: ctx.as_ref().zip(rendering.as_ref()),
+            spec: &spec,
+            case: "rm -rf build",
+            asked: &asked,
+        };
+        let through_prefix = rendering.as_ref().map_or(0, |r| r.end) + plan_prefix(&family, &input).len();
+        let again = decide(&f, &contexts, json!({}));
+        assert_eq!(
+            raw(&again),
+            raw(&first),
+            "a decision from the held head replays bit for bit"
+        );
+        assert_eq!(
+            again.usage.kept as usize, through_prefix,
+            "the second decision keeps the prefix"
+        );
+        assert_eq!(again.usage.prompt as usize, run.tokens);
+        assert_eq!(again.usage.kept + again.usage.fed, again.usage.prompt);
+        assert_eq!(again.reads[0].snapshot, first.reads[0].snapshot);
+        // Another case has another head: it keeps the context only.
+        let id = held(&f);
+        let mut other = request(&id, &contexts, json!({}));
+        other.case = json!("ls");
+        let other = f.service.decide(&other).unwrap();
+        assert_eq!(other.usage.kept as usize, rendering.as_ref().map_or(0, |r| r.end));
+    }
 }

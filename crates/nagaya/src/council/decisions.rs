@@ -10,7 +10,7 @@ use gogi_proto::{Invalid, math};
 use nagaya_abi::Kind;
 use nagaya_council::build::boundary_recipes;
 use nagaya_council::decision::{answers, asked, case_text};
-use nagaya_council::family::{Advance, Continues, DecisionInput, MediaInput, ReadPlan, ReadStep};
+use nagaya_council::family::{Advance, Boundary, Continues, DecisionInput, MediaInput, ReadPlan, ReadStep, Rendering};
 use nagaya_council::read::log_probs;
 
 use super::build::{ContextBody, Got, Then, Want};
@@ -30,6 +30,9 @@ pub(crate) struct DecisionThen {
     pub rendered_hash: Option<String>,
     /// The tokens that the read fed after the build.
     pub fed: usize,
+    /// True when the build fed the prefix with the context, because the prefix ends at a head (spec 11.11, "The plain
+    /// read of the LFM3 family").
+    prefix_built: bool,
     /// True while the slot holds the state after the prefix.
     at_prefix: bool,
     marked: bool,
@@ -40,9 +43,10 @@ pub(crate) struct DecisionThen {
 }
 
 impl DecisionThen {
-    fn new(plan: Box<dyn ReadPlan>, asked: usize) -> Self {
+    fn new(plan: Box<dyn ReadPlan>, asked: usize, prefix_built: bool) -> Self {
         Self {
             plan,
+            prefix_built,
             logprobs: vec![None; asked],
             rendered_hash: None,
             fed: 0,
@@ -114,7 +118,7 @@ impl Then for DecisionThen {
         match got {
             Got::Built(_) => {
                 let prefix = self.plan.prefix().to_vec();
-                if prefix.is_empty() {
+                if prefix.is_empty() || self.prefix_built {
                     self.at_prefix = true;
                     return self.advance(None);
                 }
@@ -150,6 +154,28 @@ impl Then for DecisionThen {
             Got::Woken => Err(ServiceError::internal("a decision read never waits")),
             Got::Frame(_) | Got::Samples(_) => Err(ServiceError::internal("a decision read makes no audio")),
         }
+    }
+}
+
+/// The rendering of a context and the prefix of `plan` after it, with a boundary at the end of the prefix. The prefix
+/// is the case turn, which counts as the message after the last message of the context.
+fn with_case_turn(rendering: Option<&Rendering>, context: Option<&Context>, plan: &dyn ReadPlan) -> Rendering {
+    let (mut tokens, mut boundaries, mut media) = match rendering {
+        Some(r) => (r.tokens[..r.end].to_vec(), r.boundaries.clone(), r.media.clone()),
+        None => (Vec::new(), Vec::new(), Vec::new()),
+    };
+    tokens.extend_from_slice(plan.prefix());
+    boundaries.push(Boundary {
+        message: context.map_or(0, |c| c.messages.len()),
+        tokens: tokens.len(),
+    });
+    media.extend(plan.media().into_iter().map(|input| input.span));
+    Rendering {
+        end: tokens.len(),
+        tokens,
+        boundaries,
+        control_text: Vec::new(),
+        media,
     }
 }
 
@@ -259,12 +285,16 @@ impl Service {
             if control.is_none() {
                 control = Some(signals(plan.control_text()));
             }
-            let room = end + plan.prefix().len();
+            let room = end + plan.prefix().len() + plan.room();
+            // A prefix that ends at a head is built with the context, so the store holds the head of the case and a
+            // later decision on the same case starts from it (spec 11.11, "The plain read of the LFM3 family").
+            let head = plan.prefix_is_head() && !plan.prefix().is_empty();
+            let built = end + if head { plan.prefix().len() } else { 0 };
             let (root, job_control) = match steer {
                 Some(steer) => (steer.root, steer.control),
                 None => (self.root, None),
             };
-            let (tokens, recipes, cuts, media): (Arc<[u32]>, _, _, _) = match (&rendering, context) {
+            let (mut tokens, mut recipes, cuts, media): (Arc<[u32]>, _, _, _) = match (&rendering, context) {
                 (Some(r), Some(c)) => (
                     r.tokens[..r.end].into(),
                     boundary_recipes(root, r)?,
@@ -273,9 +303,14 @@ impl Service {
                 ),
                 _ => (Arc::from(Vec::new()), Vec::new(), Vec::new(), Arc::from(Vec::new())),
             };
+            if head {
+                let whole = with_case_turn(rendering.as_ref(), context, plan.as_ref());
+                recipes = boundary_recipes(root, &whole)?;
+                tokens = whole.tokens.into();
+            }
             // The rows of the read's own spans follow the rows of the context, in the order of the positions.
             let media: Arc<[MediaInput]> = media.iter().cloned().chain(plan.media()).collect();
-            let then = DecisionThen::new(plan, asked.len());
+            let then = DecisionThen::new(plan, asked.len(), head);
             let shared = Arc::clone(&self.shared);
             let job = |tx| {
                 ContextBody::with(shared, tokens, recipes, room, then, tx)
@@ -286,7 +321,7 @@ impl Service {
             let finished = self.run_context(job, schedule, Some(deadline))?;
             let then = finished.then;
             let kept = finished.outcome.kept;
-            let fed = end - kept + then.fed;
+            let fed = built - kept + then.fed;
             usage.prompt += (kept + fed) as u64;
             usage.kept += kept as u64;
             usage.fed += fed as u64;
@@ -306,11 +341,14 @@ impl Service {
             numbers.push(read);
             reads.push(Read {
                 context: context.map(|_| index as u64),
+                // The read names the head of its context. With a built prefix, the last boundary is the head of the case.
                 snapshot: context.and(
                     finished
                         .outcome
                         .held
-                        .last()
+                        .iter()
+                        .rev()
+                        .nth(usize::from(head))
                         .copied()
                         .flatten()
                         .map(|id| snapshot_id(&id)),
