@@ -1344,8 +1344,10 @@ The vision tower of Omni follows these rules.
 - **Inputs.** Omni declares `tokens+rows`, and `lfm3` declares `tokens`. A segment of tokens alone, with no `meta`,
   is a text block for both. Thus the gates of 8.3 that make token segments run on an engine that declares
   `tokens+rows`. Only an engine that declares `rows` skips them.
-- **The ops.** The tower runs on the LFM3 binary. The binary also holds the ops of the embedding binary, for
-  `OP_BIATTN`, and its `OP_GEGLU` stays SwiGLU. The new ops are `OP_VISION_ROPE` (100) and `OP_VISION_CONV` (101).
+- **The ops.** The tower runs on the LFM3 binary. The binary also holds the ops of the embedding binary, and its
+  `OP_GEGLU` stays SwiGLU. The ops of the tower are `OP_VISION_ROPE` (100), `OP_VISION_CONV` (101) and
+  `OP_VISION_ATTN` (102), the attention in both directions. It gives the bits of `OP_BIATTN` (`docs/perf.md`,
+  "The vision tower on a large image").
   The LayerNorm of the projector reads F32 weights, so the open uploads its BF16 weights as F32. Each value is exact.
 - **The memory terms.** The weights of the tower and of the projector are the term `vision` on `device(0)`. The
   buffers of the tower are in `work`, sized for the largest image of 8,192 patches. `lfm3` has neither.
