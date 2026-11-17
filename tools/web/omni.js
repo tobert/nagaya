@@ -92,6 +92,19 @@ document.addEventListener("ended", (ev) => {
   clips[clips.indexOf(ev.target) + 1]?.play().catch(() => {});
 }, true);
 
+/** Send the request. If the server holds no codes of a spoken reply (404 that names its part), send that reply's
+ * text instead and try again (spec 11.11, "Read it back"). A reply with no text leaves the context. */
+async function generate(body) {
+  for (;;) {
+    try { return await call("POST", "/council/v2/generations", body); } catch (e) {
+      const at = /^messages\[(\d+)\]\.content\[(\d+)\]$/.exec(e.param || ""), messages = body.context.messages;
+      const part = at && messages[+at[1]]?.content?.[+at[2]];
+      if (e.status !== 404 || messages[+at?.[1]]?.role !== "assistant" || part?.mime !== "audio/wav") throw e;
+      messages[+at[1]].content.splice(+at[2], 1);
+      if (!messages[+at[1]].content.length) messages.splice(+at[1], 1);
+    }
+  }
+}
 $("omni-go").onclick = async () => {
   const text = $("omni-input").value.trim(), model = $("omni-model").value;
   if ((!text && !omniFiles.length) || !model) return;
@@ -135,7 +148,7 @@ $("omni-go").onclick = async () => {
   try {
     await ready(model, (t) => { $("omni-status").textContent = t; });
     $("omni-status").textContent = "thinking…";
-    const done = await call("POST", "/council/v2/generations", body);
+    const done = await generate(body);
     const spoken = (done.outputs || []).filter((o) => o.mime === "audio/wav").map((o) => ({id: o.id, mime: o.mime, host}));
     const u = done.usage || {};
     omni.push({role: "assistant", text: done.content || "", files: spoken,
