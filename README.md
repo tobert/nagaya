@@ -78,6 +78,6 @@ needs its feature (`hip` or `xe`) and the hardware. `AGENTS.md` lists each varia
 - `docs/ontology.md`: each term, defined once.
 - `docs/new-engine.md`: the checklist for a new engine, a new family, a new card or a new machine.
 - `docs/deploy.md`: the build and the install on each machine.
-- `docs/lab.md` and `docs/cv.md`: the tools that look inside a model: taps, control vectors, traces and lenses.
+- `docs/lab.md`: the lab routes, which look inside a model: taps, control vectors, traces and lenses.
 
 The docs and the code comments use Simplified Technical English (ASD-STE100). `tools/ste_check.py` checks the docs.

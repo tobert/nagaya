@@ -1,4 +1,4 @@
-"""A test of the sandbox on the CPU: best fit gives the score of the first trials (docs/swarm-ideas.md)."""
+"""A test of the sandbox on the CPU: best fit gives its known score."""
 import shutil
 import unittest
 

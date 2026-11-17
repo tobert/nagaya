@@ -763,7 +763,7 @@ fn control_keeps_the_rows_for_a_vector_of_zeros() {
 }
 
 /// A measurement, not a gate: the time of each op of the attention of a block of 512 at the end of a slot, by the
-/// count of keys, and the time of the attention of one token (`docs/perf.md`, "The long slot"). The cache holds
+/// count of keys, and the time of the attention of one token. The cache holds
 /// one chunk of random values many times. Run it alone, with `--ignored --nocapture`.
 #[test]
 #[ignore = "a measurement that takes 9 GB of card memory"]

@@ -1,8 +1,25 @@
 # The swarm driver
 
 `tools/swarm` runs a swarm recipe against the nagaya. A recipe is a JSON object that describes one round. The
-driver runs rounds for a fixed wall time, and it logs each program and each stage. `docs/swarm-ideas.md`, "An agent's
-interface to a swarm", defines the recipe. The task is the online bin packing of the first trials.
+driver runs rounds for a fixed wall time, and it logs each program and each stage. The task is the online bin
+packing problem.
+
+## An agent's interface to a swarm
+
+An agent drives a swarm in three layers:
+
+1. **Calls with their knobs.** The nagaya gives the parts, and each call takes its own settings. A generation takes
+   `temperature`, `top_p`, `min_p`, `seed` and a prefill. `ensemble` takes `combine`, `weights`, `strength` and
+   `latent` (`docs/lab.md`). A decision gives the log probability of each option: a soft vote. An embedding gives a
+   vector for the novelty filter.
+2. **A recipe for a round.** A round is a small JSON object. An agent writes it, and the driver runs it.
+   - `think` is the first swarm, and `act` is the second swarm.
+   - `select` is `vote`, `novelty` or `all`. `distill` is `pick`, `combine` or `joined`.
+   - The `by` of `act` is `plain` (independent forks), `contrast` or `joined`.
+   - Each stage can take latent steps.
+3. **A driver and its numbers.** The driver runs the rounds and the evaluator, and it logs each stage. The numbers
+   are the valid share, the share of constants, the share that improves, the tokens and the time. An agent reads them and changes
+   the recipe between runs.
 
 ## A round
 

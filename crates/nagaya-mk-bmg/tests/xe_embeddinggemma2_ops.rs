@@ -13,9 +13,8 @@ use nagaya_mk_bmg::ring::Ring;
 use nagaya_mk_bmg::tasks;
 use nagaya_mk_bmg::{EMBEDDINGGEMMA2_KERNEL, KERNEL_ENTRY};
 
-/// The SHA-256 of each binary, and the ocloc that makes them. The order of the work items of `OP_ATTN_SCORES`
-/// changed each one on 2026-11-14 (`docs/perf.md`, "The long slot"). The speech and image binaries hold the `-I` path
-/// of the kernels, so their hashes are of the checkout `~/src/nagaya`: a worktree gives other bytes.
+/// The SHA-256 of each binary, and the ocloc that makes them. The speech and image binaries hold the `-I` path of the
+/// kernels, so their hashes are of one checkout: a worktree gives other bytes.
 const BINARIES: [(&str, &str); 3] = [
     (
         "gemma4",

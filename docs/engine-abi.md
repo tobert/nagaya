@@ -900,12 +900,12 @@ so the worst wait behind other work is one quantum.
 
 A watchdog thread reports each quantum that runs past the bound.
 
-ds4-recipe chose cooperative yields after a short turn waited 283.95 s behind a long prefill (`docs/prior-art.md`
-3). The nagaya uses the bounded wait instead.
+ds4-recipe chose cooperative yields after a short turn waited 283.95 s behind a long prefill. The nagaya uses the
+bounded wait instead.
 
 **D9. Spare memory goes by share.** Each machine's placement profile gives every engine on it a share. The ledger
 first charges all mandatory bytes. It then divides what remains among the engines' elastic terms by those shares
-(`docs/prior-art.md` 2). Each elastic term gets at least its minimum. A profile whose mandatory bytes and minimums do
+(after ds4-recipe). Each elastic term gets at least its minimum. A profile whose mandatory bytes and minimums do
 not fit is refused at start.
 
 **D10. Snapshots at rest are canonical safetensors.** In device memory, each engine keeps its own layout. The model
@@ -1238,7 +1238,7 @@ The text path of the backbone (`crates/nagaya-mk-lfm3-bmg`) follows these rules.
     sliding layers take fixed rings. A slot of 32,768 positions takes 868,859,904 bytes, and one of 262,144 takes
     6,505,365,504.
   - The buffers of a block hold no scores of the backbone. The attention of a block keeps a running softmax over
-    chunks of the keys (`OP_ATTN_STREAM`, `docs/perf.md`, "The long slot").
+    chunks of the keys (`OP_ATTN_STREAM`).
   - The longest slot sizes the scratch of the ring, and no other part of the term `work`. The scratch is 60 MB for
     32,768 positions and 270 MB for 262,144.
   - The attention of a block reads no slot size ("The bits do not depend on the slot size"). Thus a long slot gives

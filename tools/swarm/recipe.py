@@ -1,4 +1,4 @@
-"""The recipe of a round (docs/swarm-ideas.md, "An agent's interface to a swarm"). A recipe is a JSON object with the
+"""The recipe of a round (tools/swarm/README.md, "An agent's interface to a swarm"). A recipe is a JSON object with the
 stages prime, think, select, distill, act and loop. The parse fills the defaults and refuses a recipe that it cannot
 run. A member that is absent leaves the parse, and so the requests, as they were before the member existed."""
 import json

@@ -5,7 +5,7 @@ English (`AGENTS.md`).
 
 - `docs/ontology.md` defines each term once.
 - `docs/engine-abi.md` defines the calls and the decisions D1-D11. The spec refers to them by number.
-- `docs/prior-art.md`, `docs/deepinfer.md` and `docs/reviews.md` record where the rules came from.
+- `docs/lab.md` defines the lab routes, which look inside a model.
 
 When this spec and another doc do not agree, correct one of them. Neither one wins without a decision.
 
@@ -184,7 +184,7 @@ is unset, it reads `nagaya.toml` in the working directory. The systemd unit sets
 at a temporary file. A file that does not read or parse stops the process with exit 3, and the message names the
 path.
 
-**2.2 Tier edges.** An edge records more than a bandwidth (`docs/prior-art.md` 5):
+**2.2 Tier edges.** An edge records more than a bandwidth (after ds4-recipe):
 
 - the rate for each read size and queue depth;
 - whether direct IO works into the destination;
@@ -468,7 +468,7 @@ thread priorities:
   - Each call of an engine stays on the thread of its device.
 
   Reason: when one thread draws each row in turn, the card waits. With 8 rows and no filter, that is 22 ms of each
-  step of 46 ms (`docs/perf.md`).
+  step of 46 ms.
 - **No pause on a discrete card.** A machine whose cards have their own memory, such as the B70 machine, has no pause
   rule. A pass there reads GDDR6, not host memory. The host traffic of a pass is the residual and the uploads, about
   11 MB for a block of the first Gemma 4 engine. A measurement under load can add a rule.
@@ -1014,7 +1014,7 @@ share one scheduler. The filler gate is per group.
 moves a continuation off the context that holds it. The job holds that context with a lease.
 
 **5.7 Segments.** Quanta from several jobs on one engine can share a pass as segments. The scheduler permits this
-only when the engine declares `segments_exact` (`docs/prior-art.md` 1). Only segments of one class share a pass, and
+only when the engine declares `segments_exact` (after ds4-recipe). Only segments of one class share a pass, and
 the quantum takes that class.
 
 Each class has a join window: the time that the scheduler waits to add more ready segments to a pass. It never
@@ -2574,7 +2574,7 @@ forwards the whole request, and the node of the engine renders it. The local ren
 split across nodes.
 
 Routing to the machine that holds the deepest chain is deferred. Reason: a typical fleet is heterogeneous, and its
-clients want sticky sessions with each model and machine (`docs/deepinfer.md` 7).
+clients want sticky sessions with each model and machine (after DeepSeek's DeepInfer).
 
 The API has contexts, specs, decisions, snapshots, pins, reads, and generations with riding decisions. In council v2
 responses, a snapshot `id` is its BLAKE3 content id (`blake3:<hex>`), and the store looks up prefixes by recipe
@@ -4685,9 +4685,26 @@ logit gate, 1e-3 over a measured 3.4e-5.
 - A wrong rotation, window or gate gave a relative error of 0.09 or more, and a wrong audio op 1.3e-2 or more.
 - The constants are `STAGE_TOL` and `LOGIT_TOL` in `crates/nagaya-mk-lfm3-bmg/tests/common/mod.rs`.
 
-**11.12 Control vectors.** A control
-vector changes the residual of a model while it runs (`docs/cv.md`). gogi's contract is "Control vectors", and a
-context names its list in `control` (gogi "Contexts"). The first models are `lfm3`, then `lfm3-omni`.
+**11.12 Control vectors.** A control vector changes the residual of a model while it runs (ontology "Control
+vector"). The residual is the stream of rows that each layer reads and adds to. The vector holds one row for each
+layer that it touches. An item of a context's list gives the vector an operation and a strength (engine-abi "Control
+vectors"). The op acts only after a layer, so it never changes the output of the embedding.
+
+gogi's contract is "Control vectors", and a context names its list in `control` (gogi "Contexts"). The engines of
+LFM3 and Qwen3.8 declare `control`.
+
+Reason for a vector at runtime: the same change can go into the weights, but a vector at runtime gives three things.
+
+- One copy of the weights serves each strength, with no new load.
+- An `add` or an `ablate` of strength 0 gives the plain model, so a test compares both in one process.
+- `add` and `clamp` have no projection of the weights that gives the same result.
+
+The cost is the prefix cache. A vector changes each row after its first layer, so it changes the keys and values.
+Thus a snapshot with one list never serves a context with another list.
+
+A control vector and the residual tap (13.1) use the same point of the pass. The tap reads the residual after a
+layer, and the vector writes it. Thus a lens (13.2) and a control vector share one format, a vector for each layer.
+A J-Lens finds a concept at a layer, and its Jacobian gives the vector that pushes that concept.
 
 - **The capability.** A served model declares `control_vectors` when its engine declares `control` (engine-abi
   "Control vectors"). A non-empty `control` for another served model is a 400 that names `control`. The route
@@ -4857,7 +4874,7 @@ speech model is in `crates/nagaya/tests/speech_context.rs`.
   covers it, so a new template is a new recipe. Gossip carries the digest, not the text (2.3). The engine binary, and
   the nagaya code that turns its outputs into answers;
 - the lineage of the plan table;
-- the bit settings, each with its class (`docs/prior-art.md` 1);
+- the bit settings, each with its class (after ds4-recipe);
 - the canary hash.
 
 The identity digest names each entry of the store (6.2). An engine with a new identity digest thus cannot read the
