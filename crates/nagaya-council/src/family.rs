@@ -275,6 +275,18 @@ pub trait ReadPlan: Send {
     fn media(&self) -> Vec<MediaInput> {
         Vec::new()
     }
+
+    /// True when the prefix ends at the end of a turn that holds no text of the spec. Then the caller builds the
+    /// prefix with the context, and the store holds a head at its end (spec 11.11, "The plain read of the LFM3
+    /// family").
+    fn prefix_is_head(&self) -> bool {
+        false
+    }
+
+    /// The most tokens that one step feeds after the prefix. The caller adds them to the room of the slot.
+    fn room(&self) -> usize {
+        0
+    }
 }
 
 /// The input of a raw read, before its contexts.

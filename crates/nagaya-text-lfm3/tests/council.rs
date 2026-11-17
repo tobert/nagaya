@@ -186,16 +186,24 @@ fn spec() -> gogi_proto::spec::Spec {
     .unwrap()
 }
 
+/// spec 11.11, "The plain read of the LFM3 family": the case turn is the prefix, and each question has a turn of its
+/// own, which ends with the prompt for thinking off and `Answer:`.
 #[test]
-fn a_plain_read_closes_the_thinking_as_the_template_does() {
+fn a_plain_read_asks_each_question_alone_after_the_case_turn() {
     if absent_any() {
         return;
     }
     let spec = spec();
-    let asked = [Asked {
-        question: 0,
-        options: vec![0, 1, 2],
-    }];
+    let asked = [
+        Asked {
+            question: 0,
+            options: vec![0, 1, 2],
+        },
+        Asked {
+            question: 1,
+            options: vec![0, 1],
+        },
+    ];
     for model in ["omni", "text"] {
         let fam = family(model);
         let c = context(json!({"thinking": false, "messages": [{"role": "user", "content": "hi"}]}));
@@ -207,18 +215,27 @@ fn a_plain_read_closes_the_thinking_as_the_template_does() {
             asked: &asked,
         };
         let mut plan = fam.decision_read(&input).unwrap();
-        let prefix = fam.detokenize(plan.prefix()).unwrap();
-        assert!(
-            prefix.ends_with("a case<|im_end|>\n<|im_start|>assistant\n<think></think>Answer to question"),
-            "{model}: {prefix:?}"
+        // The prefix is the case turn alone: no text of the spec, so its end is a head for each spec.
+        assert_eq!(
+            fam.detokenize(plan.prefix()).unwrap(),
+            "<|im_start|>user\nx:\na case<|im_end|>\n",
+            "{model}"
         );
-        let Advance::Step(step) = plan.advance(None).unwrap() else {
+        assert!(plan.prefix_is_head());
+        let Advance::Step(first) = plan.advance(None).unwrap() else {
             panic!("a step first")
         };
-        assert_eq!(step.continues, Continues::Prefix);
-        assert_eq!(fam.detokenize(&step.feed).unwrap(), " 1 (What.):");
+        assert_eq!(first.continues, Continues::Prefix);
+        assert_eq!(first.question, 0);
         assert_eq!(
-            step.letters,
+            fam.detokenize(&first.feed).unwrap(),
+            "<|im_start|>user\ni\n\nAnswer this question about the x with the letter of one option, as \"Answer: \
+             X\".\n\nWhat. Pick one.\nA. allow: a\nB. ask: b\nC. no: c\n<|im_end|>\n<|im_start|>assistant\n\
+             <think></think>Answer:",
+            "{model}"
+        );
+        assert_eq!(
+            first.letters,
             fam.tokenize(" A")
                 .unwrap()
                 .iter()
@@ -227,17 +244,40 @@ fn a_plain_read_closes_the_thinking_as_the_template_does() {
                 .copied()
                 .collect::<Vec<_>>()
         );
-        assert!(matches!(
-            plan.advance(Some(&[-1.0, -2.0, -3.0])).unwrap(),
-            Advance::Done(_)
-        ));
+        // The second question starts from the case turn too, and its turn holds no word of the first question.
+        let Advance::Step(second) = plan.advance(Some(&[-1.0, -2.0, -3.0])).unwrap() else {
+            panic!("a second step")
+        };
+        assert_eq!(second.continues, Continues::Prefix);
+        assert_eq!(second.question, 1);
+        assert_eq!(
+            fam.detokenize(&second.feed).unwrap(),
+            "<|im_start|>user\ni\n\nAnswer this question about the x with the letter of one option, as \"Answer: \
+             X\".\n\nHow The options run from lowest to highest.\nA. easy\nB. hard\n<|im_end|>\n\
+             <|im_start|>assistant\n<think></think>Answer:",
+            "{model}"
+        );
+        assert_eq!(plan.room(), first.feed.len().max(second.feed.len()));
+        let Advance::Done(done) = plan.advance(Some(&[-1.0, -2.0])).unwrap() else {
+            panic!("two questions")
+        };
+        // The hash covers each question turn: a read of one question has another hash.
+        let one = DecisionInput {
+            asked: &asked[..1],
+            ..input
+        };
+        let mut plan = fam.decision_read(&one).unwrap();
+        plan.advance(None).unwrap();
+        let Advance::Done(one_done) = plan.advance(Some(&[-1.0, -2.0, -3.0])).unwrap() else {
+            panic!("one question")
+        };
+        assert_ne!(done.rendered_hash, one_done.rendered_hash);
         // A read with no context starts with <|startoftext|>.
         let none = DecisionInput { context: None, ..input };
         let plan = fam.decision_read(&none).unwrap();
-        assert!(
-            fam.detokenize(plan.prefix())
-                .unwrap()
-                .starts_with("<|startoftext|><|im_start|>user\n")
+        assert_eq!(
+            fam.detokenize(plan.prefix()).unwrap(),
+            "<|startoftext|><|im_start|>user\nx:\na case<|im_end|>\n"
         );
     }
 }
