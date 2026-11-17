@@ -600,3 +600,320 @@ fn a_prefix_that_is_a_head_is_built_and_held_and_the_next_decision_keeps_it() {
         assert_eq!(other.usage.kept as usize, rendering.as_ref().map_or(0, |r| r.end));
     }
 }
+
+/// The spec of the write test: two `text` questions among the others.
+fn writing_spec_json() -> Value {
+    json!({"name": "w", "instructions": "Judge the command.", "input_label": "Command", "questions": [
+        {"id": "effect", "type": "text", "instructions": "What it does.", "max_tokens": 4},
+        {"id": "verdict", "type": "choice", "instructions": "What happens?", "criteria": [
+            {"option": "allow", "means": "fine"}, {"option": "ask", "means": "not clearly fine"},
+            {"option": "report", "means": "harmful"}]},
+        {"id": "why", "type": "text", "instructions": "Why.", "max_tokens": 8},
+        {"id": "undo", "type": "score", "instructions": "How hard is it to undo?", "criteria": ["easy", "hard"]},
+        {"id": "fine", "type": "noul", "instructions": "Is it fine?"}]})
+}
+
+/// The two writes of the test family: `effect` before the first step, with no stop token, and `why` after the first
+/// step, with half of the vocabulary as stop tokens.
+fn writes(toy: &ToyFamily) -> [nagaya_council::family::WriteStep; 2] {
+    let vocab = gogi_toy::VOCAB as u32;
+    [
+        nagaya_council::family::WriteStep {
+            question: 0,
+            feed: toy.tokenize("what it does").unwrap(),
+            max_tokens: 4,
+            stop: Vec::new(),
+            never: (0..vocab).filter(|id| id % 3 == 0).collect(),
+        },
+        nagaya_council::family::WriteStep {
+            question: 2,
+            feed: toy.tokenize("why").unwrap(),
+            max_tokens: 8,
+            stop: (0..vocab).filter(|id| id % 2 == 0).collect(),
+            never: Vec::new(),
+        },
+    ]
+}
+
+/// The tokens after a written answer of the test family.
+fn close(toy: &ToyFamily) -> Vec<u32> {
+    toy.tokenize("end").unwrap()
+}
+
+/// The toy family with a plan that writes two answers, as a family with `describe` does (spec 11.11).
+struct Describing {
+    toy: ToyFamily,
+}
+
+/// The toy plan with the two writes of [`writes`]: one before the first step, one after it.
+struct WritingPlan {
+    inner: Box<dyn nagaya_council::family::ReadPlan>,
+    writes: [nagaya_council::family::WriteStep; 2],
+    close: Vec<u32>,
+    /// The writes given, and the steps given.
+    wrote: usize,
+    steps: usize,
+}
+
+impl nagaya_council::family::ReadPlan for WritingPlan {
+    fn prefix(&self) -> &[u32] {
+        self.inner.prefix()
+    }
+
+    fn control_text(&self) -> &[nagaya_council::family::ControlHit] {
+        self.inner.control_text()
+    }
+
+    fn write(&mut self) -> Result<Option<nagaya_council::family::WriteStep>, nagaya_council::family::FamilyError> {
+        Ok((self.wrote == self.steps.min(1) && self.wrote < 2).then(|| self.writes[self.wrote].clone()))
+    }
+
+    fn wrote(
+        &mut self,
+        tokens: &[u32],
+    ) -> Result<nagaya_council::family::Written, nagaya_council::family::FamilyError> {
+        self.wrote += 1;
+        Ok(nagaya_council::family::Written {
+            text: format!("{tokens:?}"),
+            close: self.close.clone(),
+        })
+    }
+
+    fn advance(&mut self, last: Option<&[f64]>) -> Result<Advance, nagaya_council::family::FamilyError> {
+        self.steps += 1;
+        self.inner.advance(last)
+    }
+
+    fn room(&self) -> usize {
+        64
+    }
+}
+
+impl Family for Describing {
+    fn render(
+        &self,
+        context: &Context,
+        generation_prompt: bool,
+    ) -> Result<nagaya_council::family::Rendering, nagaya_council::family::FamilyError> {
+        self.toy.render(context, generation_prompt)
+    }
+
+    fn decision_read(
+        &self,
+        input: &DecisionInput<'_>,
+    ) -> Result<Box<dyn nagaya_council::family::ReadPlan>, nagaya_council::family::FamilyError> {
+        Ok(Box::new(WritingPlan {
+            inner: self.toy.decision_read(input)?,
+            writes: writes(&self.toy),
+            close: close(&self.toy),
+            wrote: 0,
+            steps: 0,
+        }))
+    }
+
+    fn describes(&self) -> bool {
+        true
+    }
+
+    fn raw_read(
+        &self,
+        letters: &[String],
+        suffixes: &[String],
+    ) -> Result<nagaya_council::family::RawRead, nagaya_council::family::FamilyError> {
+        self.toy.raw_read(letters, suffixes)
+    }
+
+    fn reply_parser(
+        &self,
+        start: nagaya_council::family::ReplyStart,
+        tools: &[gogi_proto::context::Tool],
+    ) -> Result<Box<dyn nagaya_council::family::ReplyParser>, nagaya_council::family::FamilyError> {
+        self.toy.reply_parser(start, tools)
+    }
+
+    fn tokenize(&self, text: &str) -> Result<Vec<u32>, nagaya_council::family::FamilyError> {
+        self.toy.tokenize(text)
+    }
+
+    fn tokenize_special(&self, text: &str) -> Result<Vec<u32>, nagaya_council::family::FamilyError> {
+        self.toy.tokenize_special(text)
+    }
+
+    fn detokenize(&self, tokens: &[u32]) -> Result<String, nagaya_council::family::FamilyError> {
+        self.toy.detokenize(tokens)
+    }
+
+    fn pieces(&self, tokens: &[u32]) -> Result<Vec<String>, nagaya_council::family::FamilyError> {
+        self.toy.pieces(tokens)
+    }
+
+    fn template_id(&self) -> &str {
+        self.toy.template_id()
+    }
+
+    fn vocab_size(&self) -> usize {
+        self.toy.vocab_size()
+    }
+
+    fn thinks(&self) -> bool {
+        self.toy.thinks()
+    }
+}
+
+/// An engine that holds the context and then each chunk of `history`, fed as the job feeds them.
+fn replay(ctx: &Context, history: &[Vec<u32>]) -> Direct {
+    let mut run = Direct::built(ctx);
+    for chunk in history {
+        for part in chunk.chunks(64) {
+            run.feed(part, false);
+        }
+    }
+    run
+}
+
+/// Write the answer of `step` on `run` as the job does: the most likely token that is not in `never`, until a stop
+/// token or `max_tokens`. It gives the answer, and it leaves the answer and the close in the slot.
+fn write_direct(
+    run: &mut Direct,
+    step: &nagaya_council::family::WriteStep,
+    close: &[u32],
+    fed: &mut Vec<Vec<u32>>,
+) -> Vec<u32> {
+    let mut row = run.feed_all(&step.feed);
+    fed.push(step.feed.clone());
+    let mut answer = Vec::new();
+    loop {
+        let token = (0..row.len() as u32)
+            .filter(|id| !step.never.contains(id))
+            .fold(None, |best: Option<u32>, id| match best {
+                Some(b) if row[b as usize] >= row[id as usize] => Some(b),
+                _ => Some(id),
+            })
+            .unwrap();
+        let stopped = step.stop.contains(&token);
+        if !stopped {
+            answer.push(token);
+        }
+        if stopped || answer.len() == step.max_tokens {
+            let mut last: Vec<u32> = if stopped { Vec::new() } else { vec![token] };
+            last.extend_from_slice(close);
+            run.feed(&last, false);
+            fed.push(last);
+            return answer;
+        }
+        row = run.feed(&[token], true).unwrap();
+        fed.push(vec![token]);
+    }
+}
+
+/// A plan can write the answer of a `text` question (spec 11.11, "Text questions of the LFM3 family"). The job writes
+/// the most likely tokens, each later step starts after the written answer, and the response holds the text.
+#[test]
+fn a_decision_writes_each_text_question_and_reads_the_later_questions_after_it() {
+    let mut config = ServiceConfig::new("toy", council_support::ENGINE);
+    config.spec_rules.describe = true;
+    config.spec_rules.text_tokens = 256;
+    let f = Fixture::with_family(
+        TermFactory::toy(),
+        std::sync::Arc::new(Describing { toy: ToyFamily::new() }),
+        1 << 20,
+        None,
+        config.clone(),
+    );
+    let id = f.service.hold_spec(writing_spec_json()).unwrap().spec_id.to_string();
+    let contexts = [plain("Commands wait in a queue.")];
+    let response = f.service.decide(&request(&id, &contexts, json!({}))).unwrap();
+
+    // The same read by hand on the fake engine.
+    let toy = ToyFamily::new();
+    let spec = parse_spec(&writing_spec_json(), &config.spec_rules).unwrap();
+    let asked = asked(&spec, None, None).unwrap();
+    let ctx = context(&contexts[0]);
+    let rendering = toy.render(&ctx, false).unwrap();
+    let input = DecisionInput {
+        context: Some((&ctx, &rendering)),
+        spec: &spec,
+        case: "rm -rf build",
+        asked: &asked,
+    };
+    let mut plan = toy.decision_read(&input).unwrap();
+    let [first, second] = writes(&toy);
+    let close = close(&toy);
+    let mut history = vec![plan.prefix().to_vec()];
+    let mut tokens = rendering.end + plan.prefix().len();
+    let count = |fed: &[Vec<u32>]| fed.iter().map(Vec::len).sum::<usize>();
+    // `effect` is written after the prefix.
+    let mut run = replay(&ctx, &history);
+    let mut fed = Vec::new();
+    let effect = write_direct(&mut run, &first, &close, &mut fed);
+    tokens += count(&fed);
+    history.extend(fed);
+    assert_eq!(effect.len(), 4, "no stop token: max_tokens ends the answer");
+    assert!(effect.iter().all(|id| id % 3 != 0), "no token of `never` is written");
+    // `verdict` is read after `effect`.
+    let mut letters = vec![Vec::new(); asked.len()];
+    let Advance::Step(step) = plan.advance(None).unwrap() else {
+        panic!("a step")
+    };
+    let lp = log_probs(&replay(&ctx, &history).feed_all(&step.feed)).unwrap();
+    letters[step.question] = step.letters.iter().map(|&l| lp[l as usize]).collect::<Vec<f64>>();
+    tokens += step.feed.len();
+    // `why` is written after `effect`, and no token of the step of `verdict` is in its state.
+    let mut run = replay(&ctx, &history);
+    let mut fed = Vec::new();
+    let why = write_direct(&mut run, &second, &close, &mut fed);
+    tokens += count(&fed);
+    history.extend(fed);
+    assert!(why.len() < 8, "a stop token ends the answer before max_tokens");
+    // Each later question is read after `why`.
+    let mut last = letters[step.question].clone();
+    loop {
+        match plan.advance(Some(&last)).unwrap() {
+            Advance::Done(_) => break,
+            Advance::Step(step) => {
+                let lp = log_probs(&replay(&ctx, &history).feed_all(&step.feed)).unwrap();
+                last = step.letters.iter().map(|&l| lp[l as usize]).collect();
+                letters[step.question] = last.clone();
+                tokens += step.feed.len();
+            }
+        }
+    }
+    assert_eq!(raw(&response), vec![letters]);
+    let described = response.reads[0]
+        .described
+        .as_ref()
+        .expect("the spec has text questions");
+    let texts: Vec<(&str, &str)> = described
+        .iter()
+        .map(|(id, text)| (id.as_str(), text.as_str()))
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            ("effect", format!("{effect:?}").as_str()),
+            ("why", format!("{why:?}").as_str())
+        ]
+    );
+    assert_eq!(response.usage.completion as usize, effect.len() + why.len());
+    assert_eq!(response.usage.prompt as usize, tokens);
+    assert_eq!(response.usage.kept + response.usage.fed, response.usage.prompt);
+    // A second decision gives the same bits and the same text (gogi rule 1).
+    let again = f.service.decide(&request(&id, &contexts, json!({}))).unwrap();
+    assert_eq!(raw(&again), raw(&response));
+    assert_eq!(again.reads[0].described, response.reads[0].described);
+    // `ask` names no text question.
+    let asks_text = f.service.decide(&request(&id, &contexts, json!({"ask": ["effect"]})));
+    assert_eq!(invalid_param(asks_text), "ask");
+    // A served model with no `describe` refuses the spec, and it reads nothing.
+    let plain_family = Fixture::with(0, 1 << 20, None, config);
+    let id = plain_family
+        .service
+        .hold_spec(writing_spec_json())
+        .unwrap()
+        .spec_id
+        .to_string();
+    let refused = plain_family.service.decide(&request(&id, &contexts, json!({})));
+    assert_eq!(invalid_param(refused), "spec_id");
+    // A spec with no text question has no `described`.
+    assert_eq!(decide(&f, &contexts, json!({})).reads[0].described, None);
+}

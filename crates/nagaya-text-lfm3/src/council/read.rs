@@ -15,7 +15,7 @@ use gogi_proto::objects::ObjectRef;
 use gogi_proto::spec::{QuestionKind, Spec};
 use nagaya_council::family::{
     Advance, Asked, Continues, ControlHit, DecisionInput, FamilyError, MediaInput, RawRead, ReadDone, ReadPlan,
-    ReadStep, Rendering,
+    ReadStep, Rendering, WriteStep, Written,
 };
 use serde_json::Value;
 
@@ -152,6 +152,21 @@ fn question_layer(spec: &Spec, question: usize) -> Result<Layer, FamilyError> {
     Ok(l)
 }
 
+/// The text layer: the text of the user turn that asks one `text` question (spec 11.11, "Text questions of the LFM3
+/// family"). The model writes its answer after the turn.
+fn text_layer(spec: &Spec, question: usize) -> Layer {
+    let mut l = Layer::default();
+    if !spec.instructions.is_empty() {
+        l.content(&spec.instructions);
+        l.lit("\n\n");
+    }
+    l.lit("Answer this question about the ");
+    l.content(&spec.input_label);
+    l.lit(" in plain text.\n\n");
+    l.content(&spec.questions[question].instructions);
+    l
+}
+
 /// The control text of the pieces, found at `place`.
 fn hits_of(family: &Lfm3Family, place: &str, pieces: &[String]) -> Vec<ControlHit> {
     pieces.iter().flat_map(|p| family.hits(place, p)).collect()
@@ -270,6 +285,19 @@ pub(crate) fn decision_read(
     check_asked(family, input.spec, input.asked)?;
     match input.context {
         Some((c, rendering)) if queue_call(c).is_some() => {
+            // spec 11.11, "Text questions of the LFM3 family": a queue read writes no text.
+            if input
+                .spec
+                .questions
+                .iter()
+                .any(|q| matches!(q.kind, QuestionKind::Text { .. }))
+            {
+                return Err(FamilyError::client_param(
+                    "spec_id",
+                    "nothing ran: the spec holds a text question, and a queue read writes no text. Send the decision \
+                     with a plain context, or use a spec with no text question.",
+                ));
+            }
             // spec 11.11, "Media in a decision": the case of a queue read is the result of a call, with no media.
             if !case_media.is_empty() {
                 return Err(FamilyError::client_param(
@@ -317,17 +345,49 @@ fn context_messages(
 
 // ---------------------------------------------------------------- a plain read
 
-/// A read with no queue: the case turn is the prefix, and each question is read in a turn of its own after it.
+/// One turn of a plain read after the case turn.
+enum Item {
+    /// A question that is read: its index in `asked`, its tokens and its letters.
+    Read {
+        slot: usize,
+        feed: Vec<u32>,
+        letters: Vec<u32>,
+    },
+    /// A `text` question that the model writes: its index in the spec, its tokens and its `max_tokens`.
+    Write {
+        question: usize,
+        feed: Vec<u32>,
+        max_tokens: usize,
+    },
+}
+
+/// A read with no queue: the case turn is the prefix, and each question has a turn of its own after it, in the
+/// order of the spec. The model writes the answer of a `text` question, and the later questions follow that answer.
 struct PlainPlan {
+    tokenizer: Arc<Tokenizer>,
     prefix: Vec<u32>,
-    rendered_hash: String,
-    /// For each asked question: its tokens and its letters.
-    steps: Vec<(Vec<u32>, Vec<u32>)>,
+    /// The turns after the case turn, and the escaped text of each.
+    items: Vec<(Item, String)>,
+    /// The items given so far.
+    at: usize,
+    /// True between `write` and `wrote`.
+    writing: bool,
+    /// All the text of the read so far, escaped.
+    read_text: String,
+    /// The id of each object of the read, in order.
+    objects: Vec<String>,
+    /// The tokens that end the assistant turn of a written answer.
+    close: Vec<u32>,
+    stop: Vec<u32>,
+    never: Vec<u32>,
     cursor: Cursor,
     control_text: Vec<ControlHit>,
     /// The rows of each media span of the prefix.
     media: Vec<MediaInput>,
 }
+
+/// The text that ends the assistant turn of a written answer, as the template writes it.
+const TURN_END: &str = "<|im_end|>\n";
 
 fn plain_plan(
     family: &Lfm3Family,
@@ -337,6 +397,7 @@ fn plain_plan(
     let label = &input.spec.input_label;
     let case_turn = format!("{label}:\n{}", input.case);
     let mut control_text = Vec::new();
+    let shared = usize::from(!input.spec.instructions.is_empty()) + 1;
     if !input.spec.instructions.is_empty() {
         control_text.extend(family.hits("spec", &input.spec.instructions));
     }
@@ -369,35 +430,62 @@ fn plain_plan(
     let base = family.encode(&closed)?;
     let (prefix, media) = expand_read(family, input, &base, case_index, case_media)?;
 
-    let mut steps = Vec::new();
-    let mut read_text = closed.clone();
-    for a in input.asked {
-        let layer = question_layer(input.spec, a.question)?;
+    // Each turn is rendered after the case turn. A turn starts and ends with a marker, so its tokens are the same
+    // after a written answer, which ends with the same marker and line feed as the case turn.
+    let mut items = Vec::new();
+    for (question, q) in input.spec.questions.iter().enumerate() {
+        let slot = input.asked.iter().position(|a| a.question == question);
+        let (layer, tail, text) = match (&q.kind, slot) {
+            (QuestionKind::Text { .. }, _) => (text_layer(input.spec, question), "", true),
+            (_, Some(_)) => (question_layer(input.spec, question)?, ANSWER, false),
+            (_, None) => continue,
+        };
         // The instructions and the label are in each turn. Their hits are reported once, above.
-        let own = &layer.client[usize::from(!input.spec.instructions.is_empty()) + 1..];
-        control_text.extend(hits_of(family, "spec", own));
+        control_text.extend(hits_of(family, "spec", &layer.client[shared..]));
         let mut with = messages.clone();
         with.push(turn_json("user", &layer.text));
-        // A read closes the thinking, so the question turn ends with the prompt of the template for thinking off.
-        let escaped = format!("{}{ANSWER}", family.run(&with, &tools, false, true)?.escaped);
+        // A read closes the thinking, so the turn ends with the prompt of the template for thinking off.
+        let escaped = format!("{}{tail}", family.run(&with, &tools, false, true)?.escaped);
         let ids = family.encode(&escaped)?;
-        // The question turn must go on from the tokens of the case, so that the model state is the same.
+        // The turn must go on from the tokens of the case, so that the model state is the same.
         let Some(turn) = escaped.strip_prefix(closed.as_str()).filter(|_| ids.starts_with(&base)) else {
             return Err(FamilyError::internal(
                 "the question turn changes the tokens of the case. The rendering has a token border it cannot keep.",
             ));
         };
-        read_text.push_str(turn);
         let feed = ids[base.len()..].to_vec();
-        steps.push((feed, a.options.iter().map(|&j| family.letters[j]).collect()));
+        let item = match (&q.kind, slot) {
+            (QuestionKind::Text { max_tokens }, _) if text => Item::Write {
+                question,
+                feed,
+                max_tokens: *max_tokens,
+            },
+            (_, Some(slot)) => Item::Read {
+                slot,
+                feed,
+                letters: input.asked[slot].options.iter().map(|&j| family.letters[j]).collect(),
+            },
+            _ => unreachable!("a question that is not asked has no turn"),
+        };
+        items.push((item, turn.to_string()));
     }
     control_text.extend(family.hits("case", input.case));
+    let mut objects: Vec<String> = match input.context {
+        Some((c, _)) => family.media_parts(c)?.into_iter().map(|p| p.id).collect(),
+        None => Vec::new(),
+    };
+    objects.extend(case_media.iter().map(|o| o.id.clone()));
     Ok(Box::new(PlainPlan {
+        tokenizer: family.shared_tokenizer(),
         prefix,
-        // gogi: the hash covers the text that the read was conditioned on: the text through the case turn, then each
-        // question turn. With media, it covers the id of each object of the read too (spec 11.11).
-        rendered_hash: hash_of_read(family, input, &read_text, case_media)?,
-        steps,
+        items,
+        at: 0,
+        writing: false,
+        read_text: closed,
+        objects,
+        close: family.encode(TURN_END)?,
+        stop: family.stop_tokens().to_vec(),
+        never: family.text_suppressed().to_vec(),
         cursor: Cursor::new(),
         control_text,
         media,
@@ -491,28 +579,18 @@ fn rename(error: FamilyError, param: &str) -> FamilyError {
     }
 }
 
-/// The `rendered_hash` of a plain read: the hash of its text, and with media, of its text and the id of each object
-/// of the read, in order (spec 11.11, "Media in a decision").
-fn hash_of_read(
-    family: &Lfm3Family,
-    input: &DecisionInput<'_>,
-    escaped: &str,
-    case_media: &[ObjectRef],
-) -> Result<String, FamilyError> {
-    let mut ids: Vec<String> = match input.context {
-        Some((c, _)) => family.media_parts(c)?.into_iter().map(|p| p.id).collect(),
-        None => Vec::new(),
-    };
-    ids.extend(case_media.iter().map(|o| o.id.clone()));
-    if ids.is_empty() {
-        return hash_of_escaped(family.tokenizer(), escaped);
+impl PlainPlan {
+    /// The `rendered_hash` of the read: the hash of its text, and with media, of its text and the id of each object
+    /// of the read, in order (spec 11.11, "Media in a decision"). gogi: the hash covers the text that the read was
+    /// conditioned on, through its written answers.
+    fn hash(&self) -> Result<String, FamilyError> {
+        let mut text = self.tokenizer.unescape(&self.read_text).map_err(refusal)?;
+        for id in &self.objects {
+            text.push('\n');
+            text.push_str(id);
+        }
+        Ok(content_id(text.as_bytes()))
     }
-    let mut text = family.tokenizer().unescape(escaped).map_err(refusal)?;
-    for id in ids {
-        text.push('\n');
-        text.push_str(&id);
-    }
-    Ok(content_id(text.as_bytes()))
 }
 
 impl ReadPlan for PlainPlan {
@@ -529,25 +607,91 @@ impl ReadPlan for PlainPlan {
     }
 
     fn room(&self) -> usize {
-        self.steps.iter().map(|(feed, _)| feed.len()).max().unwrap_or(0)
+        let mut written = 0;
+        let mut longest = 0;
+        for (item, _) in &self.items {
+            match item {
+                Item::Read { feed, .. } => longest = longest.max(feed.len()),
+                Item::Write { feed, max_tokens, .. } => written += feed.len() + max_tokens + self.close.len(),
+            }
+        }
+        written + longest
     }
 
     fn control_text(&self) -> &[ControlHit] {
         &self.control_text
     }
 
+    fn write(&mut self) -> Result<Option<WriteStep>, FamilyError> {
+        if self.writing {
+            return Err(FamilyError::internal(
+                "write was called before the answer of the last write",
+            ));
+        }
+        let Some((
+            Item::Write {
+                question,
+                feed,
+                max_tokens,
+            },
+            _,
+        )) = self.items.get(self.at)
+        else {
+            return Ok(None);
+        };
+        self.writing = true;
+        Ok(Some(WriteStep {
+            question: *question,
+            feed: feed.clone(),
+            max_tokens: *max_tokens,
+            stop: self.stop.clone(),
+            never: self.never.clone(),
+        }))
+    }
+
+    fn wrote(&mut self, tokens: &[u32]) -> Result<Written, FamilyError> {
+        if !self.writing {
+            return Err(FamilyError::internal("wrote was called with no write before it"));
+        }
+        let text = self
+            .tokenizer
+            .decode_lossy(tokens)
+            .map_err(|e| FamilyError::internal(format!("the written answer has a token with no text: {e}")))?;
+        let (_, turn) = &self.items[self.at];
+        self.read_text.push_str(turn);
+        self.read_text.push_str(&self.tokenizer.escape(&text).map_err(refusal)?);
+        self.read_text.push_str(TURN_END);
+        self.writing = false;
+        self.at += 1;
+        Ok(Written {
+            text,
+            close: self.close.clone(),
+        })
+    }
+
     fn advance(&mut self, last: Option<&[f64]>) -> Result<Advance, FamilyError> {
         self.cursor.accept(last)?;
-        let Some((feed, letters)) = self.steps.get(self.cursor.given) else {
-            return Ok(self.cursor.done(self.rendered_hash.clone()));
-        };
-        let step = ReadStep {
-            question: self.cursor.given,
-            continues: Continues::Prefix,
-            feed: feed.clone(),
-            letters: letters.clone(),
-        };
-        Ok(self.cursor.step(step))
+        match self.items.get(self.at) {
+            None => {
+                let hash = self.hash()?;
+                Ok(self.cursor.done(hash))
+            }
+            Some((Item::Write { .. }, _)) => Err(FamilyError::internal(
+                "a text question is next: the caller must call write before advance",
+            )),
+            Some((Item::Read { slot, feed, letters }, turn)) => {
+                let step = ReadStep {
+                    question: *slot,
+                    continues: Continues::Prefix,
+                    feed: feed.clone(),
+                    letters: letters.clone(),
+                };
+                // The answer of a read never enters the text of a later question, so its turn enters the hash only.
+                self.read_text.push_str(turn);
+                self.at += 1;
+                Ok(self.cursor.step(step))
+            }
+        }
     }
 }
 

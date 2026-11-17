@@ -282,6 +282,126 @@ fn a_plain_read_asks_each_question_alone_after_the_case_turn() {
     }
 }
 
+/// spec 11.11, "Text questions of the LFM3 family": the model writes a `text` question in a turn of its own, and
+/// each later question follows the written answer.
+#[test]
+fn a_plain_read_writes_each_text_question_in_the_order_of_the_spec() {
+    if absent_any() {
+        return;
+    }
+    let rules = SpecRules {
+        describe: true,
+        text_tokens: 256,
+        ..SpecRules::default()
+    };
+    let spec = parse_spec(
+        &json!({"name": "g", "instructions": "i", "input_label": "x", "questions": [
+            {"id": "safe", "type": "noul", "instructions": "It is safe."},
+            {"id": "effect", "type": "text", "instructions": "What it does.", "max_tokens": 48},
+            {"id": "undo", "type": "score", "instructions": "How", "criteria": ["easy", "hard"]}]}),
+        &rules,
+    )
+    .unwrap();
+    let asked = [
+        Asked {
+            question: 0,
+            options: vec![0, 1],
+        },
+        Asked {
+            question: 2,
+            options: vec![0, 1],
+        },
+    ];
+    for model in ["omni", "text"] {
+        let fam = family(model);
+        let input = DecisionInput {
+            context: None,
+            spec: &spec,
+            case: "a case",
+            asked: &asked,
+        };
+        let mut plan = fam.decision_read(&input).unwrap();
+        // The question before the text question is read first, from the case turn.
+        assert_eq!(plan.write().unwrap(), None);
+        let Advance::Step(first) = plan.advance(None).unwrap() else {
+            panic!("a step first")
+        };
+        assert_eq!(first.question, 0);
+        // Then the text question: its turn ends with the prompt for thinking off, and the model writes after it.
+        let write = plan.write().unwrap().expect("the text question is next");
+        assert_eq!(write.question, 1);
+        assert_eq!(write.max_tokens, 48);
+        assert_eq!(
+            fam.detokenize(&write.feed).unwrap(),
+            "<|im_start|>user\ni\n\nAnswer this question about the x in plain text.\n\nWhat it does.<|im_end|>\n\
+             <|im_start|>assistant\n<think></think>",
+            "{model}"
+        );
+        assert_eq!(write.stop, fam.stop_tokens());
+        assert!(
+            write
+                .never
+                .contains(&fam.tokenize_special("<|audio_start|>").unwrap()[0])
+        );
+        // An advance before the answer is a defect of the caller.
+        assert!(plan.advance(Some(&[-1.0, -2.0])).is_err());
+        let mut plan = fam.decision_read(&input).unwrap();
+        plan.advance(None).unwrap();
+        plan.write().unwrap().unwrap();
+        let answer = fam.tokenize("It lists the files.").unwrap();
+        let written = plan.wrote(&answer).unwrap();
+        assert_eq!(written.text, "It lists the files.");
+        assert_eq!(fam.detokenize(&written.close).unwrap(), "<|im_end|>\n");
+        // The later question has the turn that it has with no text question before it.
+        assert_eq!(plan.write().unwrap(), None);
+        let Advance::Step(second) = plan.advance(Some(&[-1.0, -2.0])).unwrap() else {
+            panic!("a second step")
+        };
+        assert_eq!((second.question, second.continues), (1, Continues::Prefix));
+        assert!(
+            fam.detokenize(&second.feed)
+                .unwrap()
+                .ends_with("How The options run from lowest to highest.\nA. easy\nB. hard\n<|im_end|>\n<|im_start|>assistant\n<think></think>Answer:"),
+            "{model}"
+        );
+        // The room holds the written turn whole, and the longest read turn.
+        assert_eq!(
+            plan.room(),
+            write.feed.len() + 48 + written.close.len() + first.feed.len().max(second.feed.len())
+        );
+        let Advance::Done(done) = plan.advance(Some(&[-1.0, -2.0])).unwrap() else {
+            panic!("two questions")
+        };
+        // The hash covers the written answer.
+        let mut other = fam.decision_read(&input).unwrap();
+        other.advance(None).unwrap();
+        other.write().unwrap().unwrap();
+        other.wrote(&fam.tokenize("It removes the files.").unwrap()).unwrap();
+        other.advance(Some(&[-1.0, -2.0])).unwrap();
+        let Advance::Done(other_done) = other.advance(Some(&[-1.0, -2.0])).unwrap() else {
+            panic!("two questions")
+        };
+        assert_ne!(done.rendered_hash, other_done.rendered_hash);
+        // A queue read writes no text.
+        let tool = json!({"name": "next", "input_schema": {"type": "object", "properties": {"answers": {
+            "type": "object", "properties": {"safe": {"type": "string", "enum": ["A", "B"]},
+            "undo": {"type": "string", "enum": ["A", "B"]}}}}}});
+        let queue = context(
+            json!({"thinking": false, "tools": [tool], "queue": "next", "messages": [
+            {"role": "user", "content": "go", "snap": true},
+            {"role": "assistant", "tool_calls": [{"id": "c0", "name": "next", "input": {}}]}]}),
+        );
+        let rendering = fam.render(&queue, false).unwrap();
+        let Err(error) = fam.decision_read(&DecisionInput {
+            context: Some((&queue, &rendering)),
+            ..input
+        }) else {
+            panic!("a queue read with a text question is refused")
+        };
+        assert!(format!("{error:?}").contains("spec_id"), "{error:?}");
+    }
+}
+
 #[test]
 fn a_queue_read_writes_the_call_in_the_xml_form() {
     if absent_any() {

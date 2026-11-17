@@ -244,6 +244,32 @@ pub fn text_pieces(m: &gogi_proto::Message) -> Vec<&str> {
     }
 }
 
+/// A `text` question that the model writes (gogi "Specs", capability `describe`): tokens to feed, then the rule of
+/// the answer. The caller picks the most likely token of each logit row, and the lowest id wins a tie.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WriteStep {
+    /// The index of the question in the spec's `questions`.
+    pub question: usize,
+    /// The tokens to feed. After them the caller takes the logits of the last position, for the first token.
+    pub feed: Vec<u32>,
+    /// The most tokens of the answer.
+    pub max_tokens: usize,
+    /// A token that ends the answer. It is not part of the answer, and the caller does not feed it.
+    pub stop: Vec<u32>,
+    /// The tokens that are not candidates.
+    pub never: Vec<u32>,
+}
+
+/// What a plan gives for a written answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Written {
+    /// The text of the answer.
+    pub text: String,
+    /// The tokens to feed after the answer. The state after them is the start of each later step that continues
+    /// from the prefix, until the next written answer.
+    pub close: Vec<u32>,
+}
+
 /// What a plan gives next.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Advance {
@@ -283,9 +309,23 @@ pub trait ReadPlan: Send {
         false
     }
 
-    /// The most tokens that one step feeds after the prefix. The caller adds them to the room of the slot.
+    /// The most tokens that the plan feeds after the prefix and holds at one time: each written answer with its
+    /// turn, and the longest step. The caller adds them to the room of the slot.
     fn room(&self) -> usize {
         0
+    }
+
+    /// The `text` question that the model writes next, or `None` when a step or the end is next. The caller asks
+    /// before each call to `advance`. It starts the answer from the state after the prefix, or after the `close` of
+    /// the answer before, feeds the answer, and then calls `wrote`. A plan of a family with no `describe` gives
+    /// `None`.
+    fn write(&mut self) -> Result<Option<WriteStep>, FamilyError> {
+        Ok(None)
+    }
+
+    /// Take the tokens of the answer of the last `write`, in order, with no stop token.
+    fn wrote(&mut self, _tokens: &[u32]) -> Result<Written, FamilyError> {
+        Err(FamilyError::internal("the plan asked for no written answer"))
     }
 }
 
@@ -449,6 +489,11 @@ pub trait Family: Send + Sync {
 
     /// The template id: `nagaya-council:<hash>+<family>-chat:<hash>` (spec 11.3a).
     fn template_id(&self) -> &str;
+
+    /// True when the family writes the `text` questions of a spec (gogi capability `describe`).
+    fn describes(&self) -> bool {
+        false
+    }
 
     /// The number of tokens in the vocabulary. A logit row has this many elements.
     fn vocab_size(&self) -> usize;

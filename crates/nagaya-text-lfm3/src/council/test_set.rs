@@ -116,6 +116,37 @@ pub(crate) fn renders(family: &Lfm3Family) -> Vec<Vec<u32>> {
             plan.as_mut(),
         ));
     }
+    // A plain read with a `text` question: the turn of the question, the end of a written answer, and the turn after.
+    let writing = parse_spec(
+        &json!({"name": "w", "instructions": "i", "input_label": "x", "questions": [
+            {"id": "effect", "type": "text", "instructions": "What it does.", "max_tokens": 8},
+            {"id": "safe", "type": "noul", "instructions": "It is safe."}]}),
+        &SpecRules {
+            describe: true,
+            text_tokens: 8,
+            ..SpecRules::default()
+        },
+    )
+    .expect("the test spec is valid");
+    let input = DecisionInput {
+        context: None,
+        spec: &writing,
+        case: "a case",
+        asked: &[Asked {
+            question: 1,
+            options: vec![0, 1],
+        }],
+    };
+    let mut plan = family.decision_read(&input).expect("the test decision plans");
+    let mut tokens = plan.prefix().to_vec();
+    let write = plan
+        .write()
+        .expect("the test plan runs")
+        .expect("the text question is first");
+    tokens.extend(write.feed);
+    tokens.extend(plan.wrote(&[]).expect("the test plan runs").close);
+    tokens.extend(plan_tokens(&[], plan.as_mut()).split_off(plan.prefix().len()));
+    out.push(tokens);
     // A raw read: the letters, and the suffixes with the markers of a queue call and of a closed thinking.
     let own = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     let raw = family

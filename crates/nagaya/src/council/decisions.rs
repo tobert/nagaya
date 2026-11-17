@@ -5,12 +5,14 @@ use std::time::{Duration, Instant};
 
 use gogi_proto::context::{Context, Usage};
 use gogi_proto::decision::{DecisionRequest, DecisionResponse, Read};
-use gogi_proto::spec::parse_spec;
+use gogi_proto::spec::{QuestionKind, parse_spec};
 use gogi_proto::{Invalid, math};
 use nagaya_abi::Kind;
 use nagaya_council::build::boundary_recipes;
 use nagaya_council::decision::{answers, asked, case_text};
-use nagaya_council::family::{Advance, Boundary, Continues, DecisionInput, MediaInput, ReadPlan, ReadStep, Rendering};
+use nagaya_council::family::{
+    Advance, Boundary, Continues, DecisionInput, MediaInput, ReadPlan, ReadStep, Rendering, WriteStep,
+};
 use nagaya_council::read::log_probs;
 
 use super::build::{ContextBody, Got, Then, Want};
@@ -37,9 +39,42 @@ pub(crate) struct DecisionThen {
     at_prefix: bool,
     marked: bool,
     /// The step that waits for a mark or a rewind.
-    waiting: Option<ReadStep>,
+    waiting: Option<Waiting>,
     /// The step whose logit row the feed gives.
     reading: Option<ReadStep>,
+    /// The `text` question that the model writes now, and the tokens of its answer so far.
+    writing: Option<(WriteStep, Vec<u32>)>,
+    /// True while the feed after a written answer runs.
+    closing: bool,
+    /// The letters of the last step, until the plan takes them.
+    last: Option<Vec<f64>>,
+    /// Each written answer: the index of its question in the spec, and its text.
+    pub described: Vec<(usize, String)>,
+    /// The tokens that the model wrote.
+    pub written: usize,
+}
+
+/// A step that starts from the state after the prefix, or after the last written answer.
+enum Waiting {
+    Read(ReadStep),
+    Write(WriteStep),
+}
+
+/// The most likely token of a logit row that is not in `never`. The lowest id wins a tie (spec 11.11, "Text questions
+/// of the LFM3 family").
+fn most_likely(row: &[f32], never: &[u32]) -> Result<u32, ServiceError> {
+    let mut best: Option<(u32, f32)> = None;
+    for (id, &logit) in row.iter().enumerate() {
+        if logit.is_nan() {
+            return Err(ServiceError::internal(format!("the logit of token {id} is NaN")));
+        }
+        let id = id as u32;
+        if !never.contains(&id) && best.is_none_or(|(_, top)| logit > top) {
+            best = Some((id, logit));
+        }
+    }
+    best.map(|(id, _)| id)
+        .ok_or_else(|| ServiceError::internal("a logit row has no candidate token"))
 }
 
 impl DecisionThen {
@@ -54,7 +89,60 @@ impl DecisionThen {
             marked: false,
             waiting: None,
             reading: None,
+            writing: None,
+            closing: false,
+            last: None,
+            described: Vec::new(),
+            written: 0,
         }
+    }
+
+    /// Start the answer of a `text` question from the state after the prefix or after the answer before.
+    fn start(&mut self, step: WriteStep) -> Want {
+        self.fed += step.feed.len();
+        self.at_prefix = false;
+        let tokens = step.feed.clone();
+        self.writing = Some((step, Vec::new()));
+        Want::Feed {
+            tokens,
+            logits: true,
+            kind: Kind::Read,
+        }
+    }
+
+    /// Take the logit row after the turn of a `text` question, or after a token of its answer.
+    fn write(&mut self, row: &[f32]) -> Result<Want, ServiceError> {
+        let (step, mut tokens) = self.writing.take().expect("a row of an answer belongs to a write");
+        let token = most_likely(row, &step.never)?;
+        let stopped = step.stop.contains(&token);
+        if !stopped {
+            tokens.push(token);
+        }
+        if !stopped && tokens.len() < step.max_tokens {
+            self.writing = Some((step, tokens));
+            self.fed += 1;
+            return Ok(Want::Feed {
+                tokens: vec![token],
+                logits: true,
+                kind: Kind::Read,
+            });
+        }
+        // The answer is whole. The slot holds every token of it but the last, when `max_tokens` ended it.
+        let written = self.plan.wrote(&tokens)?;
+        self.written += tokens.len();
+        self.described.push((step.question, written.text));
+        let mut feed: Vec<u32> = if stopped { Vec::new() } else { vec![token] };
+        feed.extend(written.close);
+        if feed.is_empty() {
+            return Err(ServiceError::internal("the plan closes a written answer with no token"));
+        }
+        self.fed += feed.len();
+        self.closing = true;
+        Ok(Want::Feed {
+            tokens: feed,
+            logits: false,
+            kind: Kind::Read,
+        })
     }
 
     fn feed(&mut self, step: ReadStep) -> Want {
@@ -70,6 +158,30 @@ impl DecisionThen {
     }
 
     fn advance(&mut self, last: Option<&[f64]>) -> Result<Want, ServiceError> {
+        // A `text` question comes before the step after it. The plan takes the letters of the last step later.
+        if let Some(step) = self.plan.write()? {
+            if step.feed.is_empty() || step.max_tokens == 0 {
+                return Err(ServiceError::internal(format!(
+                    "the write of question {} feeds no token or writes no token",
+                    step.question
+                )));
+            }
+            if let Some(last) = last {
+                self.last = Some(last.to_vec());
+            }
+            return match (self.at_prefix, self.marked) {
+                (true, _) => Ok(self.start(step)),
+                (false, true) => {
+                    self.waiting = Some(Waiting::Write(step));
+                    Ok(Want::Rewind)
+                }
+                (false, false) => Err(ServiceError::internal(
+                    "a text question starts from the prefix, but the plan left the prefix before a mark",
+                )),
+            };
+        }
+        let kept = self.last.take();
+        let last = last.or(kept.as_deref());
         match self.plan.advance(last)? {
             Advance::Done(done) => {
                 self.rendered_hash = Some(done.rendered_hash);
@@ -94,11 +206,11 @@ impl DecisionThen {
                     Continues::Prefix if self.at_prefix && self.marked => Ok(self.feed(step)),
                     Continues::Prefix if self.at_prefix => {
                         self.marked = true;
-                        self.waiting = Some(step);
+                        self.waiting = Some(Waiting::Read(step));
                         Ok(Want::Mark)
                     }
                     Continues::Prefix if self.marked => {
-                        self.waiting = Some(step);
+                        self.waiting = Some(Waiting::Read(step));
                         Ok(Want::Rewind)
                     }
                     Continues::Prefix => Err(ServiceError::internal(
@@ -130,6 +242,11 @@ impl Then for DecisionThen {
                 })
             }
             Got::Fed(None) => {
+                // After the close of a written answer, the mark of the state before it is stale.
+                if self.closing {
+                    self.closing = false;
+                    self.marked = false;
+                }
                 self.at_prefix = true;
                 self.advance(None)
             }
@@ -139,9 +256,12 @@ impl Then for DecisionThen {
             )),
             Got::Copied => {
                 self.at_prefix = true;
-                let step = self.waiting.take().expect("a mark or a rewind has a step that waits");
-                Ok(self.feed(step))
+                match self.waiting.take().expect("a mark or a rewind has a step that waits") {
+                    Waiting::Read(step) => Ok(self.feed(step)),
+                    Waiting::Write(step) => Ok(self.start(step)),
+                }
             }
+            Got::Fed(Some(row)) if self.writing.is_some() => self.write(&row),
             Got::Fed(Some(row)) => {
                 let step = self.reading.take().expect("a logit row belongs to a step");
                 let lp = log_probs(&row).map_err(|error| ServiceError::internal(error.to_string()))?;
@@ -222,6 +342,18 @@ impl Service {
         }
         let held = self.spec(&request.spec_id)?;
         let spec = parse_spec(&held.spec, &self.config.spec_rules)?;
+        let writes = spec
+            .questions
+            .iter()
+            .any(|q| matches!(q.kind, QuestionKind::Text { .. }));
+        if writes && !self.family.describes() {
+            return Err(Invalid::param(
+                "spec_id",
+                "nothing was read: the spec holds a text question, which needs the describe capability, and this \
+                 model does not have it; use a spec with no text question, or a model that declares describe",
+            )
+            .into());
+        }
         let asked = asked(&spec, request.ask.as_deref(), request.options.as_ref())?;
         let case = case_text(&request.case);
         if case.len() > self.config.case_bytes {
@@ -325,6 +457,7 @@ impl Service {
             usage.prompt += (kept + fed) as u64;
             usage.kept += kept as u64;
             usage.fed += fed as u64;
+            usage.completion += then.written as u64;
             let read: Vec<Vec<f64>> = then
                 .logprobs
                 .into_iter()
@@ -353,7 +486,13 @@ impl Service {
                         .flatten()
                         .map(|id| snapshot_id(&id)),
                 ),
-                described: None,
+                // The written answers, by question id, in the order of the spec (spec 11.11).
+                described: writes.then(|| {
+                    then.described
+                        .iter()
+                        .map(|(question, text)| (spec.questions[*question].id.clone(), text.clone()))
+                        .collect()
+                }),
                 answers: Default::default(),
                 rendered_hash: then
                     .rendered_hash
@@ -392,5 +531,20 @@ impl Service {
             self.hold_record(context)?;
         }
         Ok(response)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::most_likely;
+
+    #[test]
+    fn the_most_likely_token_is_the_lowest_id_of_the_top_logit_outside_never() {
+        let row = [0.5, 2.0, 2.0, 1.0];
+        assert_eq!(most_likely(&row, &[]).unwrap(), 1, "the lowest id wins a tie");
+        assert_eq!(most_likely(&row, &[1]).unwrap(), 2);
+        assert_eq!(most_likely(&row, &[1, 2]).unwrap(), 3);
+        assert!(most_likely(&row, &[0, 1, 2, 3]).is_err(), "no candidate is a defect");
+        assert!(most_likely(&[0.0, f32::NAN], &[]).is_err(), "a NaN is a defect");
     }
 }
