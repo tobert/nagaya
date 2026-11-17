@@ -294,7 +294,7 @@ get ran sometimes, perhaps just a bump in our AGENTS.md"
   Then an absent file fails the test.
 - Do this at least before each merge that touches the crates of that model.
 - gfx1151host holds the Qwen3.8 GGUF at the default path of `NAGAYA_QWEN38_GGUF`.
-- b70host holds Gemma 4 in `~/src/mkviolet/checkpoints/gemma-4-26B-A4B`. The `xe` tests of
+- b70host holds Gemma 4 in `~/models/gemma-4-26B-A4B`. The `xe` tests of
   `nagaya-mk-gemma4-bmg` and the tests of `nagaya-text-gemma4` read it from `GEMMA4_MODEL_DIR`. The variable has no
   default, so the tests of `nagaya-text-gemma4` skip when it is unset.
 - Those tests also read HF reference files from `target/gemma4-golden` or `GEMMA4_GOLDEN_DIR`. Write them with
