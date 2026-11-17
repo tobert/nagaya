@@ -3153,8 +3153,12 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
 - The sample defaults of a served model are temperature 1 with no filter, until the profile names others.
 - A reply ends with `context_full` when the prompt and the reply reach `context_tokens`. When it also reaches
   `max_tokens`, it ends with `context_full` (gogi "Generations", `finish`).
-- The decision limits are those of the first Gemma 4 engine until the profile names others: `decision_context_tokens`
-  3072, `contexts_per_decision` 8, `case_bytes` 65536 and `default_timeout_ms` 30000.
+- `decision_context_tokens` is `context_tokens`: a decision reads its context in the slots of a build, and the job
+  takes the lowest slot that fits. **Proposed** (Claude Fable 5.2). Reason: the owner said on 2026-11-17 that a
+  decision of LFM3 Omni uses its slots of 32,768 positions. The limit was 3,072, and one large image has 1,875
+  positions. The same rule for each engine is the simplest one.
+- The other decision limits are those of the first Gemma 4 engine: `contexts_per_decision` 8, `case_bytes` 65536
+  and `default_timeout_ms` 30000.
 
 Continuations follow gogi's rules (`docs/council-api.md`, "Continuations"). The nagaya uses them in
 these ways. Each served model declares the capability `continuation` (`crates/nagaya/src/http/mod.rs`).

@@ -53,6 +53,8 @@ fn the_identity_selects_the_family_and_the_largest_slot_sets_the_context() {
         .unwrap()
         .expect("the toy family is registered");
     assert_eq!(plan.config.context_tokens, 700);
+    // A decision reads its context in the same slots, so its limit is the context limit (spec 11.3c).
+    assert_eq!(plan.config.decision_context_tokens, 700);
     assert_eq!(plan.config.model, "fake-always");
 }
 

@@ -164,6 +164,8 @@ impl FamilyRegistry {
         let mut config = ServiceConfig::new(model, &engine.name);
         config.context_tokens =
             usize::try_from(tokens).map_err(|_| format!("a slot of {tokens} tokens is too large"))?;
+        // A decision reads its context in the same slots (spec 11.3c).
+        config.decision_context_tokens = config.context_tokens;
         config.speech = opened.speech;
         Ok(Some(Plan {
             family: opened.family,
