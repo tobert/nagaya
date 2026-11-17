@@ -112,9 +112,14 @@ fn a_forced_run_matches_the_reference() {
             flips += 1;
         }
     }
-    for frame in 0..frames {
+    assert_eq!(
+        out.cp_logits.len(),
+        frames,
+        "the code predictor gave a logit row for each frame"
+    );
+    for (frame, got) in out.cp_logits.iter().enumerate() {
         let want = golden["cp_logits"].row(frame, (CODEBOOKS - 1) * CP_VOCAB);
-        worst[2] = worst[2].max(common::rel(&out.cp_logits[frame], &want));
+        worst[2] = worst[2].max(common::rel(got, &want));
     }
     let audio = common::rel(&out.audio, &golden["audio_full"].f32());
     eprintln!(
