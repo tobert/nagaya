@@ -264,6 +264,54 @@ What is open for long slots:
 - A decode step at 262,144 positions takes 39 ms, where a short one takes 9 ms to 13 ms. One-token attention keeps
   its own form.
 
+## The vision tower on a large image
+
+A decision of `lfm3-omni` on an image of 1600 by 1200 pixels took 16.5 s on 2026-11-17. The image has 7,500 patches
+and 1,875 positions. The time of one image grew with about the cube of its size. There were two causes.
+
+**The tower ran one time for each block.** An image of more positions than a block is in several passes. Each pass
+gives the patch rows of the whole image, and each pass ran the whole tower for its own rows. An image of 1,875
+positions is in 4 blocks of 512, so its tower ran 4 times.
+
+- Now the engine holds the grid and the BLAKE3 hash of the patch rows of the last image of the tower. A later pass
+  of the same image copies its rows from the output of the projector.
+- The rows are the rows of before, and the kernel binary did not change for this repair.
+- The card gate is `an_image_in_several_blocks_runs_the_tower_one_time_and_keeps_the_bits` of `xe_vision`.
+
+**The attention read each key row one time for each query row.** The tower has 6 layers with attention. `OP_BIATTN`
+gives a subgroup one query row of one head. The subgroup reads each key row and each value row with 8 loads. An
+ignored test of `xe_lfm3_vision_ops` measures the ops on a card, on random values:
+
+| Patches | `OP_BIATTN` | `OP_VISION_ATTN` | Product `in_proj` | Convolution |
+|---|---|---|---|---|
+| 256 (16 by 16) | 1.4 ms | 0.4 ms | 0.2 ms | 0.1 ms |
+| 3,072 (48 by 64) | 86.8 ms | 12.3 ms | 0.7 ms | 0.2 ms |
+| 4,800 (60 by 80) | 211.6 ms | 30.8 ms | 1.1 ms | 0.3 ms |
+| 7,600 (76 by 100) | 637.3 ms | 72.1 ms | 1.7 ms | 0.5 ms |
+
+- The attention was the cost of one run of the tower. Its loads are the likely cost: a form of the op with no
+  exponential, or with no reduce of the lanes, took the same time.
+- `OP_VISION_ATTN` (`kernels/lfm3_vision_ops.cl`) gives a subgroup a tile of 4 query rows of one head. It reads 8
+  key rows with 4 block reads, one time for the tile, and the value rows too. Its loops have fixed counts, so its
+  values can stay in registers.
+- The arithmetic of each query row is the arithmetic of `OP_BIATTN`, in key order. Thus the op gives the same bits
+  (`vision_attn_gives_the_bits_of_biattn`), and the tower gives the rows of before.
+- A first form with a tile of 8 query rows and no block read kept its values on the stack. It took 80.5 ms at 3,072
+  patches. A tile of 2 with block reads took 15.9 ms.
+- The kernel binary of LFM3 changes, and the 4 other binaries keep their bytes. The identity of each LFM3 engine
+  changes, and each held context of `lfm3` and `lfm3-omni` fills again one time.
+
+The largest image has 8,192 patches and 2,048 positions, in 5 passes. These are their times in `xe_vision`:
+
+| Build | Passes of the largest image |
+|---|---|
+| Before | each pass ran the tower; the first pass took 4,797 ms |
+| The tower runs one time | 4,797, 87, 87, 87 and 19 ms |
+| With `OP_VISION_ATTN` | 726, 86, 87, 89 and 19 ms |
+
+The first pass is now below the quantum bound of 2,000 ms. The audio encoder still runs one time for each block of a
+clip. A clip of 41 s or less is in one block of 512.
+
 ## Other open things from the same day
 
 - The test file `crates/nagaya/tests/council_media.rs` fails 9 of its 10 tests when `LFM3_OMNI_MODEL_DIR` is set.

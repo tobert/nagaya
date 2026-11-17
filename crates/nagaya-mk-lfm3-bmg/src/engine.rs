@@ -28,7 +28,7 @@ use crate::media::{self, MAX_IMAGE_PATCHES, PATCH_ROW, SpanKind};
 use crate::model::{self, Batch, Bufs, Run, SlotMemory, bufs_bytes, scratch_floats};
 use crate::spec::{self, Backbone, Block, Config, FAMILY, Held, LayerKind, Model, Part, RING_ROWS, VisionBytes};
 use crate::spec::{LENS_TAP, MAX_SEGMENTS, RESIDUAL_TAP};
-use crate::vision::{self, Until, Vision, VisionBufs, VisionWeights};
+use crate::vision::{self, HeldRows, Until, Vision, VisionBufs, VisionWeights};
 use crate::weights::{self, Count, Weights, f32_values};
 
 /// The vision tower of Omni on the card: its numbers, its weights and its buffers.
@@ -36,6 +36,8 @@ struct Tower {
     v: Vision,
     w: VisionWeights,
     bufs: VisionBufs,
+    /// The image whose rows the output of the projector holds.
+    held: HeldRows,
 }
 
 /// The LFM3 engine on one card.
@@ -299,6 +301,7 @@ impl Lfm3Engine {
                 bufs: VisionBufs::new(&mut |bytes| device.zeros(card, bytes), v, config.max_block),
                 v: v.clone(),
                 w,
+                held: HeldRows::default(),
             }),
             _ => None,
         };
@@ -625,22 +628,31 @@ impl Lfm3Engine {
             }
             let tasks = match used.span.kind {
                 SpanKind::Image { grid } => {
-                    let tower = self
+                    // An image of more positions than a block is in several passes. The tower runs for the first one.
+                    let held = self
                         .tower
-                        .as_ref()
-                        .expect("check_pass refuses an image when the model has no vision tower");
-                    self.device.write(self.card(), tower.bufs.pixels, bytes);
-                    vision::tower(
-                        &tower.v,
-                        &tower.w,
-                        &tower.bufs,
-                        grid[1],
-                        grid[2],
-                        Until::Rows {
-                            take: (used.take.start, used.take.end),
-                            block_row: used.block_row,
-                        },
-                    )
+                        .as_mut()
+                        .expect("check_pass refuses an image when the model has no vision tower")
+                        .held
+                        .holds([grid[1], grid[2]], bytes);
+                    let tower = self.tower.as_ref().expect("the tower held the image above");
+                    let take = (used.take.start, used.take.end);
+                    if held {
+                        vec![vision::rows(&tower.v, &tower.bufs, take, used.block_row)]
+                    } else {
+                        self.device.write(self.card(), tower.bufs.pixels, bytes);
+                        vision::tower(
+                            &tower.v,
+                            &tower.w,
+                            &tower.bufs,
+                            grid[1],
+                            grid[2],
+                            Until::Rows {
+                                take,
+                                block_row: used.block_row,
+                            },
+                        )
+                    }
                 }
                 // The encoder writes every row of the clip into its own rows. A copy then takes the rows of this
                 // block to their place in the media rows of the tower, as the tower writes an image's rows. A run of
@@ -742,9 +754,11 @@ impl Lfm3Engine {
     /// norm `[patches][hidden]`, the tower `[patches][hidden]`, and the rows of the projector `[patches / 4][out]`.
     /// `pixels` holds the patch rows in merge-block order. The probe of the oracle (8.3) uses it.
     pub fn vision_stages(&mut self, pixels: &[f32], grid_h: usize, grid_w: usize) -> Result<[Vec<f32>; 3], String> {
-        let Some(tower) = self.tower.as_ref() else {
+        let Some(tower) = self.tower.as_mut() else {
             return Err("this model has no vision tower".to_owned());
         };
+        // The probe writes the output of the projector.
+        tower.held.forget();
         let n = grid_h * grid_w;
         if grid_h < 2 || grid_w < 2 || !grid_h.is_multiple_of(2) || !grid_w.is_multiple_of(2) || n > MAX_IMAGE_PATCHES {
             return Err(format!(
@@ -768,6 +782,11 @@ impl Lfm3Engine {
             out.push(self.read_f32(at, len));
         }
         Ok(out.try_into().expect("three stages"))
+    }
+
+    /// The count of the images that the vision tower ran for. A gate reads it: an image in several passes is one run.
+    pub fn tower_runs(&self) -> u64 {
+        self.tower.as_ref().map_or(0, |tower| tower.held.runs())
     }
 
     fn read_f32(&self, at: u64, n: usize) -> Vec<f32> {

@@ -230,3 +230,131 @@ fn biattn_attends_to_every_patch_of_an_image() {
         }
     }
 }
+
+/// The attention of the tower gives the bits of `OP_BIATTN` with every key. The grids are a small one, one whose
+/// count of patches is no multiple of the tile, the two images of the oracle, and a large one. The heads have 64 values
+/// and 16 values, and the scales are 1/8 and 1.
+#[test]
+fn vision_attn_gives_the_bits_of_biattn() {
+    let mut card = Card::open();
+    let grids = [(2usize, 2usize), (2, 5), (14, 22), (18, 26), (48, 64)];
+    for (case, (gh, gw)) in grids.iter().enumerate() {
+        for (d, scale) in [(D, (D as f32).powf(-0.5)), (16, 1.0)] {
+            let n = gh * gw;
+            let seed = 1000 + 10 * case as u64 + d as u64;
+            // Large scores, so a new max of the softmax is rare after the first keys, and small ones.
+            let q = values(seed, n * HEADS * d, if case % 2 == 0 { 1.0 } else { 6.0 });
+            let k = values(seed + 1, n * KV * d, 1.0);
+            let v = values(seed + 2, n * KV * d, 1.0);
+            let (qb, kb, vb) = (card.buf(&q), card.buf(&k), card.buf(&v));
+            let old = Buf::zeros(card.card(), n * HEADS * d * 4);
+            let new = Buf::zeros(card.card(), n * HEADS * d * 4);
+            let (n32, h32, kv32, d32) = (n as u32, HEADS as u32, KV as u32, d as u32);
+            card.run(&[
+                tasks::biattn(qb.at(), kb.at(), vb.at(), old.at(), n32, h32, kv32, d32, 0, scale),
+                tasks::vision_attn(qb.at(), kb.at(), vb.at(), new.at(), n32, h32, kv32, d32, scale),
+            ]);
+            let want = old.read(card.card(), n * HEADS * d);
+            let got = new.read(card.card(), n * HEADS * d);
+            assert!(want.iter().any(|x| *x != 0.0), "{gh} by {gw}: OP_BIATTN wrote nothing");
+            if let Some(i) = first_other_bits(&got, &want) {
+                panic!(
+                    "{gh} by {gw}, heads of {d}: row {} head {} value {} is {:e} and OP_BIATTN gives {:e}",
+                    i / (HEADS * d),
+                    i / d % HEADS,
+                    i % d,
+                    got[i],
+                    want[i]
+                );
+            }
+            for b in [qb, kb, vb, old, new] {
+                b.free(card.card());
+            }
+        }
+    }
+}
+
+/// A measurement, not a gate: the time of the ops of the tower by the size of the grid, on random values. A layer of
+/// the tower with attention runs the attention one time, and 4 products of the size of `q`. A conv layer runs the
+/// convolution one time and the product `in_proj`. Run it alone, with `--ignored --nocapture`.
+#[test]
+#[ignore = "a measurement"]
+fn the_time_of_each_op_of_the_tower_by_the_size_of_the_grid() {
+    let mut card = Card::open();
+    for (gh, gw) in [(16usize, 16usize), (48, 64), (60, 80), (76, 100)] {
+        let n = gh * gw;
+        let q = values(1, n * HEADS * D, 1.0);
+        let k = values(2, n * KV * D, 1.0);
+        let v = values(3, n * KV * D, 1.0);
+        let x = values(4, n * CHANNELS, 1.0);
+        let w: Vec<u16> = values(5, 3 * CHANNELS * CHANNELS, 0.05).into_iter().map(bf16).collect();
+        let taps: Vec<u16> = values(6, CHANNELS * 9, 0.5).into_iter().map(bf16).collect();
+        let (qb, kb, vb, xb, wb, tb) = (
+            card.buf(&q),
+            card.buf(&k),
+            card.buf(&v),
+            card.buf(&x),
+            card.buf(&w),
+            card.buf(&taps),
+        );
+        let yb = Buf::zeros(card.card(), n * HEADS * D * 4);
+        let bcx = Buf::zeros(card.card(), n * 3 * CHANNELS * 4);
+        let (n32, c32) = (n as u32, CHANNELS as u32);
+        let scale = (D as f32).powf(-0.5);
+        let ops = [
+            (
+                "OP_BIATTN",
+                tasks::biattn(
+                    qb.at(),
+                    kb.at(),
+                    vb.at(),
+                    yb.at(),
+                    n32,
+                    HEADS as u32,
+                    KV as u32,
+                    D as u32,
+                    0,
+                    scale,
+                ),
+            ),
+            (
+                "attention of the tower",
+                tasks::vision_attn(
+                    qb.at(),
+                    kb.at(),
+                    vb.at(),
+                    yb.at(),
+                    n32,
+                    HEADS as u32,
+                    KV as u32,
+                    D as u32,
+                    scale,
+                ),
+            ),
+            (
+                "product q",
+                tasks::matmul(xb.at(), wb.at(), yb.at(), n32, c32, c32, false),
+            ),
+            (
+                "product in_proj",
+                tasks::matmul(xb.at(), wb.at(), bcx.at(), n32, 3 * c32, c32, false),
+            ),
+            (
+                "convolution",
+                tasks::vision_conv(bcx.at(), tb.at(), yb.at(), n32, c32, gh as u32, gw as u32),
+            ),
+        ];
+        let mut line = format!("{gh} by {gw}, {n} patches:");
+        for (name, op) in &ops {
+            // The first run of a buffer pays for its pages.
+            card.run(std::slice::from_ref(op));
+            let started = std::time::Instant::now();
+            card.run(std::slice::from_ref(op));
+            line += &format!(" {name} {:.1} ms;", started.elapsed().as_secs_f64() * 1e3);
+        }
+        println!("{line}");
+        for b in [qb, kb, vb, xb, wb, tb, yb, bcx] {
+            b.free(card.card());
+        }
+    }
+}

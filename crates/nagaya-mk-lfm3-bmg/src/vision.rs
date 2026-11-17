@@ -102,11 +102,11 @@ impl Vision {
             "a divisor of hidden_size",
         )?;
         let head_dim = hidden / heads;
-        // OP_BIATTN takes heads of 16 to 512 values in 16s.
+        // OP_VISION_ATTN takes heads of 16 to 64 values in 16s.
         want(
             "vision_config.hidden_size",
-            (16..=512).contains(&head_dim) && head_dim.is_multiple_of(16),
-            "heads of 16 to 512 values in 16s",
+            (16..=64).contains(&head_dim) && head_dim.is_multiple_of(16),
+            "heads of 16 to 64 values in 16s",
         )?;
         want(
             "vision_config.num_key_value_heads",
@@ -576,7 +576,7 @@ pub fn tower(
                     v.theta,
                 ));
                 let scale = (v.head_dim as f32).powf(-0.5);
-                t.push(tasks::biattn(q, k, vv, bufs.y, n32, heads, kv, d, 0, scale));
+                t.push(tasks::vision_attn(q, k, vv, bufs.y, n32, heads, kv, d, scale));
                 t.push(tasks::matmul(bufs.y, lw.o, bufs.x, n32, h32, heads * d, true));
             }
         }
@@ -609,24 +609,65 @@ pub fn tower(
         t.push(tasks::matmul(bufs.g, w.linear_2, bufs.y, m, out, p, false));
         t.push(tasks::bias(w.linear_2_bias, bufs.y, m, out, false));
     }
-    if let Until::Rows {
-        take: (lo, hi),
-        block_row,
-    } = until
-    {
+    if let Until::Rows { take, block_row } = until {
         assert!(
-            lo < hi && hi <= n / 4,
-            "the rows {lo} to {hi} are not rows of an image of {} positions",
+            take.1 <= n / 4,
+            "the rows {} to {} are not rows of an image of {} positions",
+            take.0,
+            take.1,
             n / 4
         );
-        t.push(tasks::copy(
-            bufs.y + (lo * v.out * 4) as u64,
-            bufs.media + (block_row * v.out * 4) as u64,
-            ((hi - lo) * v.out) as u32,
-        ));
+        t.push(rows(v, bufs, take, block_row));
     }
     assert!(t.len() < MAX_TASKS_PER_CARD, "the tower has {} tasks", t.len());
     t
+}
+
+/// The copy of the rows `take` of the projector in `y` into `media` from row `block_row`. `y` must hold the rows of the
+/// image ([`HeldRows`]).
+pub fn rows(v: &Vision, bufs: &VisionBufs, take: (usize, usize), block_row: usize) -> MkTaskDescriptor {
+    let (lo, hi) = take;
+    assert!(lo < hi, "the rows {lo} to {hi} are no rows");
+    tasks::copy(
+        bufs.y + (lo * v.out * 4) as u64,
+        bufs.media + (block_row * v.out * 4) as u64,
+        ((hi - lo) * v.out) as u32,
+    )
+}
+
+/// The image whose projector rows `y` holds, and the count of the runs of the tower.
+///
+/// An image of more positions than a block is in several passes, and each pass gives the patch rows of the whole
+/// image. The tower runs for the first of them. Each later pass copies its rows from `y`.
+#[derive(Debug, Default)]
+pub struct HeldRows {
+    /// The grid and the BLAKE3 hash of the patch rows.
+    image: Option<([usize; 2], blake3::Hash)>,
+    runs: u64,
+}
+
+impl HeldRows {
+    /// True when `y` holds the rows of the image of `grid` and `pixels`. If not, this records the image and counts a
+    /// run, and the caller must run the tower before the next call.
+    pub fn holds(&mut self, grid: [usize; 2], pixels: &[u8]) -> bool {
+        let image = Some((grid, blake3::hash(pixels)));
+        if self.image == image {
+            return true;
+        }
+        self.image = image;
+        self.runs += 1;
+        false
+    }
+
+    /// `y` holds the rows of no image: another task wrote it.
+    pub fn forget(&mut self) {
+        self.image = None;
+    }
+
+    /// The count of the images that the tower ran for.
+    pub fn runs(&self) -> u64 {
+        self.runs
+    }
 }
 
 /// The copy of the media rows of `rows` block rows from `block_row` over the embedding rows of the backbone in `x`.
@@ -641,7 +682,7 @@ pub fn place(v: &Vision, bufs: &VisionBufs, x: u64, rows: Range<usize>) -> MkTas
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nagaya_mk_bmg::protocol::{OP_BIATTN, OP_COPY, OP_MATMUL, OP_VISION_CONV, OP_VISION_ROPE};
+    use nagaya_mk_bmg::protocol::{OP_COPY, OP_MATMUL, OP_VISION_ATTN, OP_VISION_CONV, OP_VISION_ROPE};
 
     pub(crate) fn vision() -> Vision {
         Vision::parse(include_str!("../tests/fixtures/lfm3-omni.config.json"), 2048).unwrap()
@@ -676,6 +717,23 @@ mod tests {
 
     fn count(t: &[MkTaskDescriptor], op: u16) -> usize {
         t.iter().filter(|task| task.opcode == op).count()
+    }
+
+    #[test]
+    fn the_tower_runs_one_time_for_an_image_and_again_for_another_image() {
+        let mut held = HeldRows::default();
+        let (a, b) = (vec![1u8; 64], vec![2u8; 64]);
+        assert!(!held.holds([4, 4], &a), "nothing is held at the start");
+        assert!(held.holds([4, 4], &a), "the second block of the image");
+        assert!(held.holds([4, 4], &a), "the third block of the image");
+        assert_eq!(held.runs(), 1);
+        assert!(!held.holds([4, 4], &b), "other patch rows are another image");
+        assert!(!held.holds([2, 8], &b), "another grid is another image");
+        assert!(!held.holds([4, 4], &a), "the first image is held no more");
+        assert_eq!(held.runs(), 4);
+        held.forget();
+        assert!(!held.holds([4, 4], &a), "a probe wrote the rows");
+        assert_eq!(held.runs(), 5);
     }
 
     #[test]
@@ -728,7 +786,12 @@ mod tests {
         );
         refused(
             &|c| c["vision_config"]["num_attention_heads"] = 128.into(),
-            "heads of 16 to 512",
+            "heads of 16 to 64",
+        );
+        // 8 heads of 128 values: OP_VISION_ATTN keeps 64 values of a head.
+        refused(
+            &|c| c["vision_config"]["num_attention_heads"] = 8.into(),
+            "heads of 16 to 64",
         );
         refused(
             &|c| c["projector_hidden_act"] = "gelu_pytorch_tanh".into(),
@@ -755,10 +818,10 @@ mod tests {
         );
         assert_eq!(count(&t, OP_VISION_CONV), 8);
         assert_eq!(count(&t, OP_VISION_ROPE), 12);
-        assert_eq!(count(&t, OP_BIATTN), 6);
+        assert_eq!(count(&t, OP_VISION_ATTN), 6);
         // patchifier; each conv layer in_proj, out_proj, w2; each attention layer q, k, v, out, w2; two linears.
         assert_eq!(count(&t, OP_MATMUL), 1 + 8 * 3 + 6 * 5 + 2);
-        let attn = t.iter().find(|task| task.opcode == OP_BIATTN).unwrap();
+        let attn = t.iter().find(|task| task.opcode == OP_VISION_ATTN).unwrap();
         assert_eq!((attn.n, attn.m, attn.p0), (468, 16 | 8 << 16, 64));
         assert_eq!(f32::from_bits(attn.layer), 0.125);
         let rope = t.iter().find(|task| task.opcode == OP_VISION_ROPE).unwrap();

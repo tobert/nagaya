@@ -242,7 +242,7 @@ fn the_largest_image_fits_the_tower_and_each_pass_is_timed() {
         rows.iter().all(|v| v.is_finite()),
         "a row of the projector is not finite"
     );
-    // A prompt of the image between two text tokens: 2,050 positions, so 5 passes of 512 and each one runs the tower.
+    // A prompt of the image between two text tokens: 2,050 positions, so 5 passes of 512. The tower runs for the first one.
     let mut ids = vec![1u32];
     ids.extend(std::iter::repeat_n(IMAGE, gh * gw / 4));
     ids.push(2);
@@ -250,6 +250,67 @@ fn the_largest_image_fits_the_tower_and_each_pass_is_timed() {
     let (logits, ms) = feed(&mut engine, &ids, &span, &f32_bytes(&pixels), 512);
     println!("the passes of the largest image took {ms:?} ms; the engine declares max_quantum_ms 2000");
     assert!(logits.iter().all(|v| v.is_finite()), "a logit is not finite");
+}
+
+/// An image of 96 positions in blocks of 32 is in 4 passes. The tower runs for the first one, and the logits are the
+/// bits of a feed that runs the tower for each pass. A probe of another image between two passes forces that run.
+#[test]
+fn an_image_in_several_blocks_runs_the_tower_one_time_and_keeps_the_bits() {
+    if common::absent(Which::Omni) {
+        return;
+    }
+    let (gh, gw) = (16usize, 24usize);
+    let images = [
+        common::values(gh * gw * PATCH_ROW, 81),
+        common::values(gh * gw * PATCH_ROW, 82),
+    ];
+    let other = common::values(4 * PATCH_ROW, 83);
+    let mut ids = vec![1u32];
+    ids.extend(std::iter::repeat_n(IMAGE, gh * gw / 4));
+    ids.push(2);
+    let span = span_of(&ids, gh, gw);
+    let mut engine = common::open(Which::Omni, 1, 32);
+    let mut logits = Vec::new();
+    for (i, pixels) in images.iter().enumerate() {
+        let before = engine.tower_runs();
+        engine.slots().unwrap().slot_clear(0);
+        let (held, _) = feed(&mut engine, &ids, &span, &f32_bytes(pixels), 32);
+        assert_eq!(
+            engine.tower_runs() - before,
+            1,
+            "image {i}: one run of the tower for its 4 passes"
+        );
+        // The same feed, with the rows of the tower lost before each pass.
+        let before = engine.tower_runs();
+        engine.slots().unwrap().slot_clear(0);
+        let mut each = Vec::new();
+        for (b, chunk) in ids.chunks(32).enumerate() {
+            engine.vision_stages(&other, 2, 2).unwrap();
+            let from = (b * 32) as u64;
+            let last = from as usize + chunk.len() == ids.len();
+            let out = engine
+                .pass(&[block(0, from, chunk, &span, &f32_bytes(pixels), last)], &[])
+                .unwrap_or_else(|e| panic!("the pass at {from}: {}", e.message));
+            if let Some(row) = out.outputs.first() {
+                each = row.bytes.clone();
+            }
+        }
+        assert_eq!(
+            engine.tower_runs() - before,
+            4,
+            "image {i}: a run of the tower for each pass after a probe"
+        );
+        let held_bytes = f32_bytes(&held);
+        assert!(
+            held_bytes == each,
+            "image {i}: the logits differ from a feed that runs the tower for each pass"
+        );
+        logits.push(held_bytes);
+    }
+    assert!(
+        logits[0] != logits[1],
+        "the two images give the same logits, so the second one read old rows"
+    );
 }
 
 #[test]

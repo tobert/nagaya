@@ -1199,6 +1199,45 @@ pub fn vision_rope(
     }
 }
 
+/// The attention of the vision tower: `tasks::biattn` with every key, with the same bits. `q` holds the query rows
+/// `[n][heads * d]`, `k` and `v` hold the key rows and the value rows `[n][kv_heads * d]`, and `y` gets `[n][heads * d]`.
+/// A subgroup takes a tile of query rows of one head, so it reads each key row one time for the tile.
+#[allow(clippy::too_many_arguments)]
+pub fn vision_attn(
+    q: u64,
+    k: u64,
+    v: u64,
+    y: u64,
+    n: u32,
+    heads: u32,
+    kv_heads: u32,
+    d: u32,
+    scale: f32,
+) -> MkTaskDescriptor {
+    // Each of 16 lanes keeps 4 values of a head for each query row of its tile.
+    assert!(
+        (16..=64).contains(&d) && d.is_multiple_of(16),
+        "OP_VISION_ATTN takes a head of 16 to 64 values in 16s, and it got {d}"
+    );
+    // The kernel reads the bits 0 as no scale.
+    assert!(
+        scale != 0.0,
+        "OP_VISION_ATTN reads a scale of 0.0 as 1.0, so it takes no scale of 0.0"
+    );
+    assert!(n > 0, "OP_VISION_ATTN takes at least one row");
+    MkTaskDescriptor {
+        a: q,
+        b: k,
+        x: v,
+        c: y,
+        n,
+        m: heads | kv_heads << 16,
+        p0: d,
+        layer: scale.to_bits(),
+        ..task(OP_VISION_ATTN)
+    }
+}
+
 /// The gated depthwise 3 by 3 convolution of a vision conv layer over `n` patch rows of `d` channels: `bcx` holds the
 /// rows of in_proj `[n][3d]` in the chunks B, C and x, `w` holds the BF16 taps `[d][9]`, and `y` gets
 /// `C * conv(B * x)` `[n][d]`. The rows are whole frames of `grid_h` by `grid_w` in merge-block order.
