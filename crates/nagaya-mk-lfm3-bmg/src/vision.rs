@@ -609,24 +609,65 @@ pub fn tower(
         t.push(tasks::matmul(bufs.g, w.linear_2, bufs.y, m, out, p, false));
         t.push(tasks::bias(w.linear_2_bias, bufs.y, m, out, false));
     }
-    if let Until::Rows {
-        take: (lo, hi),
-        block_row,
-    } = until
-    {
+    if let Until::Rows { take, block_row } = until {
         assert!(
-            lo < hi && hi <= n / 4,
-            "the rows {lo} to {hi} are not rows of an image of {} positions",
+            take.1 <= n / 4,
+            "the rows {} to {} are not rows of an image of {} positions",
+            take.0,
+            take.1,
             n / 4
         );
-        t.push(tasks::copy(
-            bufs.y + (lo * v.out * 4) as u64,
-            bufs.media + (block_row * v.out * 4) as u64,
-            ((hi - lo) * v.out) as u32,
-        ));
+        t.push(rows(v, bufs, take, block_row));
     }
     assert!(t.len() < MAX_TASKS_PER_CARD, "the tower has {} tasks", t.len());
     t
+}
+
+/// The copy of the rows `take` of the projector in `y` into `media` from row `block_row`. `y` must hold the rows of the
+/// image ([`HeldRows`]).
+pub fn rows(v: &Vision, bufs: &VisionBufs, take: (usize, usize), block_row: usize) -> MkTaskDescriptor {
+    let (lo, hi) = take;
+    assert!(lo < hi, "the rows {lo} to {hi} are no rows");
+    tasks::copy(
+        bufs.y + (lo * v.out * 4) as u64,
+        bufs.media + (block_row * v.out * 4) as u64,
+        ((hi - lo) * v.out) as u32,
+    )
+}
+
+/// The image whose projector rows `y` holds, and the count of the runs of the tower.
+///
+/// An image of more positions than a block is in several passes, and each pass gives the patch rows of the whole
+/// image. The tower runs for the first of them. Each later pass copies its rows from `y`.
+#[derive(Debug, Default)]
+pub struct HeldRows {
+    /// The grid and the BLAKE3 hash of the patch rows.
+    image: Option<([usize; 2], blake3::Hash)>,
+    runs: u64,
+}
+
+impl HeldRows {
+    /// True when `y` holds the rows of the image of `grid` and `pixels`. If not, this records the image and counts a
+    /// run, and the caller must run the tower before the next call.
+    pub fn holds(&mut self, grid: [usize; 2], pixels: &[u8]) -> bool {
+        let image = Some((grid, blake3::hash(pixels)));
+        if self.image == image {
+            return true;
+        }
+        self.image = image;
+        self.runs += 1;
+        false
+    }
+
+    /// `y` holds the rows of no image: another task wrote it.
+    pub fn forget(&mut self) {
+        self.image = None;
+    }
+
+    /// The count of the images that the tower ran for.
+    pub fn runs(&self) -> u64 {
+        self.runs
+    }
 }
 
 /// The copy of the media rows of `rows` block rows from `block_row` over the embedding rows of the backbone in `x`.
@@ -676,6 +717,23 @@ mod tests {
 
     fn count(t: &[MkTaskDescriptor], op: u16) -> usize {
         t.iter().filter(|task| task.opcode == op).count()
+    }
+
+    #[test]
+    fn the_tower_runs_one_time_for_an_image_and_again_for_another_image() {
+        let mut held = HeldRows::default();
+        let (a, b) = (vec![1u8; 64], vec![2u8; 64]);
+        assert!(!held.holds([4, 4], &a), "nothing is held at the start");
+        assert!(held.holds([4, 4], &a), "the second block of the image");
+        assert!(held.holds([4, 4], &a), "the third block of the image");
+        assert_eq!(held.runs(), 1);
+        assert!(!held.holds([4, 4], &b), "other patch rows are another image");
+        assert!(!held.holds([2, 8], &b), "another grid is another image");
+        assert!(!held.holds([4, 4], &a), "the first image is held no more");
+        assert_eq!(held.runs(), 4);
+        held.forget();
+        assert!(!held.holds([4, 4], &a), "a probe wrote the rows");
+        assert_eq!(held.runs(), 5);
     }
 
     #[test]
