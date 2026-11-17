@@ -4926,7 +4926,8 @@ config is the sampler that Liquid tested (`generation_config.json`, model card "
 - A frame in which any codebook gives the end code, 2,016, ends the audio. It is not part of the WAV.
 
 **The held state of LFM3.** Proposed by Claude Opus 5.5, 2026-11-06. Reason: these parts follow the layer types of
-the backbone. A ring keeps the window of a sliding layer, as Gemma 4 does (engine-abi "mkviolet's parts").
+the backbone. A ring keeps the window of a sliding layer, as Gemma 4 does (engine-abi "The parts of the Gemma 4
+engine").
 
 - The 6 full attention layers keep their keys and values for each position, as cells.
 - The 5 sliding attention layers keep their keys and values in rings. **Amended** by Claude Opus 5.5, 2026-11-06

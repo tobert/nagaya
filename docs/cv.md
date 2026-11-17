@@ -72,7 +72,7 @@ at runtime gives three things that other weights do not:
 These parts exist now:
 
 - **The hook point.** A stage boundary is a residual at a layer (engine-abi D1). The Gemma 4 engine sends the
-  residual after layer 14 through host memory (engine-abi "How mkviolet maps", `stages`).
+  residual after layer 14 through host memory (engine-abi "How the Gemma 4 engine maps", `stages`).
 - **The recipe slot.** The root recipe has an item for lab state, tag 4 (spec 6.2). The code hashes it in
   `recipe_root` (`crates/nagaya-store/src/lib.rs:457-475`). No caller gives a lab state yet.
 - **The rule.** Spec 6.12 says that a steered result never has a plain recipe. Spec 13.1 says that a steering

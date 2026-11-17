@@ -131,8 +131,8 @@ The crates live in directories under `crates/`. Use these crates:
 | `nagaya-mk-qwen38-gfx1151` | the Qwen3.8 engine: its HIP code in `hip/`, the FFI binding, and the `Engine` trait on top | ABI "How the Qwen3.8 engine maps" |
 | `nagaya-mk-hip` | the shared HIP ops of gfx1151: hipBLASLt with the plan table, the kernels of Qwen-Image | 12.1 |
 | `nagaya-mk-qwenimage21-gfx1151` | the Qwen-Image 2.1 engine on gfx1151: the encoder, the transformer, the VAE | 11.9c |
-| `nagaya-mk-bmg` | the megakernel interpreter of the B70 cards: Level Zero, the task protocol, the kernel source, one binary per engine | ABI "How mkviolet maps" |
-| `nagaya-mk-gemma4-bmg` | the Gemma 4 engine: Level Zero, the OpenCL C kernels, and the host code; a card needs `xe` | ABI "How mkviolet maps" |
+| `nagaya-mk-bmg` | the megakernel interpreter of the B70 cards: Level Zero, the task protocol, the kernel source, one binary per engine | ABI "How the Gemma 4 engine maps" |
+| `nagaya-mk-gemma4-bmg` | the Gemma 4 engine: Level Zero, the OpenCL C kernels, and the host code; a card needs `xe` | ABI "How the Gemma 4 engine maps" |
 | `nagaya-council` | council v2 logic with no I/O: the family interface, the sampler, request checks | 11 |
 | `nagaya-jinja` | the Jinja interpreter of the chat templates, with the results of Python's jinja2 | 11.3 |
 | `nagaya-text-qwen38` | the Qwen3.8 family library: tokenizer, templates, detokenizer, reply parser | 11.3, 11.3a |

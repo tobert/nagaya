@@ -631,20 +631,20 @@ is decided. Each other rule is **Proposed**, and it follows from the decided rul
   width 2,560, as for LFM3. Decided 2026-11-12: the placeholder of a latent position is the padding token that the
   GGUF tokenizer keys name.
 
-## How mkviolet maps
+## How the Gemma 4 engine maps
 
-This table maps mkviolet's code, the source of `nagaya-mk-gemma4-bmg`, onto the ABI. The file names and the lines
-are mkviolet's, as they were when the copy was made.
+This table maps the code of the first Gemma 4 engine, the source of `nagaya-mk-gemma4-bmg`, onto the ABI. The file
+names and the lines are those of the first engine, as they were when the copy was made.
 
-| ABI | mkviolet (`gemma4.rs` unless named) | Notes |
+| ABI | the first engine (`gemma4.rs` unless named) | Notes |
 |---|---|---|
 | open / attach | `load_slots(cluster, model_dir, slot_seqs, max_block)`, `load_slots_stored` | slot sizes and `max_block` are load-time config |
 | device group | both B70 cards | one group thread and one stage thread for each card (D1) |
 | stages | `run_card0`, `run_card1` (`gemma4.rs:1393-1436`) | stage 0: layers 0-14 on card 0; stage 1: layers 15-29 and the head on card 1 (`CARD_LAYERS`, `gemma4.rs:84`); the residual is F32 rows of 2,816 values, through host memory |
-| arena | 30 DMA-BUF slabs, one for each layer on its card (`slab_fd_name(l, card)`, `main.rs:76-108`), `verify_stored_slab` | spot check: first and last 64 bytes per tensor; mkviolet gave the head no slab, and the nagaya's copy gives it one, 31 slabs in all (spec 10.2) |
+| arena | 30 DMA-BUF slabs, one for each layer on its card (`slab_fd_name(l, card)`, `main.rs:76-108`), `verify_stored_slab` | spot check: first and last 64 bytes per tensor; the first engine gave the head no slab, and the nagaya's copy gives it one, 31 slabs in all (spec 10.2) |
 | slots | `set_slot`, `kv_high`, `slot_clear` | no contexts, no stored token count, no fork |
 | parts | `save_kv_layer_from` (a range read), `load_kv`, `load_kv_layer` | `state` is the slot index; KV only: cells on global layers, ring on sliding layers |
-| part names | the K and V planes of each layer (`KvSnapshot`) | `k.<ll>` and `v.<ll>`, F32, two digits for the layer; see "mkviolet's parts" |
+| part names | the K and V planes of each layer (`KvSnapshot`) | `k.<ll>` and `v.<ll>`, F32, two digits for the layer; see "The parts of the Gemma 4 engine" |
 | geometry / coverage | slot size, ring rows (`kv_ring`, `kv_keep_from`); `KvSnapshot::join` is the fit check | changes rows held, not bits, so no `geometry_key`; today's id is a recipe (`snapshot_id`, `held.rs:329-342`) |
 | pass | `run_card0` then `run_card1`; `pipeline_stage` for jobs in flight on both cards (`gemma4.rs:1438-1505`) | the nagaya's scheduler takes the place of `pipeline_stage` (D1) |
 | segments | `PipeJob`; `branch_block` with per-token `meta` | a branch block is atomic and is not a snapshot |
@@ -652,9 +652,9 @@ are mkviolet's, as they were when the copy was made.
 | class | `CardLock`, `GpuLock` | moves out of the engine into the nagaya scheduler, one choice for each device (D1) |
 | determinism | `always`, with a feed rule (D11) | bits depend on the token count of a pass; the first port runs one recipe in two starts and compares content ids |
 
-### mkviolet's parts
+### The parts of the Gemma 4 engine
 
-Decided 2026-10-22 (Amy: "accepted"). mkviolet keeps only KV (`new_slots`, `gemma4.rs:444-475`). The device
+Decided 2026-10-22. The first engine kept only KV (`new_slots`, `gemma4.rs:444-475`). The device
 holds each layer's K and V as F32 planes. These parts follow from that layout:
 
 - Each layer has two parts, `k.<ll>` and `v.<ll>`, with `ll` the layer in two digits. The dtype is F32, so the store

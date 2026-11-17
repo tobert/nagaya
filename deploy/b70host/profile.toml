@@ -72,7 +72,8 @@ model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-1.7B/sna
 [engines.lab]
 jlens = "/home/atobey/.local/share/nagaya/lens/lfm3.jlens.safetensors"
 
-# Gemma 4 on the two cards (docs/engine-abi.md "How mkviolet maps"): stage 0 on device 0, and stage 1 on device 1.
+# Gemma 4 on the two cards (docs/engine-abi.md "How the Gemma 4 engine maps"): stage 0 on device 0, and stage 1 on
+# device 1.
 # It is on demand, and it loads only through the load routes (spec 3.3b). It does not fit beside the other engines
 # that are not pinned, so its load names them in `unload`:
 # `POST /nagaya/v1/engines/gemma/load` with `{"unload": ["autismmix-1", "lfm3-omni", "lfm3"]}`. The way back is a

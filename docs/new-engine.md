@@ -152,8 +152,8 @@ gets its devices").
   Reason: the runtime's device order can differ from the PCI order.
 - `limits()` after `open` equals the result of `plan` (engine-abi "Core").
 
-**How the two engines map.** Read engine-abi "How the Qwen3.8 engine maps" and "How mkviolet maps" before you map the
-next one. The two engines took different capabilities for the same rule:
+**How the two engines map.** Read engine-abi "How the Qwen3.8 engine maps" and "How the Gemma 4 engine maps" before you
+map the next one. The two engines took different capabilities for the same rule:
 
 | Rule | Qwen3.8 engine | Gemma 4 |
 |---|---|---|
