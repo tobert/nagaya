@@ -1,4 +1,4 @@
-//! The reply parser of the Gemma 4 family: mkviolet's reply splitter (`Splitter` in `src/mk_api.rs`, council wire)
+//! The reply parser of the Gemma 4 family: the reply splitter of the first Gemma 4 engine
 //! behind the `ReplyParser` trait (spec 11.3).
 //!
 //! The caller pushes every sampled token, the stop token too. A stop token ends the reply, adds no text, and makes
@@ -71,8 +71,8 @@ struct Gemma4ReplyParser {
 }
 
 impl Gemma4ReplyParser {
-    /// Start a new run of text. The bytes of a character that the old run did not finish are dropped, as in mkviolet
-    /// (`Splitter::new_segment`): a marker gives no text, and the bytes belong to the phase before it (spec 11.3).
+    /// Start a new run of text. The bytes of a character that the old run did not finish are dropped, as in the first
+    /// engine: a marker gives no text, and the bytes belong to the phase before it (spec 11.3).
     fn new_segment(&mut self) {
         self.segment.clear();
         self.segment_len = 0;

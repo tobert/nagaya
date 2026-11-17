@@ -1,4 +1,4 @@
-//! Gemma 4 chat rendering: Google's template in the nagaya's interpreter, with the escapes of mkviolet `src/chat.rs`.
+//! Gemma 4 chat rendering: Google's template in the nagaya's interpreter, with the escapes of the first Gemma 4 engine.
 //!
 //! Every string that a client sends is content. Before the render, each special-token text in it (`<|turn>`,
 //! `<|channel>`, ...) becomes a sentinel of Unicode noncharacters. After the render, each sentinel is tokenized as the
@@ -6,8 +6,8 @@
 //! text is refused (spec 11.3, "Escapes").
 //!
 //! With thinking on, the generation prompt also opens the thought channel (`<|channel>thought\n`), so the reply starts
-//! inside the thinking. This is mkviolet's addition to the template. The template opens the channel itself only after
-//! a tool response, and with thinking off it closes an empty thought channel.
+//! inside the thinking. This is an addition of the first Gemma 4 engine to the template. The template opens the channel
+//! itself only after a tool response, and with thinking off it closes an empty thought channel.
 
 use std::sync::Arc;
 
@@ -112,7 +112,7 @@ fn member<'a>(m: &'a Json, key: &str) -> Option<&'a Json> {
 /// Split each assistant message that has both text and tool calls into two: the text with its thinking, then the
 /// calls. Google's template renders the text of a message after its calls and their results, and the model writes the
 /// text first. Two assistant messages in a row render as one model turn, so the split puts the text where the model
-/// wrote it (mkviolet `split_text_and_calls`).
+/// wrote it.
 fn split_text_and_calls(messages: Vec<Json>) -> Vec<Json> {
     let mut out = Vec::with_capacity(messages.len());
     for m in messages {

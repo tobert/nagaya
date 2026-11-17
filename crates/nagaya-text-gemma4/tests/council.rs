@@ -49,7 +49,7 @@ fn shell() -> Value {
 
 // ---------------------------------------------------------------- contexts and boundaries
 
-/// The cuts of mkviolet's `cuts_fall_where_a_prefix_renders_the_same`. The call keeps its thinking, and the text
+/// The cuts fall where a prefix renders the same. The call keeps its thinking, and the text
 /// answer loses its thinking before the later user message, so its boundary drops.
 #[test]
 fn a_boundary_drops_where_the_template_drops_the_thinking() {
@@ -125,7 +125,8 @@ fn the_generation_prompt_opens_the_thinking_or_closes_it() {
     }
 }
 
-/// Python's jinja2 refuses mkviolet's map `{"error": ...}` for a failed result, so the library writes a prefix.
+/// Python's jinja2 refuses the map `{"error": ...}` of the first Gemma 4 engine for a failed result, so the library
+/// writes a prefix.
 #[test]
 fn a_failed_tool_result_renders_with_its_prefix() {
     if absent() {
@@ -409,7 +410,7 @@ fn queue_context(thinking: bool) -> Context {
 }
 
 /// A queue read gives the case as the result of the queue call, and reads each answer of the next call in the order
-/// of the question ids, after the likeliest letter of the one before (mkviolet `queue_reads`).
+/// of the question ids, after the likeliest letter of the one before.
 #[test]
 fn a_queue_read_writes_the_next_call_in_the_form_of_the_template() {
     if absent() {

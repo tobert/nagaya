@@ -4,8 +4,8 @@
 //! council of the reference does, so a context renders the same with thinking on and off except for its generation
 //! prompt. Client text is content: its special token text is escaped before the template runs and tokenized as text.
 //!
-//! A decision puts a spec, a case and a letter menu after the context. This is mkviolet's rendering (mkviolet
-//! `src/template.rs`) in Qwen3.8's chat format. A plain read is:
+//! A decision puts a spec, a case and a letter menu after the context. This is the rendering of the first Gemma 4
+//! engine in Qwen3.8's chat format. A plain read is:
 //!
 //! ```text
 //! context messages (the chat template)
@@ -16,8 +16,8 @@
 //!  {n} ({first sentence of the question}):                                  one read for each question
 //! ```
 //!
-//! The letter token is the letter with a leading space, as in mkviolet. A queue read gives the case as the result of
-//! the context's last call, and writes the call to the queue tool in the template's form:
+//! The letter token is the letter with a leading space, as in the first Gemma 4 engine. A queue read gives the case as
+//! the result of the context's last call, and writes the call to the queue tool in the template's form:
 //!
 //! ```text
 //! context messages, then a tool message that holds the case
@@ -25,7 +25,8 @@
 //! {"{id}": "  then the bare letter token, then `", "{id}": "` for the next question
 //! ```
 //!
-//! Where mkviolet and gogi's contract disagree, gogi wins. Each such place has a comment with the word "gogi".
+//! Where the first Gemma 4 engine and gogi's contract disagree, gogi wins. Each such place has a comment with the word
+//! "gogi".
 
 mod messages;
 mod read;

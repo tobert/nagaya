@@ -1,6 +1,6 @@
 //! Compiles the kernels for the B70 cards with `ocloc`, ahead of time, when the feature `xe` is on.
 //!
-//! The flags are mkviolet's (`build.rs` in mkviolet). The output goes to `OUT_DIR`, and the crate embeds it. The Gemma 4
+//! The flags are those of the first Gemma 4 engine. The output goes to `OUT_DIR`, and the crate embeds it. The Gemma 4
 //! binary keeps the command of milestone 15s, so its bytes do not change (milestone 17 step 4).
 
 use std::path::PathBuf;

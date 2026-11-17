@@ -35,7 +35,7 @@ fn flag(case: &Json, name: &str) -> bool {
 }
 
 /// Each case with the library's variables renders to the text and the ids of transformers. With thinking on, the
-/// generation prompt also opens the thought channel, mkviolet's addition.
+/// generation prompt also opens the thought channel, an addition of the first Gemma 4 engine.
 #[test]
 fn the_library_renders_what_transformers_renders() {
     if absent() {
@@ -86,7 +86,7 @@ fn user(content: &str) -> Json {
     ])
 }
 
-/// The user's `<|turn>` is text: its special token appears only where the template put one (mkviolet `chat.rs`).
+/// The user's `<|turn>` is text: its special token appears only where the template put one.
 #[test]
 fn content_that_spells_a_marker_stays_text() {
     if absent() {
@@ -127,8 +127,7 @@ fn a_noncharacter_in_content_is_refused_with_its_offset() {
     }
 }
 
-/// An assistant message with text and a call renders the text before the call, where the model wrote it
-/// (mkviolet `text_before_a_call_renders_before_it`).
+/// An assistant message with text and a call renders the text before the call, where the model wrote it.
 #[test]
 fn text_before_a_call_renders_before_it() {
     if absent() {

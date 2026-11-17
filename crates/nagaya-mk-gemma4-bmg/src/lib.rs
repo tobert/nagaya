@@ -1,12 +1,12 @@
-//! The Gemma 4 26B-A4B engine on two Arc Pro B70 cards: a copy of mkviolet's engine (milestone 15s, step 4).
+//! The Gemma 4 26B-A4B engine on two Arc Pro B70 cards: a copy of the first Gemma 4 engine.
 //!
-//! Amy, 2026-10-21: "copy code in, we own all of it 100%". The copy keeps mkviolet's bits. `engine` holds the `Engine`
-//! trait with two stages (step 5), and `spec` holds its limits and rules. The nagaya's stage threads take the place of
-//! mkviolet's card locks and `pipeline_stage`. The kernels are OpenCL C in `kernels/`, and `build.rs` compiles them
-//! with `ocloc` for `bmg-g31` in the crate `nagaya-mk-bmg`, which this engine shares with the speech engine.
-//! The parts that touch a card need the feature `xe`. With no feature, the crate builds and tests with no card.
+//! The nagaya owns the copy, and the copy keeps the bits of the first engine. `engine` holds the `Engine` trait with
+//! two stages (step 5), and `spec` holds its limits and rules. The nagaya's stage threads take the place of the card
+//! locks and `pipeline_stage` of the first engine. The kernels are OpenCL C in `kernels/`, and `build.rs` compiles them
+//! with `ocloc` for `bmg-g31` in the crate `nagaya-mk-bmg`, which this engine shares with the speech engine. The parts
+//! that touch a card need the feature `xe`. With no feature, the crate builds and tests with no card.
 
-// The copy keeps mkviolet's code as it was, so these lints wait for the port of each part.
+// The copy keeps the code of the first engine as it was, so these lints wait for the port of each part.
 #![allow(
     clippy::chunks_exact_to_as_chunks,
     clippy::len_without_is_empty,

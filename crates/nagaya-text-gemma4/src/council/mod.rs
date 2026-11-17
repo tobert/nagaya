@@ -1,7 +1,7 @@
 //! The Gemma 4 family library for the council (spec 11.3, 11.3a): nagaya's family interface on this crate.
 //!
 //! A context renders with Google's chat template (`crate::chat`). A decision puts a spec, a case and a letter menu
-//! after the context. This is mkviolet's rendering (`src/template.rs`, `mkv-letters-1`) in Gemma 4's chat format with
+//! after the context. This is the rendering of the first Gemma 4 engine in Gemma 4's chat format with
 //! thinking off:
 //!
 //! ```text
@@ -14,7 +14,7 @@
 //!
 //! The letter token is the letter with a leading space. Template text is tokenized with special tokens on, and client
 //! text with them off. A queue read gives the case as the result of the context's last call. The model then writes
-//! the call to the queue tool in the template's form (mkviolet `queue_reads`):
+//! the call to the queue tool in the template's form:
 //!
 //! ```text
 //! context messages, then a tool message that holds the case, with the generation prompt
@@ -22,7 +22,7 @@
 //! {id}:<|"|>  then the bare letter token, then <|"|>, and `,` before the next question
 //! ```
 //!
-//! Where mkviolet and gogi's contract disagree, gogi wins. Each such place has a comment with the word "gogi".
+//! Where the first engine and gogi's contract disagree, gogi wins. Each such place has a comment with the word "gogi".
 
 mod messages;
 mod read;
@@ -60,7 +60,7 @@ pub struct Gemma4Family {
     letters: Vec<u32>,
     /// The token of each bare letter, `A` first. A queue read uses these: its letter follows a quote.
     bare_letters: Vec<u32>,
-    /// The tokens that end a reply: `<turn|>`, `<eos>`, `<|tool_response>` and `<|turn>` (mkviolet `mk_api.rs`).
+    /// The tokens that end a reply: `<turn|>`, `<eos>`, `<|tool_response>` and `<|turn>`.
     stop: Vec<u32>,
     /// The markers that split a reply into its parts.
     marks: reply::Marks,

@@ -1,7 +1,7 @@
 //! The council reads of the Gemma 4 family: the plans of a plain read and of a queue read, and the raw read.
 //!
-//! This is the port of mkviolet's `src/template.rs` and of the decision code of `src/council_server.rs`. Where gogi's
-//! contract and mkviolet disagree, gogi wins. Each place has a comment with the word "gogi".
+//! This is the port of the template and the decision code of the first Gemma 4 engine. Where gogi's contract
+//! and the first engine disagree, gogi wins. Each place has a comment with the word "gogi".
 
 use std::collections::HashSet;
 
@@ -18,7 +18,8 @@ use super::messages::{message_json, tools_json};
 use super::{Gemma4Family, client};
 use crate::tokenizer::{BOS, check_text};
 
-/// The words that end the case turn of a plain read. The question and its letter follow, as in mkviolet.
+/// The words that end the case turn of a plain read. The question and its letter follow, as in the first Gemma 4
+/// engine.
 const ANSWER: &str = "Answer to question";
 
 /// The quote of a string in a Gemma 4 call.
@@ -73,7 +74,7 @@ fn param(name: &str, e: FamilyError) -> FamilyError {
 
 // ---------------------------------------------------------------- the pieces of the rendering
 
-/// Rendered pieces: template text with special tokens on, client text with them off (mkviolet `Rendered`).
+/// Rendered pieces: template text with special tokens on, client text with them off.
 struct Pieces<'a> {
     family: &'a Gemma4Family,
     tokens: Vec<u32>,
@@ -116,7 +117,7 @@ fn letter(j: usize) -> char {
     char::from(b'A' + u8::try_from(j).expect("an option position is below the letters"))
 }
 
-/// The spec layer: the user turn that holds the spec. This is `spec_block` of mkviolet.
+/// The spec layer: the user turn that holds the spec.
 fn spec_layer(p: &mut Pieces<'_>, spec: &Spec) -> Result<(), FamilyError> {
     p.tpl("<|turn>user\n")?;
     if !spec.instructions.is_empty() {
@@ -169,7 +170,7 @@ fn spec_layer(p: &mut Pieces<'_>, spec: &Spec) -> Result<(), FamilyError> {
     p.tpl("<turn|>\n")
 }
 
-/// The case turn, and the start of the answer with the thinking closed. This is `case_block` of mkviolet.
+/// The case turn, and the start of the answer with the thinking closed.
 fn case_layer(p: &mut Pieces<'_>, label: &str, case: &str) -> Result<(), FamilyError> {
     p.tpl("<|turn>user\n")?;
     p.content(label, "spec")?;
@@ -179,7 +180,7 @@ fn case_layer(p: &mut Pieces<'_>, label: &str, case: &str) -> Result<(), FamilyE
 }
 
 /// The tokens that ask question `number` (counting from 1): ` N (stem):`, where the stem is the first sentence of
-/// the question. This puts the question's own words next to its answer (mkviolet `question_suffix`).
+/// the question. This puts the question's own words next to its answer.
 fn question_suffix(family: &Gemma4Family, number: usize, instructions: &str) -> Result<Vec<u32>, FamilyError> {
     let stem = match instructions.find(". ") {
         Some(i) => &instructions[..=i],
@@ -334,7 +335,7 @@ fn plain_plan(family: &Gemma4Family, input: &DecisionInput<'_>) -> Result<Box<dy
     let context_text = match input.context {
         Some((c, rendering)) => context_again(family, c, rendering)?,
         None => {
-            // A read with no context starts with `<bos>` alone, as in mkviolet.
+            // A read with no context starts with `<bos>` alone, as in the first engine.
             p.tpl(BOS)?;
             String::new()
         }
@@ -351,7 +352,7 @@ fn plain_plan(family: &Gemma4Family, input: &DecisionInput<'_>) -> Result<Box<dy
     let control_text = p.hits;
     Ok(Box::new(PlainPlan {
         prefix: p.tokens,
-        // gogi: the hash covers the text that the read was conditioned on. mkviolet hashes the id of the head.
+        // gogi: the hash covers the text that the read was conditioned on. The first engine hashed the id of the head.
         rendered_hash: content_id(format!("{context_text}{}", p.text).as_bytes()),
         steps,
         cursor: Cursor::new(),
@@ -431,7 +432,7 @@ fn queue_plan(
         })
         .collect();
     check_queue_schema(c, &questions)?;
-    // mkviolet sorts by question id, because Google's template sorts the keys of a map (`dictsort`).
+    // The first engine sorted by question id, because Google's template sorts the keys of a map (`dictsort`).
     let mut order: Vec<usize> = (0..input.asked.len()).collect();
     order.sort_by(|&x, &y| {
         let id = |slot: usize| input.spec.questions[input.asked[slot].question].id.as_str();
@@ -526,7 +527,7 @@ impl ReadPlan for QueuePlan {
         }
         let Some(step) = self.steps.get(self.cursor.given) else {
             // gogi: the hash covers all the text the read was conditioned on, up to the last letter and its quote.
-            // mkviolet hashes the text up to the call's opening brace.
+            // The first engine hashed the text up to the call's opening brace.
             return Ok(self.cursor.done(content_id(self.text.as_bytes())));
         };
         feed.extend(&step.key);

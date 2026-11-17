@@ -1,7 +1,7 @@
 //! The LFM3 family library for the council (spec 11.3, 11.3a, 11.11): nagaya's family interface on this crate.
 //!
 //! A context renders with the chat template of the model folder (`crate::chat`). A decision puts a spec, a case and
-//! a letter menu after the context. This is mkviolet's rendering (`src/template.rs`) in LFM3's ChatML form, as the
+//! a letter menu after the context. This is the rendering of the first Gemma 4 engine in LFM3's ChatML form, as the
 //! Qwen3.8 library writes it:
 //!
 //! ```text

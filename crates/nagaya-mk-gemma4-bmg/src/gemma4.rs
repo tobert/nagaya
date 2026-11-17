@@ -332,8 +332,8 @@ pub(crate) fn layer_layout(ckpt: &Checkpoint, l: usize) -> Result<LayerLayout<'_
     })
 }
 
-/// The head slab: the final norm at offset 0, then the embedding table at the next multiple of 64 bytes. The port
-/// gives the head a slab, so that a restart keeps it (spec 10.2). mkviolet uploads the head again at each start.
+/// The head slab: the final norm at offset 0, then the embedding table at the next multiple of 64 bytes. The port gives
+/// the head a slab, so that a restart keeps it (spec 10.2). The first engine uploaded the head again at each start.
 pub(crate) fn head_layout(ckpt: &Checkpoint) -> Result<LayerLayout<'_>, String> {
     let norm = ckpt.bf16(&format!("{}norm.weight", PREFIX), &[HIDDEN])?;
     let embed = ckpt.bf16(&format!("{}embed_tokens.weight", PREFIX), &[VOCAB, HIDDEN])?;
@@ -1567,7 +1567,6 @@ impl KvSnapshot {
 }
 
 /// The row of token `token_id` in a BF16 embedding table of `hidden_size` columns, as F32 times `scale`.
-/// mkviolet keeps it in `tokenizer.rs`, which stays behind.
 pub fn embedding_row_f32(embed_bf16_bytes: &[u8], hidden_size: usize, token_id: u32, scale: f32) -> Vec<f32> {
     let row_bytes = hidden_size * 2;
     let start = (token_id as usize) * row_bytes;

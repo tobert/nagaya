@@ -1,8 +1,8 @@
 //! All 30 layers on both cards against the HF reference logits.
 //!
-//! mkviolet's `src/golden.rs`, copied with no change in behavior (milestone 15s, step 4).
+//! A golden check of the first Gemma 4 engine, copied with no change in behavior.
 #![cfg(feature = "xe")]
-// `!(err < tol)` fails on NaN too, as mkviolet meant. The other lints wait for the port, as in lib.rs.
+// `!(err < tol)` fails on NaN too, as the first engine meant. The other lints wait for the port, as in lib.rs.
 #![allow(
     clippy::neg_cmp_op_on_partial_ord,
     clippy::chunks_exact_to_as_chunks,

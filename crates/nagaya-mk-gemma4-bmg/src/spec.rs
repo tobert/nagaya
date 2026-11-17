@@ -24,13 +24,13 @@ use crate::sharding::Checkpoint;
 /// The engine kind in a placement profile (AGENTS "Layout": kind, model, target).
 pub const KIND: &str = "mk-gemma4-bmg";
 
-/// The model name of the identity. Clients of mkviolet use it (`council_server.rs:39`).
+/// The model name of the identity. Clients of the first Gemma 4 engine used it, so it did not change.
 pub const MODEL: &str = "gemma-4-26b-a4b";
 
 /// The family library that the engine needs (spec 11.3).
 pub const FAMILY: &str = "gemma4";
 
-/// The feed block when the config names none: mkviolet's `MAX_BLOCK` (`main.rs:35`).
+/// The feed block when the config names none, as in the first Gemma 4 engine.
 pub const DEFAULT_MAX_BLOCK: usize = 512;
 
 /// The most positions in one slot. The measured `MAX_QUANTUM_MS` holds up to this size.

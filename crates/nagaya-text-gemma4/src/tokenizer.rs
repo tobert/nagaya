@@ -1,9 +1,8 @@
-//! The Gemma 4 tokenizer: the checkpoint's `tokenizer.json`, read by Hugging Face's `tokenizers` crate (mkviolet
-//! `src/tokenizer.rs`).
+//! The Gemma 4 tokenizer: the checkpoint's `tokenizer.json`, read by Hugging Face's `tokenizers` crate.
 //!
-//! mkviolet reads EmbeddingGemma 2's file. The port reads the file of the Gemma 4 checkpoint (spec 12.3). The two files
-//! differ only in the post-processor: EmbeddingGemma 2 adds `<bos>` and `<eos>`. The library never runs the
-//! post-processor, so both files give the same ids.
+//! The first Gemma 4 engine read EmbeddingGemma 2's file. The port reads the file of the Gemma 4 checkpoint (spec
+//! 12.3). The two files differ only in the post-processor: EmbeddingGemma 2 adds `<bos>` and `<eos>`. The library never
+//! runs the post-processor, so both files give the same ids.
 
 use crate::Error;
 use sha2::{Digest, Sha256};

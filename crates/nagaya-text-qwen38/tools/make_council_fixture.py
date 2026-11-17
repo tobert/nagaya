@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Write `tests/fixtures/council.json`: fixed renders of the Qwen3.8 council rendering, from the reference's Python front-end.
 
-The chat template and the tokenizer are the reference's (`service/common.py` `render_messages`, `harness/tokenizer.py`). The
-layout of a council read (spec layer, case turn, letter menu, queue call) is written out again below in Python. That
-text is a second port of mkviolet's `src/template.rs` to Qwen3.8's chat format. It was checked by hand against
-mkviolet's `template.rs` on 2026-10-20. The script does not take it from mkviolet. The Rust library must give the same
+The chat template and the tokenizer are the reference's (`service/common.py` `render_messages`, `harness/tokenizer.py`).
+The layout of a council read (spec layer, case turn, letter menu, queue call) is written out again below in Python. That
+text is a second port of the template of the first Gemma 4 engine to Qwen3.8's chat format. It was checked by hand
+against that template on 2026-10-20. The script does not take it from that engine. The Rust library must give the same
 text and the same token ids. The script runs no service and uses no GPU. It only reads the reference and the GGUF file.
 
     MEGAKERNEL_LLAMA_CPP=~/src/wt/llama.cpp-master-0924 \
@@ -146,7 +146,7 @@ def main() -> None:
         context_cases.append({"context": name, **text, **digest(ids), "boundaries": bounds,
                               "gen_sha256": sha(gen_ids)})
 
-    # The text of a spec layer, as mkviolet's `spec_block` writes it.
+    # The text of a spec layer, as the first Gemma 4 engine wrote it.
     def spec_text(spec: dict) -> str:
         t = ""
         if spec["instructions"]:
