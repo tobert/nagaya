@@ -9,7 +9,7 @@ builds the op libraries from the copy with the flags of `ops_build.rs`, and runs
 
 FILE is relative to `hip/src` (for example `ops/qmm.h`). OLD must occur once in FILE, or with `--all` at least once, and
 then every occurrence changes. The run takes the GPU lock when the
-variable `GPU_LOCK` names a lock file, and it refuses to run when `megakernel.service` or `nagaya.service` is active.
+variable `GPU_LOCK` names a lock file, and it refuses to run when `nagaya.service` is active.
 Prints the failed tests, or the abort of the test process. It exits with 0 when a test failed or the process aborted,
 and with 1 when no test failed.
 """
@@ -73,10 +73,9 @@ def main():
     p.add_argument("--all", action="store_true", help="replace every occurrence of OLD")
     p.add_argument("--work", type=Path, default=Path(os.environ.get("TMPDIR", "/tmp")) / "op_mutate")
     a = p.parse_args()
-    for unit in ("megakernel.service", "nagaya.service"):
-        r = subprocess.run(["systemctl", "--user", "is-active", unit], capture_output=True, text=True)
-        if r.stdout.strip() == "active":
-            sys.exit(f"{unit} is active: stop here and report")
+    r = subprocess.run(["systemctl", "--user", "is-active", "nagaya.service"], capture_output=True, text=True)
+    if r.stdout.strip() == "active":
+        sys.exit("nagaya.service is active: stop here and report")
     work = a.work / a.label.replace(" ", "_").replace("/", "_")
     if work.exists():
         shutil.rmtree(work)

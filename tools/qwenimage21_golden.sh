@@ -23,8 +23,8 @@
 #   ids                  [1, T]         i64 ids of the whole template, with the system tokens
 #   drop                 [1]            the count of leading system tokens that the cut removes
 #   prompt_embeds        [1, L, 4096]   the input of the encoder's final norm, after the cut
-#   prompt_embeds_bf16   [1, L, 4096]   the same from the encoder in bf16, as diffusepal runs it: the baseline
-#                                       of the conditioning gate (spec 8.3)
+#   prompt_embeds_bf16   [1, L, 4096]   the same from the encoder in bf16, as the diffusers reference runs it:
+#                                       the baseline of the conditioning gate (spec 8.3)
 #
 # steps.safetensors: the oracle.
 #   start                [1, 1, 64, H, W]   the start noise

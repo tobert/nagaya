@@ -1,8 +1,8 @@
 # The nagaya as a systemd user unit on gfx1151host (docs/spec.md 10.1; docs/deploy.md has the install and the cutover).
 # Install: ln -s ~/src/nagaya/deploy/nagaya.service ~/.config/systemd/user/
 #          systemctl --user daemon-reload
-# It replaces the old unit `megakernel.service`: one process, restarted. It takes the address of that unit,
-# 198.51.100.20:8090, so the two units must never run together. The nagaya is the only GPU client (spec 3.1).
+# The unit runs one process, and systemd restarts it. The process serves 198.51.100.20:8090, so two units must
+# never run together. The nagaya is the only GPU client (spec 3.1).
 # Rebuild the release binary before each restart, with `--features hip`: the unit runs the file in `target/release`.
 # `cargo build --release -p nagaya --features hip`. A build without the feature has no engine and exits 3.
 [Unit]
@@ -38,7 +38,7 @@ ExecStartPre=/usr/bin/mkdir -p %h/.local/share/nagaya/store
 ExecStartPre=%h/src/nagaya/deploy/wait-address.sh 198.51.100.20 120
 ExecStart=%h/src/nagaya/target/release/nagaya
 # Arenas through a restart (spec 10.2) come later. Then this unit sets FileDescriptorStoreMax=512 and
-# FileDescriptorStorePreserve=restart, as megakernel.service does. Today the process stores no fd, so it sets neither.
+# FileDescriptorStorePreserve=restart. Today the process stores no fd, so it sets neither.
 # SIGTERM: the running quantum ends (at most 10 s), then the park runs (10 s by default). A second signal ends it now.
 KillSignal=SIGTERM
 TimeoutStopSec=60

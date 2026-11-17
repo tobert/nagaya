@@ -1,8 +1,8 @@
 //! The compiles and links of the op libraries in `ops_build.rs` are the reference's compiles and links, flag for flag.
 //!
-//! The fixture holds the compile and the link of each op of the reference CMake build at commit `555a2a3`
-//! (`tools/op_build_fixture.py` writes it). The float flags are part of the model's definition, and the op tests compare
-//! bits. Thus a flag that differs fails here, before a GPU run. The runtime `rt.cpp` has its own entry in the fixture of
+//! The fixture is a record of the compile and the link of each op of the reference CMake build. The reference build is
+//! not in this repository. The float flags are part of the model's definition, and the op tests compare bits. Thus a
+//! flag that differs fails here, before a GPU run. The runtime `rt.cpp` has its own entry in the fixture of
 //! `build_flags.rs`.
 
 #[allow(dead_code)]

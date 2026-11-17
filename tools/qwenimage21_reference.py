@@ -3,7 +3,7 @@
 
 Run it through tools/qwenimage21_golden.sh. The tensor names, shapes and meanings are in that script.
 
-The script uses diffusers in ~/.venvs/nagaya-qwenimage21-ref (a copy of diffusepal's venv),
+The script uses diffusers in ~/.venvs/nagaya-qwenimage21-ref (the venv of the diffusers reference),
 on the CPU only. It loads the bf16 weights as float32, one model at a
 time: the text encoder, then the transformer, then the VAE. Each model is freed before the next one loads, so the peak
 is about 33 GiB of RAM. The pipeline itself runs each stage: the text encoder through `_get_qwen_prompt_embeds`, and
@@ -62,7 +62,7 @@ BLOCKS = (0, 15, 31)
 
 
 def heretic_to_transformers(key):
-    """Map the ComfyUI key names of the Heretic file onto the transformers Qwen3-VL layout (diffusepal models.py)."""
+    """Map the ComfyUI key names of the Heretic file onto the transformers Qwen3-VL layout (the diffusers reference)."""
     for old, new in (
         ("model.layers.", "model.language_model.layers."),
         ("model.embed_tokens.", "model.language_model.embed_tokens."),
@@ -161,7 +161,8 @@ def encode(base, fusal, processor, scheduler):
 
 
 def encode_bf16(base, fusal, ids):
-    """The Heretic encoder in bf16, as diffusepal runs it: the baseline of the conditioning gate (spec 8.3)."""
+    """The Heretic encoder in bf16, as the diffusers reference runs it:
+    the baseline of the conditioning gate (spec 8.3)."""
     config = AutoConfig.from_pretrained(os.path.join(base, "text_encoder"))
     te = Qwen3VLForConditionalGeneration._from_config(config, dtype=torch.bfloat16)
     state = load_file(os.path.join(fusal, HERETIC))
@@ -275,8 +276,9 @@ def denoise(base, fusal, processor, scheduler, embeds):
     parts["tr.step0_no_lora"] = base_out
     parts["tr.timestep0"] = timesteps[0]
 
-    # The baselines of the step and run gates (spec 8.3): the same transformer and LoRA in bf16, as diffusepal runs
-    # them. Each call replays from its f32 inputs rounded to bf16, and the whole run starts from the same latent.
+    # The baselines of the step and run gates (spec 8.3): the same transformer and LoRA in bf16, as the diffusers
+    # reference runs them. Each call replays from its f32 inputs rounded to bf16, and the whole run starts from the same
+    # latent.
     transformer.to(torch.bfloat16)
 
     def bf16(value):

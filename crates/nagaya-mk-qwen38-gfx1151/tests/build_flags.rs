@@ -1,12 +1,12 @@
 //! The compiles of `build.rs` are the reference's compiles, flag for flag.
 //!
-//! The fixture holds the nine entries of `build/compile_commands.json` for the units of `libqwen38engine.so`, from the
-//! reference CMake build at commit `555a2a3`. The float flags are part of the model's definition, and the conformance
+//! The fixture is a record of the compiles of the reference CMake build: the nine units of `libqwen38engine.so`. The
+//! reference build is not in this repository. The float flags are part of the model's definition, and the conformance
 //! gates compare bits. Thus a flag that differs fails here, before a GPU run.
 //!
-//! The build compiles six of the nine. The Rust reader took the place of two GGUF units of the reference in milestone
-//! 15 step 3, and the Rust pass build took the place of `blocks.hip` in step 6. The thin extern layer `extern.hip` took
-//! the place of the C ABI `capi.hip` of the reference in step 4, with the same compile.
+//! The build compiles six of the nine. The Rust reader took the place of two GGUF units of the reference, and the Rust
+//! pass build took the place of `blocks.hip`. The thin extern layer `extern.hip` took the place of the C ABI
+//! `capi.hip` of the reference, with the same compile.
 
 #[allow(dead_code)]
 #[path = "../build.rs"]
@@ -14,8 +14,8 @@ mod build;
 
 use std::path::Path;
 
-/// The source root of the reference's build, as the fixture names it.
-const REFERENCE_SRC: &str = "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src";
+/// The source root of the reference's build, as the fixture names it. The root is a made-up path.
+const REFERENCE_SRC: &str = "/reference/src";
 
 /// The name of a unit here for its name in the reference: `extern.hip` for `capi.hip` of the reference, and the same
 /// name for the others.

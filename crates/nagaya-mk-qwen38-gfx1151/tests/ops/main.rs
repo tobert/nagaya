@@ -2,7 +2,7 @@
 //!
 //! These tests port the reference's Python tests in `tests/ops` at reference commit `555a2a3`. A test module has the
 //! name of its file in the reference. `build.rs` builds the op libraries under the feature `hip`. Run with
-//! `--test-threads=1`, with `megakernel.service` and `nagaya.service` inactive, and under the GPU lock of the machine.
+//! `--test-threads=1`, with `nagaya.service` inactive, and under the GPU lock of the machine.
 
 #![cfg(feature = "hip")]
 

@@ -4,7 +4,6 @@
 //! The process holds the only engine handle. The test does not close the engine (spec 3.3).
 #![cfg(feature = "hip")]
 
-use std::path::Path;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -14,10 +13,34 @@ use nagaya::inventory::Probe;
 use nagaya::lifecycle;
 use nagaya::probe::FileProbe;
 use nagaya::process::{Quantum, QuantumOutcome};
-use nagaya::profile::{PROFILE_FILE, PlacementProfile};
+use nagaya::profile::PlacementProfile;
 use nagaya::signal::SignalFlag;
 use nagaya_abi::{Engine, OutputsWanted, Segment, SegmentInputs, State};
 use nagaya_store::Store;
+
+/// The profile of the test: the Qwen3.8 engine alone, with one pool of 112 GiB for the device and the host. The test
+/// owns it, so a change of a deploy profile does not change the test. `weights_bytes` is the size that the engine gave
+/// when it loaded.
+const PROFILE: &str = r#"
+[[engines]]
+name = "qwen38"
+kind = "mk-qwen38-gfx1151"
+devices = [0]
+share = 1
+
+[engines.config]
+weights_bytes = 65490227200
+
+[[budgets]]
+tiers = ["device(0)", "host"]
+bytes = 120259084288
+
+[store]
+nvme = 53687091200
+host = 2147483648
+interval_copies = 0
+objects = 214748364800
+"#;
 
 /// Feed `count` token ids to one slot, in passes of at most 256 tokens. Each pass starts at the token count.
 fn feed(engine: &mut dyn Engine, slot: u32, count: usize) {
@@ -42,8 +65,7 @@ fn feed(engine: &mut dyn Engine, slot: u32, count: usize) {
 
 #[test]
 fn a_stop_with_the_qwen38_engine_parks_the_states_that_hold_tokens_and_is_clean() {
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let profile = PlacementProfile::read(&repo.join("deploy/gfx1151host").join(PROFILE_FILE)).unwrap();
+    let profile = PlacementProfile::parse(PROFILE).expect("the profile of the test parses");
     let inventory = FileProbe::new("/").probe().expect("the inventory of this machine");
     let store = tempfile::tempdir().unwrap();
     let mut ready = lifecycle::start(
