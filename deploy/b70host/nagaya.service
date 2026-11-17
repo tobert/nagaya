@@ -1,8 +1,7 @@
 # The nagaya as a systemd user unit on b70host (docs/spec.md 10.1; docs/deploy.md has the install and the cutover).
 # Install: ln -s ~/src/nagaya/deploy/b70host/nagaya.service ~/.config/systemd/user/
 #          systemctl --user daemon-reload
-# It replaces mkviolet's unit (`~/src/mkviolet/systemd/mkviolet.service`) and takes its address, 198.51.100.10:8091, so
-# it and mkviolet.service must never run together. The nagaya is the only compute client of the B70 cards (spec 3.1).
+# The nagaya is the only compute client of the B70 cards (spec 3.1).
 # Rebuild the release binary before each restart, with `--features xe`: the unit runs the file in `target/release`.
 # `cargo build --release -p nagaya --features xe`. A build without the feature has no engine and exits 3.
 [Unit]
@@ -18,15 +17,15 @@ StartLimitBurst=3
 [Service]
 Type=notify
 NotifyAccess=main
-# The process sends READY=1 when the engine has loaded its weights on both cards. mkviolet's cold start takes 7.4 s
-# (mkviolet `docs/README.md`). The heartbeat extends the start while the engine opens (spec 10.1), so 300 s is a cap.
+# The process sends READY=1 when the engines of the profile have loaded their weights. The heartbeat extends the start
+# while an engine opens (spec 10.1), so 300 s is a cap.
 TimeoutStartSec=300
 WorkingDirectory=%h/src/nagaya
 # The bootstrap config (spec 2.1). It names the bind addresses, the store directory and the ignored iGPU.
 Environment=NAGAYA_CONFIG=%h/src/nagaya/deploy/b70host/nagaya.toml
-# The Gemma 4 checkpoint directory: `config.json`, the safetensors shards and `tokenizer.json` (AGENTS.md "mkviolet on
-# b70host"). The engine and the family library read it when the profile names no `model_dir`.
-Environment=GEMMA4_MODEL_DIR=%h/src/mkviolet/checkpoints/gemma-4-26B-A4B
+# The Gemma 4 checkpoint directory: `config.json`, the safetensors shards and `tokenizer.json`. The engine and the
+# family library read it when the profile names no `model_dir`.
+Environment=GEMMA4_MODEL_DIR=%h/models/gemma-4-26B-A4B
 # The Qwen3-TTS VoiceDesign checkpoint in the Hugging Face cache (milestone 17). The engine and its family read it,
 # because the profile names no `model_dir`.
 Environment=QWEN3TTS_MODEL_DIR=%h/.cache/huggingface/hub/models--Qwen--Qwen3-TTS-12Hz-1.7B-VoiceDesign/snapshots/5ecdb67327fd37bb2e042aab12ff7391903235d3
@@ -37,8 +36,8 @@ Environment=SDXL_MODEL_DIR=%h/.cache/huggingface/hub/models--stabilityai--stable
 # the profile names no `model_dir`.
 Environment=EMBEDDINGGEMMA2_MODEL_DIR=%h/.cache/huggingface/hub/models--google--embeddinggemma-2/snapshots/f9972ac22e696a105c482202646979e33e4b5a1e
 # No Level Zero variable. ZE_AFFINITY_MASK would hide a card, and the engine finds its two cards by PCI address
-# (engine-abi "The factory gets its devices"). mkviolet's unit sets none either. The process sets its own CPU sets for
-# each card (spec 3.2b), so the unit sets no CPUAffinity.
+# (engine-abi "The factory gets its devices"). The process sets its own CPU sets for each card (spec 3.2b), so the
+# unit sets no CPUAffinity.
 # OpenTelemetry: no collector listened on b70host on 2026-10-21 (no socket on 4317 in `ss -lnt`). An exporter
 # without a collector logs a transport error every 5 s, so the line stays a comment until a collector runs. Then the
 # process exports OTLP over gRPC (spec 9.1). Without it, stderr only.
