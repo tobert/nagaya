@@ -99,7 +99,7 @@ fn the_checks_of_the_query_and_the_body() {
         ("/nagaya/v1/profile?host=host-b", 400, "version"),
         ("/nagaya/v1/profile?host=host-b&version=0", 400, "version"),
         ("/nagaya/v1/profile?host=host-b&version=x", 400, "version"),
-        ("/nagaya/v1/profile?host=sm121host&version=1", 404, "host"),
+        ("/nagaya/v1/profile?host=host-d&version=1", 404, "host"),
         ("/nagaya/v1/profile?host=host-a&version=1", 400, "version"),
     ];
     for (path, status, param) in cases {
@@ -116,7 +116,7 @@ fn the_checks_of_the_query_and_the_body() {
     );
     assert_eq!(list.status, 400, "{}", list.text());
     assert_eq!(list.json()["error"]["param"], "profile");
-    let unknown = send(a.http, "GET", "/nagaya/v1/profile?host=sm121host", None, &[]);
+    let unknown = send(a.http, "GET", "/nagaya/v1/profile?host=host-d", None, &[]);
     assert_eq!(unknown.status, 404, "{}", unknown.text());
     assert_eq!(unknown.json()["error"]["param"], "host");
     // The own name is the local profile.

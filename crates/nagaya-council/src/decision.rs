@@ -38,7 +38,9 @@ pub fn asked(spec: &Spec, ask: Option<&[String]>, options: Option<&Map<String, V
                 if matches!(spec.questions[index].kind, QuestionKind::Text { .. }) {
                     return Err(Invalid::param(
                         "ask",
-                        format!("question {id} is a text question, which needs the describe capability"),
+                        format!(
+                            "question {id} is a text question; a read writes it, and ask names only the other questions"
+                        ),
                     ));
                 }
                 if out.contains(&index) {

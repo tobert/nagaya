@@ -1,12 +1,15 @@
-# The nagaya as a systemd user unit on b70host (docs/spec.md 10.1; docs/deploy.md has the install and the cutover).
-# Install: ln -s ~/src/nagaya/deploy/b70host/nagaya.service ~/.config/systemd/user/
-#          systemctl --user daemon-reload
+# The nagaya as a systemd user unit on the B70 example (docs/spec.md 10.1; docs/deploy.md has the install).
+# Install: copy this file to ~/.config/systemd/user/nagaya.service, and change the address, the paths and the
+#          models. Copy `deploy/b70-pair/nagaya.toml` to ~/.config/nagaya/nagaya.toml, and `profile.toml` into
+#          the store directory. Then `systemctl --user daemon-reload` (docs/deploy.md).
+# The unit is a copy, not a link, so a pull of the repository never changes a running machine.
+# Rebuild the release binary before each restart, with `--features xe,video`: the unit runs the file in
+# `target/release`. `cargo build --release -p nagaya --features xe,video`. A build without the feature has no engine and exits 3.
 # The nagaya is the only compute client of the B70 cards (spec 3.1).
-# Rebuild the release binary before each restart, with `--features xe`: the unit runs the file in `target/release`.
-# `cargo build --release -p nagaya --features xe`. A build without the feature has no engine and exits 3.
 [Unit]
-Description=nagaya: the engines of b70host behind council v2 (tailnet, port 8091)
-# A user unit cannot order itself after the system unit tailscaled.service. The wait in ExecStartPre covers it.
+Description=nagaya: the engines of this machine behind council v2 (port 8091)
+# A user unit cannot order itself after a system unit, such as one that sets the address. The wait in ExecStartPre
+# covers it.
 After=network-online.target
 Wants=network-online.target
 # A crash loop must not hit the cards again and again: three starts in 10 minutes, and the unit stays down.
@@ -22,31 +25,30 @@ NotifyAccess=main
 TimeoutStartSec=300
 WorkingDirectory=%h/src/nagaya
 # The bootstrap config (spec 2.1). It names the bind addresses, the store directory and the ignored iGPU.
-Environment=NAGAYA_CONFIG=%h/src/nagaya/deploy/b70host/nagaya.toml
+Environment=NAGAYA_CONFIG=%h/.config/nagaya/nagaya.toml
 # The Gemma 4 checkpoint directory: `config.json`, the safetensors shards and `tokenizer.json`. The engine and the
 # family library read it when the profile names no `model_dir`.
-Environment=GEMMA4_MODEL_DIR=%h/models/gemma-4-26B-A4B
-# The Qwen3-TTS VoiceDesign checkpoint in the Hugging Face cache (milestone 17). The engine and its family read it,
+Environment=GEMMA4_MODEL_DIR=/srv/models/gemma-4-26B-A4B
+# The Qwen3-TTS VoiceDesign checkpoint in the Hugging Face cache. The engine and its family read it,
 # because the profile names no `model_dir`.
 Environment=QWEN3TTS_MODEL_DIR=%h/.cache/huggingface/hub/models--Qwen--Qwen3-TTS-12Hz-1.7B-VoiceDesign/snapshots/5ecdb67327fd37bb2e042aab12ff7391903235d3
-# The SDXL base 1.0 checkpoint in the Hugging Face cache (milestone 18). The engines and their family read it, because
+# The SDXL base 1.0 checkpoint in the Hugging Face cache. The engines and their family read it, because
 # the profile names no `model_dir`.
 Environment=SDXL_MODEL_DIR=%h/.cache/huggingface/hub/models--stabilityai--stable-diffusion-xl-base-1.0/snapshots/462165984030d82259a11f4367a4eed129e94a7b
-# The EmbeddingGemma 2 checkpoint in the Hugging Face cache (milestone 19). The engine and its family read it, because
+# The EmbeddingGemma 2 checkpoint in the Hugging Face cache. The engine and its family read it, because
 # the profile names no `model_dir`.
 Environment=EMBEDDINGGEMMA2_MODEL_DIR=%h/.cache/huggingface/hub/models--google--embeddinggemma-2/snapshots/f9972ac22e696a105c482202646979e33e4b5a1e
 # No Level Zero variable. ZE_AFFINITY_MASK would hide a card, and the engine finds its two cards by PCI address
 # (engine-abi "The factory gets its devices"). The process sets its own CPU sets for each card (spec 3.2b), so the
 # unit sets no CPUAffinity.
-# OpenTelemetry: no collector listened on b70host on 2026-10-21 (no socket on 4317 in `ss -lnt`). An exporter
-# without a collector logs a transport error every 5 s, so the line stays a comment until a collector runs. Then the
-# process exports OTLP over gRPC (spec 9.1). Without it, stderr only.
+# OpenTelemetry: an exporter without a collector logs a transport error every 5 s, so the line stays a comment until
+# a collector runs. Then the process exports OTLP over gRPC (spec 9.1). Without it, stderr only.
 # Environment=OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317
-# The store directory must exist before the process reads its profile.
-ExecStartPre=/usr/bin/mkdir -p %h/.local/share/nagaya/store
-# At boot the tailnet address can come after the user manager starts the unit. A bind to a missing address
-# exits 3 and keeps the unit down (spec 10.4), so wait for 198.51.100.10. TimeoutStartSec covers the 120 s.
-ExecStartPre=%h/src/nagaya/deploy/wait-address.sh 198.51.100.10 120
+# The store directory must exist before the process reads its profile. It is `store_dir` of the config.
+ExecStartPre=/usr/bin/mkdir -p /srv/nagaya/store
+# At boot the address can come after the user manager starts the unit. A bind to a missing address exits 3 and
+# keeps the unit down (spec 10.4), so wait for the address of `http_bind`. TimeoutStartSec covers the 120 s.
+ExecStartPre=%h/src/nagaya/deploy/wait-address.sh 192.0.2.11 120
 ExecStart=%h/src/nagaya/target/release/nagaya
 # Arenas through a restart (spec 10.2). systemd keeps the 31 Gemma 4 slabs through a restart, and the process reads
 # the ceiling from $FDSTORE. `systemctl stop` clears the store.

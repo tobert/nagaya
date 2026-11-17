@@ -27,8 +27,6 @@ pub const END_CODE: u32 = 2016;
 pub enum MediaError {
     /// The bytes are not a PNG or a JPEG that the decoder reads. The text says what the decoder found.
     Image(String),
-    /// The PNG has this count of bits in a sample, more than 8.
-    Depth(u8),
     /// The long side of the image is more than 200 times the short side.
     Ratio { height: usize, width: usize },
     /// The bytes are not a WAV of PCM in 16 bits, mono, at 16 kHz. The text says what the file holds.
@@ -45,10 +43,6 @@ impl fmt::Display for MediaError {
             MediaError::Image(why) => write!(
                 f,
                 "is not an image that the server can read ({why}). Send a PNG or a JPEG"
-            ),
-            MediaError::Depth(bits) => write!(
-                f,
-                "is a PNG with {bits} bits in a sample. Send a PNG with 8 bits or fewer in each channel"
             ),
             MediaError::Ratio { height, width } => write!(
                 f,

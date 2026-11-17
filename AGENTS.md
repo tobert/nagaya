@@ -168,8 +168,8 @@ The nagaya runs on two machines of Amy's lab today. `docs/deploy.md` tells how t
 profiles are in `deploy/`.
 
 - **gfx1151host** has the gfx1151. Qwen-Image is resident, and Qwen3.8 is on demand under the engine name `qwen38`.
-- **b70host** has two B70 cards. Its profile is `deploy/b70host/profile.toml`. Its iGPU (gfx1036) drives the
-  display: do not run work on it.
+- **b70host** has two B70 cards. Its profile is a copy of `deploy/b70-pair/profile.toml`, in the store directory. Its
+  iGPU (gfx1036) drives the display: do not run work on it.
 
 The rules for a GPU test, on each machine:
 
@@ -186,8 +186,8 @@ The rules for a GPU test, on each machine:
 - Do not mutate a pointer or a size that a kernel reads. Such a mutant faulted a card on 2026-11-07.
 - In a container with no systemd, ask your reviewer to check the unit.
 
-An agent may also stop and start the web app on b70host (`python3 tools/nagaya_web.py --host <address>`, port
-8096). Write each restart in `signoff.md`.
+An agent may also stop and start the web app on b70host (`python3 tools/nagaya_web.py --host <address> --seed
+http://<address>:8091`, port 8096). `signoff.md` gives the address. Write each restart in `signoff.md`.
 
 #### The Qwen3.8 engine on gfx1151
 
@@ -293,7 +293,8 @@ get ran sometimes, perhaps just a bump in our AGENTS.md"
 - On a machine that holds a model, run the checks with `NAGAYA_REQUIRE_MODELS=1` and the model variables set.
   Then an absent file fails the test.
 - Do this at least before each merge that touches the crates of that model.
-- gfx1151host holds the Qwen3.8 GGUF at the default path of `NAGAYA_QWEN38_GGUF`.
+- gfx1151host holds the Qwen3.8 GGUF. `NAGAYA_QWEN38_GGUF` names its first shard, and it has no default. `signoff.md`
+  gives the path.
 - b70host holds Gemma 4 in `~/models/gemma-4-26B-A4B`. The `xe` tests of
   `nagaya-mk-gemma4-bmg` and the tests of `nagaya-text-gemma4` read it from `GEMMA4_MODEL_DIR`. The variable has no
   default, so the tests of `nagaya-text-gemma4` skip when it is unset.
@@ -318,6 +319,7 @@ get ran sometimes, perhaps just a bump in our AGENTS.md"
   folder from `QWENIMAGE21_FUSAL_DIR`, and the base folder too. Neither variable has a default.
   `tools/qwenimage21_golden.sh` writes the oracle into `target/qwenimage21-golden` or `QWENIMAGE21_GOLDEN_DIR`, with
   `nagaya.service` stopped. An absent oracle file skips a test, as an absent model does.
+- The tests `deploy` and `qwen38_wire` of `nagaya` plan the Strix Halo example. They read both Qwen-Image folders.
 - The report of a check names how many tests skipped for a missing model.
 
 On gfx1151host, run the oracle bench with `QWEN38_SHARDS` set and the unit inactive:

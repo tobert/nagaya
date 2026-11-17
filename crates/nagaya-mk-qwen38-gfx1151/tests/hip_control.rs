@@ -1,13 +1,14 @@
 //! The control vectors of the Qwen3.8 engine on gfx1151 (milestone 34 step 6).
 //!
-//! A pass with a control list runs as launches cut at the layer that the list acts on. After each launch, the host reads
-//! the rows of the segment from `h`, applies the items in list order, and writes the rows back. The gates: a strength of
-//! 0 gives the bits of no item; on the exact path an `add` matches the `plain_add` run of the oracle; segments with
-//! their own lists give the bits of each pass alone; a decode step gives the bits of the same token in a longer pass.
+//! A pass with a control list runs as launches cut at the layer that the list acts on. After each launch, the host
+//! reads the rows of the segment from `h`, applies the items in list order, and writes the rows back. The gates: a
+//! strength of 0 gives the bits of no item; on the exact path an `add` matches the `plain_add` run of the oracle;
+//! segments with their own lists give the bits of each pass alone; a decode step gives the bits of the same token in a
+//! longer pass.
 //!
-//! Run on gfx1151host with `nagaya.service` stopped, one thread, and with `QWEN38_SHARDS` set. Run it twice: with
-//! `QWEN38_FAST_QMM` unset, and with `QWEN38_FAST_QMM=0`. Only the exact path gates the oracle. A test that needs the
-//! fixture or the golden files skips with one line when they are absent, or fails with `NAGAYA_REQUIRE_MODELS=1`.
+//! Run on the Strix Halo machine with `nagaya.service` stopped, one thread, and with `QWEN38_SHARDS` set. Run it twice:
+//! with `QWEN38_FAST_QMM` unset, and with `QWEN38_FAST_QMM=0`. Only the exact path gates the oracle. A test that needs
+//! the fixture or the golden files skips with one line when they are absent, or fails with `NAGAYA_REQUIRE_MODELS=1`.
 
 #![cfg(feature = "hip")]
 

@@ -37,6 +37,46 @@ fn biattn_refuses_a_scale_of_zero() {
     biattn(256, 0.0);
 }
 
+/// `OP_VISION_ATTN` keeps 4 values of each head in each of 16 lanes for each query row of a tile.
+#[test]
+fn vision_attn_takes_heads_of_16_to_64_values() {
+    for d in [16, 32, 64] {
+        let task = tasks::vision_attn(1, 2, 3, 4, 4, 2, 1, d, 0.125);
+        assert_eq!((task.p0, task.k, task.m, task.n), (d, 0, 2 | 1 << 16, 4));
+        assert_eq!((task.a, task.b, task.x, task.c), (1, 2, 3, 4));
+        assert_eq!(task.layer, 0.125f32.to_bits());
+        assert_eq!(task.opcode, nagaya_mk_bmg::protocol::OP_VISION_ATTN);
+    }
+}
+
+/// A head above 64 values writes past the arrays of the kernel (`kernels/lfm3_vision_ops.cl`).
+#[test]
+#[should_panic(expected = "OP_VISION_ATTN takes a head of 16 to 64 values in 16s")]
+fn vision_attn_refuses_a_head_above_64() {
+    tasks::vision_attn(0, 0, 0, 0, 4, 2, 1, 80, 1.0);
+}
+
+/// A head that is not a multiple of 16 leaves its last values unwritten.
+#[test]
+#[should_panic(expected = "OP_VISION_ATTN takes a head of 16 to 64 values in 16s")]
+fn vision_attn_refuses_a_head_that_is_not_a_multiple_of_16() {
+    tasks::vision_attn(0, 0, 0, 0, 4, 2, 1, 40, 1.0);
+}
+
+/// The kernel reads the bits 0 as a scale of 1.0, so a scale of 0.0 would become 1.0.
+#[test]
+#[should_panic(expected = "OP_VISION_ATTN reads a scale of 0.0 as 1.0")]
+fn vision_attn_refuses_a_scale_of_zero() {
+    tasks::vision_attn(0, 0, 0, 0, 4, 2, 1, 64, 0.0);
+}
+
+/// The kernel reads the last row again for a tile past the end, so it needs one row.
+#[test]
+#[should_panic(expected = "OP_VISION_ATTN takes at least one row")]
+fn vision_attn_refuses_no_rows() {
+    tasks::vision_attn(0, 0, 0, 0, 0, 2, 1, 64, 1.0);
+}
+
 /// `pad_end` sets `FLAG_PAD_END` on a convolution and keeps the rest of the task.
 #[test]
 fn pad_end_marks_a_convolution_and_keeps_its_fields() {

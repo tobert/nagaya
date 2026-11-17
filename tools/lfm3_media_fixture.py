@@ -24,7 +24,7 @@ The image processor and the feature extractor are the checkpoint's own code (`tr
 weights and uses no GPU. It reads the Omni folder from --omni or LFM3_OMNI_MODEL_DIR; the code holds no default
 path. Run it with the reference venv:
 
-    PYTHONDONTWRITEBYTECODE=1 HF_HUB_OFFLINE=1 nice -n 19 ionice -c3 ~/.venvs/nagaya-lfm3-ref/bin/python -I \
+    PYTHONDONTWRITEBYTECODE=1 HF_HUB_OFFLINE=1 nice -n 19 ionice -c3 <reference venv>/bin/python -I \
         tools/lfm3_media_fixture.py [--omni DIR] [--out DIR]
 """
 import argparse

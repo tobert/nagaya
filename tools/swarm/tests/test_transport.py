@@ -64,7 +64,7 @@ class TransportTest(unittest.TestCase):
             self.assertEqual(transport.base_url("http://b:2"), "http://b:2")
             self.assertEqual(transport.base_url(), "http://a:1")
         with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(transport.base_url(), "http://198.51.100.10:8091")
+            self.assertEqual(transport.base_url(), "http://127.0.0.1:8090")
 
 
 if __name__ == "__main__":

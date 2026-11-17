@@ -4,6 +4,9 @@
 //! files exist. A test that sets the environment holds `ENV`, because the environment belongs to the whole process.
 #![cfg(feature = "hip")]
 
+#[path = "common/qwenimage21.rs"]
+mod qwenimage21;
+
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -87,8 +90,8 @@ fn a_hip_build_registers_the_qwen38_kind() {
 }
 
 #[test]
-fn the_registered_kind_is_the_kind_in_the_gfx1151host_profile() {
-    let profile = PlacementProfile::read(&repo().join("deploy/gfx1151host").join(PROFILE_FILE)).unwrap();
+fn the_registered_kind_is_the_kind_in_the_strix_halo_profile() {
+    let profile = PlacementProfile::read(&repo().join("deploy/strix-halo").join(PROFILE_FILE)).unwrap();
     assert_eq!(profile.engines[0].kind, qwen38::KIND);
     // The registry of the process: the profile has an engine of each kind that a `hip` build registers.
     let registry = Registry::compiled_in();
@@ -105,7 +108,7 @@ fn the_registered_kind_is_the_kind_in_the_gfx1151host_profile() {
 fn a_missing_variable_refuses_the_start_with_exit_3_and_names_the_variable() {
     let _env = ENV.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let install = Install::new();
-    let profile = PlacementProfile::read(&repo().join("deploy/gfx1151host").join(PROFILE_FILE)).unwrap();
+    let profile = PlacementProfile::read(&repo().join("deploy/strix-halo").join(PROFILE_FILE)).unwrap();
     let inventory = Inventory {
         devices: vec![Device {
             id: 0,
@@ -227,16 +230,29 @@ fn an_arena_that_differs_from_the_plan_refuses_the_start_and_gives_the_real_size
 }
 
 #[test]
-fn the_gfx1151host_profile_admits_on_the_probed_gfx1151host_with_the_registry_of_the_process() {
+fn the_strix_halo_profile_admits_on_the_probed_strix_halo_tree_with_the_registry_of_the_process() {
     // The whole start path up to the open: the probe, the plan and the ledger. Nothing here opens the engine.
+    // The plan of Qwen-Image reads the headers of its files, so the test takes the model folders from config.
+    let test = "the_strix_halo_profile_admits_on_the_probed_strix_halo_tree_with_the_registry_of_the_process";
+    let Some((model, fusal)) = qwenimage21::folders(test) else {
+        return;
+    };
     let _env = ENV.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let install = Install::new();
     install.export();
-    let profile = PlacementProfile::read(&repo().join("deploy/gfx1151host").join(PROFILE_FILE)).unwrap();
-    let inventory = FileProbe::new(repo().join("crates/nagaya/tests/fixtures/probe/gfx1151host"))
+    let store = tempfile::tempdir().unwrap();
+    let mut profile = PlacementProfile::read(&repo().join("deploy/strix-halo").join(PROFILE_FILE)).unwrap();
+    let image = profile
+        .engines
+        .iter_mut()
+        .find(|engine| engine.kind == nagaya::qwenimage21::KIND)
+        .expect("the example has a Qwen-Image engine");
+    qwenimage21::localize(&mut image.config, &model, &fusal, store.path());
+    let inventory = FileProbe::new(repo().join("crates/nagaya/tests/fixtures/probe/strix-halo"))
         .probe()
         .unwrap();
-    let admitted = admit(&profile, &Registry::compiled_in(), &inventory, &mut Ledger::new()).expect("gfx1151host admits");
+    let admitted = admit(&profile, &Registry::compiled_in(), &inventory, &mut Ledger::new())
+        .expect("the strix-halo profile admits");
     assert_eq!(admitted.engines.len(), 2);
     assert_eq!(admitted.engines[0].name, "qwen38");
     assert_eq!(admitted.engines[1].name, "qwen-image-fusal");

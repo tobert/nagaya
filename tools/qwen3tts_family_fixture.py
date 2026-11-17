@@ -15,7 +15,7 @@ row: text_projection(text_embedding(text id)) + codec_embedding(codec id). A row
 The tool loads the VoiceDesign model on the CPU in f32 (about 8 GB of RAM). It uses no GPU. Run it with the venv
 of the reference:
 
-    PYTHONDONTWRITEBYTECODE=1 nice -n 10 ~/.venvs/tts-proto/bin/python -I tools/qwen3tts_family_fixture.py \
+    PYTHONDONTWRITEBYTECODE=1 nice -n 10 <reference venv>/bin/python -I tools/qwen3tts_family_fixture.py \
         --model DIR [--out DIR]
 """
 import argparse

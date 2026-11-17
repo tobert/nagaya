@@ -106,7 +106,7 @@ fn a_build_that_crosses_the_grain_leaves_one_interval_copy() {
 
 #[test]
 fn a_cap_of_zero_makes_no_copies() {
-    // The gfx1151host profile has `interval_copies = 0`: the engine declares a grain, and the process makes no copy.
+    // The Strix Halo profile has `interval_copies = 0`: the engine declares a grain, and the process makes no copy.
     let f = fixture(Some(GRAIN), 0);
     build(&f, &long(WORDS));
     assert_eq!(copies(&f), Vec::<Entry>::new());

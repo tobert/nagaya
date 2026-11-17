@@ -1,5 +1,5 @@
 //! The inventory that the start path reads (spec 2.1, 10.4). A build without the fake engine probes the files of the
-//! machine. These tests use the fixed tree of gfx1151host and a broken tree.
+//! machine. These tests use the fixed tree of the Strix Halo machine and a broken tree.
 
 use std::path::{Path, PathBuf};
 
@@ -7,15 +7,15 @@ use nagaya::exit::ExitCode;
 use nagaya::inventory::{Device, FakeProbe, Inventory, Probe};
 use nagaya::probe::FileProbe;
 
-fn gfx1151host() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/probe/gfx1151host")
+fn strix_halo() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/probe/strix-halo")
 }
 
 #[test]
-fn the_start_path_reads_the_inventory_of_gfx1151host_through_the_probe_trait() {
+fn the_start_path_reads_the_inventory_of_the_strix_halo_machine_through_the_probe_trait() {
     // The start path holds the probe as `&dyn Probe`, so a later probe for another vendor needs no change there.
-    let probe: &dyn Probe = &FileProbe::new(gfx1151host());
-    let inventory = probe.probe().expect("the gfx1151host tree probes");
+    let probe: &dyn Probe = &FileProbe::new(strix_halo());
+    let inventory = probe.probe().expect("the strix-halo tree probes");
     assert_eq!(
         inventory,
         Inventory {

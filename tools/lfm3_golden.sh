@@ -10,7 +10,7 @@
 # The pinned revisions are LFM3-Omni-2B 21d75123f86c1f7ffb4bef1ea202710c4e7ebe67 and LFM3-1.7B
 # 0dc4268b561499c648c7ba7c9466bf3d8d01517a (spec 11.11). The script refuses another revision.
 #
-# REF_PYTHON overrides the python (default ~/.venvs/nagaya-lfm3-ref/bin/python). The venv holds Python 3.13,
+# REF_PYTHON names the Python of the reference venv, with no default. The venv holds Python 3.13,
 # torch 2.14.1+cpu, torchvision 0.29.2+cpu, torchcodec 0.17.0+cpu, transformers 5.20.2, tokenizers 0.23.3,
 # accelerate 1.15.0, numpy 2.5.4, pillow 13.0.0, librosa 1.0.0, soundfile 0.14.0 and safetensors 0.8.0. The files go
 # to $LFM3_GOLDEN_DIR, or to target/lfm3-golden. Do not commit them. transformers copies the remote code into
@@ -111,7 +111,7 @@
 # facts.json: the measured facts for spec 11.11: sizes, counts, the codec checks and the run patterns.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-PY="${REF_PYTHON:-$HOME/.venvs/nagaya-lfm3-ref/bin/python}"
+PY="${REF_PYTHON:?set REF_PYTHON to the Python of the reference venv}"
 OMNI="${LFM3_OMNI_MODEL_DIR:?set LFM3_OMNI_MODEL_DIR to the LFM3-Omni-2B snapshot directory}"
 TEXT="${LFM3_MODEL_DIR:?set LFM3_MODEL_DIR to the LFM3-1.7B snapshot directory}"
 OUT="${LFM3_GOLDEN_DIR:-target/lfm3-golden}"

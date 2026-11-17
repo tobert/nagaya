@@ -43,7 +43,7 @@ A port adds these things:
 | the fixtures and their tools | `crates/<crate>/tests/fixtures/`, `tools/` |
 | the probe tree of the machine | `crates/nagaya/tests/fixtures/probe/<machine>/` |
 | the unit, the config and the profile | `deploy/<machine>/` |
-| the install, the cutover and the rollback | `docs/deploy.md` |
+| the install and the roll back | `docs/deploy.md` |
 | the rows and the sections of `AGENTS.md` | section 8 below |
 
 **Pure logic stays out of the engine crate.** The ledger, the store, the scheduler and the council logic run in tests
@@ -118,7 +118,7 @@ file"). The helpers are `crates/nagaya-text-qwen38/tests/common/model.rs`,
 `crates/nagaya-text-gemma4/tests/common/model.rs` and `crates/nagaya-mk-gemma4-bmg/tests/common/mod.rs`. Each test
 calls `absent()` first.
 
-The variable is one for each family: `NAGAYA_QWEN38_GGUF` has a default path, and `GEMMA4_MODEL_DIR` has none.
+The variable is one for each family: `NAGAYA_QWEN38_GGUF` and `GEMMA4_MODEL_DIR` have no default.
 Before a merge that touches the crates of a model, run the checks with `NAGAYA_REQUIRE_MODELS=1` on the machine
 that holds the model.
 
@@ -303,7 +303,7 @@ For a new machine:
 **Devices.** The device ids follow the PCI address for every vendor (spec 2.1). A GPU that drives the display goes
 in `ignore_devices` of the bootstrap config. It keeps its id and stays in the inventory. It gets no budget, no
 thread and no work. An address that the probe does not find exits 3 (spec 2.1, "Ignored devices"). Set no runtime
-variable that hides a card, such as `ZE_AFFINITY_MASK` (`deploy/b70host/nagaya.service:29`).
+variable that hides a card, such as `ZE_AFFINITY_MASK` (`deploy/b70-pair/nagaya.service`).
 
 **CPU sets.** The housekeeping set is the two lowest online CPUs, and the pool set is the rest (spec 3.2a). A machine
 with two cards or more gives each stage thread a set of its own, from `local_cpulist` or one L3 domain (spec 3.2b).
@@ -315,26 +315,26 @@ ids), `config` and `share`. Each `[[budgets]]` entry has the tiers of one pool a
 `[store]` table has the store's budgets.
 
 A machine with unified memory pools `device(0)` and `host` in one budget. A machine with discrete cards has one budget
-for each card and one for host memory (`deploy/b70host/profile.toml`). The host safety floor of spec 4.7 is a runtime
+for each card and one for host memory (`deploy/b70-pair/profile.toml`). The host safety floor of spec 4.7 is a runtime
 check of `MemAvailable`, 12 GiB in the Qwen3.8 engine. It sets no size, and the ledger does not check it yet.
 
 The two example profiles keep a margin of their own, and each says why in a comment. The pool of the Strix Halo machine
-is 112 GiB of 125.1 GiB (`deploy/gfx1151host/profile.toml:22-24`). The host budget of the B70 machine is 96 GiB of 123.5 GiB
-(`deploy/b70host/profile.toml:34-38`). The test `crates/nagaya/tests/deploy.rs` reads the real files with the real
+is 112 GiB of 125.1 GiB (`deploy/strix-halo/profile.toml`). The host budget of the B70 machine is 96 GiB of 123.5 GiB
+(`deploy/b70-pair/profile.toml`). The test `crates/nagaya/tests/deploy.rs` reads the real files with the real
 loaders.
 
 **The unit.** One unit file for each machine, in `deploy/<machine>/` next to its config and profile (spec 10.1).
-Copy the unit of `deploy/gfx1151host/` or `deploy/b70host/`, and keep its comments. Set `FileDescriptorStoreMax` and
+Copy the unit of `deploy/strix-halo/` or `deploy/b70-pair/`, and keep its comments. Set `FileDescriptorStoreMax` and
 `FileDescriptorStorePreserve=restart` when the engine declares an arena. Set the model variable of the family in
-the unit. Keep the OTLP line a comment until a collector listens (`deploy/b70host/nagaya.service`).
+the unit. Keep the OTLP line a comment until a collector listens (`deploy/b70-pair/nagaya.service`).
 
-**The only GPU client** (spec 3.1). Before a GPU test and before the cutover, check that `nagaya.service` is inactive,
-with `--user`. A card test can run with the unit active on a card that no engine of the active profile names
+**The only GPU client** (spec 3.1). Before a GPU test and before the first start, check that `nagaya.service` is
+inactive, with `--user`. A card test can run with the unit active on a card that no engine of the active profile names
 (`NAGAYA_TEST_CARDS`, `AGENTS.md`). List the holders of the render nodes with `fuser`. The display server holds the
 iGPU, and that is correct (`docs/deploy.md`).
 
-**The cutover.** Write the install, the cutover and the rollback into `docs/deploy.md` before the first start. The
-cutover has these steps:
+**The first start.** Write the install and the roll back into `docs/deploy.md` before the first start. The first
+start has these steps:
 
 1. Check the GPU clients.
 2. Enable the unit, and read the log.
@@ -356,7 +356,7 @@ Do not start, stop or enable a service yourself, except as `AGENTS.md`, "The lab
   variable, the feature and the reference venv.
 - Add the model to "Tests that need a model file": which machine holds it, the variable, and its default or the lack
   of one.
-- Add the milestone with its steps in order, and who does the cutover.
+- Add the milestone with its steps in order, and who does the first start.
 
 ## 9. Open
 

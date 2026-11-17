@@ -87,9 +87,10 @@ pub enum ControlOp {
     Clamp = 3,
 }
 // The ops of the LFM3 vision tower (`kernels/lfm3_vision_ops.cl`, `MK_LFM3`): opcodes 100 to 109. The LFM3 binary also
-// holds the ops of the embedding binary for `OP_BIATTN`.
+// holds the ops of the embedding binary. `OP_VISION_ATTN` gives the bits of `OP_BIATTN` with every key.
 pub const OP_VISION_ROPE: u16 = 100;
 pub const OP_VISION_CONV: u16 = 101;
+pub const OP_VISION_ATTN: u16 = 102;
 
 // The speech ops of the LFM3 binary (`kernels/lfm3_speech_ops.cl`): opcodes 120 to 139.
 pub const OP_LFM3_GROUP_ATTN: u16 = 120;

@@ -97,7 +97,7 @@ fn view(entries: &[(&str, &str, serde_json::Value)]) -> ClusterView {
     }
 }
 
-const KEY: &str = "profile:desired:gfx1151host";
+const KEY: &str = "profile:desired:node-a";
 
 /// Handle a desired profile with the code of a local `PUT` (spec 2.4, "The routes of a profile for another host").
 fn desire(swap: &mut Swap, candidate: Candidate, process: &Process) -> Result<Outcome, SwapError> {
@@ -111,7 +111,7 @@ fn accepted(outcome: &Outcome, restart: bool) -> bool {
 }
 
 fn swap(dir: &Path, active: &PlacementProfile) -> Swap {
-    Swap::open(dir, "gfx1151host", active.clone()).unwrap()
+    Swap::open(dir, "node-a", active.clone()).unwrap()
 }
 
 #[test]
@@ -162,7 +162,7 @@ fn the_handled_version_survives_a_restart() {
         "7"
     );
 
-    let second = Swap::open(directory.path(), "gfx1151host", newer).unwrap();
+    let second = Swap::open(directory.path(), "node-a", newer).unwrap();
     assert_eq!(second.handled(), 7);
     let mut second = second;
     assert_eq!(second.candidate(&offered), None);
@@ -345,7 +345,7 @@ fn a_desired_profile_for_another_host_is_not_a_candidate() {
     let directory = tempfile::tempdir().unwrap();
     let active = profile(&["fake-one"], 4096);
     let mut swap = swap(directory.path(), &active);
-    let offered = view(&[("a", "profile:desired:b70host", desired_value(9, &active))]);
+    let offered = view(&[("a", "profile:desired:node-b", desired_value(9, &active))]);
     assert_eq!(swap.candidate(&offered), None);
 }
 
@@ -353,7 +353,7 @@ fn a_desired_profile_for_another_host_is_not_a_candidate() {
 fn a_version_file_that_is_not_a_number_stops_the_open() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::write(directory.path().join(VERSION_FILE), "seven\n").unwrap();
-    let error = Swap::open(directory.path(), "gfx1151host", profile(&["fake-one"], 4096))
+    let error = Swap::open(directory.path(), "node-a", profile(&["fake-one"], 4096))
         .err()
         .expect("the open fails");
     assert!(
@@ -403,7 +403,7 @@ fn a_refused_version_survives_a_restart() {
     let directory = tempfile::tempdir().unwrap();
     let active = profile(&["fake-one"], 4096);
     refuse(directory.path(), &active, 5);
-    let mut second = Swap::open(directory.path(), "gfx1151host", active.clone()).unwrap();
+    let mut second = Swap::open(directory.path(), "node-a", active.clone()).unwrap();
     assert_eq!(second.handled(), 5);
     let too_small = profile(&["fake-one", "fake-two"], 1);
     let offered = view(&[("a", KEY, desired_value(5, &too_small))]);
@@ -426,7 +426,7 @@ fn a_lower_version_after_a_refused_one_is_ignored_after_a_restart() {
     // Version 3 was applied earlier. Version 5 is refused.
     std::fs::write(directory.path().join(VERSION_FILE), "3\n").unwrap();
     refuse(directory.path(), &active, 5);
-    let mut second = Swap::open(directory.path(), "gfx1151host", active.clone()).unwrap();
+    let mut second = Swap::open(directory.path(), "node-a", active.clone()).unwrap();
     let lower = profile(&["fake-one", "fake-two"], 8192);
     let offered = view(&[("a", KEY, desired_value(4, &lower))]);
     assert_eq!(

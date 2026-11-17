@@ -215,17 +215,35 @@ fn bad_images_are_refused() {
         media::positions(b"\x89PNG", "image/png"),
         Err(MediaError::Image(_))
     ));
-    // A PNG of 16 bits in a sample.
-    let mut deep = Vec::new();
-    {
-        let mut encoder = png::Encoder::new(&mut deep, 2, 2);
-        encoder.set_color(png::ColorType::Rgb);
+    assert!(matches!(
+        media::prepare(b"not an image", "image/gif"),
+        Err(MediaError::Mime(_))
+    ));
+}
+
+/// A PNG with 16 bits in a sample keeps the high byte of each sample (spec 11.11, "Depth"), in RGB and in gray.
+#[test]
+fn a_png_of_16_bits_keeps_the_high_byte_of_each_sample() {
+    let deep = |color: png::ColorType, samples: &[u16]| {
+        let mut out = Vec::new();
+        let mut encoder = png::Encoder::new(&mut out, 2, 1);
+        encoder.set_color(color);
         encoder.set_depth(png::BitDepth::Sixteen);
-        encoder.write_header().unwrap().write_image_data(&[0; 24]).unwrap();
-    }
-    assert_eq!(image::decode(&deep, "image/png"), Err(MediaError::Depth(16)));
-    assert_eq!(media::positions(&deep, "image/png"), Err(MediaError::Depth(16)));
-    assert!(matches!(media::prepare(&deep, "image/gif"), Err(MediaError::Mime(_))));
+        let bytes: Vec<u8> = samples.iter().flat_map(|v| v.to_be_bytes()).collect();
+        encoder.write_header().unwrap().write_image_data(&bytes).unwrap();
+        out
+    };
+    let rgb = deep(png::ColorType::Rgb, &[0x12ff, 0x8000, 0xff01, 0x00ff, 0x7fff, 0xfe80]);
+    let got = image::decode(&rgb, "image/png").unwrap();
+    assert_eq!((got.height, got.width), (1, 2));
+    assert_eq!(got.bytes, [0x12, 0x80, 0xff, 0x00, 0x7f, 0xfe]);
+    assert_eq!(image::size(&rgb, "image/png"), Ok((1, 2)));
+    // Pillow clips a gray of 16 bits to 255. The family keeps the high byte, as for RGB.
+    let gray = deep(png::ColorType::Grayscale, &[0x01ff, 0xc000]);
+    assert_eq!(
+        image::decode(&gray, "image/png").unwrap().bytes,
+        [1, 1, 1, 0xc0, 0xc0, 0xc0]
+    );
 }
 
 #[test]

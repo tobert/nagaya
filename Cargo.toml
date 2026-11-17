@@ -29,13 +29,13 @@ members = [
 ]
 resolver = "3"
 
-# gogi comes from a local clone of github.com/tobert/gogi. Milestone 31 step 5 changes this to its GitHub URL. A path
-# dependency breaks in a worktree.
+# gogi is the contract of council v2 (github.com/tobert/gogi). The pin is a commit of its `main`, so a build gives the
+# same code at each fetch. Move the pin when gogi changes the contract.
 [workspace.dependencies]
-gogi-proto = { git = "file:///home/atobey/src/gogi", rev = "8830357260086202c76feda1ccce672d70921140" }
-gogi-fake = { git = "file:///home/atobey/src/gogi", rev = "8830357260086202c76feda1ccce672d70921140" }
-gogi-toy = { git = "file:///home/atobey/src/gogi", rev = "8830357260086202c76feda1ccce672d70921140" }
-gogi-conformance = { git = "file:///home/atobey/src/gogi", rev = "8830357260086202c76feda1ccce672d70921140" }
+gogi-proto = { git = "https://github.com/tobert/gogi", rev = "8830357260086202c76feda1ccce672d70921140" }
+gogi-fake = { git = "https://github.com/tobert/gogi", rev = "8830357260086202c76feda1ccce672d70921140" }
+gogi-toy = { git = "https://github.com/tobert/gogi", rev = "8830357260086202c76feda1ccce672d70921140" }
+gogi-conformance = { git = "https://github.com/tobert/gogi", rev = "8830357260086202c76feda1ccce672d70921140" }
 
 [profile.dev]
 debug = "line-tables-only"

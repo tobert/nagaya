@@ -63,7 +63,7 @@ fn row_len(part: usize) -> usize {
 
 /// The weight arena is locked in memory (milestone 30 step 5). It is a memfd that the GPU reads through a host
 /// registration. Swap could move its pages, and a move remaps them under a running kernel that the driver cannot
-/// preempt. On 2026-11-10 that gave spin-timeouts and a "Page not present" fault on gfx1151host.
+/// preempt. On 2026-11-10 that gave spin-timeouts and a "Page not present" fault on the Strix Halo machine.
 #[test]
 fn the_weight_arena_is_locked_in_memory() {
     let _engine = open().expect("open the engine");
@@ -98,7 +98,7 @@ fn the_weight_arena_is_locked_in_memory() {
         assert_eq!(locked, size, "the weight arena is not locked in memory: {line}");
         found += size;
     }
-    // The arena holds 65,490,227,200 bytes (deploy/gfx1151host/profile.toml), so the locked maps hold at least that.
+    // The arena holds 65,490,227,200 bytes (deploy/strix-halo/profile.toml), so the locked maps hold at least that.
     assert!(found * 1024 >= 65_490_227_200, "the locked weight maps hold {found} kB");
 }
 

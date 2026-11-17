@@ -6,7 +6,7 @@
 #
 #   EMBEDDINGGEMMA2_MODEL_DIR=<snapshot of google/embeddinggemma-2> tools/embeddinggemma2_golden.sh
 #
-# REF_PYTHON overrides the python (default ~/.venvs/embed-ref/bin/python). The venv holds torch 2.8.0+cpu,
+# REF_PYTHON names the Python of the reference venv, with no default. The venv holds torch 2.8.0+cpu,
 # torchvision 0.23.0+cpu, transformers 5.21.0, sentence-transformers 6.1.0 and pillow 11.3.0. sentence-transformers
 # loads the image and video processors of the model, so it needs torchvision and pillow even for text. The files go
 # to $EMBEDDINGGEMMA2_GOLDEN_DIR, or to target/embeddinggemma2-golden. Do not commit them.
@@ -33,7 +33,7 @@
 # difference of a padded batch from one input at a time, and the difference of bf16 from f32.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-PY="${REF_PYTHON:-$HOME/.venvs/embed-ref/bin/python}"
+PY="${REF_PYTHON:?set REF_PYTHON to the Python of the reference venv}"
 MODEL="${EMBEDDINGGEMMA2_MODEL_DIR:?set EMBEDDINGGEMMA2_MODEL_DIR to the EmbeddingGemma 2 snapshot directory}"
 OUT="${EMBEDDINGGEMMA2_GOLDEN_DIR:-target/embeddinggemma2-golden}"
 mkdir -p "$OUT"

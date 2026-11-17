@@ -15,7 +15,7 @@ pub struct Device {
     pub pci_address: String,
     /// The device memory in bytes.
     pub memory_bytes: u64,
-    /// True when device memory is the host's memory (gfx1151host, sm121host).
+    /// True when device memory is the host's memory (a Strix Halo machine or a DGX Spark).
     pub unified: bool,
     /// True when `ignore_devices` names the device (spec 2.1). An ignored device keeps its id and gets no work.
     pub ignored: bool,

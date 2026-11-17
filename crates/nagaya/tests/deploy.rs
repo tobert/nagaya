@@ -1,12 +1,14 @@
-//! The files in `deploy/` for gfx1151host and b70host (spec 2.1, 2.4, 10.1). The real loaders read them, so a change to
-//! a schema breaks these tests before it breaks a cutover.
+//! The example files in `deploy/`: a Strix Halo machine and a machine with two B70 cards (spec 2.1, 2.4, 10.1). The
+//! real loaders read them, so a change to a schema breaks these tests before it breaks an install.
 //!
-//! The admission of the b70host profile plans from the Gemma 4 checkpoint. That test skips when `GEMMA4_MODEL_DIR`
-//! is not set, and fails then with `NAGAYA_REQUIRE_MODELS=1` (AGENTS "Tests that need a model file").
+//! The admission of the B70 profile plans from the Gemma 4 checkpoint. That test skips when `GEMMA4_MODEL_DIR` is not
+//! set, and fails then with `NAGAYA_REQUIRE_MODELS=1` (AGENTS "Tests that need a model file").
 //!
-//! A test must not depend on the layout of one machine (AGENTS, milestone 31 step 4). The admission test of the
-//! b70host profile reads no engine name and no count. The eight tests that named the engines of the lab layout
-//! of two cards are gone since 2026-11-15.
+//! A test must not depend on the layout of one machine. The admission test of the B70 profile reads no engine name and
+//! no count.
+
+#[path = "common/qwenimage21.rs"]
+mod qwenimage21;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -31,20 +33,29 @@ fn deploy(name: &str) -> PathBuf {
     repo().join("deploy").join(name)
 }
 
+/// The folder of the Strix Halo example: one gfx1151 GPU with unified memory.
+const STRIX: &str = "strix-halo";
+
+/// The folder of the B70 example: two Intel Arc Pro B70 cards and an iGPU that drives the display.
+const B70: &str = "b70-pair";
+
+/// The path of the bootstrap config that each unit names. The install copies the example there (docs/deploy.md).
+const CONFIG: &str = "NAGAYA_CONFIG=%h/.config/nagaya/nagaya.toml";
+
 fn bootstrap() -> Bootstrap {
-    Bootstrap::read(&deploy("gfx1151host/nagaya.toml")).unwrap()
+    Bootstrap::read(&deploy(STRIX).join("nagaya.toml")).unwrap()
 }
 
 fn profile() -> PlacementProfile {
-    PlacementProfile::read(&deploy("gfx1151host").join(PROFILE_FILE)).unwrap()
+    PlacementProfile::read(&deploy(STRIX).join(PROFILE_FILE)).unwrap()
 }
 
-fn b70host_bootstrap() -> Bootstrap {
-    Bootstrap::read(&deploy("b70host/nagaya.toml")).unwrap()
+fn b70_bootstrap() -> Bootstrap {
+    Bootstrap::read(&deploy(B70).join("nagaya.toml")).unwrap()
 }
 
-fn b70host_profile() -> PlacementProfile {
-    PlacementProfile::read(&deploy("b70host").join(PROFILE_FILE)).unwrap()
+fn b70_profile() -> PlacementProfile {
+    PlacementProfile::read(&deploy(B70).join(PROFILE_FILE)).unwrap()
 }
 
 /// The value of a `Key=value` line in the unit. Panics when the key is missing or appears twice.
@@ -61,11 +72,11 @@ fn unit_value(unit: &str, key: &str) -> String {
 }
 
 fn unit() -> String {
-    std::fs::read_to_string(deploy("nagaya.service")).unwrap()
+    std::fs::read_to_string(deploy(STRIX).join("nagaya.service")).unwrap()
 }
 
-fn b70host_unit() -> String {
-    std::fs::read_to_string(deploy("b70host/nagaya.service")).unwrap()
+fn b70_unit() -> String {
+    std::fs::read_to_string(deploy(B70).join("nagaya.service")).unwrap()
 }
 
 /// The values of the `Environment=` lines of a unit.
@@ -75,39 +86,38 @@ fn environment(unit: &str) -> Vec<&str> {
         .collect()
 }
 
-#[test]
-fn the_bootstrap_config_binds_mks_address() {
-    // Amy, 2026-10-18: the nagaya takes the address of the Qwen3.8 engine, and kaijutsu's gate config names it.
-    let config = bootstrap();
-    assert_eq!(config.http_bind, "198.51.100.20:8090".parse::<SocketAddr>().unwrap());
-    assert_eq!(config.gossip_bind.ip(), config.http_bind.ip());
-    assert_ne!(config.gossip_bind.port(), config.http_bind.port());
-    assert!(config.store_dir.is_absolute(), "the loader does not expand `~`");
-    assert!(config.store_dir.ends_with(".local/share/nagaya/store"));
+/// An example address of RFC 5737 (192.0.2.0/24), so that no example names a real network.
+fn is_documentation_address(address: SocketAddr) -> bool {
+    matches!(address.ip(), std::net::IpAddr::V4(ip) if ip.octets()[..3] == [192, 0, 2])
 }
 
 #[test]
-fn gfx1151host_and_b70host_seed_each_other_for_one_cluster() {
-    // Milestone 23: each machine seeds the gossip address of the other, so they join one cluster (spec 2.1, 2.3).
-    let gfx1151host = bootstrap();
-    let b70host = b70host_bootstrap();
-    assert_eq!(gfx1151host.seed_peers, vec![b70host.gossip_bind]);
-    assert_eq!(b70host.seed_peers, vec![gfx1151host.gossip_bind]);
+fn the_strix_halo_config_binds_an_example_address_and_an_absolute_store() {
+    let config = bootstrap();
+    assert!(is_documentation_address(config.http_bind), "{}", config.http_bind);
+    assert_eq!(config.http_bind.port(), 8090);
+    assert_eq!(config.gossip_bind.ip(), config.http_bind.ip());
+    assert_ne!(config.gossip_bind.port(), config.http_bind.port());
+    assert!(config.store_dir.is_absolute(), "the loader does not expand `~`");
+}
+
+#[test]
+fn the_two_examples_seed_each_other_for_one_cluster() {
+    // Each machine seeds the gossip address of the other, so they join one cluster (spec 2.1, 2.3).
+    let strix = bootstrap();
+    let b70 = b70_bootstrap();
+    assert_eq!(strix.seed_peers, vec![b70.gossip_bind]);
+    assert_eq!(b70.seed_peers, vec![strix.gossip_bind]);
 }
 
 #[test]
 fn the_profile_names_the_qwen38_engine_and_the_store_budgets() {
     let profile = profile();
-    assert_eq!(
-        profile.engines.len(),
-        2,
-        "the Qwen3.8 engine and Qwen-Image (milestone 22)"
-    );
+    assert_eq!(profile.engines.len(), 2, "the Qwen3.8 engine and Qwen-Image");
     let engine = &profile.engines[0];
     assert_eq!(engine.name, "qwen38");
     assert_eq!(engine.kind, "mk-qwen38-gfx1151");
-    // Amy, 2026-11-01: Qwen-Image stays loaded on gfx1151host for a while, and the Qwen3.8 engine swaps in through the API
-    // (spec 3.3b).
+    // Qwen-Image stays loaded, and the Qwen3.8 engine swaps in through the load route (spec 3.3b).
     assert_eq!(engine.residency, Residency::OnDemand);
     assert_eq!(engine.devices, vec![0]);
     // The factory of the Qwen3.8 engine plans from this key (`nagaya::qwen38`). It refuses any other key.
@@ -118,9 +128,9 @@ fn the_profile_names_the_qwen38_engine_and_the_store_budgets() {
     assert!(store.nvme > 0);
     assert!(
         store.host.is_some(),
-        "the host budget of the store is explicit on gfx1151host"
+        "the host budget of the store is explicit in the pool of unified memory"
     );
-    // Objects have their own budget of 200 GiB (spec 6.15; Amy, 2026-11-01).
+    // Objects have their own budget of 200 GiB (spec 6.15).
     assert_eq!(store.objects, Some(200 << 30));
 }
 
@@ -141,16 +151,19 @@ fn the_profile_names_qwen_image_with_its_files_and_a_plan_table() {
 }
 
 /// The plans of both engines and the store's host budget fit the pool, with room for a staging copy of a context of
-/// 32,768 tokens (docs/deploy.md, "Two engines on gfx1151host"). The plan of Qwen-Image reads the headers of the files that
-/// the profile names, so the test skips on a machine without them.
+/// 32,768 tokens (docs/deploy.md, "Two engines on one GPU"). The plan of Qwen-Image reads the headers of its files, so
+/// the test takes the model folders from config, and it skips when they are absent.
 #[test]
 fn both_engines_and_the_store_fit_the_pool_with_room_for_a_staging_copy() {
-    let profile = profile();
-    let config = nagaya::qwenimage21::config(&profile.engines[1].config).unwrap();
-    if !config.encoder.is_file() {
-        eprintln!("skipped: the Qwen-Image files of the profile are absent");
+    let Some((model, fusal)) =
+        qwenimage21::folders("both_engines_and_the_store_fit_the_pool_with_room_for_a_staging_copy")
+    else {
         return;
-    }
+    };
+    let store_dir = tempfile::tempdir().unwrap();
+    let mut profile = profile();
+    qwenimage21::localize(&mut profile.engines[1].config, &model, &fusal, store_dir.path());
+    let config = nagaya::qwenimage21::config(&profile.engines[1].config).unwrap();
     let qwen38_weights = profile.engines[0].config["weights_bytes"].as_integer().unwrap() as u64;
     let qwen38_terms: u64 = nagaya_mk_qwen38_gfx1151_plan(qwen38_weights);
     let qwen: u64 = nagaya_mk_qwenimage21_gfx1151::plan::plan(&config)
@@ -184,9 +197,9 @@ fn nagaya_mk_qwen38_gfx1151_plan(weights: u64) -> u64 {
 
 #[test]
 fn the_pooled_budget_leaves_the_host_safety_floor_free() {
-    // Spec 4.1: device(0) and host are one pool on gfx1151host. Spec 4.7: 12 GiB of MemAvailable stay free.
+    // Spec 4.1: device(0) and host are one pool of unified memory. Spec 4.7: 12 GiB of MemAvailable stay free.
     let profile = profile();
-    let inventory = FileProbe::new(repo().join("crates/nagaya/tests/fixtures/probe/gfx1151host"))
+    let inventory = FileProbe::new(repo().join("crates/nagaya/tests/fixtures/probe").join(STRIX))
         .probe()
         .unwrap();
     let pool = [TierSpec::from(Tier::Device(0)), TierSpec::from(Tier::Host)];
@@ -194,7 +207,7 @@ fn the_pooled_budget_leaves_the_host_safety_floor_free() {
         .budgets
         .iter()
         .find(|budget| budget.tiers == pool)
-        .expect("gfx1151host has one budget for device(0) and host");
+        .expect("the Strix Halo example has one budget for device(0) and host");
     assert!(
         budget.bytes + FLOOR <= inventory.host_bytes,
         "the pool is {} bytes; host memory is {} bytes and the floor is {FLOOR} bytes",
@@ -226,19 +239,12 @@ fn the_unit_is_a_notify_unit_with_the_restart_policy_of_spec_10_4() {
     check_restart_policy(&unit());
 }
 
+/// A unit reads its config from outside the repository, so a pull never changes a running machine (docs/deploy.md).
 #[test]
-fn the_unit_reads_the_config_in_deploy() {
+fn the_unit_reads_the_config_outside_the_repository() {
     let unit = unit();
-    let environment: Vec<&str> = unit
-        .lines()
-        .filter_map(|line| line.strip_prefix("Environment="))
-        .collect();
-    let config = environment
-        .iter()
-        .find_map(|value| value.strip_prefix("NAGAYA_CONFIG=%h/src/nagaya/"))
-        .expect("the unit sets NAGAYA_CONFIG under the repository");
-    assert_eq!(config, "deploy/gfx1151host/nagaya.toml");
-    assert!(repo().join(config).is_file(), "the file that the unit names exists");
+    let environment = environment(&unit);
+    assert!(environment.contains(&CONFIG), "{environment:?}");
     assert!(environment.contains(&"OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317"));
     assert_eq!(unit_value(&unit, "ExecStart"), "%h/src/nagaya/target/release/nagaya");
 }
@@ -266,15 +272,14 @@ fn the_unit_names_three_shards() {
 }
 
 #[test]
-fn the_b70host_config_binds_mkviolets_address_and_ignores_the_igpu() {
-    // Amy, 2026-10-21: the nagaya replaces mkviolet and takes its address.
-    let config = b70host_bootstrap();
-    assert_eq!(config.http_bind, "198.51.100.10:8091".parse::<SocketAddr>().unwrap());
+fn the_b70_config_binds_an_example_address_and_ignores_the_igpu() {
+    let config = b70_bootstrap();
+    assert!(is_documentation_address(config.http_bind), "{}", config.http_bind);
+    assert_eq!(config.http_bind.port(), 8091);
     assert_eq!(config.gossip_bind.ip(), config.http_bind.ip());
     assert_ne!(config.gossip_bind.port(), config.http_bind.port());
     assert!(config.store_dir.is_absolute(), "the loader does not expand `~`");
-    assert!(config.store_dir.ends_with(".local/share/nagaya/store"));
-    // The Radeon 610M drives the display (spec 2.1, "Ignored devices").
+    // The iGPU drives the display (spec 2.1, "Ignored devices").
     assert_eq!(config.ignore_devices, vec!["0000:80:00.0".to_owned()]);
 }
 
@@ -416,19 +421,30 @@ fn named_checkpoints(profile: &PlacementProfile) -> bool {
     false
 }
 
+/// The profile that the admission test reads: the file of `NAGAYA_TEST_PROFILE`, or the B70 example. A machine with
+/// two B70 cards sets the variable to its own profile, so the test plans from the models that the machine holds.
+fn admitted_profile() -> PlacementProfile {
+    match std::env::var_os("NAGAYA_TEST_PROFILE") {
+        Some(path) => PlacementProfile::read(Path::new(&path))
+            .unwrap_or_else(|error| panic!("NAGAYA_TEST_PROFILE names a profile that does not load: {error}")),
+        None => b70_profile(),
+    }
+}
+
 #[test]
-fn the_b70host_profile_admits_on_the_probed_b70host() {
+fn the_b70_profile_admits_on_the_probed_b70_machine() {
     // The start path up to the open: the probe, the ignored iGPU, the plan and the ledger.
+    let profile = admitted_profile();
     if checkpoint().is_none()
         || !speech_checkpoint()
         || !image_checkpoint()
         || !embedding_checkpoint()
-        || !named_checkpoints(&b70host_profile())
+        || !named_checkpoints(&profile)
     {
         return;
     }
-    let config = b70host_bootstrap();
-    let mut inventory = FileProbe::new(repo().join("crates/nagaya/tests/fixtures/probe/b70host"))
+    let config = b70_bootstrap();
+    let mut inventory = FileProbe::new(repo().join("crates/nagaya/tests/fixtures/probe").join(B70))
         .probe()
         .unwrap();
     inventory.ignore(&config.ignore_devices).unwrap();
@@ -442,8 +458,7 @@ fn the_b70host_profile_admits_on_the_probed_b70host() {
     registry.register(nagaya::embeddinggemma2::KIND, Box::new(EmbeddingPlanOnly));
     registry.register(nagaya::lfm3::KIND, Box::new(Lfm3PlanOnly));
     // The admission runs the start rules that need no card: the plans, the ledger and the residency (spec 3.3a).
-    let profile = b70host_profile();
-    let admitted = admit(&profile, &registry, &inventory, &mut Ledger::new()).expect("b70host admits");
+    let admitted = admit(&profile, &registry, &inventory, &mut Ledger::new()).expect("the B70 profile admits");
     assert_eq!(admitted.engines.len(), profile.engines.len());
     check_served_names(&profile, &admitted.engines);
     // What the engines that load at the start take of each device. A term names a place in the device list of its
@@ -475,8 +490,8 @@ fn the_b70host_profile_admits_on_the_probed_b70host() {
 }
 
 /// Check the served names of the start (spec 2.3): each LFM3 engine serves its engine name, both in the profile check
-/// and in the family plan of the council, and no two engines of the profile serve one name. The start of 12:59 on
-/// 2026-11-10 exited 3, because `lfm3` and `lfm3-1` both served `lfm3`.
+/// and in the family plan of the council, and no two engines of the profile serve one name. Two engines that serve one
+/// name make the start exit 3.
 fn check_served_names(profile: &PlacementProfile, admitted: &[nagaya::admission::AdmittedEngine]) {
     let mut families = nagaya::serving::FamilyRegistry::new();
     families.register_with_objects("lfm3", nagaya::lfm3::open_family_with);
@@ -521,17 +536,12 @@ fn check_served_names(profile: &PlacementProfile, admitted: &[nagaya::admission:
 }
 
 #[test]
-fn the_b70host_unit_reads_its_config_and_the_checkpoint_and_hides_no_card() {
-    let unit = b70host_unit();
+fn the_b70_unit_reads_its_config_and_the_checkpoints_and_hides_no_card() {
+    let unit = b70_unit();
     check_restart_policy(&unit);
     let environment = environment(&unit);
-    let config = environment
-        .iter()
-        .find_map(|value| value.strip_prefix("NAGAYA_CONFIG=%h/src/nagaya/"))
-        .expect("the unit sets NAGAYA_CONFIG under the repository");
-    assert_eq!(config, "deploy/b70host/nagaya.toml");
-    assert!(repo().join(config).is_file(), "the file that the unit names exists");
-    assert!(environment.contains(&"GEMMA4_MODEL_DIR=%h/models/gemma-4-26B-A4B"));
+    assert!(environment.contains(&CONFIG), "{environment:?}");
+    assert!(environment.contains(&"GEMMA4_MODEL_DIR=/srv/models/gemma-4-26B-A4B"));
     assert!(environment.contains(
         &"QWEN3TTS_MODEL_DIR=%h/.cache/huggingface/hub/models--Qwen--Qwen3-TTS-12Hz-1.7B-VoiceDesign/snapshots/\
           5ecdb67327fd37bb2e042aab12ff7391903235d3"
@@ -550,15 +560,15 @@ fn the_b70host_unit_reads_its_config_and_the_checkpoint_and_hides_no_card() {
         "{environment:?}"
     );
     assert!(
-        environment.iter().all(|value| !value.starts_with("MK_")),
-        "b70host has no Qwen3.8 engine"
+        environment.iter().all(|value| !value.starts_with("QWEN38_")),
+        "the B70 machine has no Qwen3.8 engine"
     );
 }
 
 #[test]
-fn the_b70host_unit_keeps_the_arenas_through_a_restart() {
+fn the_b70_unit_keeps_the_arenas_through_a_restart() {
     // Spec 10.2: systemd keeps the stored fds through a restart. The ceiling holds the 31 Gemma 4 slabs.
-    let unit = b70host_unit();
+    let unit = b70_unit();
     let ceiling: usize = unit_value(&unit, "FileDescriptorStoreMax").parse().unwrap();
     assert!(
         ceiling >= 31,
@@ -574,7 +584,7 @@ fn exec_start_pre(unit: &str) -> Vec<&str> {
         .collect()
 }
 
-/// Check that a unit waits for the tailnet address of its bootstrap config before the process starts.
+/// Check that a unit waits for the address of its bootstrap config before the process starts.
 fn check_address_wait(unit: &str, bootstrap: &Bootstrap) {
     let address = bootstrap.http_bind.ip();
     assert_eq!(
@@ -595,11 +605,10 @@ fn check_address_wait(unit: &str, bootstrap: &Bootstrap) {
 }
 
 #[test]
-fn the_units_wait_for_the_tailnet_address_of_their_config() {
-    // On 2026-10-24 b70host booted after a power loss. The nagaya started before tailscaled set 198.51.100.10, the
-    // gossip bind failed, and exit 3 kept the unit down.
+fn the_units_wait_for_the_address_of_their_config() {
+    // After a boot, the address can come after the unit starts. Then a bind fails, and exit 3 keeps the unit down.
     check_address_wait(&unit(), &bootstrap());
-    check_address_wait(&b70host_unit(), &b70host_bootstrap());
+    check_address_wait(&b70_unit(), &b70_bootstrap());
 }
 
 #[test]

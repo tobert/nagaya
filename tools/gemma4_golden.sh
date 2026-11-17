@@ -4,7 +4,7 @@
 # The token ids are fixed in the crate's tests/fixtures. The first Gemma 4 engine made them from its prompts.
 # Do not run it with a GPU job.
 #
-#   GEMMA4_MODEL_DIR=<checkpoint> REF_PYTHON=~/.venvs/nagaya-ref/bin/python tools/gemma4_golden.sh
+#   GEMMA4_MODEL_DIR=<checkpoint> REF_PYTHON=<reference venv>/bin/python tools/gemma4_golden.sh
 #
 # The files go to $GEMMA4_GOLDEN_DIR, or to target/gemma4-golden. Do not commit them.
 set -euo pipefail

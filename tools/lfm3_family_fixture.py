@@ -17,7 +17,7 @@ The tool reads the two model folders and writes only the fixtures. It runs no mo
 from the flags or from LFM3_OMNI_MODEL_DIR and LFM3_MODEL_DIR. The code holds no default path. Run it with the
 reference venv:
 
-    PYTHONDONTWRITEBYTECODE=1 nice -n 19 ionice -c3 ~/.venvs/nagaya-ref/bin/python -I tools/lfm3_family_fixture.py \
+    PYTHONDONTWRITEBYTECODE=1 nice -n 19 ionice -c3 <reference venv>/bin/python -I tools/lfm3_family_fixture.py \
         [--omni DIR] [--text DIR] [--out DIR]
 """
 import argparse

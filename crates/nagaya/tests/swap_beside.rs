@@ -618,9 +618,9 @@ fn an_unload_and_a_load_of_the_engine_with_stages_keep_the_engine_beside_it() {
     assert_eq!(closes, ["close:chat"]);
 }
 
-/// The swaps of b70host on 2026-10-30: `chat` on both cards, `voice` pinned on card 1, `draw` on demand on card 1.
-/// A load of `draw` that names `chat`, then a load of `chat` that names `draw`. `voice` stays loaded through both, and
-/// each reply names only the engines of the load (spec 3.3a, "No moves").
+/// The swaps of the B70 machine on 2026-10-30: `chat` on both cards, `voice` pinned on card 1, and `draw` on demand on
+/// card 1. A load of `draw` that names `chat`, then a load of `chat` that names `draw`. `voice` stays loaded through
+/// both, and each reply names only the engines of the load (spec 3.3a, "No moves").
 #[test]
 fn a_pinned_engine_stays_loaded_through_a_swap_out_and_back_of_the_engine_with_stages() {
     let directory = tempfile::tempdir().unwrap();

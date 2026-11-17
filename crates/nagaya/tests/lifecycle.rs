@@ -97,7 +97,8 @@ fn receive(socket: &UnixDatagram) -> String {
 fn the_open_wait_is_no_shorter_than_the_unit_start_timeout() {
     // A group beats while its engine opens, so the watchdog cannot end a hung open. The wait is the backstop (7.4).
     let unit =
-        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/nagaya.service")).unwrap();
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/strix-halo/nagaya.service"))
+            .unwrap();
     let seconds: u64 = unit
         .lines()
         .find_map(|line| line.strip_prefix("TimeoutStartSec="))

@@ -4,8 +4,8 @@ use nagaya::cpu_sets::{CpuSetError, CpuSets, CpuSetupError, for_machine, split};
 use nagaya::exit::ExitCode;
 use nagaya::probe::FileProbe;
 
-/// The online CPUs of gfx1151host: 16 cores, two threads each (`lscpu`).
-fn gfx1151host_online() -> Vec<u32> {
+/// The online CPUs of the Strix Halo machine: 16 cores, two threads each (`lscpu`).
+fn strix_halo_online() -> Vec<u32> {
     (0..32).collect()
 }
 
@@ -19,17 +19,17 @@ fn sets(online: &[u32]) -> CpuSets {
 
 #[test]
 fn the_housekeeping_set_takes_the_two_lowest_cpus() {
-    assert_eq!(sets(&gfx1151host_online()).housekeeping, vec![0, 1]);
+    assert_eq!(sets(&strix_halo_online()).housekeeping, vec![0, 1]);
 }
 
 #[test]
 fn the_pool_set_takes_every_other_cpu() {
-    assert_eq!(sets(&gfx1151host_online()).pool, range(2, 32));
+    assert_eq!(sets(&strix_halo_online()).pool, range(2, 32));
 }
 
 #[test]
 fn the_pool_size_is_the_number_of_pool_cpus() {
-    assert_eq!(sets(&gfx1151host_online()).pool_size(), 30);
+    assert_eq!(sets(&strix_halo_online()).pool_size(), 30);
     assert_eq!(sets(&[0, 1, 2, 3]).pool_size(), 2);
 }
 
@@ -43,7 +43,7 @@ fn four_cpus_split_two_and_two() {
 #[test]
 fn the_two_sets_do_not_overlap_and_hold_every_online_cpu() {
     let holes = vec![0, 1, 2, 5, 6, 7];
-    for online in [gfx1151host_online(), vec![0, 1, 2, 3], holes] {
+    for online in [strix_halo_online(), vec![0, 1, 2, 3], holes] {
         let split = sets(&online);
         assert!(split.housekeeping.iter().all(|cpu| !split.pool.contains(cpu)));
         let mut all: Vec<u32> = split.housekeeping.iter().chain(split.pool.iter()).copied().collect();
@@ -148,7 +148,7 @@ fn some(local: Vec<Vec<u32>>) -> Vec<Option<Vec<u32>>> {
     local.into_iter().map(Some).collect()
 }
 
-/// The two L3 domains of the 9950X on b70host.
+/// The two L3 domains of the 9950X of the B70 machine.
 fn ccds() -> Vec<Vec<u32>> {
     vec![
         [0..8, 16..24].into_iter().flatten().collect(),
@@ -212,8 +212,8 @@ fn a_domain_with_no_pool_cpu_is_an_error() {
 }
 
 #[test]
-fn b70host_gives_card_0_and_card_1_one_ccd_each() {
-    let sets = for_machine_with_devices(&fixture("b70host")).unwrap();
+fn the_b70_machine_gives_card_0_and_card_1_one_ccd_each() {
+    let sets = for_machine_with_devices(&fixture("b70-pair")).unwrap();
     assert_eq!(sets.housekeeping, vec![0, 1]);
     assert_eq!(
         sets.device(0),
@@ -226,16 +226,16 @@ fn b70host_gives_card_0_and_card_1_one_ccd_each() {
 }
 
 #[test]
-fn gfx1151host_has_one_device_and_it_keeps_the_pool_set() {
-    let sets = for_machine_with_devices(&fixture("gfx1151host")).unwrap();
-    let plain = for_machine(&fixture("gfx1151host")).unwrap();
+fn the_strix_halo_machine_has_one_device_and_it_keeps_the_pool_set() {
+    let sets = for_machine_with_devices(&fixture("strix-halo")).unwrap();
+    let plain = for_machine(&fixture("strix-halo")).unwrap();
     assert_eq!((&sets.housekeeping, &sets.pool), (&plain.housekeeping, &plain.pool));
     assert_eq!(sets.devices, vec![sets.pool.clone()]);
 }
 
 #[test]
-fn sm121host_has_one_device_and_it_keeps_the_pool_set() {
-    let sets = for_machine_with_devices(&fixture("sm121host")).unwrap();
+fn the_gb10_machine_has_one_device_and_it_keeps_the_pool_set() {
+    let sets = for_machine_with_devices(&fixture("dgx-spark")).unwrap();
     assert_eq!(sets.device(0), sets.pool);
 }
 
@@ -267,8 +267,8 @@ fn one_device_that_is_not_ignored_keeps_the_pool_set() {
 }
 
 #[test]
-fn b70host_with_the_igpu_ignored_keeps_the_sets_of_the_cards() {
-    let sets = for_machine_with_devices_ignoring(&fixture("b70host"), &["0000:80:00.0".to_owned()]).unwrap();
+fn the_b70_machine_with_the_igpu_ignored_keeps_the_sets_of_the_cards() {
+    let sets = for_machine_with_devices_ignoring(&fixture("b70-pair"), &["0000:80:00.0".to_owned()]).unwrap();
     assert_eq!(
         sets.device(0),
         [2..8, 16..24].into_iter().flatten().collect::<Vec<u32>>()
@@ -283,21 +283,21 @@ fn b70host_with_the_igpu_ignored_keeps_the_sets_of_the_cards() {
 #[test]
 #[should_panic(expected = "device 2 is ignored")]
 fn the_set_of_an_ignored_device_is_a_defect_to_ask_for() {
-    let sets = for_machine_with_devices_ignoring(&fixture("b70host"), &["0000:80:00.0".to_owned()]).unwrap();
+    let sets = for_machine_with_devices_ignoring(&fixture("b70-pair"), &["0000:80:00.0".to_owned()]).unwrap();
     sets.device(2);
 }
 
 #[test]
 fn an_ignored_address_that_the_machine_lacks_is_a_probe_error() {
-    let error = for_machine_with_devices_ignoring(&fixture("b70host"), &["0000:99:00.0".to_owned()]).unwrap_err();
+    let error = for_machine_with_devices_ignoring(&fixture("b70-pair"), &["0000:99:00.0".to_owned()]).unwrap_err();
     assert!(error.to_string().contains("0000:99:00.0"), "{error}");
     assert_eq!(error.exit_code(), ExitCode::RefusedStart);
 }
 
 #[test]
-fn b70host_with_one_card_left_gives_it_the_pool_set() {
+fn the_b70_machine_with_one_card_left_gives_it_the_pool_set() {
     let ignore = ["0000:80:00.0".to_owned(), "0000:08:00.0".to_owned()];
-    let probe = fixture("b70host");
+    let probe = fixture("b70-pair");
     let machine = probe.machine().unwrap();
     assert!(
         machine

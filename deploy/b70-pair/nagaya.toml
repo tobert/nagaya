@@ -1,0 +1,27 @@
+# The bootstrap config of the B70 example (docs/spec.md 2.1, 11.6). Copy it to `~/.config/nagaya/nagaya.toml`, where
+# the unit points NAGAYA_CONFIG, and change the addresses, the store directory and the iGPU. The loader
+# (`crates/nagaya/src/bootstrap.rs`) refuses an unknown key. `crates/nagaya/tests/deploy.rs` reads this file.
+#
+# The addresses are of RFC 5737, for examples. Use an address that only your clients can reach: the routes have no
+# authentication (README.md).
+
+# The HTTP address of council v2 and of `/nagaya/v1`.
+http_bind = "192.0.2.11:8091"
+
+# The gossip address: a UDP port on the same address, next to the HTTP port (spec 2.3). The loader refuses 0.0.0.0,
+# because no peer can reach it.
+gossip_bind = "192.0.2.11:8092"
+
+# The store directory. It holds the accepted profile (`profile.toml`), its version and the store's NVMe tier. Put it
+# on an NVMe disk. The user of the unit must own it. The loader does not expand `~`, so the path is absolute.
+store_dir = "/srv/nagaya/store"
+
+# The two examples form one cluster. The seed is the gossip address of the Strix Halo example (spec 2.1).
+seed_peers = ["192.0.2.10:8091"]
+
+# The time budget of the stop park, in seconds (spec 10.3). This is the default, and it is written here on purpose.
+park_budget_secs = 10
+
+# The iGPU drives the display (spec 2.1, "Ignored devices"). It stays visible, and it gets no work. Write the PCI
+# address of your display GPU.
+ignore_devices = ["0000:80:00.0"]

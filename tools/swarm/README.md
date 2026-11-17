@@ -158,7 +158,7 @@ python3 -m swarm swarm/recipes/pick-vote.json --out /tmp/pick-vote-1.jsonl --see
 ```
 
 - `--url` gives the base URL of the nagaya. With no `--url`, the driver reads `NAGAYA_URL`. With neither, it uses
-  `http://198.51.100.10:8091`.
+  `http://127.0.0.1:8090`, a nagaya on this machine.
 - `--seed` gives the seed of the parents, the foci and the seeds of the calls.
 - `loop.minutes` sets the wall time. `loop.in_flight` sets the count of rounds that run at once. `loop.rounds`, if
   present, stops the run after that count of rounds.

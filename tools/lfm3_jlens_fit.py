@@ -1,11 +1,11 @@
 """Fits the J-Lens of LFM3-1.7B on the CPU, and writes it as a lens object (docs/lab.md, "The J-Lens in the nagaya").
 
-The fit is Anthropic's reference, `jacobian-lens` (Gurnee et al., 2026), imported from a clone at
-~/src/research/jacobian-lens or $JLENS_SRC. The model is transformers with the checkpoint's own code, in float32
+The fit is Anthropic's reference, `jacobian-lens` (Gurnee et al., 2026), imported from the clone that
+--jlens-src or $JLENS_SRC names. The model is transformers with the checkpoint's own code, in float32
 with eager attention, as tools/lfm3_reference.py loads it. Do not run it with a GPU job. The fit
 runs on the CPU.
 
-  ~/.venvs/nagaya-lfm3-ref/bin/python -I tools/lfm3_jlens_fit.py --model "$LFM3_MODEL_DIR" \
+  <reference venv>/bin/python -I tools/lfm3_jlens_fit.py --model "$LFM3_MODEL_DIR" --jlens-src <clone> \
       --corpus prompts.json --weight-hash blake3:… --out lfm3.jlens.safetensors [--n 100]
 
 --corpus is a JSON list of prose paragraphs. The first J-Lens fit, of Gemma 4 12B, used the WikiText-103
@@ -13,7 +13,7 @@ paragraphs of more than 700 characters. The tool takes the first --n of one fixe
 so a larger --n resumes the checkpoint. --weight-hash is the `weight_hash` of the served model in
 `GET /council/v2/identity`. The route refuses a lens of other weights.
 
-The cost on b70host (Ryzen 9 9950X, 16 threads) was 2.18 s for each backward pass, 256 passes for each prompt:
+The cost on a Ryzen 9 9950X (16 threads) was 2.18 s for each backward pass, 256 passes for each prompt:
 9.3 minutes a prompt (2026-11-08). The checkpoint goes beside --out, every 5 prompts.
 
 The output is canonical safetensors (engine-abi D10). It holds one F16 tensor `layers.<l>` of shape [2048, 2048]
@@ -84,7 +84,14 @@ def main():
     parser.add_argument("--dim-batch", type=int, default=8)
     parser.add_argument("--max-seq-len", type=int, default=128)
     parser.add_argument("--threads", type=int, default=16)
+    parser.add_argument("--jlens-src", type=Path, default=os.environ.get("JLENS_SRC"),
+                        help="the clone of jacobian-lens (default: $JLENS_SRC)")
     args = parser.parse_args()
+    if args.jlens_src is None:
+        sys.exit("the clone of jacobian-lens is not known. Give --jlens-src <folder>, or set JLENS_SRC.")
+    if not (Path(args.jlens_src) / "jlens").is_dir():
+        sys.exit(f"{args.jlens_src} holds no folder jlens, so it is not a clone of jacobian-lens. Give the folder "
+                 "of the clone.")
     if args.model.resolve().name != REVISION:
         sys.exit(f"{args.model} is not the pinned revision {REVISION} of LFM3-1.7B (spec 11.11)")
     if not re.fullmatch(r"blake3:[0-9a-f]{64}", args.weight_hash):
@@ -92,7 +99,7 @@ def main():
 
     import torch
 
-    sys.path.insert(0, os.environ.get("JLENS_SRC", str(Path.home() / "src" / "research" / "jacobian-lens")))
+    sys.path.insert(0, str(args.jlens_src))
     import jlens
     from jlens.hf import Layout
     from transformers import AutoModelForCausalLM, AutoTokenizer

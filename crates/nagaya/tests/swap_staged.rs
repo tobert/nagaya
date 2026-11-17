@@ -414,8 +414,8 @@ fn wait_swap(process: &Process) {
 }
 
 /// A swap away from the engine with stages gives its stage handles back, and the device threads beat on (spec 7.4). On
-/// b70host on 2026-10-24, a swap from gemma to the speech engine ended in a stall 30 s later, the watchdog timeout,
-/// and exit 1.
+/// the B70 machine on 2026-10-24, a swap from gemma to the speech engine ended in a stall 30 s later, the watchdog
+/// timeout, and exit 1.
 #[test]
 fn a_swap_away_from_the_engine_with_stages_is_not_a_stall() {
     let directory = tempfile::tempdir().unwrap();

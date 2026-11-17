@@ -89,14 +89,10 @@ pub fn prepare(bytes: &[u8], mime: &str) -> Result<ImageRows, MediaError> {
 fn png_reader(bytes: &[u8]) -> Result<png::Reader<Cursor<&[u8]>>, MediaError> {
     let mut decoder = png::Decoder::new(Cursor::new(bytes));
     // EXPAND maps a palette to RGB and scales a gray of 1, 2 or 4 bits to 8 bits, as Pillow does. It also adds an
-    // alpha channel for `tRNS`, which the convert to RGB then drops, as Pillow's `convert("RGB")` does.
-    decoder.set_transformations(png::Transformations::EXPAND);
-    let reader = decoder.read_info().map_err(|e| MediaError::Image(e.to_string()))?;
-    let depth = reader.info().bit_depth as u8;
-    if depth > 8 {
-        return Err(MediaError::Depth(depth));
-    }
-    Ok(reader)
+    // alpha channel for `tRNS`, which the convert to RGB then drops, as Pillow's `convert("RGB")` does. STRIP_16
+    // keeps the high byte of a sample of 16 bits (spec 11.11, "Depth").
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    decoder.read_info().map_err(|e| MediaError::Image(e.to_string()))
 }
 
 fn jpeg_decoder(bytes: &[u8]) -> zune_jpeg::JpegDecoder<zune_jpeg::zune_core::bytestream::ZCursor<&[u8]>> {

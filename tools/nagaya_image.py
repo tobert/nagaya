@@ -17,13 +17,20 @@ It needs only the Python standard library.
 
 import argparse
 import json
+import os
 import pathlib
 import sys
 import time
 import urllib.error
 import urllib.request
 
-DEFAULT_URL = "http://198.51.100.10:8091"
+# The nagaya when neither --url nor NAGAYA_URL gives one: a nagaya on this machine.
+DEFAULT_URL = "http://127.0.0.1:8090"
+
+
+def default_url():
+    """The default of --url: NAGAYA_URL, else DEFAULT_URL."""
+    return os.environ.get("NAGAYA_URL") or DEFAULT_URL
 SAMPLERS = ["euler", "euler a", "dpm++ 2m karras", "dpm++ 2m sde karras"]
 
 
@@ -152,7 +159,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("prompt", help="the prompt, with A1111 weights such as (word:1.2) and [word]")
     parser.add_argument("--model", required=True, help="the served image model, such as sdxl-0")
-    parser.add_argument("--url", default=DEFAULT_URL, help=f"the base URL of the nagaya (default {DEFAULT_URL})")
+    parser.add_argument("--url", default=default_url(),
+                        help=f"the base URL of the nagaya (default: NAGAYA_URL, else {DEFAULT_URL})")
     parser.add_argument("--negative", default="", help="the negative prompt")
     parser.add_argument("--width", type=int, default=1024, help="a multiple of 64 from 512 to 2048 (default 1024)")
     parser.add_argument("--height", type=int, default=1024, help="a multiple of 64 from 512 to 2048 (default 1024)")

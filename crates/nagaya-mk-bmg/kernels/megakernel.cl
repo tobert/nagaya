@@ -95,7 +95,7 @@
 #endif
 #if defined(MK_EMBEDDINGGEMMA2) || defined(MK_LFM3)
 // The ops of the embedding engine (embeddinggemma2_ops.cl); must match src/protocol.rs. The LFM3 binary holds them for
-// the attention of its vision tower, and its OP_GEGLU stays SwiGLU.
+// the gate of the attention of its vision tower, and its OP_GEGLU stays SwiGLU.
 #define OP_BIATTN           80
 #define OP_GELU_MUL         81
 #define OP_SCALE            82
@@ -119,6 +119,8 @@
 // The ops of the LFM3 vision tower (kernels/lfm3_vision_ops.cl)
 #define OP_VISION_ROPE      100
 #define OP_VISION_CONV      101
+#define OP_VISION_ATTN      102
+#define VISION_ATTN_TILE    4   // query rows of one head for each subgroup of OP_VISION_ATTN; at most 16
 #endif
 #define NUM_EXPERTS         128
 #define TOP_K               8

@@ -33,7 +33,7 @@ use nagaya::signal::SignalFlag;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-/// The iGPU of b70host drives the display. The b70host config ignores it (spec 2.1, `ignore_devices`).
+/// The iGPU of the B70 machine drives the display. Its config ignores it (spec 2.1, `ignore_devices`).
 const IGNORE: &str = "0000:80:00.0";
 
 /// The served model.

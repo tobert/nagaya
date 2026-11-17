@@ -7,9 +7,8 @@
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
+/// The variable that names the first shard of the Qwen3.8 GGUF. It has no default, as each model folder has none.
 pub const GGUF_VARIABLE: &str = "NAGAYA_QWEN38_GGUF";
-pub const GGUF_DEFAULT: &str =
-    "/tank/ml/models/llama.cpp/Qwen3.8-Flash-Next-GGUF/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf";
 pub const REQUIRE_VARIABLE: &str = "NAGAYA_REQUIRE_MODELS";
 
 /// What the check found for the model file.
@@ -38,8 +37,21 @@ pub fn check(path: &Path, require: bool, test: &str) -> Found {
     }
 }
 
-fn configured() -> PathBuf {
-    PathBuf::from(std::env::var(GGUF_VARIABLE).unwrap_or_else(|_| GGUF_DEFAULT.to_string()))
+fn configured() -> Option<PathBuf> {
+    std::env::var_os(GGUF_VARIABLE).map(PathBuf::from)
+}
+
+/// Check the file that the variable names. An unset variable skips, as an absent file does, and it panics when
+/// `require` is set.
+pub fn check_variable(path: Option<PathBuf>, require: bool, test: &str) -> Found {
+    match path {
+        Some(path) => check(&path, require, test),
+        None if require => panic!(
+            "{GGUF_VARIABLE} is not set, and {REQUIRE_VARIABLE} is set. Set {GGUF_VARIABLE} to the first shard of the \
+             Qwen3.8 GGUF."
+        ),
+        None => Found::Skip(format!("skipped: {test}: {GGUF_VARIABLE} is not set")),
+    }
 }
 
 fn required() -> bool {
@@ -50,7 +62,7 @@ fn required() -> bool {
 /// Call it first in each test that needs the model.
 pub fn absent() -> bool {
     let thread = std::thread::current();
-    match check(&configured(), required(), thread.name().unwrap_or("a test")) {
+    match check_variable(configured(), required(), thread.name().unwrap_or("a test")) {
         Found::Present => false,
         Found::Skip(line) => {
             eprintln!("{line}");
@@ -61,7 +73,7 @@ pub fn absent() -> bool {
 
 /// The path of the model file. A test that calls it has called `absent` before, so the file is there.
 pub fn gguf_path() -> PathBuf {
-    let path = configured();
+    let path = configured().expect("the test must call `absent` first: NAGAYA_QWEN38_GGUF is not set");
     assert!(
         path.is_file(),
         "the Qwen3.8 GGUF file {} does not exist; the test must call `absent` first",

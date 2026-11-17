@@ -36,7 +36,7 @@ use tower::ServiceExt;
 const GEMMA: &str = "gemma-4-26b-a4b";
 const EMBEDDER: &str = "embeddinggemma-2";
 
-/// The iGPU of b70host drives the display. The b70host config ignores it (spec 2.1, `ignore_devices`).
+/// The iGPU of the B70 machine drives the display. Its config ignores it (spec 2.1, `ignore_devices`).
 const IGNORE: &str = "0000:80:00.0";
 
 fn directory(variable: &str) -> Option<PathBuf> {
@@ -52,7 +52,7 @@ fn directory(variable: &str) -> Option<PathBuf> {
     }
 }
 
-/// Gemma 4 on devices 0 and 1, and EmbeddingGemma 2 resident and pinned on device 1, as on b70host.
+/// Gemma 4 on devices 0 and 1, and EmbeddingGemma 2 resident and pinned on device 1, as on the B70 machine.
 fn profile(gemma: &std::path::Path, embedder: &std::path::Path) -> PlacementProfile {
     card_support::need_devices_0_and_1();
     let (gemma, embedder) = (gemma.display(), embedder.display());
@@ -343,7 +343,7 @@ fn the_process_serves_embeddings_beside_gemma4() {
     assert!(gemma_failed.is_empty(), "{GEMMA}: {gemma_failed:?}");
 }
 
-/// The swaps of b70host on 2026-10-30: a load of an engine on card 1 that names Gemma 4, then a load of Gemma 4
+/// The swaps of the B70 machine on 2026-10-30: a load of an engine on card 1 that names Gemma 4, then a load of Gemma 4
 /// that names that engine. The pinned EmbeddingGemma 2 stays ready, never reloads, and gives the same bits.
 #[test]
 fn a_swap_of_gemma4_out_and_back_keeps_the_pinned_embedder() {

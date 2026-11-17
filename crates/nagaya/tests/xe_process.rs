@@ -32,7 +32,7 @@ use tower::ServiceExt;
 
 const MODEL: &str = "gemma-4-26b-a4b";
 
-/// The iGPU of b70host drives the display. The b70host config ignores it (spec 2.1, `ignore_devices`).
+/// The iGPU of the B70 machine drives the display. Its config ignores it (spec 2.1, `ignore_devices`).
 const IGNORE: &str = "0000:80:00.0";
 
 fn checkpoint() -> Option<PathBuf> {
@@ -48,7 +48,7 @@ fn checkpoint() -> Option<PathBuf> {
     }
 }
 
-/// The profile of b70host: the engine on machine devices 0 and 1, the B70 cards, and a budget for each card.
+/// The profile of the B70 machine: the engine on machine devices 0 and 1, the B70 cards, and a budget for each card.
 fn profile(dir: &std::path::Path) -> PlacementProfile {
     card_support::need_devices_0_and_1();
     let dir = dir.display();

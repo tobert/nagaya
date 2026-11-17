@@ -3,7 +3,7 @@
 
 Run it through tools/sdxl_golden.sh's conventions. The direct command is:
 
-  HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 nice -n 10 ~/.venvs/sdxl-ref/bin/python -I \
+  HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 nice -n 10 <reference venv>/bin/python -I \
       tools/sdxl_lora_reference.py --model "$SDXL_MODEL_DIR" --out target/sdxl-lora-golden
 
 The script writes a small LoRA of fixed values in kohya names, loads it with diffusers at weight 0.8, and records:

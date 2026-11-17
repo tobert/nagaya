@@ -1,17 +1,15 @@
-# The placement profile of b70host (docs/spec.md 2.4). The nagaya reads the accepted profile from
-# `<store_dir>/profile.toml`, so docs/deploy.md says to copy this file there once. The loader is
-# `crates/nagaya/src/profile.rs`.
+# The placement profile of the B70 example (docs/spec.md 2.4): two Intel Arc Pro B70 cards and an iGPU that drives the
+# display. The nagaya reads the accepted profile from `<store_dir>/profile.toml`, so copy this file there once
+# (docs/deploy.md). The loader is `crates/nagaya/src/profile.rs`, and `crates/nagaya/tests/deploy.rs` reads this file.
 #
-# Both cards serve. Decided 2026-11-15: card 1 (0000:08:00.0, device 1) holds an image model, the embedding model and
-# LFM3-Omni, and card 0 (0000:03:00.0, device 0) holds LFM3-1.7B. Each loads at the start. Gemma 4 is on demand on
-# both cards. Device 2 is the ignored iGPU.
+# Both cards serve. Card 1 (device 1) holds an image model, the embedding model and LFM3-Omni, and card 0 (device 0)
+# holds LFM3-1.7B. Each loads at the start. Gemma 4 is on demand on both cards. Device 2 is the ignored iGPU.
 #
 # A card test needs card 0 free. `POST /nagaya/v1/devices/0/release` unloads its engines, and
 # `POST /nagaya/v1/devices/0/reclaim` loads the resident ones again (spec 3.3b, "The release of a device"). A start
-# of the unit ends a release. The profile of 2026-11-14, with the other image models and the speech engine, is the
-# file of `4c02b39` in the history.
+# of the unit ends a release.
 
-# AutismMix, a Pony merge of SDXL, as a single file from Civitai. The SDXL engine reads Stability's tensor names
+# AutismMix, a merge of SDXL, as a single file. The SDXL engine reads Stability's tensor names
 # (docs/spec.md 11.9, the single file), and its CLIP tokenizer comes from `SDXL_MODEL_DIR` of the unit. It plans
 # 21,018,307,972 bytes: 14,243,390,464 on its card for the weights and their BF16 planes, 6,707,675,524 on its card
 # for the activations of 4 images of 1.5 MP, and 67,241,984 of host memory. `clip_skip` is 2, the default of the
@@ -23,7 +21,7 @@ devices = [1]
 share = 1
 
 [engines.config]
-checkpoint = "/home/atobey/models/sdxl/autismmixSDXL_autismmixPony.safetensors"
+checkpoint = "/srv/models/sdxl/autismmixSDXL_autismmixPony.safetensors"
 
 # EmbeddingGemma 2 (docs/spec.md 11.10), the served embedding model `embeddinggemma-2` for the semantic search of a
 # client. It is resident and pinned, so no load and no unload removes it (spec 3.3a, "Explicit layout"). It plans
@@ -46,11 +44,11 @@ devices = [1]
 share = 1
 
 [engines.config]
-model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-Omni-2B/snapshots/21d75123f86c1f7ffb4bef1ea202710c4e7ebe67"
+model_dir = "/srv/models/huggingface/hub/models--LiquidAI--LFM3-Omni-2B/snapshots/21d75123f86c1f7ffb4bef1ea202710c4e7ebe67"
 slots = 4
 
 [engines.family]
-model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-Omni-2B/snapshots/21d75123f86c1f7ffb4bef1ea202710c4e7ebe67"
+model_dir = "/srv/models/huggingface/hub/models--LiquidAI--LFM3-Omni-2B/snapshots/21d75123f86c1f7ffb4bef1ea202710c4e7ebe67"
 
 # LFM3-1.7B on card 0, the text model `lfm3`, with eight slots of 32,768 positions, so a batched decode pass holds
 # eight contexts. It is resident: a text model on demand is not built (admission.rs, "a text model on demand").
@@ -61,16 +59,15 @@ devices = [0]
 share = 1
 
 [engines.config]
-model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-1.7B/snapshots/0dc4268b561499c648c7ba7c9466bf3d8d01517a"
+model_dir = "/srv/models/huggingface/hub/models--LiquidAI--LFM3-1.7B/snapshots/0dc4268b561499c648c7ba7c9466bf3d8d01517a"
 slots = 8
 
 [engines.family]
-model_dir = "/home/atobey/.cache/huggingface/hub/models--LiquidAI--LFM3-1.7B/snapshots/0dc4268b561499c648c7ba7c9466bf3d8d01517a"
+model_dir = "/srv/models/huggingface/hub/models--LiquidAI--LFM3-1.7B/snapshots/0dc4268b561499c648c7ba7c9466bf3d8d01517a"
 
-# The J-Lens of LFM3-1.7B (docs/lab.md, "The rules of the J-Lens"), fitted on this machine. The file is outside the
-# ledger.
+# The J-Lens of LFM3-1.7B (docs/lab.md, "The rules of the J-Lens"). The file is outside the ledger.
 [engines.lab]
-jlens = "/home/atobey/.local/share/nagaya/lens/lfm3.jlens.safetensors"
+jlens = "/srv/nagaya/lens/lfm3.jlens.safetensors"
 
 # Gemma 4 on the two cards (docs/engine-abi.md "How the Gemma 4 engine maps"): stage 0 on device 0, and stage 1 on
 # device 1.
@@ -103,15 +100,16 @@ bytes = 34359738368
 tiers = ["device(1)"]
 bytes = 34359738368
 
-# The host has 129,447,428 kB (about 123.5 GiB, `proc/meminfo` of 2026-10-21), and the safety floor of spec 4.7 is
+# The host has 129,447,428 kB (about 123.5 GiB, `proc/meminfo`), and the safety floor of spec 4.7 is
 # 12 GiB. The host budget takes 96 GiB = 103,079,215,104 bytes, which leaves about 15.5 GiB above the floor.
 [[budgets]]
 tiers = ["host"]
 bytes = 103079215104
 
 # The store (spec 4.1a): 64 GiB in host memory and 300 GiB on NVMe, so long contexts stay warm in memory and cold on
-# disk (Amy, 2026-11-12). The host budget of the store takes its bytes from the host budget above. Objects have their own budget of 200 GiB on the same disk, apart from the
-# NVMe budget (spec 6.15, Amy 2026-10-25): objects of up to 8 GiB, and keeps of up to 100 GiB in all.
+# disk. The host budget of the store takes its bytes from the host budget above. Objects have their own budget of
+# 200 GiB on the same disk, apart from the NVMe budget (spec 6.15): objects of up to 8 GiB, and keeps of up to 100 GiB
+# in all.
 [store]
 nvme = 322122547200
 host = 68719476736

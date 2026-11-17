@@ -164,6 +164,8 @@ impl FamilyRegistry {
         let mut config = ServiceConfig::new(model, &engine.name);
         config.context_tokens =
             usize::try_from(tokens).map_err(|_| format!("a slot of {tokens} tokens is too large"))?;
+        // A decision reads its context in the same slots (spec 11.3c).
+        config.decision_context_tokens = config.context_tokens;
         config.speech = opened.speech;
         Ok(Some(Plan {
             family: opened.family,
@@ -201,6 +203,9 @@ fn open_qwen38(identity: &Identity, table: &toml::Table) -> Result<OpenedFamily,
         served: ServedName::Identity,
     })
 }
+
+/// The most tokens of a written answer to a `text` question (gogi `text_tokens`).
+const TEXT_TOKENS: usize = 256;
 
 /// An engine on demand that its factory describes: the facts that its open will report (`Factory::describe`).
 #[derive(Clone, Debug)]
@@ -364,6 +369,14 @@ pub fn council_with(
             continue;
         };
         plans.push((engine, *is_described, plan));
+    }
+    // The server holds a spec with a `text` question when one of its served models writes such a question (spec
+    // 11.11, "Text questions of the LFM3 family"). The specs of the server have one set of rules.
+    if plans.iter().any(|(_, _, plan)| plan.family.describes()) {
+        for (_, _, plan) in &mut plans {
+            plan.config.spec_rules.describe = true;
+            plan.config.spec_rules.text_tokens = TEXT_TOKENS;
+        }
     }
     // The home reads and pins the snapshots of each text engine and each speech engine (spec 11.7, Proposed).
     let texts: Vec<(String, String)> = plans
