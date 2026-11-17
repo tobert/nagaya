@@ -59,7 +59,8 @@ def main():
     parser.add_argument("--layers", type=int, default=None)
     args = parser.parse_args()
     if args.model is None:
-        parser.error("no checkpoint folder: neither --model nor GEMMA4_MODEL_DIR names one. Give the folder of the Gemma 4 checkpoint.")
+        parser.error("no checkpoint folder: neither --model nor GEMMA4_MODEL_DIR names one. "
+                     "Give the folder of the Gemma 4 checkpoint.")
 
     import torch
     import transformers
