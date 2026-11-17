@@ -26,7 +26,7 @@ use nagaya::serving::{FamilyRegistry, council};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-/// The iGPU of b70host drives the display. The b70host config ignores it (spec 2.1, `ignore_devices`).
+/// The iGPU of the B70 machine drives the display. Its config ignores it (spec 2.1, `ignore_devices`).
 const IGNORE: &str = "0000:80:00.0";
 
 fn directory(variable: &str) -> Option<PathBuf> {
@@ -42,9 +42,9 @@ fn directory(variable: &str) -> Option<PathBuf> {
     }
 }
 
-/// One LFM3 model resident on device 0, with one slot and an object store, as step 9 puts it on b70host. The object
-/// store holds the control vectors (spec 11.12) and the media of Omni, and gogi's suite asks a server with such a model
-/// for objects. Each model gets its own process.
+/// One LFM3 model resident on device 0, with one slot and an object store, as step 9 puts it on the B70 machine. The
+/// object store holds the control vectors (spec 11.12) and the media of Omni, and gogi's suite asks a server with such
+/// a model for objects. Each model gets its own process.
 fn profile(name: &str, dir: &Path) -> PlacementProfile {
     let card = card_support::device();
     let dir = dir.display();

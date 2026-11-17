@@ -1,8 +1,8 @@
 //! Decode jobs of a batching engine on a device thread share passes (milestone 27 step 5, engine-abi "LFM3", "Batched
 //! passes"). `chat` with stages spans both cards, so the cards are one group with a device thread for each card, as on
-//! b70host. `batcher` on card 0 has a feed rule and 8 segments, so its decode quanta join on the thread of card 0. A
-//! second test gives `batcher` `segments_exact` and no feed rule, as the Qwen3.8 engine has (spec 5.7, "The first joins
-//! of an engine with `segments_exact`"); its decode quanta join the same way.
+//! the B70 machine. `batcher` on card 0 has a feed rule and 8 segments, so its decode quanta join on the thread of
+//! card 0. A second test gives `batcher` `segments_exact` and no feed rule, as the Qwen3.8 engine has (spec 5.7, "The
+//! first joins of an engine with `segments_exact`"); its decode quanta join the same way.
 
 mod feed_support;
 

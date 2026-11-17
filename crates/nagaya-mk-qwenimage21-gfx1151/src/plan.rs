@@ -133,7 +133,7 @@ pub fn weights_bytes(config: &Config) -> Result<u64, String> {
     Ok(bytes)
 }
 
-/// The work buffers of the largest job, for the plan: 7 GiB. Measured on gfx1151host on 2026-11-01 with
+/// The work buffers of the largest job, for the plan: 7 GiB. Measured on the Strix Halo machine with
 /// `examples/measure.rs`: a job at 1440 by 1440 (2,073,600 pixels, the largest size but 1%) peaked at 6.41 GiB over
 /// the loaded engine, with the picks of its GEMM shapes, and at 3.63 GiB with them in the plan table. At 1024 by 1024
 /// the peaks were 3.39 and 1.99 GiB. The engine runs the images of a job one at a time, so the count adds no buffer.

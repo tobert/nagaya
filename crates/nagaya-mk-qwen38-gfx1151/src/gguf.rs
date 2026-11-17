@@ -343,7 +343,7 @@ struct Shard {
 
 /// A model across every shard of a split GGUF, with each shard mapped read-only.
 ///
-/// The maps hold the tensor data. The reader never copies it into anonymous memory: the shards hold 94 GB on gfx1151host.
+/// The maps hold the tensor data. The reader never copies it into anonymous memory: the shards hold 94 GB.
 pub(crate) struct Model {
     shards: Vec<Shard>,
     tensors: Vec<TensorInfo>,

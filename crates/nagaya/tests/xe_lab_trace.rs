@@ -28,7 +28,7 @@ use safetensors::SafeTensors;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-/// The iGPU of b70host drives the display (spec 2.1, `ignore_devices`).
+/// The iGPU of the B70 machine drives the display (spec 2.1, `ignore_devices`).
 const IGNORE: &str = "0000:80:00.0";
 const LAYERS: usize = 24;
 const WIDTH: usize = 2048;

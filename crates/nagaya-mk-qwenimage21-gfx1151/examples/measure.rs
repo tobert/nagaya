@@ -1,4 +1,4 @@
-//! Measure the engine on gfx1151host: the open, and the time and the peak memory of each phase of a job at each size. The
+//! Measure the engine on its gfx1151 GPU: the open, and the time and the peak memory of each phase of a job at each size. The
 //! peak is the GPU's VRAM and GTT use from sysfs, sampled every 10 ms. Stop `nagaya.service` first (spec 3.1).
 //!
 //! Run: `QWENIMAGE21_MODEL_DIR=... QWENIMAGE21_ENCODER=... QWENIMAGE21_LORA=... cargo run --release -p

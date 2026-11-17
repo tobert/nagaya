@@ -30,12 +30,12 @@ fn inventory() -> Inventory {
 
 #[test]
 fn the_resource_names_the_host_and_the_hardware_of_the_inventory() {
-    let capture = Capture::start(resource(Some("gfx1151host"), Some(&inventory())));
+    let capture = Capture::start(resource(Some("node-a"), Some(&inventory())));
     nagaya_telemetry::instruments().store_lookup("any", nagaya_telemetry::LookupOutcome::Miss);
     let attributes = capture.resource();
     let get = |key: &str| attributes.get(key).map(String::as_str);
     assert_eq!(get("service.name"), Some("nagaya"));
-    assert_eq!(get("host.name"), Some("gfx1151host"));
+    assert_eq!(get("host.name"), Some("node-a"));
     assert_eq!(get("nagaya.device.count"), Some("2"));
     assert_eq!(get("nagaya.device.names"), Some("gfx1151,cpu"));
     assert_eq!(get("nagaya.device.memory_bytes"), Some("1024"));
@@ -45,7 +45,7 @@ fn the_resource_names_the_host_and_the_hardware_of_the_inventory() {
 #[test]
 fn a_missing_host_name_or_inventory_leaves_the_attribute_out() {
     assert!(resource(None, None).is_empty());
-    let only_host = resource(Some("gfx1151host"), None);
+    let only_host = resource(Some("node-a"), None);
     assert_eq!(only_host.len(), 1);
 }
 

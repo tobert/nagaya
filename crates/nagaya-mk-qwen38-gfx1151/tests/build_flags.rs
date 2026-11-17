@@ -14,8 +14,24 @@ mod build;
 
 use std::path::Path;
 
-/// The source root of the reference's build, as the fixture names it.
-const REFERENCE_SRC: &str = "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src";
+/// The source root of the reference's build, as the fixture names it. The build directory of each entry is
+/// `<root>/build`, and the sources are in `<root>/src`.
+fn reference_src(entries: &[serde_json::Value]) -> String {
+    let directory = entries[0]["directory"]
+        .as_str()
+        .expect("an entry names its build directory");
+    let root = directory
+        .strip_suffix("/build")
+        .expect("the build directory of the reference is <root>/build");
+    for entry in entries {
+        assert_eq!(
+            entry["directory"].as_str(),
+            Some(directory),
+            "all entries have one build directory"
+        );
+    }
+    format!("{root}/src")
+}
 
 /// The name of a unit here for its name in the reference: `extern.hip` for `capi.hip` of the reference, and the same
 /// name for the others.
@@ -30,14 +46,15 @@ fn each_compile_is_the_compile_of_the_reference_cmake_build() {
     )
     .expect("read the fixture");
     let entries: Vec<serde_json::Value> = serde_json::from_str(&text).expect("the fixture is a JSON list");
+    let reference_src = reference_src(&entries);
     let rust = [
-        format!("{REFERENCE_SRC}/engine/blocks.hip"),
-        format!("{REFERENCE_SRC}/gguf/gguf.cpp"),
-        format!("{REFERENCE_SRC}/gguf/dequant.cpp"),
+        format!("{reference_src}/engine/blocks.hip"),
+        format!("{reference_src}/gguf/gguf.cpp"),
+        format!("{reference_src}/gguf/dequant.cpp"),
     ];
     let (gone, entries): (Vec<_>, Vec<_>) = entries.into_iter().partition(|entry| {
         let file = entry["file"].as_str().expect("an entry names its file");
-        file.starts_with(&format!("{REFERENCE_SRC}/gguf/")) || file == rust[0]
+        file.starts_with(&format!("{reference_src}/gguf/")) || file == rust[0]
     });
     let mut gone: Vec<&str> = gone.iter().map(|entry| entry["file"].as_str().unwrap()).collect();
     gone.sort();
@@ -73,7 +90,7 @@ fn each_compile_is_the_compile_of_the_reference_cmake_build() {
                 continue;
             }
             after_o = word == "-o";
-            expected.push(rename(&word.replace(REFERENCE_SRC, &src.display().to_string())));
+            expected.push(rename(&word.replace(&reference_src, &src.display().to_string())));
         }
         assert_eq!(unit.arguments, expected, "the compile of {}", unit.source.display());
         assert_eq!(
@@ -82,7 +99,7 @@ fn each_compile_is_the_compile_of_the_reference_cmake_build() {
                 &entry["file"]
                     .as_str()
                     .expect("an entry names its file")
-                    .replace(REFERENCE_SRC, &src.display().to_string())
+                    .replace(&reference_src, &src.display().to_string())
             )
         );
     }

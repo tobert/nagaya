@@ -68,14 +68,14 @@ fn a_file_directory_variable_is_listed_so_that_the_process_can_warn() {
 #[test]
 fn the_resource_carries_the_service_name_the_host_and_the_hardware() {
     let resource = vec![
-        ("host.name".to_owned(), ResourceValue::Text("gfx1151host".to_owned())),
+        ("host.name".to_owned(), ResourceValue::Text("node-a".to_owned())),
         ("nagaya.device.count".to_owned(), ResourceValue::Count(1)),
     ];
     let capture = Capture::start(resource);
     instruments().store_lookup("qwen", nagaya_telemetry::LookupOutcome::Miss);
     let resource = capture.resource();
     assert_eq!(resource.get("service.name").map(String::as_str), Some("nagaya"));
-    assert_eq!(resource.get("host.name").map(String::as_str), Some("gfx1151host"));
+    assert_eq!(resource.get("host.name").map(String::as_str), Some("node-a"));
     assert_eq!(resource.get("nagaya.device.count").map(String::as_str), Some("1"));
 }
 

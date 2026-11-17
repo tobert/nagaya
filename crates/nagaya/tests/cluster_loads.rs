@@ -32,7 +32,7 @@ fn a_load_of_an_engine_of_one_peer_goes_to_that_peer() {
 #[test]
 fn a_host_that_no_live_node_has_is_a_404_that_names_host() {
     let a = Node::start("host-a", Has::Objects);
-    let reply = load(&a, "?host=sm121host");
+    let reply = load(&a, "?host=host-d");
     assert_eq!(reply.status, 404, "{}", reply.text());
     assert_eq!(reply.json()["error"]["param"], "host");
 }
