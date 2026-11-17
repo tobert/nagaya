@@ -128,7 +128,7 @@ markers.
 
 `think.latent`, `distill.latent` and `act.latent` give the latent steps of the calls of that stage. With a value above
 0, a generation goes to `POST /nagaya/v1/lab/ensemble` with one context and `"latent": {"steps": N}`. The member
-`latent` of `ensemble` is Proposed (`docs/lab.md`, "Latent steps in a request"). The driver sends it only when the
+`latent` of `ensemble` follows `docs/lab.md`, "Latent steps in a request". The driver sends it only when the
 value is above 0, so a nagaya without latent steps serves the other recipes.
 
 ## Run a recipe

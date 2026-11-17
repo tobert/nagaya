@@ -574,7 +574,7 @@ impl Lfm3Family {
     }
 
     /// The media type of a part in its recipe item (tag 9). A video part also names the versions of the decoder,
-    /// because a new decoder can give other rows from the same bytes (spec 11.11, Decided 2026-11-08).
+    /// because a new decoder can give other rows from the same bytes (spec 11.11).
     pub(crate) fn recipe_mime(&self, part: &MediaPart) -> String {
         // The speech of an assistant part enters the recipe as its codes do (spec 11.11, "Assistant audio").
         if part.kind == MediaKind::AudioOut

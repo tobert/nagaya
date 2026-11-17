@@ -214,7 +214,7 @@ class Markup(unittest.TestCase):
         self.assertIn('<input id="chat-topp" type="number" min="0.01" max="1" step="0.01" placeholder="off">', page)
 
     def test_the_instructions_of_a_tab_are_behind_its_help_button_and_long_hints_are_tooltips(self):
-        # Amy, 2026-11-11: "there's too much instruction text on the page, pls move to tooltips and/or help buttons".
+        # The instructions of a tab are behind its help button, and a long hint is a tooltip, so the page stays short.
         page = WEB.joinpath("index.html").read_text()
         self.assertNotIn('<p class="note">', page)
         sections = re.findall(r'<section id="(\w+)">(.*?)</section>', page, re.S)

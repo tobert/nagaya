@@ -29,7 +29,8 @@ use crate::spec;
 pub enum Qwen38ErrorKind {
     /// Any failure that a restart can change.
     Other,
-    /// The canary of the build does not match its record, or the record is missing (spec 8.1). A restart cannot change it.
+    /// The canary of the build does not match its record, or the record is missing (spec 8.1). A restart cannot change
+    /// it.
     Canary,
 }
 
@@ -840,7 +841,8 @@ impl ThreadState {
             return Err(Qwen38Error::new(problem));
         }
 
-        // The tokenizer is in the first shard. Hash it before the weights load, so a shard with no tokenizer fails fast.
+        // The tokenizer is in the first shard. Hash it before the weights load, so a shard with no tokenizer fails
+        // fast.
         let text = gguf::text_keys(&paths.shards[0])?;
 
         let (model, ple, arena, weights) = load_weights(&binding, paths, tiles)?;
@@ -942,8 +944,8 @@ impl ThreadState {
     }
 
     /// Free the weights (engine-abi "close"). The weight table and the PLE table point into the arena and the shard
-    /// maps, so they go first. The pass host, the C++ engine and the HIP runtime stay (Amy, 2026-11-01: "mk can stay
-    /// loaded and use some memory").
+    /// maps, so they go first. The pass host, the C++ engine and the HIP runtime stay
+    /// loaded, and they use some memory.
     fn unload(&mut self) -> Result<(), String> {
         if !self.contexts.is_empty() {
             return Err(format!(

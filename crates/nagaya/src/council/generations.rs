@@ -646,7 +646,7 @@ impl GenerateThen {
             Err(FamilyError::Client(_)) => return Ok(self.done()),
             Err(error) => return Err(error.into()),
         };
-        // Decided 2026-11-11 (spec 6.14): a generation on an engine with a feed rule holds a decoded head.
+        // A generation on an engine with a feed rule holds a decoded head (spec 6.14).
         if self.heads == Heads::Decoded {
             return self.decoded_head(&rendering, context.open().is_some(), context.messages.len() - 1);
         }

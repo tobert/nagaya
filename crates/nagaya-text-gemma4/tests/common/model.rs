@@ -1,7 +1,6 @@
 //! The checkpoint of the tests, and the rule for a machine that has no copy of it.
 //!
-//! Amy, 2026-10-21: "adjust the tests so they don't break our tests when we don't have a model downloaded locally.
-//! we won't replicate all models to all machines so this state is normal." An absent checkpoint skips the test. The
+//! A machine does not hold every model, so this state is normal. An absent checkpoint skips the test. The
 //! variable `GEMMA4_MODEL_DIR` names the directory, and the code holds no default path (AGENTS.md). The variable
 //! `NAGAYA_REQUIRE_MODELS=1` makes an absent checkpoint fail the test. Only absence skips.
 #![allow(dead_code)]

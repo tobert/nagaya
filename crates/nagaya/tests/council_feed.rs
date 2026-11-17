@@ -301,7 +301,7 @@ fn put_by_rule(fixture: &FeedFixture, direct: &mut Direct, recipe: RecipeId) -> 
         .expect("the recipe of the rule holds no other bytes")
 }
 
-/// Decided 2026-11-11 (spec 6.14, "The decoded head"): a generation on an engine with a feed rule holds a head after
+/// A generation on an engine with a feed rule holds a head (spec 6.14, "The decoded head") after
 /// its reply. This replaces the test of the rule of 2026-10-21, which checked a null head.
 ///
 /// Falsified by a head under the recipe of the rule: the put of the rule's state fires the tripwire. Also falsified

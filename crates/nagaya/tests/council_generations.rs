@@ -667,7 +667,7 @@ fn a_continuation_goes_on_from_the_open_text_and_counts_only_the_sampled_tokens(
     assert_eq!((built.head, built.usage.fed), (Some(head), 0));
 }
 
-/// Decided by Amy 2026-10-21 (spec 11.3c): a cut reply holds a sealed head. A snapshot holds no logit row, so the head
+/// A cut reply holds a sealed head (spec 11.3c). A snapshot holds no logit row, so the head
 /// is the state before the last sampled token, and a continuation from it feeds that token.
 #[test]
 fn a_cut_reply_holds_a_sealed_head_and_a_continuation_starts_from_it() {

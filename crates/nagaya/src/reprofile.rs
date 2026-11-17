@@ -328,7 +328,7 @@ impl Changer {
         if self.applying() {
             return Ok(PutAnswer::Busy);
         }
-        // A swap that waits or runs makes the change busy (spec 3.3a, Decided 2026-10-30). From here, no load is
+        // A swap that waits or runs makes the change busy (spec 3.3a). From here, no load is
         // planned until the ledger takes the new profile.
         match process.begin_change(&profile) {
             Ok(_) => {}

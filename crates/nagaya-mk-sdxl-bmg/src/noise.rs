@@ -1,6 +1,6 @@
 //! The random stream of the engine (spec 11.9, engine-abi "Image"). Each value is a function of the seed, the image,
 //! the step, the purpose and its index, so the image of seed `s` does not depend on the other images of its slot. A
-//! seed from another tool does not give that tool's image (Decided 2026-10-28).
+//! seed from another tool does not give that tool's image.
 
 /// What a draw is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

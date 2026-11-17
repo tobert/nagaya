@@ -38,9 +38,9 @@ pub struct ContextClass {
 
 /// The pool that a handle creates at open. The small class comes first, so slot 0 is the cheapest to fill.
 ///
-/// Decided by senpai 2026-10-20 night (vetoable): 12 contexts of 4096 tokens and 4 of 32 768 tokens. A real
-/// kaijutsu context needs thousands of tokens. The count of 16 equals `MAX_SEGMENTS`, so a pass can hold one segment
-/// for each context (Amy, 2026-10-20: "grow the pool"). The bytes are in `context_bytes`.
+/// 12 contexts of 4096 tokens and 4 of 32 768 tokens. A context of a council v2 client needs thousands of tokens. The
+/// count of 16 equals `MAX_SEGMENTS`, so a pass can hold one segment for each context. The bytes are in
+/// `context_bytes`.
 pub const CONTEXT_CLASSES: [ContextClass; 2] = [
     ContextClass {
         count: 12,
@@ -538,8 +538,8 @@ pub(crate) fn identity(
     canary_hash: &str,
 ) -> Identity {
     let mut numbers = BTreeMap::new();
-    // The build facts leave the identity digest (spec 12.1): the canary decides if a build changed the bits. A file path
-    // is not a fact of the build, so no path is here.
+    // The build facts leave the identity digest (spec 12.1): the canary decides if a build changed the bits. A file
+    // path is not a fact of the build, so no path is here.
     let mut facts = BTreeMap::new();
     facts.insert("engine_build_sha256".to_owned(), build.library_sha256.to_owned());
     facts.insert("engine_compiler".to_owned(), build.compiler.to_owned());
@@ -645,8 +645,9 @@ mod tests {
 
     #[test]
     fn the_engine_declares_a_grain_of_256_and_segments_exact() {
-        // Spec 6.13: a grain needs `segments_exact`. The GPU tests `an_interval_copy_restores_and_replays_to_the_bits_of_
-        // the_live_context` and `a_split_across_256_does_not_change_the_bits_in_either_class` measured both.
+        // Spec 6.13: a grain needs `segments_exact`. The GPU tests
+        // `an_interval_copy_restores_and_replays_to_the_bits_of_the_live_context` and
+        // `a_split_across_256_does_not_change_the_bits_in_either_class` measured both.
         let limits = limits(0);
         assert_eq!(limits.checkpoint_grain, Some(256));
         assert!(limits.segments_exact);
@@ -1022,7 +1023,8 @@ mod tests {
         assert_eq!(term.bytes, 15_728_640);
         assert_eq!(term.tier, Tier::Device(0));
         assert_eq!(term.lifetime, Lifetime::Engine);
-        // The rule of the ABI: the capability, the limit and the term come together, and the term has the table's bytes.
+        // The rule of the ABI: the capability, the limit and the term come together, and the term has the table's
+        // bytes.
         limits.check().expect("the limits pass the check of the ABI");
         // The pass scratch term does not change with the table: its constant is the measured pool.
         let scratch = limits

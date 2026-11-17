@@ -316,8 +316,8 @@ fn digest(ids: &[u32]) -> String {
     Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The open renderings of the test GGUF, pinned. The template id does not cover an open message (Amy, 2026-10-21:
-/// the id stays), so this test sees a change to `run_open` instead (kaibo job-5). Change a value only when the
+/// The open renderings of the test GGUF, pinned. The template id does not cover an open message, so this test
+/// sees a change to `run_open` instead. Change a value only when the
 /// rendering of an open message changes on purpose, and say so in the commit message.
 #[test]
 fn the_open_renderings_of_the_test_gguf_are_the_golden_ones() {

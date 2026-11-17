@@ -1,6 +1,6 @@
 //! Helpers that the integration tests share.
 //!
-//! Amy, 2026-10-21: "adjust the tests so they don't break our tests when we don't have a model downloaded locally."
+//! A machine does not hold every model, so this state is normal.
 //! An absent file skips the test with one line on stderr. `NAGAYA_REQUIRE_MODELS=1` makes it fail. A path that
 //! exists but cannot be read fails the test. Only absence skips.
 #![allow(dead_code)]

@@ -2,8 +2,8 @@
 
 The fit is Anthropic's reference, `jacobian-lens` (Gurnee et al., 2026), imported from a clone at
 ~/src/research/jacobian-lens or $JLENS_SRC. The model is transformers with the checkpoint's own code, in float32
-with eager attention, as tools/lfm3_reference.py loads it. Do not run it with a GPU job. Amy, 2026-11-08: the fit
-runs on the CPU of b70host.
+with eager attention, as tools/lfm3_reference.py loads it. Do not run it with a GPU job. The fit
+runs on the CPU.
 
   ~/.venvs/nagaya-lfm3-ref/bin/python -I tools/lfm3_jlens_fit.py --model "$LFM3_MODEL_DIR" \
       --corpus prompts.json --weight-hash blake3:… --out lfm3.jlens.safetensors [--n 100]
