@@ -4489,8 +4489,10 @@ the note above leaves these choices open, and each one is the simplest choice th
 
 - **Objects.** The process gives the family a reader of the objects of this machine. The family reads the bytes of
   each media part through it. A family with no reader refuses a media part with a 400 that names the part.
-- **Depth.** A PNG with 16 bits in a sample is a 400 that names the part. Pillow reads it, but its convert of a gray
-  of 16 bits clips each value. The SDXL family refuses it too (11.9b). A PNG of 1, 2 or 4 bits expands to 8 bits.
+- **Depth.** A PNG with 16 bits in a sample keeps the high byte of each sample. Reason: common tools write such a
+  PNG, and the owner accepts a conversion on the CPU (2026-11-17). Pillow clips each value of a gray of 16 bits,
+  and the family does not copy that. The SDXL family refuses such a PNG (11.9b). A PNG of 1, 2 or 4 bits expands
+  to 8 bits.
 - **JPEG.** The decoder is the crate `zune-jpeg`, not libjpeg-turbo of Pillow. On the fixture, 305 of 9,216 bytes
   differ, each by 2 or less. Thus a JPEG has no gate of bits, and a PNG has one.
 - **Orientation.** The family does not turn an image by its EXIF orientation. The reference processor does not
