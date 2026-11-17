@@ -1,0 +1,55 @@
+# The checks that need no GPU and no model file (README.md, "Checks"). A test that needs a model file skips when its
+# variable is not set, so each test here runs or skips the same way on each machine.
+#
+# The check of the `xe` code uses the ocloc stub, which writes empty kernels: clippy compiles the code, and nothing
+# that it builds runs on a card. The `hip` and `video` features need ROCm and ffmpeg, so they run on a machine that
+# has them (AGENTS.md, "Checks").
+name: checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: clippy with xe, and the ocloc stub
+        run: PATH="$PWD/tools/ocloc-stub:$PATH" cargo clippy --workspace --all-targets --features xe -- -D warnings
+      - name: tests
+        run: cargo test --workspace --tests
+      - name: tests with no default features
+        run: cargo test --workspace --tests --no-default-features
+
+  docs-and-tools:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: STE check of the docs
+        run: python3 tools/ste_check.py README.md docs/*.md
+      - name: lines of the docs at 120 columns
+        run: awk 'length > 120 && !/^\|/ {print FILENAME":"FNR; bad = 1} END {exit bad}' README.md docs/*.md
+      - name: tests of the tools
+        working-directory: tools
+        run: python3 -m unittest test_nagaya_web test_nagaya_web_page test_nagaya_image_batch test_oracle_fixture test_ste_check
+      - name: tests of the swarm driver
+        working-directory: tools
+        run: python3 -m unittest discover -s swarm/tests -t .
