@@ -1,4 +1,4 @@
-//! The head of a cut reply (spec 11.3c, "Sealed head") with the Qwen3.8 family: its real tokenizer and chat template
+//! The head of a cut reply (spec 11.3c) with the Qwen3.8 family: its real tokenizer and chat template
 //! from the GGUF, on the fake engine. The engine is scripted, so a test knows the reply. No GPU runs.
 
 mod council_support;

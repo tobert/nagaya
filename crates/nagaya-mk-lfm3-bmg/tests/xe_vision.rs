@@ -370,7 +370,7 @@ fn a_pass_that_reads_a_clip_gives_the_logits_of_transformers() {
 /// The placeholder of a frame of speech.
 const AUDIO_OUT: u32 = 125_032;
 
-/// An assistant audio part feeds the codes of its frames (spec 11.11, "Read it back"): each position takes the sum of
+/// An assistant audio part feeds the codes of its frames (spec 11.11): each position takes the sum of
 /// its 12 codebook rows, the end frame last, and the logits after the conversation are those of transformers.
 #[test]
 fn a_pass_that_reads_the_speech_of_an_assistant_part_gives_the_logits_of_transformers() {

@@ -93,7 +93,7 @@ document.addEventListener("ended", (ev) => {
 }, true);
 
 /** Send the request. If the server holds no codes of a spoken reply (404 that names its part), send that reply's
- * text instead and try again (spec 11.11, "Read it back"). A reply with no text leaves the context. */
+ * text instead and try again (spec 11.11, "Assistant audio"). A reply with no text leaves the context. */
 async function generate(body) {
   for (;;) {
     try { return await call("POST", "/council/v2/generations", body); } catch (e) {
@@ -136,7 +136,7 @@ $("omni-go").onclick = async () => {
   for (const t of omni) {
     const parts = (t.text ? [{type: "text", text: t.text}] : [])
       .concat(t.files.map((f) => ({type: "object", id: f.id, mime: f.mime})));
-    // A spoken reply goes back as its text and its audio, whose codes the service keeps (spec 11.11, "Read it back").
+    // A spoken reply goes back as its text and its audio, whose codes the service keeps (spec 11.11).
     messages.push(t.role === "user" ? {role: "user", content: parts, snap: true} : {role: "assistant", content: parts});
   }
   const body = {model, max_tokens: +$("omni-max").value, sample: {temperature: +$("omni-temp").value},

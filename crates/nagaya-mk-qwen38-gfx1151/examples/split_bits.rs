@@ -1,4 +1,4 @@
-//! Measure whether the split of tokens into passes changes the bits (spec open question 15.4).
+//! Measure whether the split of tokens into passes changes the bits (spec 6.13).
 //!
 //! For a fixed token sequence, the probe runs the sequence as one pass, as one pass for each token, and as uneven
 //! chunks. Each run starts in a new context. The probe then compares every stored part and the logits of the last

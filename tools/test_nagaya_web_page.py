@@ -960,7 +960,7 @@ class Page(unittest.TestCase):
         self.assertIn('objects/blake3:' + "f" * 64 + '" target="_blank" title="blake3:' + "f" * 64, out["log"])
         self.assertIn(">ffffffff</a>", out["log"])
         self.assertIn(">aaaaaaaa</a>", out["log"])
-        # The next turn sends the spoken reply back as its text and its audio (spec 11.11, "Read it back"), and no
+        # The next turn sends the spoken reply back as its text and its audio (spec 11.11, "Assistant audio"), and no
         # output asks for text only.
         second = out["second"]
         self.assertNotIn("output", second)

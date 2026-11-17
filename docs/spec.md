@@ -28,12 +28,10 @@ what a client asks a model.
 | nagaya | placement, the ledger, scheduling, the store, IO, machine telemetry, lifecycle, the client API | what a request means; kernels |
 | engine | a model's code and weights, its kernels, its private layouts and caches | anything that another engine uses |
 
-Amy, 2026-10-17: "Coordination belongs in kaijutsu, yeah. It's the agent."
-
 Goals for v0:
 
 - Several engines run on one machine at the same time: inference endpoints with different models, image batch, and
-  training as filler. All three kinds of engine are in v0 (Amy, 2026-10-17). Thus the ABI must cover image steps
+  training as filler. All three kinds of engine are in v0. Thus the ABI must cover image steps
   and training before v0 is done.
 - Each engine gives the same bits for the same identity and inputs.
 - Nothing is lost or corrupted without a report.
@@ -42,7 +40,7 @@ Not in v0:
 
 - One model split across machines. The links are gigabit today (README, "Between machines").
 - Engines that load in place for a profile `PUT`. A `PUT` that adds or changes an engine still restarts the process
-  (3.3, "Which actions run in place"). Milestone 16 built the swap in place, and the load routes start it (3.3b).
+  (3.3, "Which actions run in place"). The load routes start a swap in place (3.3b).
 - Cooperative yields inside a pass (D8).
 - Tensor transfer between engines (13.3).
 
@@ -54,11 +52,11 @@ bind addresses, store directory, and seed peer addresses.
 
 | Machine | Devices | Memory |
 |---|---|---|
-| gfx1151host | Strix Halo, one gfx1151 GPU | 128 GB unified |
-| b70host | two Intel Arc Pro B70, and an AMD Radeon 610M for the display | 64 GB GDDR6, 128 GB DDR5, 4 TB NVMe |
-| sm121host | DGX Spark, one Blackwell GPU | 128 GB unified |
+| the Strix Halo machine | Strix Halo, one gfx1151 GPU | 128 GB unified |
+| the B70 machine | two Intel Arc Pro B70, and an AMD Radeon 610M for the display | 64 GB GDDR6, 128 GB DDR5, 4 TB NVMe |
+| a machine with unified memory | DGX Spark, one Blackwell GPU | 128 GB unified |
 
-On 2026-10-21, a capture of b70host's tree showed these facts:
+A capture of the tree of the B70 machine shows these facts:
 
 - The CPU is a Ryzen 9 9950X with 32 online CPUs. Each CCD has one L3 domain: CPUs 0-7 and 16-23, then 8-15 and
   24-31 (`cpu*/cache/index3/shared_cpu_list`).
@@ -67,15 +65,14 @@ On 2026-10-21, a capture of b70host's tree showed these facts:
 - No BlueField-2 is in the machine. The NICs are `enp17s0` (igc), `enp18s0` (atlantic, 1 Gb/s) and a Wi-Fi card.
 - Both cards have `local_cpulist` 0-31 and `numa_node` -1. Thus the machine has no NUMA locality to use (3.2b).
 
-Telemetry takes hardware attributes from the probed inventory, not from constants in code. (mkviolet puts B70 values
-in `telemetry.rs` as constants.) A CPU that runs work is a device in the inventory too, with host memory as its tier.
-A machine with no GPU engine can also join the cluster to serve as a coordinator, run CPU devices (13.2), or hold a
-store tier.
+Telemetry takes hardware attributes from the probed inventory, not from constants in code. A CPU that runs work is a
+device in the inventory too, with host memory as its tier. A machine with no GPU engine can also join the cluster to
+serve as a coordinator, run CPU devices (13.2), or hold a store tier.
 
 **The probe reads files, not a GPU runtime.** The inventory probe reads sysfs, procfs and `/dev` under a root path.
 It does not open a GPU runtime to count devices. A call into a vendor library is allowed only when it opens no device
-context. (DeepInfer reads NVML through `ctypes`.) The tests run the probe against fixed trees for gfx1151host, b70host
-and sm121host.
+context. (DeepInfer reads NVML through `ctypes`.) The tests run the probe against fixed trees of the Strix Halo
+machine, the B70 machine and a machine with unified memory.
 
 **What the file probe reads.** `FileProbe` in `crates/nagaya/src/probe.rs` reads these files under its root path. The
 root path is `/` on a machine, and a fixed tree in a test (`crates/nagaya/tests/fixtures/probe/`).
@@ -93,13 +90,13 @@ root path is `/` on a machine, and a fixed tree in a test (`crates/nagaya/tests/
 A device id is the position in the list, in the order that the next paragraph decides.
 
 The device ids follow the PCI address, in the order of domain, bus, device
-and function, for every vendor. Reason: on b70host the vendor order makes the display iGPU device 0, and the
+and function, for every vendor. Reason: on the B70 machine the vendor order makes the display iGPU device 0, and the
 B70 cards devices 1 and 2. The PCI order gives the cards 0 and 1, and the iGPU 2. A device id then does not change
-when a driver loads in another order. gfx1151host has one device, so it keeps id 0.
+when a driver loads in another order. The Strix Halo machine has one device, so it keeps id 0.
 
-**Ignored devices.** The probe lists every GPU that it can size, also a GPU that drives
-the display, such as b70host's iGPU. The bootstrap config key `ignore_devices` lists PCI addresses (2.1, "The
-bootstrap config"). These rules apply to an ignored device:
+**Ignored devices.** The probe lists every GPU that it can size, also a GPU that drives the display, such as the iGPU of
+the B70 machine. The bootstrap config key `ignore_devices` lists PCI addresses (2.1, "The bootstrap config"). These
+rules apply to an ignored device:
 
 - It keeps its device id, so the ids of the other devices do not change.
 - The inventory and the gossip key `inventory` keep it, marked `ignored: true`. Thus a person still sees it.
@@ -127,9 +124,9 @@ starts.
 - Xe: sysfs has no file for the size of the device memory, and `xe` has no `tile0/vram0` size file. The probe reads
   the largest prefetchable memory BAR of the standard BARs 0 to 5, which are the first six lines of the `resource`
   file. The later lines are the ROM and the SR-IOV BARs of the virtual functions. With resizable BAR off, the BAR is
-  small, so the probe refuses the card. Resizable BAR is a deploy requirement on b70host.
+  small, so the probe refuses the card. Resizable BAR is a deploy requirement on the B70 machine.
 
-  On b70host, line 9 of `resource` holds 56 GiB: 7 virtual functions of 8 GiB. BAR 2 holds the 32 GiB of the
+  On the B70 machine, line 9 of `resource` holds 56 GiB: 7 virtual functions of 8 GiB. BAR 2 holds the 32 GiB of the
   card. A probe that reads every line takes the 56 GiB.
 - AMD: the probe cannot tell unified memory from dedicated memory by one flag. It compares the KFD framebuffer
   memory with `mem_info_gtt_total` and `mem_info_vram_total` of the PCI device. Equal to the first means unified.
@@ -139,15 +136,14 @@ starts.
 - The NVMe namespace that holds `store_dir`. The probe lists all namespaces.
 - Intel cards with the `i915` driver, and any other driver. They are not devices of the nagaya.
 
-The rules of "What the file probe reads" and "What the
-file probe cannot see". Reason: the probe must give a true size or stop. A heuristic that guesses wrong without a sign
+Reason for the rules of "What the file probe reads" and "What the file probe cannot see": the probe must give a true
+size or stop. A heuristic that guesses wrong without a sign
 would corrupt the ledger (8.5).
 
-The tree for sm121host is made by hand, not captured. The
-coder could not read that machine. The README in the fixture directory marks each guessed value. Capture the real tree
-when we port.
+The tree of the machine with unified memory is made by hand, not captured. The README in the fixture directory marks
+each guessed value. Capture the real tree when a port starts.
 
-The tree for b70host is a capture of 2026-10-21. A Xe card reports the largest prefetchable range among its six
+The tree of the B70 machine is a capture. A Xe card reports the largest prefetchable range among its six
 standard BARs. The ranges after them hold the ROM and the SR-IOV functions, and they are not memory of the card.
 
 A build with the feature `fake` keeps a made-up
@@ -157,7 +153,8 @@ the features `fake`, `hip` and `xe` has no engine, so it refuses the start (exit
 **The bootstrap config.** The bootstrap config is one TOML file, `nagaya.toml`. Its keys are `http_bind`,
 `gossip_bind`, `store_dir`, `seed_peers`, `park_budget_secs` and `ignore_devices`. The first three keys are required.
 By default, `seed_peers` is an empty list, `park_budget_secs` is 10 (10.3, ds4-recipe), and `ignore_devices` is an
-empty list of PCI addresses (2.1, "Ignored devices"). b70host's config sets `ignore_devices = ["0000:80:00.0"]`.
+empty list of PCI addresses (2.1, "Ignored devices"). The config of the B70 machine sets
+`ignore_devices = ["0000:80:00.0"]`.
 
 An unknown key is an error, so a misspelled key stops the process. There are no flags for these values, and the file
 is the only source. Reason: two sources for one value can disagree.
@@ -168,7 +165,7 @@ peer can reach. The process refuses it and exits 3, and the message names `gossi
 **An unspecified HTTP address.** Reason: the node publishes `http_bind` in
 `server` and in `engine:<name>` (2.3), and a peer sends each call of the cluster to it (11.1a). The process refuses an
 unspecified `http_bind`, `0.0.0.0` or `::`, as it refuses one for `gossip_bind`. It exits 3, and the message names
-`http_bind`. The other choice was to publish the address of `gossip_bind` with the port of `http_bind`.
+`http_bind`.
 
 The bootstrap config has one more key, `node_name`. It is optional. Its default is the machine's host name. The name
 is the `<host>` of the gossip keys (2.3), and gossip uses it as the node id. Each machine in a cluster needs its own
@@ -196,23 +193,22 @@ path.
 The nagaya measures edges at install, stores the result in its local store index, and can measure them again. Each
 measurement is data with a date.
 
-**The edges of a machine with discrete cards.** b70host has these
-edges, and the install measures each one:
+**The edges of a machine with discrete cards.** The B70 machine has these edges, and the install measures each one:
 
-- host to `device(i)`, and `device(i)` to host. Each B70 links at PCIe 5.0 x8. mkviolet measured about 21.6 GB/s for
-  a copy from host to device (mkviolet `docs/07-long-context.md`).
-- `device(i)` to `device(j)`. mkviolet copies the residual through host memory (`run_card0`, `run_card1`). A peer
+- host to `device(i)`, and `device(i)` to host. Each B70 links at PCIe 5.0 x8. The first Gemma 4 engine measured about
+  21.6 GB/s for a copy from host to device.
+- `device(i)` to `device(j)`. The first Gemma 4 engine copies the residual through host memory. A peer
   copy is a separate edge with its own measurement.
 - NVMe to `device(i)`, through host memory or direct. The edge records which path works (7.2).
 
-The probe reads the link of a card from the upstream port of the card's own PCIe switch. On b70host the ports are
-01:00.0 and 06:00.0, and each reports 32 GT/s x8. The card's endpoint reports 2.5 GT/s x1, because it sits behind
+The probe reads the link of a card from the upstream port of the card's own PCIe switch. On the B70 machine the ports
+are 01:00.0 and 06:00.0, and each reports 32 GT/s x8. The card's endpoint reports 2.5 GT/s x1, because it sits behind
 that switch. Thus a probe that reads the endpoint gives a false rate.
 
-**Pinned host memory.** A copy over PCIe is fastest from pinned host
-memory. Thus a mandatory host term may set `pinned: true`. The ledger charges its bytes in the host budget, as any
-host bytes. `nagaya.ledger.bytes` reports the term, so the pinned bytes are visible. mkviolet pins a staging buffer
-of 4 MiB for uploads (`STAGE_FLOATS`, `gemma4.rs:172`), and host buffers for the routes (`gemma4.rs:521`).
+**Pinned host memory.** A copy over PCIe is fastest from pinned host memory. Thus a mandatory host term may set `pinned:
+true`. The ledger charges its bytes in the host budget, as any host bytes. `nagaya.ledger.bytes` reports the term, so
+the pinned bytes are visible. The first Gemma 4 engine pins a staging buffer of 4 MiB for uploads, and host buffers for
+the routes.
 
 Not built: the term has no member `pinned`. The Gemma 4 binding names its term `pinned.<i>`
 (`crates/nagaya-mk-gemma4-bmg/src/spec.rs:197`), and the ledger charges it as any host term.
@@ -289,8 +285,8 @@ For each duplicate, the node logs one error that names both ids as `name:generat
 ids of the live duplicates, in sorted order. The node removes the key when no duplicate is live. It takes no other
 action.
 
-**The cluster of gfx1151host and b70host.** gfx1151host and
-b70host join one cluster, and each machine serves the models of both. Each machine lists the gossip address of
+**The cluster of the two machines.** The Strix Halo machine and the B70 machine join one cluster, and each machine
+serves the models of both. Each machine lists the gossip address of
 the other in `seed_peers` (2.1). Each node publishes the HTTP address of each engine in `engine:<name>`, as the list
 above says. 11.1a gives the rules of the forward.
 
@@ -306,19 +302,17 @@ gossip alone (11.1a). Thus gossip must hold each served model, the HTTP address 
 - **`server`.** A new key `server` holds `{"http", "limits", "capabilities"}`. They are the HTTP address of the node,
   and the server limits and capabilities of its own identity. A node with no engine writes it too, so peers can reach
   its store.
-- **The sizes.** On 2026-11-02 the identity of b70host had nine served models in 4,524 bytes. The largest entry was
-  738 bytes (`embeddinggemma-2`). Each engine has its own key, so a key holds one entry, far below 8192 bytes.
-- The largest value of a node is `profile:active`. The profile of b70host, with nine engines, is 1,791 bytes as
+- **The sizes.** An identity of the B70 machine with nine served models has 4,524 bytes. The largest entry has 738
+  bytes (`embeddinggemma-2`). Each engine has its own key, so a key holds one entry, far below 8192 bytes.
+- The largest value of a node is `profile:active`. The profile of the B70 machine, with nine engines, is 1,791 bytes as
   compact JSON (`deploy/b70host/profile.toml`, without its comments).
 - **A value that does not fit.** At the start, a value of `engine:<name>` or `server` past 8192 bytes refuses the
   start (exit 3). The message names the key and its size. After the start, it stops the process (8.5).
-- Reason for the stop: a served model that no peer sees is a silent fallback. The other choice was to serve the model
-  only on its own node with a warning. `published` in `crates/nagaya/src/main.rs` warns so for any key today.
+- Reason for the stop: a served model that no peer sees is a silent fallback.
+- Not built: `published` in `crates/nagaya/src/main.rs` only logs a warning, for any key.
 
 **A served model name in the cluster.** A served model name is the id of a
-model in the whole cluster, so two served models never share a name. Amy: "I think we should adopt a rule that no 2
-models can have the same text name we use as an identifier. Then if I want 2 qwens, I'd have them have some number or
-hostname in the model name." A name is a `model` or an alias.
+model in the whole cluster, so two served models never share a name. A name is a `model` or an alias.
 
 - A profile that adds a name that a live peer serves is refused, as a profile that does not fit is refused (2.4,
   3.3). The refusal names the model and the peer. The start of a node whose profile has such a name exits 3 (10.4).
@@ -330,8 +324,7 @@ hostname in the model name." A name is a `model` or an alias.
   "kept_by"}]}`, sorted by `model`. It removes an entry when the clash ends, and the key when no entry is left.
 - It does not list its copy, and it forwards each request for the name to the keeper (11.1a). Its engine stays as it
   is, and its `engine:<name>` key stays.
-- Replicas behind one name are a later design. Amy: "Maybe we can have some underlying thing to match on for fungible
-  load balance-able models, but that will be rare in nagaya except maybe embedding and tiny model things maybe."
+- Replicas behind one name are a later design.
 - An engine name is unique in one profile only (2.4). Two nodes can each have an engine `gemma` (3.3b).
 
 **The check of a name.** Reason: the ledger knows no served model name
@@ -347,7 +340,7 @@ before an engine opens, and the rule above needs the names of a new profile.
   A refused desired profile writes `profile:refused` with that reason and no shortfall.
 - The start check compares the served models of the council with the live peers, before the node publishes them. The
   node does not wait for its seeds, so a peer that it does not see yet makes a clash of the rules above.
-- The other choice was a 507, as for a profile that does not fit. A 507 names a shortfall in bytes, and a clash has
+- A clash is not a 507, as for a profile that does not fit. A 507 names a shortfall in bytes, and a clash has
   none.
 
 **2.4 Placement profile.** A placement profile names a machine's engines, their devices, their config, each tier's
@@ -362,7 +355,8 @@ shortfall in bytes for each tier. At cold start, a refused profile exits 3 (10.4
 returns 507 and keeps the active profile.
 
 A refusal has one entry for each budget that is short, with the tiers that share that budget. Thus a caller that
-adds the entries does not count a pooled budget twice. On gfx1151host, `device(0)` and `host` are one pool (4.2).
+adds the entries does not count a pooled budget twice. On the Strix Halo machine, `device(0)` and `host` are one pool
+(4.2).
 
 The placement profile is one TOML file. Each `[[engines]]` entry has `name`, `kind`, `devices`, `config`, an optional
 `family` table (11.3) and `share`. An entry can also have `residency` and `pinned` (3.3a).
@@ -384,7 +378,7 @@ Each place uses one of two names, and this map joins them.
   of that machine device. Thus an engine never sees a machine device id, and a profile never sees a group index.
 - The list can have any order. With `devices = [1, 0]`, group index 0 is machine device 1. Thus stage 0 of an engine
   with stages runs on machine device 1. It uses the device thread and the CPU set of that card (3.2, 3.2b).
-- On gfx1151host, both names of the one device are 0.
+- On the Strix Halo machine, both names of the one device are 0.
 
 `limits().devices` holds group indexes, `0` to `n - 1` in order. The
 process checks that `n` is the length of the profile's `devices` list, as `check_devices` checks the list today
@@ -403,10 +397,10 @@ check.
 **A profile for another host.** A profile `PUT` for another host publishes
 `profile:desired:<host>` under the node that takes the `PUT`. The target handles the key by the rules of 2.3.
 
-**The routes of a profile for another host.** Reason: Amy chose gossip for the path, so the coordinator cannot wait for
-the answer of the target. This note answers question 15.5.
+**The routes of a profile for another host.** Reason: the path is gossip, so the coordinator cannot wait for the
+answer of the target.
 
-- The query `host` names the target: `PUT /nagaya/v1/profile?host=gfx1151host&version=7`. The body is the profile as JSON,
+- The query `host` names the target: `PUT /nagaya/v1/profile?host=<name>&version=7`. The body is the profile as JSON,
   as for a local `PUT` (3.3).
 - A `host` equal to the name of this node is a local `PUT`. A `version` with it is a 400 `invalid_request` that names
   `version`.
@@ -419,16 +413,14 @@ the answer of the target. This note answers question 15.5.
   target's `profile:active` changes, or its `profile:refused` names the version (11.4a, "The cluster route").
 - The target handles a desired profile with the actions of 3.3, as for a local `PUT`. A version that comes while a
   swap waits is refused with the reason `busy`. It counts as handled, so the client sends a higher version.
-- This replaces the stop on each change of 2.3, which `desired_profile` in `crates/nagaya/src/main.rs` does today. The
-  stop came before the changes in place of 3.3.
+- This rule replaces the stop on each change of 2.3, which `desired_profile` in `crates/nagaya/src/main.rs` does today.
 - `GET /nagaya/v1/profile?host=<name>` gives the `profile:active` of that live node, from gossip. A `host` that no live
   node has is a 404 that names `host`.
-- The other choice was to forward the `PUT` over HTTP to the target, which gives its real answer. Amy chose the key.
 
 ## 3. Process
 
-**3.1 One process per machine.** The nagaya owns every GPU on the machine (Amy: "we'd do 1 process per host that
-owns the gpus"). The nagaya is the only GPU client. An ignored device, such as a display GPU, is the one exception
+**3.1 One process per machine.** The nagaya owns every GPU on the machine. The nagaya is the only
+GPU client. An ignored device, such as a display GPU, is the one exception
 (2.1, "Ignored devices"). A tool that needs a device sends its work through the nagaya, or
 stops the nagaya first. (ds4-recipe: a shader fault with a second GPU client made the SMU stop responding.)
 
@@ -443,15 +435,14 @@ thread priorities:
 - **One watchdog thread.** Runs on the housekeeping cores and watches each group thread from outside, because a pass
   blocks the thread that it watches (7.4).
 - **One thread per GPU device group.** A device group is the set of devices that one or more engines use. Most groups
-  have one device, and mkviolet's group has both B70 cards. Engines whose device sets share a device, also through
-  a chain of shared devices, are in one group with the union of their devices. A group has one thread and one
-  scheduler. Every engine call for a group comes from its thread, and the call
-  is synchronous.
-- **One device thread per device of a group with more than one device.** An
-  engine with one device opens on the thread of its device, and its quanta run there. Thus engines on separate cards of
-  one group run at once. Reason: Gemma 4 spans both B70 cards, so each engine of b70host is in its group. The image
-  engines on the two cards must run in parallel (11.9). This extends the rule of engine-abi "How a group loads both" to
-  a group with no loaded engine with stages.
+  have one device, and the group of the Gemma 4 engine has both B70 cards. Engines whose device sets share a device,
+  also through a chain of shared devices, are in one group with the union of their devices. A group has one thread and
+  one scheduler. Every engine call for a group comes from its thread, and the call is synchronous.
+- **One device thread per device of a group with more than one device.** An engine with one device opens on the thread
+  of its device, and its quanta run there. Thus engines on separate cards of one group run at once. Reason: Gemma 4
+  spans both B70 cards, so each engine of the B70 machine is in its group. The image engines on the two cards must run
+  in parallel (11.9). This extends the rule of engine-abi "How a group loads both" to a group with no loaded engine with
+  stages.
 - **One stage thread per device of a staged engine.** An engine that declares `stages` runs each stage on the device
   thread of its device (D1, and the next rule). The group thread runs the scheduler and sends each stage quantum to the
   thread of its device. Each call that touches a device comes from the stage thread of that device. The thread layout is
@@ -461,9 +452,9 @@ thread priorities:
   engine with stages gives each stage handle to the thread of its device. Its unload takes the handles back. Thus the
   stage thread of a device is its device thread. Reason: an engine with one device then stays on its thread through each
   swap of the engine with stages (3.3a, "Explicit layout").
-- **A bounded CPU worker pool.** Rendering, tokenization, hashing, safetensors conversion, and CPU device passes
-  (13.2) run on a bounded pool pinned to the remaining cores at `SCHED_BATCH`. Long CPU work yields between chunks
-  to obey `max_quantum_ms`. On unified-memory machines (`gfx1151host` and `sm121host`), the scheduler pauses background CPU
+- **A bounded CPU worker pool.** Rendering, tokenization, hashing, safetensors conversion, and CPU device passes (13.2)
+  run on a bounded pool pinned to the remaining cores at `SCHED_BATCH`. Long CPU work yields between chunks to obey
+  `max_quantum_ms`. On unified-memory machines, such as the Strix Halo machine, the scheduler pauses background CPU
   memory work during a GPU pass to protect GPU memory bandwidth.
 - **The row threads.** After a pass that several
   jobs share, each row has host work that uses no engine. That work is the read of its logit row and the draw of its
@@ -476,22 +467,19 @@ thread priorities:
   - The draw of a row is the same function of the same inputs on each thread (11.2). Thus the bits do not change.
   - Each call of an engine stays on the thread of its device.
 
-  Reason: one thread drew each row in turn while the card waited. With 8 rows and no filter, that was 22 ms of
-  each step of 46 ms (`docs/perf.md`).
-- **No pause on a discrete card.** A machine whose cards have their own memory, such as b70host, has no pause
-  rule. A pass there reads GDDR6, not host memory. The host traffic of a
-  pass is the residual and the uploads, about 11 MB for a block of mkviolet. A measurement under load can add a rule.
-  Decided by senpai 2026-10-22, accepted by Amy 2026-11-02.
+  Reason: when one thread draws each row in turn, the card waits. With 8 rows and no filter, that is 22 ms of each
+  step of 46 ms (`docs/perf.md`).
+- **No pause on a discrete card.** A machine whose cards have their own memory, such as the B70 machine, has no pause
+  rule. A pass there reads GDDR6, not host memory. The host traffic of a pass is the residual and the uploads, about
+  11 MB for a block of the first Gemma 4 engine. A measurement under load can add a rule.
 
-**3.2a Control runtime first.** The control runtime (`tokio`) arrived with gossip, in milestone 10 step f. The HTTP
-server joined the runtime in milestone 12 step 6. The group threads, the ledger thread and the watchdog thread stay
-std threads. They do not use `tokio`. Milestone 14 applied the CPU sets (below).
+**3.2a Control runtime first.** The control runtime (`tokio`) runs gossip and the HTTP server. The group threads, the
+ledger thread and the watchdog thread stay std threads. They do not use `tokio`.
 
-Milestone 10 did not apply `sched_setaffinity`, because the bootstrap config names no core sets. The isolation has a
-test. The test reads the CPU mask of each thread with `sched_getaffinity`. It checks that the control threads do not
-use the group cores.
+The isolation has a test. The test reads the CPU mask of each thread with `sched_getaffinity`. It checks that the
+control threads do not use the group cores.
 
-**CPU sets (milestone 14).** The nagaya splits the online CPUs into a housekeeping set and a pool set. The bootstrap
+**CPU sets.** The nagaya splits the online CPUs into a housekeeping set and a pool set. The bootstrap
 config names no core sets, so the split is one fixed rule.
 
 - The housekeeping set holds the two lowest-numbered online CPUs.
@@ -503,9 +491,7 @@ config names no core sets, so the split is one fixed rule.
   applies the split.
 - The online CPU list must be sorted and strictly increasing. Another list is an error.
 
-The rules of the two sets above.
-
-**Where each thread pins (milestone 14).** Each thread pins itself to its set when it starts. A thread that cannot pin
+**Where each thread pins.** Each thread pins itself to its set when it starts. A thread that cannot pin
 is an error: a worker thread panics, and the process exits 1 (8.5). A thread of the control runtime aborts the
 process. Reason: a hook of the runtime cannot return an error, and a thread that runs on the wrong cores breaks the
 isolation.
@@ -532,18 +518,18 @@ the same kind of work as the pool does, and it needs whole cores. A group thread
 with gossip and the HTTP coordinator. A stalled gossip round is worse than a slow pass.
 
 The pool has one thread for each pool CPU, and a group thread uses one more. This oversubscription is small. A
-measurement on gfx1151host can change it.
+measurement on the Strix Halo machine can change it.
 
-The sets use logical CPUs, and the split does not know
-SMT siblings. A housekeeping CPU can share a physical core with a pool CPU. Reason: on gfx1151host, CPU 0 pairs with 16 and
-CPU 1 with 17 (`thread_siblings_list`), so the two housekeeping CPUs sit on two physical cores. A rule for other
-machines would only guess before a measurement. The bootstrap config can name the sets later.
+The sets use logical CPUs, and the split does not know SMT siblings. A housekeeping CPU can share a physical core with a
+pool CPU. Reason: on the Strix Halo machine, CPU 0 pairs with 16 and CPU 1 with 17 (`thread_siblings_list`). Thus the
+two housekeeping CPUs sit on two physical cores. A rule for other machines would only guess before a measurement. The
+bootstrap config can name the sets later.
 
-**Open:** on gfx1151 on 2026-10-20, two of the four `qwen38-engine` threads had the mask 0-31. The worker and one other
-thread had the pool set, 2-31. The HIP runtime starts the two other threads and sets their masks itself. The nagaya
-does not pin threads that a runtime starts.
+**Open:** on gfx1151, a measurement showed that two of the four `qwen38-engine` threads had the mask 0-31. The worker
+and one other thread had the pool set, 2-31. The HIP runtime starts the two other threads and sets their masks itself.
+The nagaya does not pin threads that a runtime starts.
 
-**Open:** 3.2 asks for elevated priority on the control threads. Milestone 14 does not apply it. A raised priority
+**Open:** 3.2 asks for elevated priority on the control threads. The nagaya does not apply it yet. A raised priority
 needs `CAP_SYS_NICE` or a setting in the unit.
 
 **3.2b CPU sets for each device.** 3.2a puts every group thread in one
@@ -553,11 +539,11 @@ pool set. A stage thread (3.2) drives one card, so it gets a set of its own.
 - A card whose `local_cpulist` holds every online CPU has no locality. Then the nagaya gives each such card one L3
   domain (`cpu*/cache/index3/shared_cpu_list`), in the order of the device ids. With more cards than domains, the
   cards take the domains in turn.
-- On b70host, card 0 gets CPUs 2-7 and 16-23, and card 1 gets CPUs 8-15 and 24-31. CPUs 0 and 1 are the
+- On the B70 machine, card 0 gets CPUs 2-7 and 16-23, and card 1 gets CPUs 8-15 and 24-31. CPUs 0 and 1 are the
   housekeeping set.
 - The group thread, the CPU pool and the store thread keep the pool set (3.2a).
 - A machine with one card has nothing to separate. Its card keeps the pool set, and the nagaya reads no CPU list.
-  Reason: on gfx1151host the behavior of 3.2a stays as it was.
+  Reason: the Strix Halo machine keeps the behavior of 3.2a.
 - A card with a `local_cpulist` that holds a part of the online CPUs takes that part, less the housekeeping set.
 - A card whose set holds no pool CPU is an error. The start is refused: exit 3 (10.4).
   Reason: a stage thread on the wrong CPUs breaks the isolation.
@@ -569,18 +555,17 @@ one cache.
 The Level Zero runtime and IGC start threads of their own, as the HIP runtime does (15 item 14). Linux gives a new
 thread the mask of the thread that starts it. The engine calls `zeInit` on
 the group thread, so those threads start with the pool set. The nagaya does not pin a thread that a runtime starts.
-**Open:** measure the masks of the Level Zero threads on b70host, as on gfx1151.
+**Open:** measure the masks of the Level Zero threads on the B70 machine, as on gfx1151.
 
 **3.3 Engine lifecycle and profile swaps.** The nagaya opens each engine at start, from the profile. The HIP runtime
-cannot end inside a process: "the HIP runtime's own teardown segfaults" (the first Qwen3.8 engine, in
-`service/__main__.py`). Thus in the first v0, when `PUT /nagaya/v1/profile` changed the profile, the nagaya persisted
-the profile and stopped as in 10.3. It kept its arenas in the file-descriptor store (10.2) and exited with code 4, and
-systemd started it again. Since milestone 16, an engine whose `close()` is safe loads and unloads in place (README door
-1, and the rules below). The Qwen3.8 engine has a `close` since `6e8e013`: it frees its weights and keeps the HIP
-runtime (engine-abi "The close of the Qwen3.8 engine").
+cannot end inside a process: its teardown segfaults. Thus a profile change that must free such an engine persists the
+profile and stops as in 10.3. The nagaya keeps its arenas in the file-descriptor store (10.2) and exits with code 4, and
+systemd starts it again. An engine whose `close()` is safe loads and unloads in place (README door 1, and the rules
+below). The Qwen3.8 engine has a `close`: it frees its weights and keeps the HIP runtime (engine-abi "The close of the
+Qwen3.8 engine").
 
 **A profile change in place.** Reason: a client sets the work of the fleet with one `PUT /nagaya/v1/profile` to each
-machine (Amy: "the whole profile PUT is good for now"). A named set of profiles, such as agent time or live performance,
+machine. A named set of profiles, such as agent time or live performance,
 is the client's policy. The nagaya keeps no such name.
 
 - **Admission first.** The nagaya admits the new profile as a whole (2.4). A refusal is a 507 with the shortfall,
@@ -593,8 +578,7 @@ is the client's policy. The nagaya keeps no such name.
     the loaded engines (3.3a, "Explicit layout"). An engine that becomes on demand stays loaded until an unload.
   - **One try.** The change tries the load
     of a resident engine once. When it does not fit, the engine stays unloaded and the log names the shortfall. A client
-    loads it later with the load route (3.3b). Reason: a retry by itself is a swap that no client asked for. Amy,
-    2026-10-30: "I'd like to avoid churning on model swaps."
+    loads it later with the load route (3.3b). Reason: a retry by itself is a swap that no client asked for.
   - `load`: the entry is new. It loads if it is resident.
   - `unload`: the entry is gone.
   - `reload`: `kind`, `devices`, `config` or `family` changes. The engine unloads, then it loads with the new entry.
@@ -608,17 +592,13 @@ is the client's policy. The nagaya keeps no such name.
 
 **Which actions run in place.** `keep`, `residency` and `unload` run in place. `load` and
 `reload` restart the process (exit 4). Reason: the engines of a device group are fixed at start, so a new entry has no
-group thread. Amy: "I think reconfigurations of models will end up being fairly deliberate; nagaya should make that
-work well, trusting eg kaijutsu or the user's scripts to do the config and understand this will cause brief 503s."
-Amy: "we can reconsider some more automatic config later but I think it would be extremely difficult to get right
-and therefore probably smart to have good APIs for configuring and let an agent like you handle it."
+group thread.
 
 **The profile routes.**
 Reason: a client needs a fixed shape for the change of 3.3, and for a read of the active profile.
 
 - `PUT /nagaya/v1/profile` takes the profile as JSON, in the shape of `profile.toml`. It changes only this machine.
-  2.4 answers question 15.5 for a `PUT` to another machine ("The routes of a profile for another host"), accepted
-  2026-11-08.
+  A `PUT` for another machine follows 2.4, "The routes of a profile for another host".
 - A profile that does not parse, or that breaks a rule of 2.4 or 3.3a, is a 400 `invalid_request` with the param
   `profile`. A profile that does not fit is a 507 with the type `too_large`, the param `profile` and `shortfall`.
 - A profile equal to the active profile is a 200, with the action `keep` for each engine.
@@ -633,22 +613,18 @@ Reason: a client needs a fixed shape for the change of 3.3, and for a read of th
 **Swaps in place.** An engine whose `close()` is safe loads and unloads in
 place, with no restart. The placement profile chooses the devices of each engine.
 
-**Explicit loads.** This replaces the rule of 2026-10-24 that a request starts a
-swap and waits for the load (Amy then: "Nagaya swaps itself").
+**Explicit loads.**
 
 - A request never starts a load. A request for a served model that is not `ready` gets a 503 `model_unavailable`, with
-  `model` and `status` (gogi). Amy: "hmm this could get churny... I think we should 503 until models are explicitly
-  swapped."
+  `model` and `status` (gogi).
 - A client loads and unloads an engine in two ways: a profile `PUT` (above), and the load routes (3.3b).
 - The nagaya never loads or unloads an engine by itself after the start (3.3a, "Explicit layout").
-- The route `POST /v1/audio/speech` goes, because speech is a council served model (11.8a). Amy: "remove that route if
-  we have the one in council/gogi now".
+- The route `POST /v1/audio/speech` goes, because speech is a council served model (11.8a).
 
 Reason: a load takes seconds, and it can unload another engine of the group. When requests start loads, the cards can
 churn between engines. The client knows its plan, so the client loads.
 
-Reason for swaps in place: voice and image engines can use the B70 cards when Gemma 4 is idle. Milestone 16 built it,
-on 2026-10-24 (`AGENTS.md`).
+Reason for swaps in place: voice and image engines can use the B70 cards when Gemma 4 is idle.
 
 **3.3a The swap in place.** Reason: these rules make each swap one choice on one thread.
 
@@ -658,7 +634,7 @@ on 2026-10-24 (`AGENTS.md`).
   entry. No load and no unload removes a pinned engine. Only a profile `PUT` does (3.3a, "Explicit layout").
 - **Only engines that close.** A profile refuses an on-demand engine unless each engine of its device group declares
   `close` (engine-abi "Capabilities"). Reason: a swap frees an engine in the process, and only `close` makes that
-  safe. The Qwen3.8 engine has no `close`, so gfx1151host keeps its restart (3.3).
+  safe.
 - **Admission.** The resident engines must fit together (2.4). Each on-demand engine must also fit with the resident
   engines of the other device groups. Reason: in the worst case, a swap unloads every other engine of the group.
 - **One thread decides.** The group thread of an engine runs its swaps. A load (3.3) names its engine, and the group
@@ -669,22 +645,22 @@ on 2026-10-24 (`AGENTS.md`).
 - The ledger takes a load when the group plans it, before any engine unloads. Until the swap ends, a later context or
   staging charge must fit the ledger now and the ledger after the swap. The engines that unload keep their bytes until
   their drop, and the ledger charges the swap after the drop. A profile change waits for the drop of each engine that it
-  retires. Reason: a late charge stopped the process
+  retires. Reason: a late charge can stop the process
   after a 202, and bytes freed too early let the staying engines over-commit.
 - Swaps of two groups can wait at one time, and they can end in either order. A swap is charged after its own unloads,
   beside any set of other swaps that ended first, each whole with its load and unload. Each such state must fit. A swap
-  that only unloads is never refused. Reason: a check of the end state let the first swap find no room, and a load
-  counted without its unload refused an unload.
+  that only unloads is never refused. Reason: a check of the end state can let the first swap find no room. A
+  load counted without its unload can refuse an unload.
 - A profile `PUT` while any swap waits or runs is a 409 busy, and nothing changes. The client sends it again later.
-  Decided 2026-10-30 (Amy: "409 while busy with swaps is good, write it in and do"). Reason: a profile checked
+  Reason: a profile checked
   beside a waiting swap could fail after that swap.
 - After the nagaya accepts a change, a load is a 409 of the same kind until the ledger takes the new profile. The ledger
   takes it when no swap waits, and the engines that the change removes dropped and hold no context. Reason: a load in
-  that time could break the new profile, and a late context stopped the process.
+  that time could break the new profile, and a late context can stop the process.
 - Until the ledger takes the new profile, each context and staging charge must also fit it. A charge for an engine that
   the change removes is refused as not ready, a 503 `model_unavailable`. The log names the wait of the change at its
-  start and every 10 s. Reason: a charge that fit
-  only the old profile stopped the process, and steady traffic to a removed engine held the change off.
+  start and every 10 s. Reason: a charge that fits
+  only the old profile can stop the process, and steady traffic to a removed engine can hold the change off.
 - Known limit: a swap that only unloads is charged with no check. Fewer engines fit, but with elastic terms the spare of
   the staying engines can shrink under live contexts. No engine declares elastic terms today.
 - **The wait before an unload.** An engine that must unload takes no new job. Its jobs that the group holds run to
@@ -694,10 +670,8 @@ on 2026-10-24 (`AGENTS.md`).
   thread, not on the group thread. The ledger still decides each swap, on its one thread. The group thread keeps the
   swaps of an engine that spans devices, such as Gemma 4 on both cards, and that stall is accepted. Reason: a 244 ms
   image swap then no longer waits on the other card. The cost: two threads run swaps, so the ledger check orders them.
-  - Amy accepted the Gemma stall on 2026-10-29.
 
-**A job for an engine that is not ready.** Reason: the explicit loads of 3.3 remove the wait for a load. The text of
-2026-10-24 let a job wait for the next load of its engine.
+**A job for an engine that is not ready.** Reason: the explicit loads of 3.3 remove the wait for a load.
 
 - The group thread decides. A job for an engine that is not `ready` ends at once, and nothing runs. Its request gets a
   503 `model_unavailable`.
@@ -727,12 +701,10 @@ its fds stay in the store frees no device memory.
   memory and no part of the spare memory (4.4).
 - Thus the terms of its contexts stay admitted while it is unloaded (4.2).
 
-Reason: a council request charges its context on the request thread, before it submits its job (11.3c). On the cards
-on 2026-10-24, a generation for an unloaded Gemma 4 failed with "engine gemma is not admitted" until this rule.
+Reason: a council request charges its context on the request thread, before it submits its job (11.3c). Without this
+rule, a generation for an unloaded Gemma 4 fails with "engine gemma is not admitted".
 
 **Explicit layout.**
-This replaces "The swap back" of 2026-10-24. Amy: "yeah, remove auto-swap ... Gemma not coming back on its own is
-exactly right. the kaijutsu management agents will use the api and tools to manage the model loads and unloads."
 
 - Engines load and unload only through the API: the load routes (3.3b) and a profile `PUT` (3.3). The start opens
   the resident engines (above).
@@ -744,17 +716,15 @@ exactly right. the kaijutsu management agents will use the api and tools to mana
   unloads any engine. A swap that still does not fit is a 409, and nothing changes.
 - A pinned engine never unloads for a load or by the unload route. A load that needs its memory is a 409 that names
   the pin.
-- **No moves.** This replaces the rule "Moves" of
-  2026-10-30. A swap of an engine with stages unloads only the engines that its load names, as every swap does. Each
+- **No moves.** A swap of an engine with stages unloads only the engines that its load names, as every swap does. Each
   other engine of the group stays loaded on its device thread (3.2, "The device threads live as long as the group"). A
-  load of an engine with stages that does not fit is a 409, as for any load.
+  load of an engine with stages that does not fit is a 409, as for any load. Reason: a move can take a pinned engine
+  away for seconds, and a later swap can unload it until a restart.
 - The group thread opens and closes the engine with stages. It waits until the group holds no job, and the jobs of
   the other engines wait during the open. Reason: the scheduler of the group runs on that thread.
 - While such a swap waits, a new job of an engine that stays waits too. It runs after the swap, and it never fails for
-  the swap. Thus the jobs in flight end, and a steady stream of jobs cannot hold off the swap. Reason: a review found
-  that steady embeddings kept the group busy, so a load of Gemma 4 never ran.
-- Reason: on 2026-10-30 on b70host, a load of an image engine that named Gemma 4 moved the pinned EmbeddingGemma 2.
-  It was not ready for 8 s. The swap back to Gemma 4 unloaded it, and nothing loaded it again until a restart.
+  the swap. Thus the jobs in flight end, and a steady stream of jobs cannot hold off the swap. Reason: steady embeddings
+  can keep the group busy, so that a load of Gemma 4 never runs.
 - A resident engine can share a device group with a resident engine with stages. At start, it loads beside that
   engine after its open, as a load does.
 - A profile change that makes an engine resident loads it when it fits beside the loaded engines (3.3). Otherwise the
@@ -765,15 +735,13 @@ Reason: a client agent knows its plan, so it chooses the layout. A layout that c
 **What a swap does not change.** A swap changes no device group, group thread or route. An unloaded engine is in its
 group, with the state `unloaded` (9.4, 11.1).
 
-**Council models on demand.** This replaces the Proposed note "No council model
-on demand" of 2026-10-24.
+**Council models on demand.**
 
 - Any served model can be on demand. Identity lists an unloaded model with the status `unloaded`.
 - A request for it is a 503 `model_unavailable` (3.3).
 - Its `weight_hash` and `tokenizer_hash` come from its first open since the start, and they are empty before (11.8a).
 
-**3.3b The load routes.** Amy decided that the routes exist (3.3), and the shape was Decided 2026-10-28 (Amy, by
-interview).
+**3.3b The load routes.**
 
 - `POST /nagaya/v1/engines/{name}/load` loads the engine of the profile with that name, by a swap (3.3a). The reply is a
   202 when the swap starts, and it names the engines that unload. A loaded or loading engine gives a 200.
@@ -781,8 +749,8 @@ interview).
   engine itself, or a malformed body is a 400 `invalid_request` with the param `unload`. An unknown name is a 404 that
   names it.
 - A name that comes twice in `unload` is a 400 with the param `unload` too. The checks of the list run before the 200 of
-  a loaded engine. Reason: a repeat crashed the
-  ledger thread, and a loaded engine hid a bad list behind a 200.
+  a loaded engine. Reason: a repeat can crash the
+  ledger thread, and a loaded engine can hide a bad list behind a 200.
 - A load that does not fit is a 409 that names the shortfall, the engines in the way and the pins (3.3a).
 - **The memory check of an open.** The ledger holds byte targets of
   the profile, not a measurement (4.1). An engine can also check the free memory of the machine at its open. A load
@@ -796,9 +764,8 @@ interview).
   - The sum is an upper bound, so the check never refuses a load that would have worked. A load can pass the
     check and still fail at its open, for example when another process takes memory in between. That open still
     panics (8.5), because a silent fallback after an unload would hide a corrupt state.
-  - Reason: on 2026-11-11 a load with an empty `unload` list opened the Qwen3.8 engine beside a resident
-    engine. The open found 90,237,583,360 bytes available, and it needed 93,682,584,224 bytes with its floor. The
-    process exited, and systemd started it again.
+  - Reason: a load with an empty `unload` list can open the Qwen3.8 engine beside a resident engine. Then the
+    open finds less memory than it needs with its floor, the process exits, and systemd starts it again.
 - `POST /nagaya/v1/engines/{name}/unload` unloads a loaded engine that is not pinned, resident or on demand. No other
   engine loads. An engine that is not loaded gives a 200.
 - An unknown name is a 404 `not_found` that names `name`. A pinned engine, or an engine without `close`, is a 409 that
@@ -815,8 +782,8 @@ interview).
 - **Any node.** A load or an unload of an engine on any node goes to the node
   that holds the engine.
 
-**The release of a device.** The owner asked for a route that unloads
-a card, so a card test runs on it while the other cards serve. Reason for each choice: it is the simplest one that
+**The release of a device.** A route unloads a card, so a card test
+runs on it while the other cards serve. Reason for each choice: it is the simplest one that
 keeps the rules of "Explicit layout" and adds no key to the profile.
 
 - `POST /nagaya/v1/devices/{id}/release` unloads each loaded engine whose device list names the device. No engine
@@ -845,7 +812,7 @@ keeps the rules of "Explicit layout" and adds no key to the profile.
 an engine name is unique only in one profile (2.4), so two nodes can each have an engine `gemma`. A load must name one
 engine.
 
-- The query `host` names the node: `POST /nagaya/v1/engines/gemma/load?host=b70host`. A `host` that no live node
+- The query `host` names the node: `POST /nagaya/v1/engines/gemma/load?host=<name>`. A `host` that no live node
   has is a 404 `not_found` that names `host`.
 - Without `host`, the route takes the engine of the local profile. Without one there, it takes the one live peer that
   publishes `engine:<name>`.
@@ -855,11 +822,9 @@ engine.
   it is.
 - The names in an `unload` list are engines of the target node.
 - A `host` equal to the name of this node is a local load, with no forward.
-- The other choice was a unique engine name in the cluster, as for a served model (2.3). It needs a new conflict
-  rule, and two machines can then not both name an engine `gemma`.
 
 **Open:** Do the GPU queues of an idle engine slow the other engines on its device? The Qwen3.8 engine has a note that
-its idle queues slow another process, but we did not find the source. A measurement answers the question.
+its idle queues slow another process. The source of that note is unknown. A measurement answers the question.
 
 ## 4. Ledger
 
@@ -869,8 +834,8 @@ ledger thread owns it (3.2).
 **4.1 Budgets.** Each tier has one budget. A budget is a byte target in the placement profile (2.4). It is not a
 measurement of free memory.
 
-- gfx1151host and sm121host: one shared pool for device and host memory.
-- b70host: one budget for each card's device memory, and one for host memory.
+- A machine with unified memory, such as the Strix Halo machine: one shared pool for device and host memory.
+- The B70 machine: one budget for each card's device memory, and one for host memory.
 - Every machine: one budget for the store's host-memory tier, and one for the store on NVMe.
 
 **4.1a The store's budgets.** The placement profile names the store's NVMe budget in bytes. The profile may name the
@@ -879,7 +844,7 @@ with an engine that names no NVMe budget is refused at start (10.4, exit 3). A p
 store section: it parks nothing.
 
 Reason: a store write must not take bytes that an engine needs. An unbounded NVMe budget can fill the disk with no
-warning (Amy, 2026-10-19). The owner quota is unbounded, and the chain limit is open.
+warning. The owner quota is unbounded, and the chain limit is open.
 
 **4.2 Terms.** Each engine declares its terms in `limits().memory`. `plan(config)` gives the same terms before
 `open` (2.4).
@@ -899,7 +864,8 @@ warning (Amy, 2026-10-19). The owner quota is unbounded, and the chain limit is 
   so the Qwen3.8 engine does not change.
 - Elastic terms `{name, tier, unit_bytes, minimum, maximum, kinds}`. The minimum and maximum are counts of units.
 - A term's tier is `device(i)` or `host`, where `i` is an index into the engine's device group. The ledger maps each
-  tier to a budget (4.1). On gfx1151host and sm121host, `device(0)` and `host` map to one pool. NVMe belongs to the store.
+  tier to a budget (4.1). On a machine with unified memory, `device(0)` and `host` map to one pool. NVMe belongs to
+  the store.
 - Each term has a key by kind of quantum, where the bytes change by kind. A prefill's scratch is not a decode's
   scratch.
 
@@ -921,8 +887,7 @@ buffer that holds a snapshot until the store takes it.
   The service records a failure, the main loop sees it, and the process stops with exit 1 (8.5). A release in a
   stopping process is no failure, because the ledger has no charge left.
 
-Reason: the copy is the largest transient allocation of the nagaya, and no term charged it (kaibo review,
-2026-10-20, finding 3).
+Reason: the copy is the largest transient allocation of the nagaya, and no other term charges it.
 
 **4.3 Admission.** The ledger thread admits each call that allocates before the call runs. These calls are `open`,
 `attach`, `ctx_new`, `ctx_fork`, `ctx_copy`, `part_write`, and each resize. The check includes transient peaks. A
@@ -939,8 +904,8 @@ Admission of a profile keeps the charges that live now.
 - If the live charges do not fit the new budgets, the ledger refuses the profile and changes nothing. The shortfall
   is in bytes (4.3).
 
-Reason: a profile swap (3.3) admits a profile while requests run. A reset of the charges made a later release fail.
-The failed release stops the process (4.2), so a planned restart would have become a crash. The alternative, a
+Reason: a profile swap (3.3) admits a profile while requests run. A reset of the charges makes a later release fail.
+The failed release stops the process (4.2), so a planned restart becomes a crash. The alternative, a
 refusal of every admission while a charge lives, would make a transient request refuse a profile for good (2.3).
 
 When the ledger refuses a quantum's call, the quantum waits in the scheduler and keeps its place. A request that can
@@ -973,10 +938,9 @@ while a lease refers to what would go. (A pin is a lease too.)
 A park out of a slot uses `part_read`, which changes nothing in the slot. The nagaya frees the device copy only
 after the copy in the lower tier is durable. Reclaim never seals. It never discards state that has no other copy.
 
-**4.7 Host safety floor.** The first Qwen3.8 engine keeps 12 GiB of MemAvailable free (`FLOOR_BYTES` in its
-`service/contexts.py`). In the nagaya, a safety floor is a check for what the ledger cannot see: other processes, tmpfs
-and swap. It does not set any size. When free memory goes below the floor, the ledger refuses new admissions, resizes
-nothing, and reports the event.
+**4.7 Host safety floor.** The first Qwen3.8 engine keeps 12 GiB of MemAvailable free. In the nagaya, a safety floor
+is a check for what the ledger cannot see: other processes, tmpfs and swap. It does not set any size. When free
+memory goes below the floor, the ledger refuses new admissions, resizes nothing, and reports the event.
 
 On machines with unified memory, RSS and the OOM scorer do not show GTT. Thus the nagaya sets its own OOM score.
 
@@ -1009,11 +973,10 @@ ready quantum of a higher class first. A quantum is ready when its job has no qu
 present, and the ledger admitted its calls (4.3).
 
 A council decision is interactive. A job's class starts to apply at its first quantum, not when the job arrives.
-mkviolet's `lazy_high` takes the card at the council's first GPU step. That change cut decisions beside a prefill
-from 383-702 ms to 300-390 ms.
+The first Gemma 4 engine takes the card at the council's first GPU step (`lazy_high`). There, decisions beside a
+prefill take 300-390 ms, and 383-702 ms without it.
 
-**5.4 Order in a class.** The classes do not schedule the same way (Amy, 2026-10-18: "batch/filler can be fifo-ish,
-while interactive is more cooperative multitasking"):
+**5.4 Order in a class.** The classes do not schedule the same way:
 
 - In `batch` and `filler`, the scheduler orders jobs by integer priority (0 by default) and then time of arrival.
   One job runs its quanta in flow until it finishes, or until a higher class or higher priority job becomes ready.
@@ -1072,8 +1035,8 @@ first, as it does for a feed rule (engine-abi "Batched passes"):
 - A pass holds at most the engine's `max_segments` segments. For the Qwen3.8 engine, that is 16.
 
 Reason: this rule permits more, such as the prefills of several jobs in one pass. But the drivers build only joined
-decode quanta today, and Amy asked for the join first. The card gate `tests/hip_joined.rs` of the Qwen3.8 crate checks
-The Qwen3.8 engine's decode rows at deep positions, alone and joined, and beside a prefill.
+decode quanta today. The card gate `tests/hip_joined.rs` of the Qwen3.8 crate checks the Qwen3.8 engine's decode
+rows at deep positions, alone and joined, and beside a prefill.
 
 A pass holds segments of one kind only (5.2), and at most the engine's `max_segments`.
 The scheduler joins a ready job only when its next quantum has the
@@ -1101,13 +1064,13 @@ expired. A release does not delete a snapshot. Only eviction (6.9) removes a sto
 **5.10 The door limit.** The client API accepts a limited number of requests in flight for each engine (the Qwen3.8
 engine: 16). Above that limit it answers 429 with `Retry-After`.
 
-Milestone 12 step 6 limits the calls in another way (11.7). It allows 64 calls at once for the process, and it answers
+The process limits the calls in another way too (11.7). It allows 64 calls at once for the process, and it answers
 429 `busy` with no `Retry-After`. The limit for each engine is not built.
 
 **5.11 Cost model (D4).** The nagaya fits a robust affine cost from production quanta, keyed by engine, kind,
 segment count and context depth. Quanta that ran beside other work are not in the fit. The nagaya uses the fit for
 store eviction value-per-byte (6.9) and deadline checks between quanta (5.8). An engine can have its own private
-planner, which stays in the engine (mkviolet `council_server.rs`).
+planner, which stays in the engine.
 
 **A measured prior.** At the first start of an engine identity, the nagaya times a short curve for each kind. Each point
 is one warmup run and the trimmed mean of five runs. The curve goes into the store's index under the identity digest,
@@ -1122,7 +1085,7 @@ Not built. The nagaya fits no cost curve yet, and it times no measured prior.
 tiers (host memory, NVMe) and gets its budgets from the ledger. It replaces these stores:
 
 - The first Qwen3.8 engine's parked files (a 50 GiB budget);
-- mkviolet's `council_server` snapshots, its `held::Store`, and the prefix cache in `mk_api`. These are three
+- the first Gemma 4 engine's snapshots, its held store, and its prefix cache. These are three
   formats and three SHA-256 id schemes on one host.
 
 **The store tier is `host` or `nvme`.** An entry's tier is `host` or `nvme`, apart from the ABI's memory tier. The
@@ -1150,8 +1113,7 @@ boundaries:
 Thus a prefix lookup hashes only the tokens since the last boundary. The identity digest is the same tagged hash over
 the fields of `identity()` (12.1). The inputs are tokens, not text: the tokenizer and template are in the identity.
 
-The identity digest uses derive-key mode with the same context string. The code used plain BLAKE3 until 2026-10-24.
-That fix gave each engine a new digest and a new council `engine` id, so every held entry fills again once.
+The identity digest uses derive-key mode with the same context string.
 
 The tag numbers are in this table.
 
@@ -1165,7 +1127,7 @@ The tag numbers are in this table.
 | 6 | the tokens |
 | 7 | the boundary position |
 | 8 | "not sealed", with no bytes: only on an interval copy (6.13). It follows tag 5, which holds the sealed recipe at the same position |
-| 9 | a media part (11.11): its media type, its content id and its count of positions. Only on a decoded head (6.14). It follows tags 5, 6 and 7. Tag 5 holds the recipe of the prompt as the rule fed it. Tag 6 holds the tokens after the prompt. Proposed, 2026-11-11 |
+| 9 | a media part (11.11): its media type, its content id and its count of positions. Only on a decoded head (6.14). It follows tags 5, 6 and 7. Tag 5 holds the recipe of the prompt as the rule fed it. Tag 6 holds the tokens after the prompt. |
 
 **The park recipe.** The park knows the bytes of a state in a slot. It does not know the inputs that made the state.
 Thus the park recipe names the bytes. 10.3 gives the one exception. The park recipe is a root recipe with four items:
@@ -1177,8 +1139,9 @@ Thus the park recipe names the bytes. 10.3 gives the one exception. The park rec
 
 Equal bytes give one entry, and the tripwire fires only on a real duplicate.
 
-The Qwen3.8 engine's `context_id` and mkviolet's `snap:<sha256>` are the input part of a recipe. They do not include the
-engine identity. The Qwen3.8 engine's id is a SHA-256 of the tokens and boundaries with `|gdn-bf16-v1|`.
+The Qwen3.8 engine's `context_id` and the first Gemma 4 engine's `snap:<sha256>` are the input part of a recipe.
+They do not include the engine identity. The Qwen3.8 engine's id is a SHA-256 of the tokens and boundaries with
+`|gdn-bf16-v1|`.
 
 **The printed form of a content id.**
 
@@ -1186,11 +1149,11 @@ engine identity. The Qwen3.8 engine's id is a SHA-256 of the tokens and boundari
 - Each API, log, file and gossip value uses the whole printed form.
 - A display can show a short form. No input accepts one, and no input resolves a prefix.
 - A request that names a short form or a prefix is a 400 `invalid_request`. Its `param` is `id` for a path, or the
-  member of the body. The message quotes the id (gogi "Content ids", `33b78b7`). A whole id that the server does not
+  member of the body. The message quotes the id (gogi "Content ids"). A whole id that the server does not
   hold is a 404.
 
-Reason for the whole form: a person copies and pastes what they see (Amy: "let's assume they will copy and paste
-something"). In a cluster that copies objects (6.15), a prefix that is unique today can name two objects tomorrow.
+Reason for the whole form: a person copies and pastes what they see. In a cluster that copies objects (6.15), a
+prefix that is unique today can name two objects tomorrow.
 
 Reason for BLAKE3, not SHA-256:
 
@@ -1225,8 +1188,8 @@ that they are the same state.
   put carries them, because one store serves every engine. The tripwire (6.7) and the chain checks read them from
   the entry.
 
-The index also holds a record that is not an entry: the cost curve of each engine identity (5.11). It once planned a
-second record, the expected identity of each engine. That record is not built (12.1).
+The index also holds a record that is not an entry: the cost curve of each engine identity (5.11). A second record,
+the expected identity of each engine, is not built (12.1).
 
 **One `Check` enum.** The store's `Check` is `full | spot | none`, the same enum that the ABI uses for arenas and
 store entries (engine-abi "Capabilities").
@@ -1239,12 +1202,12 @@ entry.
 only when it is at most a quarter of a full snapshot.) A delta holds, for each cells part and ring part, the rows
 after its parent's end. It holds each fixed part whole. The store never evicts a base while a delta needs it.
 
-A ring part can wrap past its parent's end (kaibo, 2026-10-20). Then the rows after the parent's end are gone, and
+A ring part can wrap past its parent's end. Then the rows after the parent's end are gone, and
 check 4 refuses the delta. The refusal changes nothing, so nothing is corrupt.
 
 A ring part can start after the end of the parent. Then the build puts a
 whole snapshot with no parent. Check 4 stays as it is. Reason: the store needs no new rule. A ring held whole in the
-delta holds 4,096 rows of each sliding layer of mkviolet. That is close to the size of a whole snapshot.
+delta holds 4,096 rows of each sliding layer of the first Gemma 4 engine. That is close to the size of a whole snapshot.
 
 A delta's `put` names its parent content id and its previous recipe. The store checks these facts:
 
@@ -1334,15 +1297,15 @@ one tier does not make room in the other.
 
 **A host victim moves to NVMe.** When a put to the host tier needs room,
 the store first parks the victims to the NVMe tier (10.3, ontology "Park"). It parks a parent before its children.
-The NVMe tier makes room by its own rules. The put removes a victim that a park refuses, as before:
+The NVMe tier makes room by its own rules. The put removes a victim that a park refuses:
 
 - an interval copy, which never goes to NVMe (6.13);
 - a child whose parent stays in the host tier, because a restart would cut the chain (6.11);
 - a victim with no room on NVMe.
 
-Reason: with two engines on gfx1151host, the host tier is 2 GiB (`docs/deploy.md`, "Two engines on gfx1151host"). The Qwen3.8
-engine's snapshots of about 135 MB left the tier before a client read them again, and gogi's suite failed 7 checks on
-2026-11-01. The NVMe tier has 50 GiB. A refused put still changes nothing: the store checks the room before it parks a
+Reason: with two engines on the Strix Halo machine, the host tier is 2 GiB (`docs/deploy.md`, "Two engines on
+gfx1151host"). The Qwen3.8 engine's snapshots of about 135 MB can leave the tier before a client reads them again. The
+NVMe tier has 50 GiB. A refused put still changes nothing: the store checks the room before it parks a
 victim.
 
 **A host put of bytes on NVMe is a hit.** A put for the host tier can name
@@ -1350,28 +1313,26 @@ bytes that the store holds live on NVMe, with the same recipe and parent. Then t
 stays on NVMe. Reason: NVMe holds the bytes at least as long as the host tier (6.11). A put for NVMe of bytes in the
 host tier stays refused, because an Ok would promise more than the store holds.
 
-Before this rule, the store refused such a put, and the process stopped (spec 8.5). It happened live on 2026-11-10
-(`signoff.md`). Two builds of one prefix both missed, the first put moved to NVMe as a victim, and the second put asked
-for the host tier.
+Reason: two builds of one prefix can both miss. Then the first put moves to NVMe as a victim, and the second put
+asks for the host tier. A refusal of that put stops the process (8.5).
 
-**6.10 Pins.** A pin is a lease on a snapshot, with an owner and an expiry (mkviolet v2: one day at most). A request
-pin holds a snapshot from its lookup to the end of its load. Pins stay through a restart (mkviolet `pins.json`).
+**6.10 Pins.** A pin is a lease on a snapshot, with an owner and an expiry of one day at most. A request
+pin holds a snapshot from its lookup to the end of its load. Pins stay through a restart, in `pins.json`.
 
 **Many owners can pin one entry.** Each owner holds its own pin, with its own expiry. An entry is pinned while any
 pin on it is live. An unpin removes only the caller's own pin. A pin on a tip also keeps the entries under it,
 because eviction takes a chain as a group (6.9).
 
-**The one-day maximum is for every pin.** The one-day maximum is a nagaya rule for every engine, not only for
-mkviolet. The store has no clock, so `pin` takes `now_ms` from the caller. It refuses an expiry more than one day
-(86,400,000 ms) after `now_ms` with `Invalid`. A refused pin changes nothing.
+**The one-day maximum is for every pin.** The one-day maximum is a nagaya rule for every engine. The
+store has no clock, so `pin` takes `now_ms` from the caller. It refuses an expiry more than one day (86,400,000 ms)
+after `now_ms` with `Invalid`. A refused pin changes nothing.
 
 Reason: one store holds every engine, pins stay through a restart, and a lease with no bound can hold bytes
-forever. The mkviolet rule is the origin, not the scope.
+forever.
 
 **6.11 Restart.** At start, the store loads its index again. It checks each entry when a lookup first uses it.
 Entries in the host tier do not survive a restart, so the store removes them from the index at start. (The stop
-parks the pinned ones first, below.) Decided
-2026-10-20 (reading).
+parks the pinned ones first, below.)
 
 `index.json` stores `hits` and `last_used_ms`, so a restart keeps them for every NVMe entry. A lookup updates them in
 memory, and the next index write saves them to disk.
@@ -1386,8 +1347,6 @@ pin stay through a clean restart, as 6.10 says. A crash does not stop, so a cras
 
 A park of a pinned entry that fails is a failure of the stop, as for a state (10.3).
 
-Amy, 2026-10-23: "ah, let's save add the saves then".
-
 **Two rules for the park of pins.**
 
 - The stop does not park a pinned interval copy, and its pin ends at the restart. Reason: an interval copy never goes
@@ -1400,8 +1359,7 @@ attention cell mask or a control vector (11.12). Such state goes into the recipe
 has a plain recipe. The bytes of a control list are in 11.12.
 
 **6.13 Interval copies.** An engine can declare a checkpoint grain in `limits()`, in tokens. Then, between quanta,
-the scheduler makes an interval copy (ontology) of each context that passed a multiple of the grain. Milestone 11.5
-built the store's part. Milestone 12 step 7 built the scheduler's part on the job path.
+the scheduler makes an interval copy (ontology) of each context that passed a multiple of the grain.
 
 The Qwen3.8 engine declares a grain of 256 tokens. Two
 GPU tests in `crates/nagaya-mk-qwen38-gfx1151/tests/hip.rs` measured it on gfx1151:
@@ -1460,8 +1418,7 @@ GPU tests in `crates/nagaya-mk-qwen38-gfx1151/tests/hip.rs` measured it on gfx11
 
 Reason: these are the smallest rules that keep the text above true.
 
-**The job path.** The council jobs of milestone 12 step
-5 make and use the copies (`crates/nagaya/src/council/build.rs`):
+**The job path.** The council jobs make and use the copies (`crates/nagaya/src/council/build.rs`):
 
 - **A context is a slot.** The tracker of an engine keys each context by the slot of its job. A job tracks its slot
   from its start to its end. A rewind moves the rows back, so the job tracks the slot again from the new rows. The
@@ -1485,20 +1442,19 @@ Reason: these are the smallest rules that keep the text above true.
 A restore from a copy writes its parts, then replays the tokens after it, with the same boundaries. The result has
 the bits of the first run. The lookup is by recipe with tag 8, so any context with the same prefix can use a copy.
 The copy serves three uses: a branch from an earlier position, a truncate, and a recovery after the live state is
-lost. Amy, 2026-10-20: "I suspect we only want a few copies online and won't benefit as much as a commerical service
-does, but it is cool and we'll do it."
+lost.
 
 For the Qwen3.8 engine, the fixed parts of a copy are about 112 MiB. They are the GDN state in f32 (108 MiB) and the
 conv state (4.3 MiB). The K/V, the index keys and the pooled keys add 55.5 KiB (56,832 bytes) for each
 token. With a grain of 256 tokens, a decode makes a copy every 10-15 s.
 
 On the Qwen3.8 engine, the split of tokens into passes does not change bits. The probe `examples/split_bits.rs` in the
-Qwen3.8 crate (`427fdc3`) compared one pass, one pass for each token, and uneven chunks, at 64 and 200 tokens. Every
+Qwen3.8 crate compared one pass, one pass for each token, and uneven chunks, at 64 and 200 tokens. Every
 part and all 248,320 logits were equal. One pass of 200 tokens took 424 ms, and 200 passes of one token took 10,079 ms.
 Thus a replay of up to 255 tokens takes about 0.5 s on the Qwen3.8 engine.
 
 **6.14 The feed rule.** An engine can declare a feed rule, `{block}`. The
-scheduler feeds each span between boundaries in passes of `block` tokens from the start of the span. mkviolet
+scheduler feeds each span between boundaries in passes of `block` tokens from the start of the span. The Gemma 4 engine
 declares it, because its bits depend on the token count of a pass.
 
 This is the reading of 6.2 for such an engine. A recipe names the identity, the tokens and the boundaries. The bits
@@ -1508,28 +1464,25 @@ the rule made each of its rows. These rules follow:
 - **Decode.** A decode quantum feeds one token, or one token and its drafts. Its rows do not follow the rule. The job
   path puts a state with decode rows under no recipe of 6.2 but the recipe of a decoded head (below). The park recipe
   (6.2) names bytes, so a park of such a state is still exact.
-- **Drafts.** A draft test feeds one token and k drafts in one pass, with k + 1 logit rows (mkviolet
-  `mk_api.rs:1187-1222`). The rows of a rejected draft stay past the token count, and the next pass writes over them.
-  The logits fall under the tolerance of the served model.
+- **Drafts.** A draft test feeds one token and k drafts in one pass, with k + 1 logit rows. The rows of a
+  rejected draft stay past the token count, and the next pass writes over them. The logits fall
+  under the tolerance of the served model.
 - **Branch blocks.** A branch block is a read. It feeds the tail of a case and each branch in one pass with
   per-token `meta` (`branch_block`, `gemma4.rs:1521-1554`). No row of it is kept, also the rows of the tail. No build
   continues from the slot after it. The job restores a held snapshot, or feeds again from a boundary.
-- **The bits of a branch.** On 2026-10-21, a branch in a branch block gave the logits of a plain pass of the prefix
-  and that branch. The difference was 0 (`golden_branches_match_separate_passes`, mkviolet `golden.rs:264-287`).
+- **The bits of a branch.** A branch in a branch block gives the logits of a plain pass of the prefix and that
+  branch. The difference is 0.
   The rows stay unkept all the same, because the rule did not make them.
-- **Reads.** The reads of a decision keep no state. mkviolet splits a case into chunks that it picks for speed
-  (`council_server.rs:822-848`). The nagaya may do the same for a read on such an engine.
+- **Reads.** The reads of a decision keep no state. The first Gemma 4 engine splits a case into chunks that it picks
+  for speed. The nagaya may do the same for a read on such an engine.
 - **A continued span.** The last pass of a span can hold fewer than `block` tokens. Then a job that continues the
   span feeds that pass again (engine-abi D11 rule 7).
 
 **The decoded head.** A generation on an engine with a feed rule holds a head
-after its reply. The head keeps the decode rows of the reply. Amy: "yeah 3 for sure. let's realign the rules to
-match. I think it's understood that continue from cache is a bit different." This replaces the decision of
-2026-10-21, which gave such a generation no head. Its reason was the cost of a second feed of the reply. A decoded
-head needs no second feed: the engine has the state when the reply ends.
+after its reply. The head keeps the decode rows of the reply. A decoded head needs no second feed of the reply: the
+engine has the state when the reply ends.
 
-The goal is that the nagaya does not run again what it has run (milestone 32). These rules are **Proposed**
-(claude-fable-5-2, 2026-11-11), and each is the simplest reading of the decision:
+The goal is that the nagaya does not run again what it has run. These rules follow:
 
 - **Its recipe names its rows.** The recipe of a decoded head names the last boundary of the prompt and the sampled
   tokens. It also says that a decode quantum made each of their rows. It is another recipe than the recipe of the
@@ -1542,7 +1495,7 @@ The goal is that the nagaya does not run again what it has run (milestone 32). T
 - **The bits differ a little.** A request that starts from a decoded head gives other bits than the same context
   built from its text. The rule made the rows of that build. Both are valid readings of the context. The
   same request from the same head gives the same bits. The council gives no logits, so the card gate `xe_lfm3_head`
-  measures the next-token log probabilities. On 2026-11-11 on `lfm3`, they differed by 7.2e-6 at most, over the 68
+  measures the next-token log probabilities. On `lfm3`, they differ by 7.2e-6 at most, over the 68
   tokens that both reads list.
 - **No head when the tokens differ.** The family can render the reply with other tokens than the model sampled. For
   example, the reply parser of LFM3 removes white space at the ends of the content. Then the context has no decoded
@@ -1579,37 +1532,33 @@ The goal is that the nagaya does not run again what it has run (milestone 32). T
   also when a build would start from a decoded head.
 - **No head after latent steps.** A latent row is not a token (`docs/lab.md`, "No head").
 
-The code has these rules since milestone 32 step 4:
+The code of these rules:
 
 - `GenerateThen::decoded_head` in `council/generations.rs` holds the head, and it writes the head note.
 - `Service::noted_head` in `council/mod.rs` makes the search. `council/records.rs` keeps the notes.
 - `JobBody::shared_pass` in `jobs.rs` tells a job that its decode row shared a pass.
 - `crates/nagaya/tests/council_feed.rs` has the tests, with the fake engine that has a feed rule.
 - `crates/nagaya/tests/http_conformance_feed.rs` runs gogi's suite on that engine, with its head checks.
-- `crates/nagaya/tests/xe_lfm3_head.rs` is the card gate of LFM3. It has not run yet.
+- `crates/nagaya/tests/xe_lfm3_head.rs` is the card gate of LFM3.
 
 **The job path.** The council jobs take passes of `block` for an engine with a feed rule (`council/mod.rs`, the
 `chunk` of a build). A build starts each span at a held boundary, at a decoded head or at 0. A decoded head is a seal.
 Thus no job continues a span today, and rule 7 has no code yet. The tests are in
 `crates/nagaya/tests/council_feed.rs`.
 
-Drafts are a setting of the
-served model, not a bit setting of the engine. The nagaya's generation job makes the prompt-lookup drafts, as mkviolet
-does (`draft`, `mk_api.rs:336-347`, keys of 4 and 3 tokens, at most 7 drafts). Reason: drafts change no row that the
-store keeps. Thus a change of the setting must not change the identity and lose the store. A test on the cards must
-still show that drafts change no bit of a kept row (`docs/new-engine.md`).
+Drafts are a setting of the served model, not a bit setting of the engine. The nagaya's generation job makes the
+prompt-lookup drafts. The first Gemma 4 engine makes them in the same way: keys of 4 and 3 tokens, and at most 7
+drafts. Reason: drafts change no row that the store keeps. Thus a change of the setting must not change the identity
+and lose the store. A test on the cards must still show that drafts change no bit of a kept row
+(`docs/new-engine.md`).
 
-The drafts are not built yet. Amy chose on 2026-11-02 to build them at the next pass on gfx1151host: "b70host is gonna
-focus on image models and smaller models where it doesn't matter as much". That pass also decides what a seed
-promises when drafts change the text of a sampled reply (mkviolet `docs/report-2026-10-16-overnight.md`, item 2).
+The drafts are not built yet. They come first to the Qwen3.8 engine on the Strix Halo machine.
 
-**6.15 Objects.** The
-budget, the limits and the order of the work are Decided 2026-10-25 (Amy, by interview); see "The budget of objects"
-below.
+**Open:** what does a seed promise when drafts change the text of a sampled reply? The work that builds the drafts
+answers it.
 
-Reason: council requests will carry images, audio, video and MIDI (Amy: "I kinda want our API to be
-comprehensive"). gogi's contract holds the text of the API: "Objects and keeps", "Outputs" and "Contexts" (gogi
-`04cf19b`, `59298a3`, `41c53bc`). This section is how the nagaya implements it.
+**6.15 Objects.** Council requests can carry images, audio, video and MIDI. gogi's contract holds the text of the
+API: "Objects and keeps", "Outputs" and "Contexts". This section is how the nagaya implements it.
 
 - **Object.** An object is bytes and a media type, named by its content id (6.2). The id is the BLAKE3 hash of the
   bytes, with no canonical form. A message, a reply or a case names an object by `{"id", "mime"}`.
@@ -1639,25 +1588,25 @@ comprehensive"). gogi's contract holds the text of the API: "Objects and keeps",
 **The budget of objects.**
 
 - Objects have their own budget, the key `objects` of the `[store]` table, in bytes. It is not part of `nvme`. Reason:
-  a batch of images must not evict model state, and model state must not evict images. b70host sets 200 GiB.
+  a batch of images must not evict model state, and model state must not evict images. The profile of the B70
+  machine sets 200 GiB.
 - A profile without the key declares no capability `objects`, and the routes of objects are a 404.
 - `object_bytes` is 8 GiB (8,589,934,592 bytes), or half the budget when that is less. `keep_bytes` is half the
   budget. Thus a put always fits after the store evicts cached objects, and full keeps never stop a generation.
 - The store evicts the cached object that was used least recently first.
 - At most four puts stream at once, so staged bytes stay below four times `object_bytes`. A fifth is a 429 `busy`.
-  Decided by senpai 2026-10-25, accepted by Amy 2026-11-02.
 - The first read of an object after a start hashes its file. A file that does not hash to its id drops the object,
   as an eviction does (7.3: same size is not same bytes). An index that does not read moves aside, and the store
   starts empty. Objects are a cache of what clients sent, so a start never stops for them.
-- Replication waits (Amy: "later"). The first step is the store on one machine, its routes and the conformance
+- Replication waits. The first step is the store on one machine, its routes and the conformance
   checks. Home machines and pulls come when a second machine speaks this contract.
 
 **A read on a miss.** A `GET` of an object that this node lacks asks each live
 peer, and it gives the first hit. A forwarded request takes its objects to the target first (11.1a). This is the
 first step of "A pull" above. The home machines, the copies and the checks of each range wait.
 
-**Objects in the cluster.** Reason:
-Amy's rule leaves open the order of the peers, the pending ids, and the copies.
+**Objects in the cluster.** These rules fill what "A read on a miss" leaves open: the order of the peers, the
+pending ids, and the copies.
 
 - **The read.** The coordinator sends a `HEAD` of the same path to each live peer at once, as a broadcast read of the
   cluster call (11.1a).
@@ -1683,10 +1632,11 @@ Snapshots stay entries (6.4) for now. They can become objects of their own media
 eviction.
 
 Some names in an identity are short today: the council `engine` (11.3c), and the template and tokenizer hashes
-(12.1). Each has 16 hex digits. They are names that a client compares, not addresses. Amy decides whether they
-become whole at the next change of identity.
+(12.1). Each has 16 hex digits. They are names that a client compares, not addresses.
 
-**Open** (Amy, 2026-10-22: "leave open for testing on b70host"): do drafts change the bits? A drafted verify pass
+**Open:** do these names become whole at the next change of identity?
+
+**Open:** do drafts change the bits? A drafted verify pass
 has a shape that a plain decode does not have. Gemma 4 declares `segments_exact: false`, and its feed rule (6.14)
 exists because its bits depend on the split of a pass. The test runs on the B70 cards:
 
@@ -1694,12 +1644,11 @@ exists because its bits depend on the split of a pass. The test runs on the B70 
 - Compare the rows that the slot holds after each run, bit for bit.
 - Equal bits accept the note above. Other bits make drafts a bit setting, or a rule that a verify pass follows.
 
-gfx1151host cannot run this test. The Qwen3.8 engine declares `segments_exact: true`
+The Strix Halo machine cannot run this test. The Qwen3.8 engine declares `segments_exact: true`
 (`crates/nagaya-mk-qwen38-gfx1151/src/spec.rs:463`), so the test cannot fail there for this reason.
 
-**6.16 Conditionings.** Amy decided on 2026-10-31 that the store keeps the encoder output of each prompt (`AGENTS.md`
-milestone 22). The rules below are Decided by senpai 2026-11-01, and accepted by Amy 2026-11-02. Amy decided on
-2026-11-01, by interview, that variants with the same encoder share their conditionings. Reason: a conditioning is
+**6.16 Conditionings.** The store keeps the encoder output of each prompt. Variants with the same encoder share their
+conditionings. Reason: a conditioning is
 sealed state with a recipe. Thus the rules of 6.2 to 6.11 give its key, its lookup, its eviction and its tripwire.
 
 - A **conditioning** is the output of an image engine's text encoder for one prompt. It has one row for each id after
@@ -1737,7 +1686,7 @@ One choice is left for later. It is a design, and nothing builds it now.
 
 **6.17 Context records.** gogi "Context
 records" says what a record is, and it leaves the choices below to the server. Reason: each choice is the simplest
-one that keeps the contract. Each follows a rule that specs or pins have now. Amy decides.
+one that keeps the contract. Each follows a rule that specs or pins have now.
 
 - **A record is a server file.** It is the file `contexts/<context id>.json` in the store directory, beside `specs/`
   and `pins.json`. The file holds the record text of gogi's `record_text`, and nothing else.
@@ -1822,41 +1771,39 @@ The timeout is 30 s, three times the longest declared quantum bound (the Qwen3.8
 bootstrap config. The code takes it as a start parameter, so the tests use a short value.
 
 **Open:** The group thread sends no beat while a quantum runs. On a slow NVMe, a copy quantum could run past the 30 s
-timeout, and the watchdog would end the process. We have not measured it (kaibo review job-1, finding 4).
+timeout, and the watchdog would end the process. This is not measured.
 
-**The watchdog during an open.** An engine's open can take longer than the timeout: the Qwen3.8 engine loaded in 24-50 s
-on 2026-10-20. A group beats its heartbeat while its engine opens, so a long open is not a stall. Amy, 2026-10-20: the
-heartbeat during an open is part of milestone 14. The group thread is blocked in the open. Thus a helper thread sends
-the beats, at the heartbeat interval, until the open ends. The helper stops when the group thread leaves the open
-for any reason.
+**The watchdog during an open.** An engine's open can take longer than the timeout: the Qwen3.8 engine loads in 24 to
+50 s. A group beats its heartbeat while its engine opens, so a long open is not a stall. The group thread is blocked
+in the open. Thus a helper thread sends the beats, at the heartbeat interval, until the open ends. The helper stops
+when the group thread leaves the open for any reason.
 
 The beat hides a hung open from the watchdog. The wait for the opens is the backstop (10.1). It ends a hung open
 after 300 s, and the process exits 1 (10.4). The 300 s equals `TimeoutStartSec` in the unit.
 
-The wait for the opens is 300 s. Reason: the Qwen3.8
-engine waits up to 60 s for free memory, then loads for about 35 s. The old wait of 60 s ended a slow open that was not
-hung.
+The wait for the opens is 300 s. Reason: the Qwen3.8 engine waits up to 60 s for free memory, then loads for about
+35 s. A wait of 60 s ends a slow open that is not hung.
 
 ## 8. Correctness at runtime
 
 **8.1 Canary.** The nagaya records a canary for each engine: fixed inputs and the exact outputs that the engine gave
 for them. The nagaya runs the canary through the engine, with its own sampler and decision code. The Qwen3.8 engine's
-canary has pilot reads and an 8-step greedy decode (`service/canary.py` of the first Qwen3.8 engine). It keeps letter
+canary has pilot reads and an 8-step greedy decode. It keeps letter
 logits as f32 bit patterns, the top 5, and a SHA-256 of all logits. The canary's hash is part of the engine identity.
 
 The nagaya runs the canary again before the engine is ready, with no tolerance. At start, a mismatch makes the
 nagaya exit with code 3, "do not restart" (10.4). After start, a mismatch marks the engine fatal (8.2), and the
 process continues with its other engines.
 
-Built for the Qwen3.8 engine only. The notes below are Decided 2026-11-12. The engine runs its canary at each load and
-compares it with a table of records. Any other engine gives an empty `canary_hash` and runs no canary. The process
-runs no canary through the `Engine` trait.
+Built for the Qwen3.8 engine only. The engine runs its canary at each load and compares it with a table of records.
+Any other engine gives an empty `canary_hash` and runs no canary. The process runs no canary through the `Engine`
+trait.
 
-The canary adds time to each load. The measure of 2026-11-12 used 5 processes for each path. The canary took about
-1.9 s on the fast path and about 4.2 s on the exact path. A load took about 28 s.
+The canary adds time to each load. Over 5 processes for each path, it takes about 1.9 s on the fast path and about
+4.2 s on the exact path. A load takes about 28 s.
 
-The Qwen3.8 engine runs its canary itself. It runs on the engine's
-worker thread, in two contexts that it makes and frees, and it uses the same pass path as a client. The host takes the
+The Qwen3.8 engine runs its canary itself. It runs on the engine's worker thread, in two contexts that it makes and
+frees, and it uses the same pass path as a client. The host takes the
 argmax of each row. Reason: the engine crate holds the worker thread, the passes and the fixed token ids, and it needs
 no tokenizer. The form through the `Engine` trait comes with the canary of the other engines.
 
@@ -1896,7 +1843,7 @@ A mismatch of the canary refuses the open, with no tolerance.
 - Built: the table, the check at each load, the exit code 3 at start, and the second form of the open.
 
 Reason: a build that gives other bits must not serve under the old digest. A load is rare, so a check at each load
-can cost its time. The measure of 2026-11-12 in the release build: the canary took 1.2 s of a swap of about 30 s.
+can cost its time.
 
 A checkpoint that the table does not hold.
 
@@ -1906,8 +1853,6 @@ A checkpoint that the table does not hold.
   the canary, reports it and compares nothing. The test `hip_canary` uses that form and prints the measured hash.
 - The person adds one line to the table, in a commit that records the bits of that checkpoint.
 - The process always uses the checked form. A card test of a deploy opens the engine in the checked form too.
-- Not chosen: the start goes on without that engine, and its first load fails with the measured hash.
-- Not chosen now: a key of the profile that gives the hash.
 
 Reason: the table is the simplest record that needs no new file. A stranger needs one line for each checkpoint.
 
@@ -1919,8 +1864,6 @@ poison. After a poison or a timeout, the nagaya does these steps:
 2. Run the canary again on the group thread, before any other work.
 3. If the canary does not match, or if this is the engine's fourth timeout in the last 600 s, mark the engine fatal.
    Refuse every later job for it.
-
-(The first Qwen3.8 engine did this in `service/gpu.py`.)
 
 **8.3 Conformance.** The crate `nagaya-conformance` holds one suite for every engine, generic over the `Engine`
 trait. The GPU tests of each engine crate run it on the real device. They are `tests/hip.rs` in the Qwen3.8 crate and
@@ -1945,37 +1888,35 @@ from the reference repository of the Qwen3.8 engine, with its venv (`AGENTS.md`,
 
 The fixture holds five prompts of 5 to 596 tokens, with the top 64 logits and the logsumexp of the last position.
 The bench `oracle` in the Qwen3.8 crate compares the Qwen3.8 engine with it.
-The Qwen3.8 engine's exact path (`QWEN38_FAST_QMM=0`) is the gate. Its largest gap was a logit difference of 1.7e-5 on
-2026-10-20.
+The Qwen3.8 engine's exact path (`QWEN38_FAST_QMM=0`) is the gate. Its largest gap is a logit difference of 1.7e-5.
 
 - On the exact path, the argmax agrees when the reference's top two differ by more than 0.25. The reference's top 8
   are in the engine's top 16. The largest logit difference is at most 1e-3, the KL at most 1e-8, and the logsumexp
   difference at most 1e-3.
 - The fast path (`QWEN38_FAST_QMM` unset) is an approximation (12.1). It keeps only the argmax and top-8 rules, and the
-  bench reports its other numbers. At 249 tokens its largest logit difference was 1.03.
+  bench reports its other numbers. At 249 tokens its largest logit difference is 1.03.
 
 The fixture covers prompts of up to 596 tokens. Past about 640 tokens, the gap between the Qwen3.8 engine and the
 reference is not explained (15 item 8). The oracle does not gate a longer prompt.
 
 A family with no reference has no oracle. Both families of v0 have one: the Qwen3.8 oracle above, and the Gemma 4
-oracle below, which the first port of mkviolet built.
+oracle below.
 
-**The Gemma 4 oracle.** `tools/gemma4_reference.py` runs HF transformers'
-own Gemma 4 layers in f32 on the CPU (copied from mkviolet). `tools/gemma4_oracle_fixture.py` makes the fixture
-with it, as `tools/oracle_fixture.py` makes the Qwen3.8 fixture. The reference Python runs in `~/.venvs/nagaya-ref`
-(`AGENTS.md`, "mkviolet on b70host").
+**The Gemma 4 oracle.** `tools/gemma4_reference.py` runs HF transformers' own Gemma 4 layers in f32 on the CPU
+(copied from the first Gemma 4 engine). `tools/gemma4_oracle_fixture.py` makes the fixture with it, as
+`tools/oracle_fixture.py` makes the Qwen3.8 fixture. The reference Python runs in a venv of its own.
 
 The fixture is `crates/nagaya-text-gemma4/tests/fixtures/oracle.json`, and `crates/nagaya-text-gemma4/tests/oracle.rs`
-reads it. It holds five prompts of 6 to 586 tokens, in the format of the Qwen3.8 fixture. It took 94 s on b70host
-on 2026-10-21. The fixture belongs to the family, so each engine of Gemma 4 reads the same file.
+reads it. It holds five prompts of 6 to 586 tokens, in the format of the Qwen3.8 fixture. The fixture belongs to the
+family, so each engine of Gemma 4 reads the same file.
 
-- mkviolet measured these gaps (mkviolet `docs/README.md`). The full pass had a largest logit difference of 5.8e-5.
+- The first Gemma 4 engine measured these gaps. The full pass had a largest logit difference of 5.8e-5.
   A prompt of 1,270 tokens, past the sliding window of 1,024, had 7.2e-3 and the same top token.
 - At 1,270 tokens, the f32 order of sums changed 123 of 38,100 top-8 expert picks. Each change began on a near tie in
   HF's own router.
 - The gates are the argmax and top-8 rules of the Qwen3.8 oracle. The largest logit difference is at most 1e-2. The
-  bench reports the other numbers. A spike measures the gap at longer prompts first. The engine crates stay one for each
-  vendor and device (Amy: "we generate a megakernel per vendor/device and they get their own whole crate").
+  bench reports the other numbers. A spike measures the gap at longer prompts first. Each vendor and device has an
+  engine crate of its own.
 
 A gate that restores state restores it through `Store::restore`, the path that production uses. Thus a gate and
 the store cannot drift apart.
@@ -1983,9 +1924,8 @@ the store cannot drift apart.
 The suite compares values by integer bit pattern. NaN or Inf fails, even when the bit patterns are equal. Counts
 must also match. Each gate keeps a broken variant that it must fail (ds4-recipe `01-correctness-and-measurement.md`).
 
-**The speech oracle.** The
-random stream of the card differs from PyTorch's, so the oracle of a speech engine forces the codes. The fixture holds a
-prompt, the codes that the reference sampled for it, and the reference outputs:
+**The speech oracle.** The random stream of the card differs from PyTorch's, so the oracle of a speech engine forces
+the codes. The fixture holds a prompt, the codes that the reference sampled for it, and the reference outputs:
 
 - the logits of codebook 0 at each frame, and the logits of the code predictor for codebooks 1 to 15;
 - the audio that the codec decoder makes from those codes.
@@ -1994,7 +1934,7 @@ The engine runs with the codes of the fixture in place of its samples, and each 
 Python writes the fixture once, on the CPU; no Python runs at test time (`AGENTS.md` "Checks").
 
 **The embedding oracle.** `tools/embeddinggemma2_golden.sh` runs sentence-transformers 6.1.0 on the CPU, in f32 from the
-bf16 weights, with eager attention. Its venv is `~/.venvs/embed-ref`, and its header names each version. It writes
+bf16 weights, with eager attention. It runs in a venv of its own, and its header names each version. It writes
 `cases.json` and `golden.safetensors` into `target/embeddinggemma2-golden` or `EMBEDDINGGEMMA2_GOLDEN_DIR`. Neither file
 is committed.
 
@@ -2010,8 +1950,8 @@ is committed.
 **The Qwen-Image oracle.** Reason: this follows the oracles of SDXL and EmbeddingGemma 2, with one gate for each
 stage of the engine.
 
-- `tools/qwenimage21_golden.sh` runs diffusers 0.41.0.dev0 in `~/.venvs/nagaya-qwenimage21-ref`, on the CPU only. It
-  computes in f32 from the bf16 weights, and loads one model at a time. Its peak is about 33 GiB of RAM.
+- `tools/qwenimage21_golden.sh` runs diffusers 0.41.0.dev0 in a venv of its own, on the CPU only. It computes in f32
+  from the bf16 weights, and loads one model at a time. Its peak is about 33 GiB of RAM.
 - Run it with `nagaya.service` stopped and no GPU job. It writes `encode.safetensors`, `steps.safetensors` and
   `parts.safetensors` into `target/qwenimage21-golden` or `QWENIMAGE21_GOLDEN_DIR`. No file is committed.
 - The request: the prompt `fusal style. a red fox in a snowy forest, watercolor`, 256 by 256, 4 steps, seed 1234. It
@@ -2024,8 +1964,8 @@ stage of the engine.
   conditioning is the input of the final norm in either case (11.9c, "The load").
 
 The gates. A reference in f32 does not give the bits of an engine in bf16. 11.9c also rounds in bf16 where the
-pipeline in bf16 rounds, and the reference does not. Thus each gate has a tolerance. The first run on gfx1151host measures
-each gap, as for every oracle. Then a Decided note sets each gate at about 4 times its gap, at most the cap below.
+pipeline in bf16 rounds, and the reference does not. Thus each gate has a tolerance. The first run measures each gap,
+as for every oracle.
 
 | Gate | What the engine runs | Compares with | Cap |
 |---|---|---|---|
@@ -2045,30 +1985,21 @@ each gap, as for every oracle. Then a Decided note sets each gate at about 4 tim
 - `parts.safetensors` holds the encoder layers, the transformer modules of step 0 and the VAE stages. They are
   references for kernel bring-up, not gates.
 
-**The bf16 baseline of each gate.** Amy's goal of
-2026-11-01 asked for it: "choose a balance of accuracy & speed. Working is most important."
-
-Reason: the first run on gfx1151host showed that no bf16 encoder reaches the cap of the conditioning gate. diffusers in
-bf16, which diffusepal runs, does not reach it either.
+**The bf16 baseline of each gate.** Reason: no bf16 encoder reaches the cap of the conditioning gate. diffusers in
+bf16, as the diffusers reference runs it, does not reach it either.
 
 - The oracle also runs each stage in bf16 under torch, from the same inputs: `prompt_embeds_bf16`,
   `transformer_out_bf16`, `latents_bf16` and `rgba_bf16` (`tools/qwenimage21_golden.sh`). These are the baselines.
 - The gap of the engine and the gap of the baseline are each measured against the f32 reference. A gate passes when
   the engine's gap is at most 4 times the gap of the baseline. Thus the engine may differ from f32 as much as
   diffusers in bf16 does, with a margin of 4, and no more. A floor of 1e-5 keeps a gate from failing on noise.
-- The caps of the table no longer decide. A first rule took the looser of the cap and 4 times the baseline. Then a
-  broken variant passed the step gate under the cap of 1e-3: its condition rows had the timestep 0.5. 4 times the
-  baseline caught it.
-- The conditioning gate applies the rule to each row, with the gap 1 minus the cosine. The first run was on
-  2026-11-01. Row 0, the `<|im_start|>` after the cut, had a gap of 8.8e-2, and the baseline 3.3e-2. The worst ratio
-  was 3.1, on row 21. Most rows had a smaller gap than the baseline. diffusers in bf16 had cosines from 0.967 to
-  0.99991.
-- The first run of the step and run gates on 2026-11-01: the steps had gaps of 2.2e-5 to 1.8e-4, at most 1.5 times
-  the baseline. The run had 5.1e-5, and the baseline 9.1e-5.
-- The decode gate measures the mean of the absolute difference of each byte, with a floor of 0.25. The first run on
-  2026-11-01 had 0.415 (worst 28), and the baseline 0.417 (worst 29).
-- The oracle holds no run of the whole job in bf16, so the image gate keeps its cap: 2 on average in each byte. The
-  first run on 2026-11-01, from the encoder through the 4 steps to the decode, had 0.721 (worst 22).
+- The caps of the table do not decide. Reason: the looser of the cap and 4 times the baseline lets a broken variant
+  pass. A variant with the timestep 0.5 in its condition rows passes the step gate under the cap of 1e-3. 4 times the
+  baseline catches it.
+- The conditioning gate applies the rule to each row, with the gap 1 minus the cosine. diffusers in bf16 has cosines
+  from 0.967 to 0.99991.
+- The decode gate measures the mean of the absolute difference of each byte, with a floor of 0.25.
+- The oracle holds no run of the whole job in bf16, so the image gate keeps its cap: 2 on average in each byte.
 
 **8.4 Audit.** For some engines the tripwire is not reliable, because of their determinism class. For them, the
 nagaya runs an audit after each start, as a filler job in the same process. The audit builds a sample of stored
@@ -2084,7 +2015,7 @@ end of a job.
 
 ## 9. Observability
 
-The nagaya follows kaijutsu's conventions (kaijutsu `docs/telemetry.md`). mkviolet followed them too.
+The nagaya follows kaijutsu's conventions (kaijutsu `docs/telemetry.md`).
 
 **9.1 Activation.** The nagaya always logs to stderr. It also exports in these cases:
 
@@ -2098,7 +2029,6 @@ Built: the log, and the OTLP gRPC export of spans and metrics. Not built: the JS
 export of logs. The nagaya warns at the start when `NAGAYA_OTEL_FILE_DIR` or `KAIJUTSU_OTEL_FILE_DIR` is set, so that
 a missing export is never silent. The code is in `crates/nagaya-telemetry`.
 
-
 - A log line is the message, then the fields as `key=value`. A warning or an error ends with `level=warn` or
   `level=error`. A line has no time, no level prefix and no span name. The journal adds the time. The tests of the
   process read a line by the start of its message.
@@ -2111,7 +2041,7 @@ a missing export is never silent. The code is in `crates/nagaya-telemetry`.
 - The process drops the telemetry before it exits, because `std::process::exit` runs no destructor. The drop waits at
   most 2 s for each signal. A collector that is gone does not stop the process.
 - The exporters run on a Tokio runtime of their own with one worker. The telemetry owns it, and the nagaya does not
-  leak it (compare mkviolet, section 14).
+  leak it.
 
 **9.2 Traces.** When a request has a W3C `traceparent` and `tracestate`, its span is a child of the caller's span.
 The nagaya records an invalid header as an attribute, not an error. The spans nest in this order:
@@ -2120,7 +2050,7 @@ The nagaya records an invalid header as an attribute, not an error. The spans ne
 2. `nagaya.job`, with engine, class and request kind;
 3. `nagaya.quantum` for each quantum, with engine, device group, kind, class, segments, and wait and run times in ms.
 
-Decode quanta make metrics only: "one span per generated token would bury a generation's trace" (the Qwen3.8 engine).
+Decode quanta make metrics only, because one span for each generated token would bury the trace of a generation.
 The trace context goes to the group thread with the job. The nagaya gives it to the engine through the telemetry
 capability, and the engine adds its own spans under the quantum. No engine carries it onto GPU work: none declares the
 capability `telemetry` (`Capability::Telemetry`, `crates/nagaya-abi/src/lib.rs:346`).
@@ -2148,7 +2078,6 @@ thread records.
 job from an HTTP request starts a trace of its own today. A test shows the parent when the caller's span is current
 (`crates/nagaya/tests/quantum_telemetry.rs`).
 
-
 - The attribute `engine` of a group is the names of its engines in profile order, joined with `+`. A group with one
   engine has the name of the engine.
 - The attribute `request` of `nagaya.job` has one of these values: `attach`, `build`, `dry_run`, `read`, `decision`,
@@ -2160,22 +2089,20 @@ job from an HTTP request starts a trace of its own today. A test shows the paren
 - The attribute `engine` of the span `nagaya.job`, of its quanta, and of the quantum metrics is the name of the job's
   engine. `GroupJobs` holds the engine of each job, so the name is known.
 - The joined name above stays for what belongs to the whole group, such as the heartbeat of the group thread.
-- Reason: the rule above came when each group had one engine. Group 0 of b70host has nine engines, from `gemma`
-  to `inpaint-0` (`deploy/b70host/profile.toml`). Thus each job has the same long name, and a metric
-  cannot tell the engines apart.
+- Reason: a group can hold many engines. Group 0 of the B70 machine has nine engines, from `gemma` to `inpaint-0`
+  (`deploy/b70host/profile.toml`). With the joined name, each job has the same long name, and a metric cannot tell
+  the engines apart.
 
-Built 2026-11-02. `GroupJobs` and the jobs of a staged group take the names of the engines in profile order. A job
+Built. `GroupJobs` and the jobs of a staged group take the names of the engines in profile order. A job
 span names the engine of its job. `ObservedScheduler::set_job_engine` gives that name to the quanta of the job. The
 heartbeat of a group carries no attribute `engine` today. Thus no signal uses the joined name now.
 
-The route template is axum's, such as
-`/council/v2/pins/{owner}`. A request that matches no route has the span `<METHOD>` alone, and the `http.route` value
-`unmatched`. The span has the attributes `http.request.method`, `http.route`, `http.response.status_code` and
-`request_id`. A status of 500 or more marks the span as an error. The span name has no `nagaya.` prefix, so it has the
-default rate of 9.3.
+The route template is axum's, such as `/council/v2/pins/{owner}`. A request that matches no route has the span
+`<METHOD>` alone, and the `http.route` value `unmatched`. The span has the attributes `http.request.method`,
+`http.route`, `http.response.status_code` and `request_id`. A status of 500 or more marks the span as an error. The span
+name has no `nagaya.` prefix, so it has the default rate of 9.3.
 
-**A forwarded request.** Reason: a
-forward (11.1a) crosses two nodes, and one trace must show both.
+**A forwarded request.** Reason: a forward (11.1a) crosses two nodes, and one trace must show both.
 
 - The coordinator opens the span `nagaya.forward` under its HTTP server span. Its attributes are `nagaya.peer`, the
   name of the target node, and `http.response.status_code`.
@@ -2232,7 +2159,7 @@ These rules fix the labels of the metrics that exist:
 - `nagaya.store.lookups` counts every `lookup`. The engine is the model name of the engine that asks, because the store
   does not know the profile name. An outcome is `approx` when an entry of the chain has a provenance. A lookup that
   returns an error counts as `refused`.
-- This table adds `nagaya.store.restores`. It counts every `restore`. The engine is the model name. The result
+- `nagaya.store.restores` counts every `restore`. The engine is the model name. The result
   `error` means that the store refused before any write.
 - `nagaya.engine.state` is a gauge. A change of state records one for the new state and zero for the other four.
 
@@ -2249,8 +2176,7 @@ NVML. Each provider maps its values onto shared names:
 | `nagaya.device.throttle` | {event} | device, reason |
 | `nagaya.device.evicted` | ms | device (amdgpu KFD only) |
 
-**The Xe provider.** Each card has these files under
-`/sys/class/drm/card<N>/device`, as the b70host tree shows:
+**The Xe provider.** Each card has these files under `/sys/class/drm/card<N>/device`, as the B70 machine shows:
 
 - clock: `tile0/gt<N>/freq0/act_freq` and `cur_freq`;
 - power: the change of `hwmon/hwmon*/energy1_input` over time, and `power1_cap`;
@@ -2260,12 +2186,11 @@ NVML. Each provider maps its values onto shared names:
 
 `nagaya.device.evicted` stays amdgpu only.
 
-The metric names of the first Qwen3.8 engine and mkviolet's `mkviolet.*` names map onto these names. Council decision
-metrics (count, spread, confidence) belong to the council layer (11.1).
+Council decision metrics (count, spread, confidence) belong to the council layer (11.1).
 
-**9.5 Each instrument has a call site under test.** mkviolet defines `record_gpu_pass` but calls it only from its
-smoke test. It calls `record_council_decision` only in tests. Its docs name instruments for routing entropy and
-J-Lens drift that do not exist. Thus a test shows that each instrument records on the path that it describes.
+**9.5 Each instrument has a call site under test.** The first Gemma 4 engine called some instruments only from its
+tests, and its docs named instruments that did not exist. Thus a test shows that each instrument records on the path
+that it describes.
 
 A test runs the real call site and reads the points through an in-memory exporter (`nagaya_telemetry::testing`). The
 code defines an instrument in the commit that adds its call site. The table shows each instrument that exists.
@@ -2295,32 +2220,31 @@ the change with the failure. The Qwen3.8 engine reads these counters: KFD evicte
 Built as `nagaya::evidence` in `crates/nagaya/src/evidence.rs`, with fixed trees in the tests. The code that runs a
 quantum calls `Machine::watch` before the quantum and `Watch::failed` in its error branch. `GroupJobs::run_one` does
 this on the group thread. The tests are `crates/nagaya/tests/job_evidence.rs` and
-`crates/nagaya/tests/process_evidence.rs`.
-A read costs four files, so the group thread skips `watch` for decode quanta.
+`crates/nagaya/tests/process_evidence.rs`. A read costs four files, so the group thread skips `watch` for decode
+quanta.
 
-A decode quantum that fails still logs the failure. The
-line says `evidence unavailable (not read before a decode quantum)` (`evidence::failed_unwatched`). The failure text
-names the kind of the quantum, the kind of request and the engine. `Start::machine` gives the process a machine with a
-fixed tree of files for a test.
+A decode quantum that fails still logs the failure. The line says `evidence unavailable (not read before a decode
+quantum)` (`evidence::failed_unwatched`). The failure text names the kind of the quantum, the kind of request and the
+engine. `Start::machine` gives the process a machine with a fixed tree of files for a test.
 
-**A refused job is not a failed quantum.** A job that finds no free
-slot ends in its first quantum, and its caller gets `busy` (11.3c). A request of several replies then runs that reply
-again (11.15). The engine and the machine did nothing wrong, so the group thread logs no failure line and reads no
-evidence for it. It logs one line at the level `info` that starts with `job refused` (`evidence::refused`).
+**A refused job is not a failed quantum.** A job that finds no free slot ends in its first quantum, and its caller gets
+`busy` (11.3c). A request of several replies then runs that reply again (11.15). The engine and the machine did nothing
+wrong, so the group thread logs no failure line and reads no evidence for it. It logs one line at the level `info` that
+starts with `job refused` (`evidence::refused`).
 
 The body reports `Ran::Refused`, and the job ends as failed. Its quantum span has the outcome `refused` and no error
 status.
 
-Reason: on 2026-11-15 a request of 8 forks on an engine of 4 slots gave 8 replies. For each such request, the log
-held 4 failure lines at the level `error`.
+Reason: a request of 8 forks on an engine of 4 slots gives 8 replies. A failure line for each refusal would put 4
+lines at the level `error` in the log for each such request.
 
 Evidence never hides its failure. A counter that cannot be read, or that went back, is named in the line as
 `evidence unavailable`. The failure is logged all the same. The sources are `/proc/meminfo`, `/proc/vmstat`,
 `/sys/class/kfd/kfd/proc/<pid>/stats_*/evicted_ms` and `/sys/class/drm/card*/device/mem_info_gtt_used`. The GTT is
 summed over the devices, and it is absent on a machine with no amdgpu device.
 
-**Evidence on Xe.** Xe has no counter of evicted ms, and no GTT in the
-amdgpu sense. Thus a Xe machine reads these sources in their place:
+**Evidence on Xe.** Xe has no counter of evicted ms, and no GTT in the amdgpu sense. Thus a Xe machine reads these
+sources in their place:
 
 - the memory of the nagaya's own DRM clients: the `drm-total-*` and `drm-resident-*` keys in `/proc/self/fdinfo/<fd>`
   of each `xe` fd;
@@ -2330,8 +2254,7 @@ amdgpu sense. Thus a Xe machine reads these sources in their place:
 The fdinfo reader sums the keys once per `drm-client-id` across `/proc/<pid>/fdinfo`, and the GT reader reads each
 `card*/device/tile*/gt*/freq0/throttle` entry. A source that is absent is `evidence unavailable`, as above.
 
-**9.7 Status feed.** Each machine has one SSE status feed (the status route of the first Qwen3.8 engine, mkviolet
-`PassBus`):
+**9.7 Status feed.** Each machine has one SSE status feed:
 
 - a snapshot when a client connects;
 - one `quantum` event for each quantum, with engine, device group, kind, ms, and queue length by class;
@@ -2344,8 +2267,7 @@ Not built. The HTTP server exists (11.7), and it has no status route. `ObservedS
 the job path uses it now (9.2), so it can feed the bus.
 
 **9.7a The events.** The route is `GET /nagaya/v1/status` (11.4a). The feed is `text/event-stream`. Each event has an
-`event:` line and a `data:` line of one JSON object. The rules of this section are each "Decided by senpai 2026-10-22,
-accepted by Amy 2026-11-02". Not built yet. Claude Sonnet 5.5 proposed them on 2026-10-21.
+`event:` line and a `data:` line of one JSON object. Not built yet.
 
 | Event | When | `data` |
 |---|---|---|
@@ -2384,7 +2306,7 @@ The `data` of `quantum`:
 
 ```
 event: snapshot
-data: {"t_ms": 91234, "machine": "gfx1151host", "engines": [{"engine": "mk-qwen38-gfx1151", "device_group": 0,
+data: {"t_ms": 91234, "machine": "node-a", "engines": [{"engine": "mk-qwen38-gfx1151", "device_group": 0,
   "state": "ready", "queue": {"interactive": 0, "batch": 0, "filler": 0}, "jobs": 0}]}
 
 event: quantum
@@ -2396,8 +2318,8 @@ data: {"t_ms": 91790, "engine": "mk-qwen38-gfx1151", "device_group": 0, "kind": 
 
 In a real event, the `data` is one line.
 
-- **Decode events.** A decode quantum makes an event too, as the first Qwen3.8 engine's `pass` event did. Decode makes
-  metrics only in 9.2, but a feed is for a person. A client that wants less volume filters by `kind`.
+- **Decode events.** A decode quantum makes an event too. Decode makes metrics only in 9.2, but a feed is for a
+  person. A client that wants less volume filters by `kind`.
 - **Order.** The events of one group are in order. The events of two groups have no order. `t_ms` tells the client
   which came first.
 - **Filters.** A filter is the query `engine` or the query `kind` of the connect request. Each takes values joined
@@ -2405,15 +2327,14 @@ In a real event, the `data` is one line.
   that names the query. Reason: an empty result from a typo would hide the fault.
 - **What a filter drops.** The `kind` filter drops quantum events only. The `engine` filter also drops entries of
   the snapshot.
-- **The keepalive.** The keepalive comes every 15 s without an event, as in the Qwen3.8 engine. A machine with no engine
-  sends a snapshot with an empty `engines`, and then the keepalive.
+- **The keepalive.** The keepalive comes every 15 s without an event. A machine with no engine sends a snapshot with an
+  empty `engines`, and then the keepalive.
 - **Open feeds.** At most 16 feeds are open at once. A request past that is a 429 `busy`. A feed does not count
   toward the 64 calls of 11.7, because it holds no call thread.
 - **A stop.** A stop ends each feed after the `draining` state (10.3). A client reconnects and gets a new snapshot.
 
-**9.7b Where the events come from.** Not built yet. The group
-thread produces the events, and a bus delivers them. The code of the obs-wire merge (`532eb28`) already holds each
-value.
+**9.7b Where the events come from.** Not built yet. The group thread produces the events, and a bus delivers them.
+The code already holds each value.
 
 - A new type `StatusBus` in `crates/nagaya/src/status.rs` holds the subscribers and the last state of each group. The
   process makes one bus and gives it to the council and to each group.
@@ -2435,23 +2356,22 @@ value.
   thread, so a slow subscriber never blocks a group. A full channel removes the subscriber, and its stream ends. The
   nagaya logs `status feed dropped a slow subscriber` as a warning.
 - The route is a handler in `crates/nagaya/src/http/extensions.rs`. It subscribes before it reads the snapshot, so no
-  quantum falls between them (as the first Qwen3.8 engine's `gpu.subscribe` does).
+  quantum falls between them.
 
 Tests that can fail: a fake engine runs a build and a failing quantum, and the test reads the events from a
 subscriber. It checks each member of 9.7a against the metric and the span. A subscriber that never reads must be
 dropped, and the group must go on.
 
-Other option for the source: emit from inside `ObservedScheduler::record_end`, so that no caller can forget an event.
-That type then needs a sink, and it does not know the request kind or the evidence. The pick keeps the scheduler a pure
-recorder of metrics and spans.
+Reason for the group thread as the source: `ObservedScheduler` does not know the request kind or the evidence. Thus
+the scheduler stays a pure recorder of metrics and spans.
 
 ## 10. Lifecycle
 
 **10.1 systemd.** The unit is `Type=notify`. The process sends `READY=1` when every engine in the profile has
 opened, passed its canary, and woken its pinned state. `STATUS=` gives the state of each engine.
 
-**One unit file for each machine.** gfx1151host's unit stays at
-`deploy/nagaya.service`. b70host's unit is `deploy/b70host/nagaya.service`, next to its config and profile.
+**One unit file for each machine.** The unit of the Strix Halo machine is `deploy/nagaya.service`. The unit of the
+B70 machine is `deploy/b70host/nagaya.service`, next to its config and profile.
 Reason: the units differ in the engine variables, the cargo feature of the build and the OTLP line. One shared unit
 needs a drop-in file on each machine, and a drop-in is not in the repository.
 
@@ -2460,30 +2380,26 @@ because a machine with no engine can serve as a coordinator or hold a store tier
 profile sends `READY=1` when admission passes.
 
 Not built: the canary of the other engines, and the wake of pinned state (8.1, 6.11). The Qwen3.8 engine runs its
-canary inside its open, so `READY=1` follows it. `READY=1` follows the open of every resident engine
-and the attach of the council routes. An engine on demand does not open at start (3.3a,
-`crates/nagaya/src/process.rs:1149-1154`).
+canary inside its open, so `READY=1` follows it. `READY=1` follows the open of every resident engine and the attach
+of the council routes. An engine on demand does not open at start (3.3a, `crates/nagaya/src/process.rs:1149-1154`).
 
-**`READY=1` follows the HTTP bind.** Amy: "seems fine to change it, http can come up and return
-an http not ready if it's not ready yet".
+**`READY=1` follows the HTTP bind.**
 
 - The process binds the HTTP address before the engines open. A bind that fails refuses the start (exit 3, 10.4).
 - Until the council routes attach, each request gets a 503 `unavailable` that says the process is starting.
 - The process sends `READY=1` after the council routes attach. Thus a client that connects at `READY=1` gets an answer.
 
-Reason: on 2026-10-23, the HTTP server listened about 0.45 s after `READY=1` on b70host. A client that connected
-when `systemctl restart` returned got a refused connection.
+Reason: if the server listens after `READY=1`, a client that connects when `systemctl restart` returns gets a refused
+connection.
 
-A request during the start gets
-`unavailable`, not `model_unavailable`. Reason: `model_unavailable` names the model and its status, and the identity is
-known only after the engines open. gogi lists `unavailable` for a server that starts or stops (gogi `33fbe40`). A client
-tries again later.
+A request during the start gets `unavailable`, not `model_unavailable`. Reason: `model_unavailable` names the model
+and its status, and the identity is known only after the engines open. gogi lists `unavailable` for a server that
+starts or stops. A client tries again later.
 
 While the engines open, the process tells systemd that the start goes on. Every 5 s (the heartbeat interval), it
 sends one datagram. The datagram holds `EXTEND_TIMEOUT_USEC=` and a `STATUS=` line that says `loading` for each
 engine. The extension is 30 s, the watchdog timeout (7.4). systemd sets the start deadline to 30 s after each
 datagram, so a slow open does not time the start out. A process that stops sending the datagram times out within 30 s.
-
 
 When the wait for the opens ends (7.4), the process sends `STATUS=` with the name of each engine that did not open.
 Then it exits 1.
@@ -2491,16 +2407,14 @@ Then it exits 1.
 **10.2 Arenas through a restart.** systemd's file-descriptor store keeps the arenas (`FDSTORE=1`). Each fd has the
 name `<engine>/<device>/<part>`. systemd reads `FileDescriptorStoreMax` from the unit file before the process starts.
 The unit file sets a generous ceiling (`FileDescriptorStoreMax=512`), and profile admission (2.4) refuses a profile
-that needs more arena fds than the ceiling. (mkviolet keeps 30 slab fds under a limit of 64,
-`systemd/mkviolet.service`.)
+that needs more arena fds than the ceiling.
 
 At start, the nagaya does these steps for each engine:
 
 1. Check each stored arena against the engine's build, and record the strength of the check.
 2. If an arena does not match, make sure that a cold load fits the ledger first (2.4). Then drop that engine's
    stored fds and load it cold. If a cold load does not fit, keep the fds and exit 3.
-3. Duplicate each fd before use. (In mkviolet on 2026-10-16, an import closed the stored fd and caused a crash
-   loop.)
+3. Duplicate each fd before use. Reason: an import can close the stored fd, and that causes a crash loop.
 
 `systemctl stop` clears the store. A restart keeps it.
 
@@ -2508,12 +2422,12 @@ At start, the nagaya does these steps for each engine:
 
 - `<engine>` is the engine name in the profile. `<device>` is `device<id>`, with the machine device id (2.4).
   `<part>` is a name that the engine gives in `arena_export`.
-- mkviolet's parts are `w<ll>` for the slab of layer `ll`, and `head` for the head on card 1. Thus its arena has 31
-  fds, such as `gemma/device1/w15`.
-- mkviolet stored no head, so its restart uploaded the head again. The head is about 1.5 GB: 262,144 rows of 2,816
-  BF16 values. The port gives it a slab.
+- The parts of the Gemma 4 engine are `w<ll>` for the slab of layer `ll`, and `head` for the head on card 1. Thus its
+  arena has 31 fds, such as `gemma/device1/w15`.
+- The head is about 1.5 GB: 262,144 rows of 2,816 BF16 values. It has a slab, so a restart does not upload it again.
 - The engine opens its stored fds through `Factory::attach` (engine-abi "The factory gets its devices"). The check is
-  `spot`: the first and last 64 bytes of each tensor (`verify_stored_slab`, `gemma4.rs:287-307`).
+  `spot`: the first and last 64 bytes of each tensor (`verify_stored_slab` in
+  `crates/nagaya-mk-gemma4-bmg/src/gemma4.rs`).
 
 **The ceiling and the start steps.**
 
@@ -2540,15 +2454,11 @@ At start, the nagaya does these steps for each engine:
 
 Reason: the unit file is the one source of the ceiling. A bootstrap key can differ from the unit.
 
-mkviolet restarted in 0.9 to 1.2 s from its stored slabs, and its cold start took 7.4 s (mkviolet `docs/README.md`).
-Thus 10.2 went into the b70host milestone (`AGENTS.md`, 15s step 7), because mkviolet had it and the port must
-not lose it.
-
 Built: the process side (`crates/nagaya/src/arena.rs`, `crates/nagaya/src/process/handoff.rs`) and the arena of the
-Gemma 4 engine, with its head slab (`Loaded::attach`). On b70host on 2026-10-21, a cold `Loaded::load` took 7.1 s,
-and an attach from the 31 slabs took 1.2 s (`tests/xe_arena.rs`, release build). A process restart took 7.1 s to
-`READY=1` cold and 1.2 s hot (`crates/nagaya/tests/xe_restart.rs`). The b70host unit sets
-`FileDescriptorStoreMax=512` (`deploy/b70host/nagaya.service`). The Qwen3.8 engine on gfx1151host exports no arena yet.
+Gemma 4 engine, with its head slab (`Loaded::attach`). A cold `Loaded::load` takes about 7.1 s, and an attach from
+the 31 slabs takes about 1.2 s (`tests/xe_arena.rs`, release build). A process restart takes about 7.1 s to
+`READY=1` cold and 1.2 s hot (`crates/nagaya/tests/xe_restart.rs`). The unit of the B70 machine sets
+`FileDescriptorStoreMax=512` (`deploy/b70host/nagaya.service`). The Qwen3.8 engine exports no arena yet.
 
 **10.3 Stop.** On SIGTERM, the nagaya does these steps:
 
@@ -2559,7 +2469,7 @@ and an attach from the 31 slabs took 1.2 s (`tests/xe_arena.rs`, release build).
 4. Exit.
 
 A second signal makes the process exit at once. Cancellation of running work follows 5.9. **Open:** the conversion
-to canonical safetensors (D10) is not yet measured, so we do not know how many contexts fit in the budget.
+to canonical safetensors (D10) is not yet measured, so the count of contexts that fit in the budget is not known.
 
 **Queued quanta and the park budget.** A stop cancels each queued quantum that has not started, and the submitter
 gets a cancelled result (5.9). Only the running quantum goes to its end. The park budget of a group starts when the
@@ -2595,8 +2505,8 @@ choices"). A park of the Qwen3.8 engine's 16 empty states would write about 1.9 
 - A park of an entry makes room on NVMe as a put does (6.9). A delta parks only when its parent is on NVMe.
 - A quarantined entry with the same bytes makes the park fail, and the process exits 1.
 
-Reason: on gfx1151 on 2026-10-21 at 00:44, the park of one Qwen3.8 state failed with "the content id already has another
-recipe". The stop exited 1. The recipe of a build names the inputs, so it is a better key than the park recipe.
+Reason: a put under the park recipe of bytes that the store holds fails with "the content id already has another
+recipe", and the stop exits 1. The recipe of a build names the inputs, so it is a better key than the park recipe.
 
 **Open:** the park's copy of a state in host memory has no staging charge (4.2 "Staging"). The park holds one copy
 at a time, on the group thread. A copy of a 32,768-token Qwen3.8 context is about 1.93 GB. The charge path
@@ -2616,15 +2526,12 @@ needs no new dependency. A later step can use a signal stream from `tokio` inste
 | 3 | a refusal to start: a bad bootstrap config (2.1), a probe error (2.1), a profile that does not fit, a canary mismatch at start, a mismatch of a part size or of the weight arena size, a store that does not open, a gossip bind or an HTTP bind that fails, or a council service that does not attach (11.7) | `RestartPreventExitStatus=3` |
 | 4 | a planned restart: a new profile (2.3, 3.3) | `RestartForceExitStatus=4` |
 
-The restart policy follows the Qwen3.8 engine's unit: `Restart=on-failure`, `RestartSec=30`, and at most 3 starts in 600
-s. systemd counts each start against that limit, also a start after code 4. Thus a fourth profile swap in 600 s fails.
+The restart policy is `Restart=on-failure`, `RestartSec=30`, and at most 3 starts in 600 s. systemd counts each start
+against that limit, also a start after code 4. Thus a fourth profile swap in 600 s fails.
 
-An engine that does not open at start stops the process. A mismatch of a part size or the
-weight arena size is a refusal to start: exit 3. Any other failure to open is a crash. The process exits 1, and
-systemd restarts it within its start limit. A message on stderr names the engine and the reason.
-
-The library pin was a refusal to start too. It is gone, because the binary links the Qwen3.8 engine. Amy decided this on
-2026-10-22 (AGENTS.md milestone 15).
+An engine that does not open at start stops the process. A mismatch of a part size or the weight arena size is a
+refusal to start: exit 3. Any other failure to open is a crash. The process exits 1, and systemd restarts it within
+its start limit. A message on stderr names the engine and the reason.
 
 **One exit path.**
 
@@ -2634,31 +2541,29 @@ The library pin was a refusal to start too. It is gone, because the binary links
 - Then `leave` calls `_exit(2)`. It runs no `atexit` handler and no static destructor.
 - The fake build takes the same path, so the host tests run the path of the GPU build.
 
-Reason: the Qwen3.8 engine's HIP runtime stops the program in its static destructors, as its teardown does (3.3). On
-gfx1151 on 2026-10-20, a clean stop with `exit(3)` printed "pure virtual method called" and ended with SIGABRT (status
-134) and a core dump. Nothing in the process needs an `atexit` handler.
+Reason: the Qwen3.8 engine's HIP runtime stops the program in its static destructors, as its teardown does (3.3). A
+clean stop with `exit(3)` prints "pure virtual method called" and ends with SIGABRT (status 134) and a core dump.
+Nothing in the process needs an `atexit` handler.
 
 ## 11. Client API
 
 **11.1 Council and coordinator routing.** The nagaya serves council v2 for all engines in the cluster. It does not
 serve v1, because no client speaks v1. The contract is gogi (ontology, "The other projects"): the text
-`docs/council-api.md`, the types in `gogi-proto`, and the suite in `gogi-conformance`. mkviolet and kaijutsu moved
-to the same gogi before the nagaya served them (Amy, 2026-10-18).
+`docs/council-api.md`, the types in `gogi-proto`, and the suite in `gogi-conformance`.
 
-gogi is normative today. This spec says how the nagaya serves the API, and it never restates the API. When this
+gogi is normative. This spec says how the nagaya serves the API, and it never restates the API. When this
 spec and gogi differ about the API, gogi is the rule, and this spec is corrected.
 
-**Text only.** Each served model of the nagaya reads and
-writes text only, until a family renders an object. Its identity declares no `media`. Since M18 step 1 (`6469b63`),
-the server declares `objects` when its profile names an `objects` budget (6.15, `crates/nagaya/src/http/mod.rs:306`).
-The routes refuse an object part, `case_media` and `output` with a 400 that names the member (gogi
-"Contexts", "Outputs"). A content of text parts is the context of their string.
+**Text only.** Each served model of the nagaya reads and writes text only, until a family renders an object. Its
+identity declares no `media`. The server declares `objects` when its profile names an `objects` budget (6.15,
+`crates/nagaya/src/http/mod.rs:306`). The routes refuse an object part, `case_media` and `output` with a 400 that names
+the member (gogi "Contexts", "Outputs"). A content of text parts is the context of their string.
 
-**The text stays in gogi.** This rule replaces a Proposed note of 2026-10-22, which moved the text here. gogi keeps
-the text, the types, the suite and the toy family. This spec keeps only how the nagaya implements the API.
+**The text stays in gogi.** gogi keeps the text, the types, the suite and the toy family. This spec keeps only how the
+nagaya implements the API.
 
 Any machine can receive any request and act as its coordinator (Cassandra style). Clients prefer a coordinator with
-separate host memory (`b70host` or a CPU rig) to save unified memory bandwidth on `gfx1151host` and `sm121host` (3.2). The
+separate host memory (the B70 machine or a CPU rig). Thus a machine with unified memory saves its bandwidth (3.2). The
 coordinator finds the target engine from the request's `model` field and the `chitchat` cluster state (2.3). Because
 the coordinator has the family libraries (11.3) and the engine's `identity()` from gossip, it can render, tokenize
 and compute the recipe locally. It then schedules the job locally or forwards the work to the machine that holds the
@@ -2666,11 +2571,10 @@ engine.
 
 The forward of 11.1a replaces the local render and recipe of the last paragraph for each job route. A coordinator
 forwards the whole request, and the node of the engine renders it. The local render stays the later design of a job
-split across nodes (Amy, 2026-11-02: "A job split across machines comes later").
+split across nodes.
 
-Routing to the machine that holds the deepest chain is deferred. Amy, 2026-10-20: "it's more likely folks like me
-and my friend Gavin have a heterogeneous fleet, and will typically want sticky sessions with each model/gpu rig,
-and it's okay those can't move around easily" (`docs/deepinfer.md` 7).
+Routing to the machine that holds the deepest chain is deferred. Reason: a typical fleet is heterogeneous, and its
+clients want sticky sessions with each model and machine (`docs/deepinfer.md` 7).
 
 The API has contexts, specs, decisions, snapshots, pins, reads, and generations with riding decisions. In council v2
 responses, a snapshot `id` is its BLAKE3 content id (`blake3:<hex>`), and the store looks up prefixes by recipe
@@ -2683,10 +2587,9 @@ responses, a snapshot `id` is its BLAKE3 content id (`blake3:<hex>`), and the st
 - `class` is `interactive` (the default) or `batch` (5.3). `priority` is an `i32`, 0 by default (5.4).
 - A request carries no tolerance. Its served model sets the tolerance (6.6).
 
-**Capabilities.** Milestone 12 declares `reads`, `generate`, `dry_run` and `leave_one_out` for each served model. It
-declares `pins` and `classes` for the server. Since `72b4952`, each text
-model also declares `continuation` (11.3c). `describe`, `think`, `ride` and `tiers` come in a later milestone. A
-request that needs one of them is a 400 that names it (gogi "Errors").
+**Capabilities.** Each served model declares `reads`, `generate`, `dry_run` and `leave_one_out`. The server declares
+`pins` and `classes`. Each text model also declares `continuation` (11.3c). `describe`, `think`, `ride` and `tiers`
+are not built. A request that needs one of them is a 400 that names it (gogi "Errors").
 
 **Thinking is required.** Each context names `thinking`, `true` or `false`, and the nagaya has no default (gogi
 "Contexts"). A text model declares `thinking` when its family thinks (`Family::thinks`). Then its contexts take
@@ -2699,9 +2602,8 @@ Pooling and the decision numbers come from `gogi_proto::math`, which all engines
 (The Qwen3.8 engine puts the SHA-256 of `libqwen38engine.a` in `build`, as `engine_build_sha256`. The digest does
 not cover it.)
 
-**A text engine on demand.** Reason: Amy made the
-Qwen3.8 engine on demand on gfx1151host (`docs/deploy.md`, "The layout of gfx1151host"), and the council served only the engines
-that opened at the start. Then the Qwen3.8 engine was no served model, and gogi found no ready model.
+**A text engine on demand.** Reason: an engine on demand, such as the Qwen3.8 engine (`docs/deploy.md`), does not
+open at the start. Without these rules it is no served model, and gogi finds no ready model.
 
 - A factory can describe an engine: the identity and the limits that its open will report, with no GPU and no load
   (`Factory::describe`). The Qwen3.8 engine describes itself from its shards, its build and its knobs.
@@ -2709,12 +2611,11 @@ that opened at the start. Then the Qwen3.8 engine was no served model, and gogi 
   is `unloaded` until a load, and a request for it gets a 503 `model_unavailable` (3.3).
 - An open that reports another identity than the description is an open error. The council's recipes would have
   the wrong root (6.2).
-- A kind that cannot describe its engine is not a text model while its engine is on demand, as before.
+- A kind that cannot describe its engine is not a text model while its engine is on demand.
 
-**The description of Gemma 4.** Reason: the
-profile of `5c1cf18` put Gemma 4 on demand, and `mk-gemma4-bmg` had no description. Thus b70host served no
-`gemma-4-26b-a4b`. Its identity names the Level Zero driver, which no file holds. Amy: "ideally description is cheap
-but if it can do some poking in model on cpu real quick that's fine too for fidelity."
+**The description of Gemma 4.** Reason: a profile can put Gemma 4 on demand, and without a description the server
+serves no `gemma-4-26b-a4b`. Its identity names the Level Zero driver, which no file holds. A description is cheap,
+but it can read the checkpoint on the CPU for fidelity.
 
 - `Factory::describe` gets the devices of the group, as `plan` does. The Qwen3.8 engine does not read them.
 - `mk-gemma4-bmg` describes itself from the checkpoint, sysfs and the version of the Level Zero driver. It asks the
@@ -2724,9 +2625,8 @@ but if it can do some poking in model on cpu real quick that's fine too for fide
 - The factory keeps each identity that it described. An open of the same checkpoint, cards and block that reports
   another identity is an open error. The check needs no second hash of the checkpoint.
 
-**11.1a The cluster.** Amy decided these rules on 2026-11-02, by interview (`AGENTS.md` milestone 23). Amy: "ideally
-we do the work with what's available on the cluster - so if the tokenizer is on this machine great we tokenize here.
-otherwise we forward to whereever it is."
+**11.1a The cluster.** A node does the work that it can do with what it holds, and it forwards the rest. For
+example, a node that holds the tokenizer tokenizes the text.
 
 - The routes `tokenize`, `detokenize` and `render` (11.4b) run on the node that takes them when it holds the family of
   the model. Otherwise they forward.
@@ -2757,9 +2657,7 @@ give the same list.
 - `extensions` holds `/nagaya/v1` when `identity.models` is not empty, because the text routes then forward
   (11.4f).
 
-**The cluster call.** Amy: "I feel like we should have a general way to forward
-to the cluster, can be simple at first, broadcast to all, let things 4xx or 5xx, and so on but later we could add bloom
-filters and or some routing". Each call from a node to its peers goes through one layer of the code, in two forms:
+**The cluster call.** Each call from a node to its peers goes through one layer of the code, in two forms:
 
 - **Routed.** The node knows the peer from gossip: the holder of a served model (2.3) or of an engine (3.3b). The call
   goes to that peer only ("The forward" below).
@@ -2774,8 +2672,8 @@ filters and or some routing". Each call from a node to its peers goes through on
 - Later, gossip can carry a bloom filter of the ids that each node holds, or a table of routes. Then a broadcast
   becomes a routed call. The routes keep their rules.
 
-**The forward.** Reason: Amy's rule
-names what forwards. It does not say how a coordinator finds the node, what it sends, or how a forward fails.
+**The forward.** Reason: the rules of 11.1a name what forwards. They do not say how a coordinator finds the node, what
+it sends, or how a forward fails.
 
 - **The node of a model.** The coordinator finds the live node whose `served` entries name `model`, as a `model` or
   an alias (2.3). A model of this node never forwards, unless another node keeps its name (2.3).
@@ -2802,7 +2700,7 @@ names what forwards. It does not say how a coordinator finds the node, what it s
 - Reason for `model_unavailable`: gogi keeps `unavailable` for a server that starts or stops (gogi "Errors"). Here the
   coordinator runs, and one model is not reachable.
 - **No other timeout.** A forward has no read timeout. The target keeps its own deadlines, such as `timeout_ms` (5.8).
-  Reason: an image of 40 steps took 176 s on gfx1151host (`AGENTS.md` milestone 22).
+  Reason: an image of 40 steps takes 176 s on the Strix Halo machine.
 - **A duplicate node name.** A coordinator never forwards to a node name that has a live duplicate (2.3). The request
   gets the 503 above, and the message names the conflict.
 - **The limits.** A forward runs on the control runtime, not on a call thread. It does not count toward the 64 calls
@@ -2810,8 +2708,7 @@ names what forwards. It does not say how a coordinator finds the node, what it s
 - **A stop.** A stopping coordinator answers each new request with the 503 `unavailable`, also for a model of a peer.
   An open forward gets the wait of 2 s of 11.7, as a local request does.
 
-**The open points of the forward.** Reason: the rules above leave these
-choices open, and the code of milestone 23 step 4 needs one answer for each. Amy decides.
+**The open points of the forward.** These rules fill the choices that the rules above leave open.
 
 - **No trace.** A coordinator with no trace layer has no span context to send. Then the `traceparent` of the client
   goes on as it came, so the target can still join the trace of the client.
@@ -2849,11 +2746,11 @@ same answer from each node.
   (6.15).
 - **The calls to peers.** Each call to a peer carries `nagaya-forwarded` (above), so a peer answers from its own store
   and asks no other node. A peer that does not answer in 2 s is left out, and the log names it.
-- The other choice was to keep these routes on the coordinator only. Then a pin through b70host could not hold a
-  snapshot of a model of gfx1151host.
+- The other choice was to keep these routes on the coordinator only. Then a pin through one node could not hold a
+  snapshot of a model of another node.
 
-**The open points of the routes with no model.** Reason: the rules above
-and 3.3b, 2.4 and 6.15 leave these choices open. The code of milestone 23 steps 5 and 6 needs one answer for each.
+**The open points of the routes with no model.** These rules fill the choices that the rules above, 3.3b, 2.4 and
+6.15 leave open.
 
 - **The join of a broadcast write.** A route of pins, keeps or specs gives the first answer that is not a 2xx or a
   404. The order is this node, then the peers in byte order of the name. A 413 is one such answer.
@@ -2873,8 +2770,8 @@ and 3.3b, 2.4 and 6.15 leave these choices open. The code of milestone 23 steps 
   code of a local `PUT`. It records the version after that code answers, also for a refusal. It writes
   `profile:active` again after each accepted change.
 
-**Context records in the cluster.** Reason:
-the forward sends the same bytes (above), and a record is a file of one node (6.17). Amy decides.
+**Context records in the cluster.** Reason: the forward sends the same bytes (above), and a record is a file of one
+node (6.17).
 
 - **Records belong to a node.** Each node holds the records of the contexts that it reads. Gossip carries no record
   and no record id.
@@ -2914,7 +2811,7 @@ The sampler keeps no random state between tokens. A fork gets a child seed, a ha
 number.
 
 Reason: a park, a restore or a fork then keeps the sampler's bits, with nothing to save. A client that sends a
-request again with the same seed gets the same tokens. A speculative draft (mkviolet's prompt-lookup drafts) has
+request again with the same seed gets the same tokens. A speculative draft (such as a prompt-lookup draft) has
 its own purpose, so it never moves a later draw. Thus the reported seed does not change when drafts are on.
 
 **The draw function.** These rules give the bits.
@@ -2932,9 +2829,8 @@ its own purpose, so it never moves a later draw. Thus the reported seed does not
 Thus the first Qwen3.8 engine's own uniform value, put into the nagaya's pick, gives the first Qwen3.8 engine's token.
 The sampler's tests use that.
 
-The first Qwen3.8 engine's sampler draws from one PCG64 stream for each request (`service/sampling.py` of the first
-Qwen3.8 engine). The nagaya does not match those bits. It matches the first Qwen3.8 engine's filter order and its
-probabilities (milestone 12 step 2).
+The first Qwen3.8 engine's sampler draws from one PCG64 stream for each request. The nagaya does not match those
+bits. It matches the first Qwen3.8 engine's filter order and its probabilities.
 
 **11.3 Text front-end.** Each model family has its own text rules. They are a tokenizer, a template, escapes for
 special tokens in client text, and parsers for tool calls and thinking. The nagaya holds one library per family
@@ -2957,9 +2853,9 @@ one set of conformance tests. The first Qwen3.8 engine's C ABI does not need a t
 - A value in `{{ }}` and the `string` filter follow Python's `str`. Thus none is `None` and a bool is `True`. A float
   is its `repr`, and a string in a list has quotes.
 - A render refuses the same input as the first Qwen3.8 engine. A template error is an error. A message that holds a
-  Unicode noncharacter is an error, because the first Qwen3.8 engine keeps those for its escapes (`RESERVED` in its
-  `harness/tokenizer.py`). The error names the character and its offset in characters, as the first Qwen3.8 engine does.
-  A message of `raise_exception` reaches the error.
+  Unicode noncharacter is an error, because the first Qwen3.8 engine keeps those for its escapes. The error names the
+  character and its offset in characters, as the first Qwen3.8 engine does. A message of `raise_exception` reaches the
+  error.
 - The first Qwen3.8 engine lets some Python exceptions pass, such as a `TypeError`. The library gives a template error
   for those.
 - **String methods.** The engine has no Python methods. The library holds these methods of `str`, with the results of
@@ -3001,9 +2897,8 @@ one set of conformance tests. The first Qwen3.8 engine's C ABI does not need a t
 - The tokenizer reads `tokenizer.ggml.token_type` of any integer type. A value that does not fit a signed 64-bit
   integer, and any float, is an error. A special token with an empty text is an error. The first Qwen3.8 engine builds
   an empty alternative that splits the text at every position, so a file like that is a mistake.
-- Milestone 11 built the tokenizer, the template and the detokenizer. Milestone 12 step 4 built the parsers for tool
-  calls and thinking. They match `service/chatfmt.py` (`ReplyTracker`) of the first Qwen3.8 engine, and fixed outputs of
-  its Python test them.
+- The parsers for tool calls and thinking match the reply tracker of the first Qwen3.8 engine. Fixed outputs of its
+  Python test them.
 - **The finish.** The first Qwen3.8 engine gives only `stop` and `length`. The parser maps a stop token with one or more
   entries in `tool_calls` to `tool_use`, and a stop token with none to `end_turn`. An entry that did not parse counts as
   a call, because the model tried one. The caller says whether a cut came from `max_tokens` or from a full context. The
@@ -3019,49 +2914,49 @@ one set of conformance tests. The first Qwen3.8 engine's C ABI does not need a t
 - One token can release text in two phases, but a gogi `token` event has one phase. This is rare, because each
   Qwen3.8 marker is one token. 11.3a has the rule for the step of such a token.
 
-**The Gemma 4 library.** The crate `nagaya-text-gemma4` holds the Gemma
-4 family. It ports mkviolet's text code, which served council v2 and an older route set on b70host until 2026-10-21.
+**The Gemma 4 library.** The crate `nagaya-text-gemma4` holds the Gemma 4 family. It ports the text code of the first
+Gemma 4 engine, which served council v2.
 
-- **Tokenizer.** The library reads the `tokenizer.json` of the checkpoint with the `tokenizers` crate, as mkviolet
-  did (`tokenizer.rs:27-48`). The tokenizer hash is of that file (12.3).
+- **Tokenizer.** The library reads the `tokenizer.json` of the checkpoint with the `tokenizers` crate, as the first
+  Gemma 4 engine did. The tokenizer hash is of that file (12.3).
 - **Template.** The library runs Google's chat template with the nagaya's own Jinja interpreter, with `trim_blocks` and
-  `lstrip_blocks`, as mkviolet's `chat.rs` did. The template is the crate's own copy,
-  `crates/nagaya-text-gemma4/assets/gemma4_chat_template.jinja`, copied from mkviolet. Not `minijinja`. The identity's
-  `template` is the text of that file. The variables that the library sets, such as `PRESERVE_THINKING`, are code, so
-  the test renders of 11.3a cover them.
-- **Escapes.** Client text that spells a marker is content. mkviolet swaps each marker text for a sentinel of
-  Unicode noncharacters before the render, and it refuses a noncharacter in client text (`chat.rs:1-13`).
-- **Council rendering.** The library ports `src/template.rs` (`mkv-letters-1`), the origin of 11.3a, with its Gemma 4
-  layout. The template id follows 11.3a.
-- **Reply parser.** The library ports `parse_tool_call` and the thought channel of `chat.rs`.
+  `lstrip_blocks`, as the first Gemma 4 engine did. The template is the crate's own copy,
+  `crates/nagaya-text-gemma4/assets/gemma4_chat_template.jinja`, copied from the first Gemma 4 engine. Not
+  `minijinja`. The identity's `template` is the text of that file. The variables that the library sets, such as
+  `PRESERVE_THINKING`, are code, so the test renders of 11.3a cover them.
+- **Escapes.** Client text that spells a marker is content. Before the render, the first Gemma 4 engine swaps each
+  marker text for a sentinel of Unicode noncharacters. It refuses a noncharacter in client text.
+- **Council rendering.** The library ports the council rendering of the first Gemma 4 engine, the origin of 11.3a,
+  with its Gemma 4 layout. The template id follows 11.3a.
+- **Reply parser.** The library ports the tool call parser and the thought channel of the first Gemma 4 engine.
 - **The method `get` of a dict.** Google's template calls `message.get(...)`. The interpreter holds `get` with the
   results of Python: a missing key gives the default, which is none. It refuses a keyword argument, as Python does.
   The other methods of a dict stay refused. Reason: the template needs
   it, and transformers renders it so (`crates/nagaya-jinja/tests/dict_get.rs`).
 
-**The Gemma 4 choices.** The port found these places where
-mkviolet's rules do not carry over, or where the rules above leave a choice open:
+**The Gemma 4 choices.** These rules apply where the rules of the first Gemma 4 engine do not carry over, or where the
+rules above leave a choice open:
 
-- **A failed tool result.** mkviolet gives the template the map `{"error": content}` (`held.rs:48`). In Python's
+- **A failed tool result.** The first Gemma 4 engine gives the template the map `{"error": content}`. In Python's
   jinja2 a map is a sequence, so Google's template loops over its keys and fails. The library writes `Error: ` before
   the content, as the Qwen3.8 library does. Reason: one form for both families, and a render that Python gives too.
 - **One form in every family.** A family library gives a failed tool result the form `Error: ` and the content. It
-  uses another form only when its model's template needs that form. Amy, 2026-10-22: "seems okay if it needs to
-  follow a model's template, but otherwise we should try to be consistent across models and kernels."
-- **Noncharacters.** mkviolet refuses only U+FDD0 to U+FDEF. The library refuses all 66 noncharacters, and the error
-  names the character and its offset, as the Qwen3.8 library does. Reason: the words of the rule above.
-- **The reply parser** ports the reply splitter of `mk_api.rs` (`Splitter`, council wire), because `chat.rs` has
-  only `parse_tool_call`. Its stop tokens are `<turn|>`, `<eos>`, `<|tool_response>` and `<|turn>` (`mk_api.rs:654`).
-  A marker token gives an empty piece.
-- **Proposed** (claude-opus-5-5, 2026-10-24), and Decided 2026-10-28 (Amy, by interview): a character that a run of text
-  does not finish. At `<|channel>`, `<channel|>`, `<|tool_call>` or `<tool_call|>`, the parser drops its bytes, as
-  mkviolet does (`Splitter::new_segment`, `mk_api.rs:1306`). At a stop token or a cut, `finish` gives them as U+FFFD in
-  the tail, in the phase of the last token. Reason: a marker gives an empty piece, and the pieces of a part join to its
-  text.
+  uses another form only when its model's template needs that form.
+- **Noncharacters.** The first Gemma 4 engine refuses only U+FDD0 to U+FDEF. The library refuses all 66
+  noncharacters, and the error names the character and its offset, as the Qwen3.8 library does. Reason: the words of
+  the rule above.
+- **The reply parser** ports the reply splitter of the council wire of the first Gemma 4 engine, because its chat code
+  parses only tool calls. Its stop tokens are `<turn|>`, `<eos>`, `<|tool_response>` and `<|turn>`. A marker token
+  gives an empty piece.
+- **A character that a run of text does not finish.** At `<|channel>`, `<channel|>`, `<|tool_call>` or `<tool_call|>`,
+  the parser drops its bytes, as the first Gemma 4 engine does. At a stop token or a cut, `finish` gives them as U+FFFD
+  in the tail, in the phase of the last token. Reason: a marker gives an empty piece, and the pieces of a part join to
+  its text.
 - **Boundaries.** A marked message is a boundary when the tokens of its rendering begin the tokens of the whole, as
   in the Qwen3.8 library. Two boundaries with the same token count keep the first.
-- **Reads.** A plain read and a queue read keep mkviolet's text and its tokenization piece by piece. A read hashes the
-  whole text that it was conditioned on (gogi), as the Qwen3.8 library does. mkviolet hashes the id of the head.
+- **Reads.** A plain read and a queue read keep the text of the first Gemma 4 engine and its tokenization piece by
+  piece. A read hashes the whole text that it was conditioned on (gogi), as the Qwen3.8 library does. The first Gemma 4
+  engine hashes the id of the head.
 - **Detokenize.** Every family library refuses tokens whose bytes end inside a character. The error names `tokens`
   (11.4d). No library puts U+FFFD in their place (`crates/nagaya-text-gemma4/src/council/mod.rs`,
   `decode_whole`). A piece of one token is not a detokenize, so `pieces` keeps U+FFFD (`Family::pieces`).
@@ -3073,43 +2968,40 @@ Reason for `tokenizers`: the port copies code that its Python fixtures already c
 The Jinja interpreter moves out of `nagaya-text-qwen38` into a crate
 `nagaya-jinja`, which both family libraries use. The move changes no behavior, and the Qwen3.8 fixtures stay green
 through it. A feature that Gemma 4's template needs and the interpreter lacks is a step with a test that fails first.
-Reason: one template engine for every family, as Amy chose, with no second copy of it.
+Reason: one template engine for every family, with no second copy of it.
 
-**The engine registry.** Before this rule, a hard map from the engine kind
-picked the family (`if kind == crate::the Qwen3.8 engine::KIND` in `crates/nagaya/src/serving.rs`). These rules replace
-it:
+**The engine registry.** The engine identity selects the family library, not the engine kind. These rules apply:
 
 - The identity gets one more field, `family`: `toy`, `qwen38` or `gemma4`. The engine sets it.
 - The process holds a registry of family libraries by that name. A family library opens from the identity and the
   table `[engines.family]` of the profile, which names its files.
 - The opened library must give the `tokenizer_hash` of the identity, as 11.7 says now. Another hash refuses the
   start (exit 3).
-- `context_tokens` of the served model is the largest slot of the engine, in tokens. `SlotLimit` gets a member
-  `tokens` for it. This replaces the 4096 and the Qwen3.8 engine's `MAX_CONTEXT` of 11.7.
+- `context_tokens` of the served model is the largest slot of the engine, in tokens. `SlotLimit` has a member
+  `tokens` for it.
 
 Reason: the identity names what the engine computes, so it selects the text rules too (11.3). A new engine kind then
-needs no change in `serving.rs`. mkviolet gives `context_tokens` as the slot size less one (`council_server.rs:334`).
-The nagaya does not copy that.
+needs no change in `serving.rs`.
 
 **Registry choices.** These choices fill what the rules above leave open.
 
 - The identity digest (12.1) does not cover `family`. The family follows from the model, the tokenizer hash and the
-  template, which the digest already covers. A new digest would make every held entry of gfx1151host unusable.
+  template, which the digest already covers. A new digest would make every held entry unusable.
 - An engine whose family has no library is not a served model, and the log says so. This is the rule of 11.7 for
   an unknown kind, now keyed by the family.
 - The key `gguf` of `[engines.family]` names the GGUF file of the `qwen38` family. With no key, the library reads the
-  first shard of `QWEN38_SHARDS`, as before. The `toy` family needs no file and no tokenizer hash.
+  first shard of `QWEN38_SHARDS`. The `toy` family needs no file and no tokenizer hash.
 - The registry of engine factories holds each kind that the build has. The feature `hip` gives `mk-qwen38-gfx1151`
   and `qwenimage21`. `xe` gives `mk-gemma4-bmg`, `qwen3tts-bmg`, `mk-sdxl-bmg` and `mk-embeddinggemma2-bmg`. `fake`
   gives the fake kinds (`crates/nagaya/src/admission.rs:196-219`). A build with no kind refuses the start (exit 3).
 - The key `model_dir` of `[engines.family]` names the checkpoint directory of the `gemma4` family. With no key, the
   library reads `GEMMA4_MODEL_DIR`. The engine config reads the checkpoint in the same way (engine-abi "The first
   Gemma 4 binding").
-- `context_tokens` is `SlotLimit.tokens` of the largest slot, with no "less one". The Qwen3.8 engine declares 32,768,
-  the value that `MAX_CONTEXT` had.
+- `context_tokens` is `SlotLimit.tokens` of the largest slot, not that value less one. The Qwen3.8 engine declares
+  32,768.
 
 **11.3a Council rendering.** A decision and a raw read put a spec, a case and a letter menu after each context. The
-nagaya renders them with mkviolet's rules (mkviolet `src/template.rs` and its council code), ported to each family.
+nagaya renders them with the rules of the first Gemma 4 engine, ported to each family.
 The family library holds the port, because the tokens belong to the family.
 
 A served model's `template` in council identity has two parts: `nagaya-council:<hash>+<family>-chat:<hash>`.
@@ -3118,7 +3010,7 @@ A served model's `template` in council identity has two parts: `nagaya-council:<
   and contexts. Thus the id changes only when the rendered tokens change.
 - An edit to a comment or a change in the code structure keeps the id. Thus it keeps the thresholds that clients
   fitted (gogi rule 6).
-- The id has no hand version, such as the `-1` of mkviolet's `mkv-letters-1`. The hash does that work.
+- The id has no hand version number. The hash does that work.
 - The second hash is the digest of the chat template text (12.1).
 - Each hash is the first 16 hex digits of a SHA-256.
 
@@ -3126,66 +3018,52 @@ A served model's `template` in council identity has two parts: `nagaya-council:<
 **Open:** the first hash covers the tokens of the test renders and nothing else. A change in how the family parses a
 reply does not change the id.
 
-**The Qwen3.8 rendering.** The spec and gogi leave these choices open for Qwen3.8. Sonnet 5.5 proposed them on
-2026-10-20. Each rule has the mark "Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02", and Amy can veto
-it.
+**The Qwen3.8 rendering.** These rules fill the choices that the spec and gogi leave open for Qwen3.8.
 
 - Every render uses the reasoning effort `medium`, as the Qwen3.8 engine's council does. The template then writes no
   effort line.
 - Thinking follows the context: the render uses `thinking` of the context. A context renders the same with thinking on
   and off, except for the generation prompt. A past assistant message keeps its reasoning in both. A test compares the
   two renders.
-  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 - A read closes the thinking. The case turn ends with the template's prompt for thinking off:
   `<think>\n\n</think>\n\n`.
-  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
-- A plain read keeps mkviolet's layout: spec turn, case turn, `Answer to question`, then ` N (stem):`. The letter
-  token has a leading space, as in mkviolet. A raw read uses the letters that the client sends.
-  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
-- A plain read tokenizes the template text and the client text in one pass, as the Qwen3.8 engine renders a chat.
-  mkviolet tokenizes the pieces one by one, and the two ways can differ at a join. The library checks that the tokens of
-  the context begin the tokens of the read. It also checks that each step begins with the tokens before it. A failed
-  check is an internal error (`council/read.rs`).
-  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
+- A plain read keeps the layout of the first Gemma 4 engine: spec turn, case turn, `Answer to question`, then
+  ` N (stem):`. The letter token has a leading space, as in that engine. A raw read uses the letters that the client
+  sends.
+- A plain read tokenizes the template text and the client text in one pass, as the Qwen3.8 engine renders a chat. The
+  first Gemma 4 engine tokenizes the pieces one by one, and the two ways can differ at a join. The library checks that
+  the tokens of the context begin the tokens of the read. It also checks that each step begins with the tokens before
+  it. A failed check is an internal error (`council/read.rs`).
 - A queue read writes the call in Qwen3.8's form, with the parameter `answers` as one JSON object. It reads a bare
   letter after the opening quote of the value.
-  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 - A queue read asks the questions in the order of the properties of `answers` in the queue tool's schema. Qwen3.8's
-  template writes the keys in the order it gets them. mkviolet sorts by question id, because Gemma 4's template sorts.
+  template writes the keys in the order it gets them. The first Gemma 4 engine sorts by question id, because Gemma
+  4's template sorts.
   A test pins the order.
-  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 - The workspace turns on the `serde_json` features `preserve_order` and `float_roundtrip` for all its crates, because
   Cargo joins the features of one build. The queue read needs `preserve_order` to read the order of the schema.
   Without it, the map sorts its keys, and the questions come in the wrong order. `float_roundtrip` keeps a float of a
   schema or a call equal to the float that was sent. A build of one crate alone may lack both.
-  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 - The template has no form for a failed result. The library writes `Error: ` before the content of a tool message with
   `is_error`.
-  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 - A system message after a message of another role renders as a system turn, in its place. gogi allows it
   (`docs/council-api.md`: "A system message may come later"), and `gogi-conformance` sends one. The template refuses
   such a message, so the library gives it a user message with stand-in text. Then the library swaps that user turn
   for a system turn with the trimmed content. The template merges the system messages at the start into one turn.
-  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 - A marked message is a boundary when the tokens of the rendering up to it begin the whole rendering. A tool message
   inside a run of tool messages is not a boundary, because the template puts one user turn around the run. A later
   system message ends the run.
-  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 - The template keeps the reasoning of every assistant message. No marked message loses its boundary for that reason.
-  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
-- `rendered_hash` is the content id of the text that the read was conditioned on (gogi's words). mkviolet hashes the
-  head's snapshot id. A plain read hashes the text through `Answer to question`, which all its questions share. A
-  queue read hashes its whole text at the end: the call through the last letter that the read chose, and its closing
-  quote.
-  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
+- `rendered_hash` is the content id of the text that the read was conditioned on (gogi's words). The first Gemma 4
+  engine hashes the head's snapshot id. A plain read hashes the text through `Answer to question`, which all its
+  questions share. A queue read hashes its whole text at the end: the call through the last letter that the read chose,
+  and its closing quote.
 - The reply parser follows these rules.
   - It takes the stop token as a pushed token (`<|im_end|>` or `<|endoftext|>`). It adds no text for that token.
   - A token has the phase of the last text that it released. The step of the token holds only the text of that phase.
   - A token can release text in an earlier phase too. That text is in the fields of the whole reply, and in no step.
   - The end of the thinking is not part of the reasoning.
   - A call that parses but holds an integer of more than 64 bits becomes a malformed call. Its text stays as written.
-
-  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
 
 **11.3b The toy family.** The fake engine has no real tokenizer. For tests, it serves the toy family of gogi's
 `gogi-toy` crate. Its tokens are the 256 byte values and 14 template markers, and its template is the template of
@@ -3199,7 +3077,6 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
 - **The store and the group thread.** `lookup` and `restore` take the engine, and the engine lives on its group
   thread (3.2). Thus a build runs them on the group thread. The store sits behind a mutex that the group threads and
   the park thread share. The ledger stays on its own thread, and a build asks it by message.
-  Decided by senpai 2026-10-22, accepted by Amy 2026-11-02.
 - **The quanta of a build.** The first quantum has the kind `copy`. It chooses a slot, looks up the prefixes and
   restores the longest one. It then adds the other quanta to the job.
 - **The kinds of the later quanta.** A feed of at most `max_pass_inputs` tokens is `prefill`. An engine with a feed
@@ -3207,33 +3084,23 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
   boundary.
 - **The seal.** A build calls `seal` at each boundary that it passes, before it reads the parts. A snapshot is a
   context sealed at a boundary (ontology). An engine without `seal` skips the call.
-  Decided by senpai 2026-10-22, accepted by Amy 2026-11-02.
 - **The slot.** A build takes the lowest free slot where the prompt fits (`fits` on each cells part). A build that fits
   no slot is `too_large`. A build with no free slot is `busy`.
 - **What a build lists.** The response lists the boundaries that the store holds when the build ends. A boundary
   that eviction removed, below the start of the build, is not made again. A dry run feeds nothing and lists no
   snapshot.
-- The head of a dry run. A dry run reports the held head when the store holds it. Otherwise the head is `recipe:` and
-  the hex of the head's recipe (the note below makes the scheme `blake3:`). It names the state that a build would make.
-  No store entry has the id, so a snapshot read or a pin of it finds nothing.
+- The head of a dry run. A dry run reports the held head when the store holds it. Otherwise the head is `blake3:` and
+  the hex of the head's recipe. It names the state that a build would make. No store entry has the id, so a read or a
+  pin of it is a 404 or `held: false`. The id does not show that it is a recipe: a client tells that from
+  `dry_run: true`.
 
-  Reason: gogi types `head` as required, and gogi is the contract. This settles a note of Claude Sonnet 5.5.
-  Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
-
-  **Decided 2026-10-27 (Amy, by interview)**, proposed by claude-opus-5-5 on 2026-10-25: a dry run head that the store
-  does not hold is `blake3:` and the recipe's hex. The form `recipe:` goes. Reason: gogi now allows only `blake3:` and
-  64 digits as a snapshot id (spec 6.2, gogi `33b78b7`), and gogi is the contract. A recipe is a whole BLAKE3 hash
-  already (6.2).
-
-  No store entry has the id, so a read or a pin of it is still a 404 or `held: false`. The id no longer shows that it
-  is a recipe: a client tells that from `dry_run: true`. It replaces the `recipe:` form of the rule above and of
-  the continuation dry run (Amy, 2026-10-21). Section 16 has the same line.
+  Reason: gogi types `head` as required, and gogi is the contract. gogi allows only `blake3:` and 64 digits as a
+  snapshot id (6.2). A recipe is a whole BLAKE3 hash already (6.2).
 - **The pin owner.** gogi names an owner with text, and the store names it with a `u64`. The service keeps the text and
   gives the store the first 8 bytes of the BLAKE3 hash of the text. A restart keeps the text in `pins.json` in the store
   directory. Entries that builds put have the owner 1.
 
-**Reads and generations on the job path.** The rules below are each "Decided by senpai 2026-10-20 night, accepted by Amy
-2026-11-02".
+**Reads and generations on the job path.** These rules apply to reads and generations.
 
 - A raw read, a decision read and a generation are each one job for each context. The job builds the context, as a
   build does, and its work goes on in the same slot. When the store holds the head, the job restores it.
@@ -3248,7 +3115,7 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
 - A raw read lists 8 top tokens when the request names no `top`, and at most 64. A larger `top` is a 400.
 - A build of more than `context_tokens` tokens is a 413 `too_large` that names `context_tokens`. So is a raw read
   whose context and longest suffix have more. A context of exactly `context_tokens` tokens builds. `context_full` is
-  only for the prompt of a generation (gogi "Errors", gogi `a07d85e`).
+  only for the prompt of a generation (gogi "Errors").
 - The text of a top token is the detokenized token. A token that is not whole text alone, such as one byte of a
   longer character, has the text U+FFFD. Its `id` names it exactly.
 - The council identity's `engine` is `nagaya:` and the first 16 hex digits of the identity digest (6.2). The digest
@@ -3283,11 +3150,11 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
   system seeds.
 - The sample defaults of a served model are temperature 1 with no filter, until the profile names others.
 - A reply ends with `context_full` when the prompt and the reply reach `context_tokens`. When it also reaches
-  `max_tokens`, it ends with `context_full` (gogi "Generations", `finish`, gogi `a07d85e`).
-- The decision limits are mkviolet's until the profile names others: `decision_context_tokens` 3072,
-  `contexts_per_decision` 8, `case_bytes` 65536 and `default_timeout_ms` 30000.
+  `max_tokens`, it ends with `context_full` (gogi "Generations", `finish`).
+- The decision limits are those of the first Gemma 4 engine until the profile names others: `decision_context_tokens`
+  3072, `contexts_per_decision` 8, `case_bytes` 65536 and `default_timeout_ms` 30000.
 
-Continuations follow gogi's rules (`docs/council-api.md`, "Continuations", gogi `dc94cb3`). The nagaya uses them in
+Continuations follow gogi's rules (`docs/council-api.md`, "Continuations"). The nagaya uses them in
 these ways. Each served model declares the capability `continuation` (`crates/nagaya/src/http/mod.rs`).
 
 - **The rendering.** `Family::render` renders an open last message as a reply up to its open text, without its end
@@ -3315,8 +3182,8 @@ these ways. Each served model declares the capability `continuation` (`crates/na
   model saw when it sampled the reply, so a cut reply goes on from the same tokens. The closed rendering's tokens
   do not begin with them, so a cut reply that the client sends back closed starts from the last boundary.
 - **The seam check.** The family checks each open field in `render`, with `gogi_proto::continuation::check_seam`. A
-  field that does not tokenize on its own is a 400 that names `continue`. This is the prefix check of the first Qwen3.8
-  engine's `prefill` (`_with_prefill` in its `service/generate.py`).
+  field that does not tokenize on its own is a 400 that names `continue`. This is the prefix check of the prefill of the
+  first Qwen3.8 engine.
 - **The parse.** The reply parser starts in the phase that the open message sets (`ReplyStart::of`). It reads only
   the sampled tokens. After an open message, the Qwen3.8 parser keeps the white space at the start of its first part.
   At `max_tokens`, it keeps the white space at the end of its last part (`Keep` in
@@ -3340,18 +3207,17 @@ these ways. Each served model declares the capability `continuation` (`crates/na
     tokens up to the seam must begin the closed rendering's tokens. The search of the store's index finds the head
     (see the cuts above). So does a context that sends back the reply of a continuation from a head: that reply's
     head chains through the seam.
-  - **Open**, the cuts from the index. Claude Opus 5.5 proposed this rule on 2026-10-21. A build tries each sealed
-    snapshot that the search of the index finds, not only the ends of messages. Reason: the first rule tried the
-    open forms of the last assistant message. It missed a reply cut inside its thinking and sent back with
-    `content: ""`, and it cost three renders of the prefix. The search also replaces the second render of the cuts at
-    message ends.
+  - The cuts from the index. A build tries each sealed snapshot that the search of the index finds, not only the
+    ends of messages. Reason: a try of the open forms of the last assistant message misses a reply cut inside its
+    thinking and sent back with `content: ""`. It also costs three renders of the prefix. The search also takes the
+    place of a second render of the cuts at message ends.
 
-    Amy, 2026-10-22: "could we put something in the index to make this more targeted? maybe a few tokens of
-    prefix/suffix?" Section 15 lists the question.
+    **Open:** can the index hold a few tokens of prefix or suffix, so that the search is more targeted? Section 15
+    lists the question.
   - The timings of a dry run come from a release host test (`crates/nagaya/tests/council_heads.rs`). For 18026
-    tokens with an assistant message: 103 ms with the open forms, then 38 ms with a pass over the index. It is 16 ms
-    with one render. The same context without the message takes 16 ms. With 10,000 unrelated entries in the store: 85 ms
-    with a pass over the index, then 0.22 ms (0.16 ms when empty).
+    tokens with an assistant message, a pass over the index takes 38 ms. It is 16 ms with one render. The same context
+    without the message takes 16 ms. With 10,000 unrelated entries in the store, it takes 0.22 ms (0.16 ms when
+    empty).
   - A dry run reports the interval copy that a build would restore. For a continuation, it asks for a slot of the
     open rendering, as the generation does.
   - A continuation whose reply's closed tokens differ from its prompt and sampled tokens holds no head after the
@@ -3361,22 +3227,16 @@ these ways. Each served model declares the capability `continuation` (`crates/na
     Reason: a snapshot holds no logit row. A continuation from a head at the end would have no first logit row, and
     it cannot feed the last token again. At the seam it feeds that token (`fed` 1), which gogi allows.
 - The dry run: a build with an open message and `dry_run: true` looks up the plan of the continuation and its seam.
-  Its `kept` and `fed` are what the generation keeps and feeds. Its `head` is `recipe:` and the recipe of the open
-  rendering, which the store never holds. (The Proposed note of the dry run head above
-  makes the scheme `blake3:`.)
+  Its `kept` and `fed` are what the generation keeps and feeds. Its `head` is `blake3:` and the recipe of the open
+  rendering, which the store never holds (see the head of a dry run above).
 - The template id: the test sets of the families have no open message, so the open rendering is not in the template
   id (11.3a). Adding one would change the id of each family once, and a fitted threshold does not carry over.
-  Decided by Amy 2026-10-21.
 - A riding `before` is not built, because the nagaya does not serve `ride`. A generation with `decisions` is a 400
   that names `decisions`.
 
-**11.4 The routes of the first Qwen3.8 engine.** The provider of kaijutsu used `model`, `render` and `generate`
-(mkviolet `mk_api.rs`).
-
-The nagaya does not serve the route set of the first Qwen3.8 engine. kaijutsu moved to council v2
-and uses the gogi reference. Amy: "kaijutsu will move to council v2 and use the new gogi (~/src/gogi) reference. it's
-happening now, on b70host". In council v2 the server renders messages with its model's own template, and the template
-is part of identity (gogi `docs/council-api.md`, "Terms").
+**11.4 The routes of the first Qwen3.8 engine.** The nagaya does not serve the route set of the first Qwen3.8 engine:
+`model`, `render` and `generate`. kaijutsu uses council v2 and the gogi reference. In council v2 the server renders
+messages with its model's own template, and the template is part of identity (gogi `docs/council-api.md`, "Terms").
 
 **11.4a Extensions.** gogi puts model-specific routes under the server's own prefix, listed in
 `identity.extensions` (gogi `docs/council-api.md`, "Extensions"). The nagaya's prefix is `/nagaya/v1`:
@@ -3386,23 +3246,21 @@ is part of identity (gogi `docs/council-api.md`, "Terms").
 - `render`, `tokenize` and `detokenize`: served by the family library for bench tools and semantic search;
 - `status` (9.7) and `traces` (13.1).
 
-Built on 2026-10-21: `render`, `tokenize` and `detokenize` (11.4b to 11.4d), and the prefix in `identity` (11.4f).
-Built in M18 step 3: `profile` (3.3, `74a5903`), and the load routes of 3.3b. The other routes in this list are not
-built.
-Embeddings left this list on 2026-10-30. gogi's contract has them as `POST /council/v2/embeddings` (11.10).
+`render`, `tokenize` and `detokenize` (11.4b to 11.4d), the prefix in `identity` (11.4f), `profile` (3.3) and the
+load routes of 3.3b are built. The other routes in this list are not built. Embeddings are not in this list: gogi's
+contract has them as `POST /council/v2/embeddings` (11.10).
 
-**The cluster route.** Reason: Amy
-decided that the route gives the gossip view (11.1a), and the web app finds its hosts there (`AGENTS.md` milestone 23
-step 7). It needs a fixed shape.
+**The cluster route.** Reason: the route gives the gossip view (11.1a), and the web app finds its hosts there. It
+needs a fixed shape.
 
 ```json
 GET /nagaya/v1/cluster
--> {"node": "b70host",
-    "nodes": [{"name": "b70host", "id": "b70host:1793577600000:198.51.100.10:8092", "self": true,
-               "gossip": "198.51.100.10:8092", "http": "198.51.100.10:8091",
+-> {"node": "node-a",
+    "nodes": [{"name": "node-a", "id": "node-a:1793577600000:<address>:8092", "self": true,
+               "gossip": "<address>:8092", "http": "<address>:8091",
                "engines": [{"name": "gemma", "state": "ready", "models": ["gemma-4-26b-a4b"]}],
                "conflicts": {"name": null, "models": []}, "refused": null}],
-    "dead": ["sm121host"]}
+    "dead": ["node-c"]}
 ```
 
 - `node` is the name of the node that answers. `nodes` holds the live nodes, this node too, in byte order of the name.
@@ -3420,11 +3278,10 @@ GET /nagaya/v1/cluster
   then parse the keys itself.
 
 **11.4b The text routes.** `render`, `tokenize` and `detokenize` use the family library (11.3). They share the rules
-below. The rules of 11.4b to 11.4f are each "Decided by senpai 2026-10-22, accepted by Amy 2026-11-02". Claude Sonnet
-5.5 proposed them on 2026-10-21, and the code of that day follows them.
+below.
 
-Their sources were the routes of the first Qwen3.8 engine and mkviolet's `mk_api.rs`. Bench tools use them to see what a
-council request feeds. The semantic search of kaijutsu uses them to count and to cut text by tokens.
+Bench tools use them to see what a council request feeds. The semantic search of kaijutsu uses them to count and to cut
+text by tokens.
 
 - **The model.** Each body has a required `model`, as a council request has. A body without it, or with a name that
   no served model has, is a 400 `invalid_request` that names `model`. The routes never choose a model for a client
@@ -3442,7 +3299,7 @@ council request feeds. The semantic search of kaijutsu uses them to count and to
 - **The span.** The HTTP server span of 9.2 covers each call, and its `http.route` is the path, such as
   `/nagaya/v1/render`. The routes make no `nagaya.job` span and no metric of their own.
 
-Built on 2026-10-21. The code is in `crates/nagaya/src/http/extensions.rs`. The function `routes` in
+The code is in `crates/nagaya/src/http/extensions.rs`. The function `routes` in
 `crates/nagaya/src/http/routes.rs` merges its routes, so `router` and the running server both serve them. `Service`
 has one accessor, `Service::family` (`crates/nagaya/src/council/mod.rs`), because its field `family` is private. The
 tests are `crates/nagaya/tests/extensions.rs` (the toy family), `extensions_qwen38.rs` (the real tokenizer and
@@ -3451,10 +3308,9 @@ template) and `http_telemetry_extensions.rs` (the span and the duration point).
 A `FamilyError::Client` becomes a 400. The existing `From<FamilyError>` for `ServiceError`
 (`crates/nagaya/src/council/error.rs`) does this. A `FamilyError::Internal` is a 500, and the process stops (8.5).
 
-**The `param` of a family error.** A family error can have no `param`. Then the route sets it to the request member
-at fault: `text` for `tokenize`, `tokens` for `detokenize`, and `context` for `render`. The first Qwen3.8 engine and
-mkviolet named only the message. A family error that has a `param`, such as `continue`, keeps it (`at` in
-`extensions.rs`).
+**The `param` of a family error.** A family error can have no `param`. Then the route sets it to the request member at
+fault: `text` for `tokenize`, `tokens` for `detokenize`, and `context` for `render`. A family error that has a `param`,
+such as `continue`, keeps it (`at` in `extensions.rs`).
 
 **11.4c Render.** `POST /nagaya/v1/render` gives the text and the tokens of a context, as a council request feeds
 them. It is for bench tools and for the debug of a template.
@@ -3510,11 +3366,11 @@ The numbers in the example show the shape only.
 - **The context only.** The route shows the context only. A decision also renders a spec, a case and a letter menu
   after it (11.3a). A later route can show them through `ReadPlan::prefix`. It is not in the first set.
 
-Senpai chose between two options in each of these three rules. Amy can change each one.
+Each of these three rules chooses one of two options.
 
 - **The generation prompt.** `generation_prompt` is `false` by default. This matches a build and a decision, which
-  render with no generation prompt, and so `boundaries` match a build. The first Qwen3.8 engine and mkviolet defaulted
-  to `true`. A client that wants the prompt of a generation sends `true`.
+  render with no generation prompt, and so `boundaries` match a build. A client that wants the prompt of a generation
+  sends `true`.
 - **One member for the context.** The context is one member, `context`. The same object then goes to
   `/council/v2/contexts`. The other option was the first Qwen3.8 engine's flat body, with `messages`, `tools` and
   `thinking` at the top. It saves one level, and a client copies less.
@@ -3562,24 +3418,23 @@ POST /nagaya/v1/detokenize
   2). For Qwen3.8 this is `Qwen38Family::tokenize`: it escapes the text as content, then it calls `encode_escaped`.
 - **Detokenize.** `detokenize` calls `Family::detokenize`. A token outside the vocabulary is a 400 with `param`
   `tokens`. The message of `Error::TokenId` already gives the vocabulary size.
-- **Split characters.** Tokens that do not make whole UTF-8 text are a 400 with `param` `tokens`. The first Qwen3.8
-  engine and mkviolet replaced the bad bytes. Here the route follows `Family::detokenize`, and a silent replacement
-  would hide a split character. The other option was a member `lossy` that replaces the bytes.
+- **Split characters.** Tokens that do not make whole UTF-8 text are a 400 with `param` `tokens`. The route follows
+  `Family::detokenize`, because a silent replacement would hide a split character. The other option was a member `lossy`
+  that replaces the bytes.
 - **Empty input.** An empty `text` gives an empty `tokens`. An empty `tokens` gives an empty `text`. Neither is an
   error.
 - **Pieces.** `pieces` are lossy by design. A piece is the bytes of one token, and a token can end inside a
   character. The route replaces bad bytes with U+FFFD in each piece (`String::from_utf8_lossy`). The piece of a
   marker is its text.
-- **A cut at the end of a piece.** The code found a difference from the first Qwen3.8 engine. The first Qwen3.8 engine's
-  `piece_text` dropped a cut-off character at the end of a piece. The route keeps a U+FFFD, so that a client sees the
+- **A cut at the end of a piece.** The first Qwen3.8 engine drops a cut-off character at the end of a piece. The
+  route keeps a U+FFFD, so that a client sees the
   cut. A token of several stray bytes can give more than one U+FFFD, and a top token in a raw read (11.3c) always gives
   one.
 - **The members of each route.** Each route has its own members. `special` and `pieces` in a `detokenize` body, and
   `tokens` in a `tokenize` body, are each a 400 that names the member. A `tokens` member must be an array of unsigned
   32-bit integers. Any other value is a 400 with `param` `tokens`, and the message names the place of the bad id.
 
-Two small additions to the `Family` trait (`crates/nagaya-council/src/family.rs`) serve `special` and `pieces`. Both
-were built on 2026-10-21.
+Two small additions to the `Family` trait (`crates/nagaya-council/src/family.rs`) serve `special` and `pieces`.
 
 - **`tokenize_special`.** `Family::tokenize_special(&self, text: &str) -> Result<Vec<u32>, FamilyError>`. Qwen3.8
   calls `Tokenizer::encode`. This is the rule of a raw-read suffix (gogi "Raw reads"), where a marker is one token.
@@ -3589,9 +3444,9 @@ were built on 2026-10-21.
   (`crates/nagaya/tests/council_generations.rs`) implement both. Both methods are required, not defaults, so a family
   that does not implement them does not compile.
 - **The other option** was to build the first set with neither `special` nor `pieces`. `tokenize` then needs no
-  change to the trait. The cost is a bench tool that cannot tokenize a raw suffix. The build took the rule above.
+  change to the trait. The cost is a bench tool that cannot tokenize a raw suffix.
 
-Tests that can fail (all built, in `crates/nagaya/tests/extensions.rs` and `extensions_qwen38.rs`):
+Tests that can fail (in `crates/nagaya/tests/extensions.rs` and `extensions_qwen38.rs`):
 
 - `detokenize(render.tokens)` equals `render.text`, for each fixture of the family.
 - `tokenize` with `special` on, applied to a `render.text` with no `control_text`, gives `render.tokens`.
@@ -3618,7 +3473,7 @@ The other option was a `GET /nagaya/v1/health` that gives only `{"status": "ok"}
 read `identity`. It costs one route and no new state.
 
 **11.4f Extensions in identity.** `identity.extensions` lists the prefix `/nagaya/v1` once. gogi's example lists
-a route prefix this way, and it lists no route (gogi "Extensions"). The rules below were built on 2026-10-21.
+a route prefix this way, and it lists no route (gogi "Extensions").
 
 - **When the list holds the prefix.** `Council::identity` returns `["/nagaya/v1"]` as soon as the process serves one
   route under the prefix. The text routes need a family. Thus the list holds the prefix when the council has a served
@@ -3656,25 +3511,14 @@ the table and gogi's table already hold.
 | 503 | `model_unavailable` | The served model is not `ready`. The text routes only. |
 | 503 | `unavailable` | The process is starting or stopping. |
 
-**11.6 Binding.** The HTTP and gossip listen addresses and seed peers are in the bootstrap config (2.1). (mkviolet
-has a tailnet address in its code.)
+**11.6 Binding.** The HTTP and gossip listen addresses and seed peers are in the bootstrap config (2.1).
 
 **11.7 The HTTP routes.** The process serves the council routes with `axum` on the control runtime
 (`crates/nagaya/src/http`). It starts the server before the engines open, and it logs `http listening on <address>`
-(10.1, Decided 2026-10-23). The other rules here are each "Decided by senpai 2026-10-20 night, accepted by Amy
-2026-11-02".
+(10.1).
 
-- The engine registry of 11.3 replaces the first two rules below. The code builds it
-  (`crates/nagaya/src/serving.rs`, `FamilyRegistry`).
-- The process serves an opened engine when its kind has a family library. The kind `fake-toy` has the toy family
-  (11.3b). The kind `mk-qwen38-gfx1151` has the Qwen3.8 family, from the first shard of `QWEN38_SHARDS`. The tokenizer
-  hash of that family must equal the `tokenizer_hash` of the engine identity. Thus the identity selects the library
-  (11.3). Another kind is not a served model, and the log says so.
-- The served model is the `model` of the engine identity, as gossip publishes it (2.3). It has no alias and no
-  `device` yet. Its `context_tokens` is 4096, or `MAX_CONTEXT` for the Qwen3.8 engine.
-- A process serves at most one model in milestone 12. The specs and the pins of a service are files in the store
-  directory, and two services would write one file. A profile with two served engines refuses the start (exit 3).
-  The note "Several text models in one process" below replaces this rule. Amy accepted it on 2026-11-08.
+- The engine registry of 11.3 selects the family library of each engine (`crates/nagaya/src/serving.rs`,
+  `FamilyRegistry`). "Several text models in one process" below has the rules of more than one text model.
 - Specs, pins and snapshots belong to the server. Their routes use the one service. With no served model, they are
   a 503 `unavailable`.
 - A service call blocks, so each call runs on a call thread of its own, on the pool CPUs (3.2a). At most 64 calls
@@ -3698,11 +3542,11 @@ has a tailnet address in its code.)
   engines stop (10.3), and the server waits at most 2 s for its open requests.
 - The routes `render`, `tokenize` and `detokenize` under `/nagaya/v1` are built (11.4b to 11.4d). So are `profile`
   and the load routes (3.3, 3.3b). `cluster`, `cas`, `traces` and the status feed (9.7) are not built.
-- Continuations are built (11.3c). `gogi-conformance` against the process with the fake engine gave 271 to 274 ok,
-  0 FAIL and 8 skip on 2026-10-21, at gogi `dc94cb3`. The number of checks depends on the reply to a random nonce.
+- Continuations are built (11.3c). `gogi-conformance` runs against the process with the fake engine. The number of
+  its checks depends on the reply to a random nonce.
 
-**Several text models in one process.** Reason: milestone 24 step 9
-serves `lfm3`, `lfm3-omni` and Gemma 4 from one process on b70host. gogi "Served models" says that specs, pins and
+**Several text models in one process.** Reason: one process can serve several text models, such as `lfm3`,
+`lfm3-omni` and Gemma 4 on the B70 machine. gogi "Served models" says that specs, pins and
 snapshots belong to the server, not to a served model. Thus one set of files serves all the text models.
 
 - A process serves each text engine whose kind has a family library, opened or described. A profile can have
@@ -3723,19 +3567,15 @@ snapshots belong to the server, not to a served model. Thus one set of files ser
 - The other choice was one book of specs and pins for each served model. gogi forbids it: a pin or a spec does not
   name a served model.
 
-**11.8 Speech.** Amy decided these rules on 2026-10-24, by interview (`AGENTS.md` milestone 17).
+**11.8 Speech.**
 
 - One request is a line or a paragraph. The agent orders the requests and paces them. The nagaya has no stream for
   speech, and a speech job can wait behind other work.
 - The reply sends the audio in chunks while the frames decode.
-- The route was `POST /v1/audio/speech`, in the shape of OpenAI's speech API. It went on 2026-10-27 (3.3).
+- A council generation of the speech model speaks a line (11.8a). The nagaya has no route `/v1/audio/speech`.
 - The engine is Qwen3-TTS VoiceDesign. A text prompt designs each voice, so the voice drifts a little between
-  requests. Amy: "a bit of drift, hmm, inevitable for now, let's let it be and fix up later".
+  requests.
 - The speech engine is on demand (3.3a), and the placement profile chooses its card.
-
-**The route `/v1/audio/speech` goes.** Amy: "remove that route if we have the
-one in council/gogi now". A council generation of the speech model (11.8a) does its work. Commit `1d3e11d` built the
-route, and Git keeps its rules.
 
 **The sampler of a line.** The default sampler is the generation config of the checkpoint: `temperature` 0.9, `top_k`
 50, `top_p` 1.0, and `repetition_penalty` 1.05 for codebook 0. A generation can set `temperature` and `top_k` (11.8a).
@@ -3758,22 +3598,18 @@ camel case gave other ids under Qwen2's pattern.
 The family keeps text that spells a special token as that token, as the reference does. Spec 11.3 gives each family
 its escapes; the speech route has none in v0.
 
-**11.8a Speech in the council API.** Amy decided these rules on 2026-10-25, by interview (M18 step 2).
+**11.8a Speech in the council API.**
 
-- A speech engine is a council served model too. A generation with an `output` of `audio/wav` speaks a line, and the
-  route `/v1/audio/speech` stayed for clients in OpenAI's shape until 2026-10-27 (11.8).
-- A speech context renders its input as it is, and the generation speaks the most recent message. Amy: "I think a
-  tts context would take the exact input and render it ... just process most recent".
+- A speech engine is a council served model too. A generation with an `output` of `audio/wav` speaks a line.
+- A speech context renders its input as it is, and the generation speaks the most recent message.
 - A speech context holds state as a chat holds it: a snapshot of the voice, and the head after each spoken line. The
-  next line then continues with the audio before it in the model state. Amy: "Level 2 sounds awesome tbh perfect
-  display of something council + nagaya can do".
-- The frame is built whether or not Qwen3-TTS keeps its voice better with it. Amy: "I think the frame is right even
-  if qwen doesn't adapt right away. Maybe we can tune it later." A later model may use it better.
+  next line then continues with the audio before it in the model state.
+- The frame is built whether or not Qwen3-TTS keeps its voice better with it. A later model may use it better.
 
 **The speech context.**
 
-- The `system` message is the voice design: the text that `generate_voice_design` takes as `instruct`, such as the
-  ship AI of `~/tts-proto`. A context has one `system` message, first, or none.
+- The `system` message is the voice design: the text that `generate_voice_design` takes as `instruct`. A context has
+  one `system` message, first, or none.
 - Each `user` message is a line to speak, rendered as it is.
 - An `assistant` message after a line holds that line's audio: an object part of `audio/wav` that this served model
   wrote. Its text, when it has some, is not rendered.
@@ -3814,15 +3650,15 @@ of that machinery, because each message end is in the chain.
   make codes from audio.
 - The server drops the codes of an output when the object store drops the object.
 - Audio whose codes the server does not hold is a 404 that names the part, as an object that it does not hold. The
-  client speaks that line again. This replaces a 400 for audio that the model did not write. Reason: the server cannot
+  client speaks that line again. Reason: the server cannot
   tell that audio from audio whose codes it dropped, and the client does the same for both.
 
 **The WAV of an output.**
 gogi leaves the bytes of a stream open.
 
 - The sealed object is a whole WAV: PCM, mono, 16 bits, 24 kHz, with the true sizes in its header.
-- A `GET` of the pending id streams the same bytes, except the two size fields of the header. They are `0xFFFFFFFF`, as
-  the old route `/v1/audio/speech` did, because the length is not known while the frames decode.
+- A `GET` of the pending id streams the same bytes, except the two size fields of the header. They are `0xFFFFFFFF`,
+  because the length is not known while the frames decode.
 
 Reason: a reader of the object gets a valid WAV, and a reader of the stream gets audio before the end.
 
@@ -3835,7 +3671,7 @@ Reason: a reader of the object gets a valid WAV, and a reader of the stream gets
 - `sample` takes `seed`, `temperature` and `top_k`. Temperature 0 is greedy: top_k 1. A `top_p` other than 1, a
   `min_p` other than 0, and a `top_k` of 0 are each a 400 that names it. Reason: the engine samples with a
   temperature and top_k, and the gogi suite sends temperature 0. `output.options` takes `language` only.
-- Identity marks the model with `media.text_replies: false` (gogi `c3acffe`, Decided 2026-10-27). A build, a decision or
+- Identity marks the model with `media.text_replies: false`. A build, a decision or
   a raw read that names it is a 400 that names `model`. Its `snapshot_bytes` is one row of `talker_kv`.
 - The reply has no text, `finish` is `end_turn`, and `usage` counts positions. `snapshots` names the held ends and the
   head.
@@ -3855,7 +3691,7 @@ Reason: a reader of the object gets a valid WAV, and a reader of the stream gets
 
 **A slow reader of speech.**
 
-- A slow reader of a speech stream, or of its pending id, never holds the group thread. No change to the code.
+- A slow reader of a speech stream, or of its pending id, never holds the group thread.
 - The job gives each chunk of audio to the call thread through a queue of 64 chunks (`crates/nagaya/src/speech/mod.rs`,
   `QUEUE`). The call thread copies each chunk into the pending output, and it does not wait for a reader.
 - The stream itself carries the `output` event and `done` only. The audio goes through the pending id, which each
@@ -3864,14 +3700,13 @@ Reason: a reader of the object gets a valid WAV, and a reader of the stream gets
   is a defect of the call thread, not of the client.
 - A closed stream cancels the line at its next chunk, and the pending id is then a `404` (gogi "Outputs"). The job
   gives its slot back. The client speaks the line again.
-- Reason: the rule for images (11.9a) is for a stream that carries events at each step. Since M18 step 2, the audio of
-  a line is an object, and its stream holds no audio. Thus the rule for images does not apply to speech.
+- Reason: the rule for images (11.9a) is for a stream that carries events at each step. The audio of a line is an
+  object, and its stream holds no audio. Thus the rule for images does not apply to speech.
 
-**11.9 Images.** Amy decided these rules on 2026-10-25, 2026-10-27 and 2026-10-28, by interview (`AGENTS.md`
-milestone 18).
+**11.9 Images.**
 
-- The first image model is SDXL base 1.0. Amy, 2026-10-27: "could we start with a general sdxl and pony etc would be
-  easier later?" Pony Diffusion V6 and its merges come later, as other weights on the same engine.
+- The first image model is SDXL base 1.0. Pony Diffusion V6 and its merges come later, as other weights on the same
+  engine.
 - The loader reads the diffusers folders and the single file with Stability's tensor names. Thus a Civitai
   checkpoint loads with no new code.
 - There is no refiner. The VAE is the VAE that the checkpoint ships, in f32. Thus the inpainting checkpoint of 11.9b
@@ -3881,16 +3716,14 @@ milestone 18).
 - A request can ask for a preview at each step. First a linear map from latent to RGB, and TAESD later.
 - The samplers are Euler, Euler a, DPM++ 2M Karras and DPM++ 2M SDE Karras.
 - A request asks for at most 4 images, and each is its own output object.
-- An image engine has one card. Amy, 2026-10-27: "if higher quality models fit on these cards, we'll run them in
-  parallel, one model per card". Each engine is its own served model with its own name (Decided 2026-10-28).
-- Engines on separate cards of one group run their quanta at once (3.2, Decided 2026-10-28).
+- An image engine has one card. Each engine is its own served model with its own name.
+- Engines on separate cards of one group run their quanta at once (3.2).
 - A request never starts a load (3.3).
-
 
 - The last `user` message is the prompt. The negative prompt is `output.options.negative`.
 - The output is `image/png` with an A1111 `parameters` text chunk, so A1111 and Civitai tools read the settings.
 - The engine makes the noise from `sample.seed` with its own random stream. A seed from another tool does not give
-  its image. Reason: Amy chose the simpler stream.
+  its image. Reason: the stream is simpler.
 - The engine makes its stream and runs its sampler on the host, not on the card (`noise.rs` and `sampler.rs` of
   `nagaya-mk-sdxl-bmg`). Reason: the latents of 4 images of 1.5 MP are about
   6 MB, so a step reads and writes them cheaply. On the host, the sampler follows the f32 math of diffusers step by
@@ -3904,9 +3737,7 @@ milestone 18).
 - `clip_skip` is an option now. The family config of the served model gives its default.
 - An image job holds no state in the store. Each request starts with empty latents.
 - A hires pass is not built, and the design leaves room for it. LoRAs are built (11.9a). img2img and inpainting are
-  built (11.9b, milestone 20, done on 2026-11-02). Amy: "We don't
-  necessarily need to build img2img or inpainting right now, but we need to design for them. same for lora and
-  highres/upscale."
+  built (11.9b).
 
 **11.9a An image request.** Reason: the rules of 11.9 need names, ranges and errors before the family and the engine can
 test them.
@@ -3935,15 +3766,14 @@ test them.
   so 2 is the penultimate layer. Reason: a recipe
   from Civitai then works as written. The `clip_skip` of diffusers is 1 less. The last layer, A1111's 1, is not built.
 
-- `spacing` sets the timesteps of `euler` and `euler a`, as diffusers' `timestep_spacing` does. `leading` is the
-  spacing of SDXL base. `trailing` gives the steps that a few-step checkpoint, such as SDXL-Lightning, needs. The
-  DPM++ samplers take their timesteps from their sigmas, so `spacing` with them is a 400 that names `spacing`.
-  Decided 2026-10-29 (Amy, by interview): `spacing` is a request option, not a setting of the served model. Reason:
-  one served model can run both kinds of weights.
+- `spacing` sets the timesteps of `euler` and `euler a`, as diffusers' `timestep_spacing` does. `leading` is the spacing
+  of SDXL base. `trailing` gives the steps that a few-step checkpoint, such as SDXL-Lightning, needs. The DPM++ samplers
+  take their timesteps from their sigmas, so `spacing` with them is a 400 that names `spacing`. `spacing` is a request
+  option, not a setting of the served model. Reason: one served model can run both kinds of weights.
 - `loras` lists objects of safetensors weights, each with its `weight` from -2.0 to 2.0. Each `id` is a `blake3:` id of
   an object (6.15). An id that the store does not hold is a 404 `not_found`, as for any object (6.15).
-  Decided 2026-10-29 (Amy, by interview): at most 8 entries, and the weight range above. Reason: the base weights never
-  change, and each job picks its own set.
+  A request has at most 8 entries, in the weight range above. Reason: the base weights never change, and each job
+  picks its own set.
   - The scale of a LoRA is folded into its up matrix on upload. Reason: the
     engine adds each delta with no further scale, and the base weights never change.
   - A LoRA that the engine refuses makes the job a 400. The message names `output.options.loras` and the key. Reason:
@@ -3975,8 +3805,8 @@ test them.
     job (11.7). A full queue alone lets the job run on.
   - The queue keeps its last two places for the `output` events and the `done` event. A full queue drops each later
     `progress` and `preview` event, and the stream stays open. Thus each client gets the pending ids and the sealed ids,
-    and the worker never waits. Reason: the kaibo review found that a cut could drop the `output` event, so the
-    client could not find its images. Amy's choice "drop the stream" becomes "drop the step events".
+    and the worker never waits. Reason: a cut of the stream can drop the `output` event, and then the client cannot
+    find its images.
 - A stream sends an `output` event for each image when its decode starts. `GET` of a pending id gives the PNG when it
   is sealed, because a PNG has no useful part before its end.
 - A stream sends the events `progress` and `preview` of gogi's council API ("Steps and previews"). Reason: other models
@@ -3993,7 +3823,7 @@ test them.
 - Two changes to the rules above, so that the gogi suite passes.
   - A `system` message is not a 400. The server does not render it, as it does not render the other messages before
     the last `user` message. Reason: the suite opens the context of its output check with a `system` message
-    (gogi-conformance `checks/mod.rs:179` at gogi `33fbe40`).
+    (gogi-conformance `checks/mod.rs`).
   - `sample.temperature` is not a 400, and it has no effect. `top_p`, `top_k` and `min_p` stay a 400. Reason: the
     suite sends `temperature` 0 with its output check (`checks/outputs.rs:36`).
 
@@ -4002,8 +3832,7 @@ test them.
 - Identity lists it with `media.outputs` of `image/png`, no inputs, `media.text_replies: false`, and the capability
   `generate`. A build, a decision or a raw read that names it is a 400 that names `model`.
 - Its `context_tokens` is the tokens of the prompt that the family takes: 3 chunks of 75 tokens. Its `snapshot_bytes`
-  is 0, because it holds no state. The gogi suite at `33fbe40` asked for a positive value. Amy chose to change the
-  check of gogi, and to keep 0 (2026-10-28, by interview).
+  is 0, because it holds no state.
 - Its `weight_hash` and `tokenizer_hash` are the engine's after its first open since the start, and empty before
   (3.3a "Council models on demand").
 - The name of the served image model is the name of its engine in the profile, such as `sdxl-0`. The A1111 chunk names
@@ -4012,7 +3841,7 @@ test them.
 - The engine kind is `mk-sdxl-bmg`, in a build with `xe`. Its
   config and `[engines.family]` take the key `model_dir`, and read `SDXL_MODEL_DIR` with no key, as `gemma4` does.
   `[engines.family]` also takes `clip_skip`, 2 or 3, with the default 2. Reason: these follow the rules of the other
-  engine kinds of b70host.
+  engine kinds of the B70 cards.
 - The single file of 11.9. Reason: a Civitai checkpoint is
   one file with Stability's tensor names, and it holds no tokenizer.
   - The key `checkpoint` of `[engines.config]` names the file. The engine then reads its weights from the file only.
@@ -4041,8 +3870,8 @@ The crate `nagaya-text-sdxl` holds it (11.3).
 - The family gives the engine the ids and the weight of each token. The engine scales the encoder output by the
   weights, and keeps its mean, as A1111 does.
 
-**The design of later image work.** Milestone 20 built img2img and inpainting from it (11.9b), and LoRAs are built. The
-hires pass is not.
+**The design of later image work.** img2img and inpainting are built from it (11.9b), and LoRAs are built. The hires
+pass is not.
 
 - **img2img.** The last `user` message also holds an `image/png` object part. The engine encodes it with the VAE
   into the start latent, and `output.options.strength` sets how many steps run. This needs a VAE encode quantum.
@@ -4053,8 +3882,7 @@ hires pass is not.
   latent up and runs img2img steps on it. Each is one more quantum of kind `step`.
 - The engine calls (engine-abi "Image") take these inputs as optional members. Thus each one adds members and no call.
 
-**11.9b Image inputs.** Amy decided these rules on 2026-10-30, by interview (`AGENTS.md` milestone 20). Milestone 20
-built img2img and inpainting from "The design of later image work" (11.9a). It was done on 2026-11-02.
+**11.9b Image inputs.** img2img and inpainting follow "The design of later image work" (11.9a).
 
 - The image and the mask are object parts of the request.
 - The blend of the latent works with any checkpoint. An inpainting UNet with 9 input channels, such as diffusers'
@@ -4065,7 +3893,7 @@ built img2img and inpainting from "The design of later image work" (11.9a). It w
 The notes below fill the choices that these rules leave open. Each one follows diffusers 0.42.1, the version of the
 oracle, unless it says otherwise. `img2img.py` is its `pipeline_stable_diffusion_xl_img2img.py`, and `inpaint.py` is
 its `pipeline_stable_diffusion_xl_inpaint.py`. `image_processor.py`, `vae.py` and the schedulers are files of the same
-package. The venv `~/.venvs/sdxl-ref` holds it.
+package.
 
 **The request.** Reason: the family, the route and
 the oracle need the names, the ranges and the errors before they can test them.
@@ -4123,11 +3951,10 @@ input before the job starts, so a bad input is a 400, not a failed job.
   no such case.
 - The nagaya ignores an alpha channel, as Pillow's `convert("RGB")` does (`image_processor.py:250`). diffusers takes
   an RGB image.
-- Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-11-02, for milestone 20. A PNG with 1, 2 or 4 bits in a
-  sample is a 400 that names the part, as 16 bits is. A `tRNS` chunk has no effect, as in Pillow's `convert("RGB")` and
-  `convert("L")`. Reason: "8 bits in each channel" leaves these open, and the refusal is the simplest choice. Its cost:
-  Pillow writes a mask of mode `1` with 1 bit, and a palette of at most 16 colors with fewer than 8 bits. Pillow reads
-  such a file as 8-bit values, so a later rule can accept it.
+- A PNG with 1, 2 or 4 bits in a sample is a 400 that names the part, as 16 bits is. A `tRNS` chunk has no effect, as in
+  Pillow's `convert("RGB")` and `convert("L")`. Reason: the refusal is the simplest choice. Its cost: Pillow writes a
+  mask of mode `1` with 1 bit, and a palette of at most 16 colors with fewer than 8 bits. Pillow reads such a file as
+  8-bit values, so a later rule can accept it.
 - Each channel `v` of the image becomes `2 * v / 255 - 1` in f32 (`image_processor.py:167` and `:220`).
 
 **The schedule of a job with an image.** Reason:
@@ -4220,9 +4047,9 @@ diffusers' inpainting UNet, and the profile then needs no new key.
 - The weights are diffusers' `stable-diffusion-xl-1.0-inpainting-0.1`, snapshot `115134f`. Its
   `unet/diffusion_pytorch_model.fp16.safetensors` has `conv_in.weight` of shape `[320, 9, 3, 3]` in F16. Its
   `add_embedding.linear_1.weight` is `[1280, 2816]`, as in SDXL base, so it takes the time ids of base.
-- The engine does not trust the snapshot's `config.json` for this. The first download had no `config.json`, and the
-  configs came later (b70host, 2026-10-30). Its VAE is `madebyollin/sdxl-vae-fp16-fix`. Thus the engine reads the
-  input channels from `conv_in.weight`: 4 or 9. Another count refuses the plan and the open.
+- The engine does not trust the snapshot's `config.json` for this, because a download can lack it. Its VAE is
+  `madebyollin/sdxl-vae-fp16-fix`. The engine reads the input channels from `conv_in.weight`: 4 or 9. Another count
+  refuses the plan and the open.
 - The input of each step has 9 channels in this order: the scaled latent, the latent mask, and the masked image latent
   (`inpaint.py:1612-1615`). Both halves of CFG take the same mask and masked latent (`inpaint.py:877` and `:900-902`).
 - The masked image is the image with 0 at each repainted pixel, after the map to -1 to 1 (`inpaint.py:1455`). The
@@ -4251,31 +4078,28 @@ the same way.
 - `strength` without an image, `mask_blur` without a mask, or a `strength` that runs no step names that member.
 - A 9-channel UNet without an image and a mask names the content of the last `user` message.
 
-**11.9c Qwen-Image 2.1.** Amy decided these rules on 2026-10-31, by interview (`AGENTS.md` milestone 22). Amy: "I'm
-thinking about adding qwen-image to the nagaya. we'd use nagaya instead of diffusepal and retire that project."
+**11.9c Qwen-Image 2.1.**
 
-- The model is Qwen-Image 2.1 (`Qwen/Qwen-Image-2.1`) with the FUSAL Anime LoRA, text to image only. Amy: "fusal
-  only to start. we'll add more variants over time so keep that in mind but just build one."
-- The engine runs on gfx1151host's gfx1151. Amy: "the goal of nagaya is to make our lab flexible, eventually we'll have
-  models across all the hosts to choose from."
-- The text encoder is the Heretic Qwen3-VL-8B of FUSAL, in bf16 (Amy: "keep bf16"). FUSAL trained its LoRA against
+- The model is Qwen-Image 2.1 (`Qwen/Qwen-Image-2.1`) with the FUSAL Anime LoRA, text to image only. Other
+  variants can come later, so the design keeps room for them.
+- The engine runs on the gfx1151.
+- The text encoder is the Heretic Qwen3-VL-8B of FUSAL, in bf16. FUSAL trained its LoRA against
   the output of this encoder.
-- The store keeps the encoder output of each prompt (Amy: "yes"). 6.16 gives the rules.
-- hipBLASLt does the large bf16 matrix multiplies. Amy: "hipBLASLt for GEMMs but we let it ride with changes over
-  time, ok with some change in behavior if upstream changes". 12.1, "The plan table of a HIP engine", gives the rules.
-- Qwen3.8 and Qwen-Image are both loaded while gfx1151host only serves. Before a large build, a client unloads Qwen-Image
-  through the load routes (3.3b).
+- The store keeps the encoder output of each prompt. 6.16 gives the rules.
+- hipBLASLt does the large bf16 matrix multiplies. A change of hipBLASLt upstream can change the behavior a little,
+  and that is accepted. 12.1, "The plan table of a HIP engine", gives the rules.
+- Qwen3.8 and Qwen-Image are both loaded while the Strix Halo machine only serves. Before a large build, a client
+  unloads Qwen-Image through the load routes (3.3b).
 - The base model and the LoRA are under the Qwen Research License: non-commercial research and evaluation only. The
   Heretic encoder keeps its Apache 2.0 license (FUSAL `text_encoders/ORIGIN.md`).
 
 The notes below fill the choices that these rules leave open. Each one follows diffusers 0.41.0.dev0 in the venv of
-`~/src/diffusepal`, unless it says otherwise. Since 2026-11-01, a copy of that venv is
-`~/.venvs/nagaya-qwenimage21-ref`. `pipeline.py` is its `pipelines/qwenimage21/pipeline_qwenimage21.py`,
+the diffusers reference, unless it says otherwise. `pipeline.py` is its `pipelines/qwenimage21/pipeline_qwenimage21.py`,
 and `transformer.py` is its `models/transformers/transformer_qwenimage21.py`. `vae.py` is its
 `models/autoencoders/autoencoder_kl_qwenimage21.py`, and `scheduler.py` is its
 `schedulers/scheduling_flow_match_euler_discrete.py`.
 
-**The engine and its weights.** Reason: a variant is other weights (Amy, above). Thus the profile names each file, and
+**The engine and its weights.** Reason: a variant is other weights (above). Thus the profile names each file, and
 the code names none.
 
 - The engine kind is `mk-qwenimage21-gfx1151`, in a build with `hip`. Its crate is `nagaya-mk-qwenimage21-gfx1151`.
@@ -4291,7 +4115,7 @@ the code names none.
   strength. Thus each variant has its own identity.
 
 **The load.** Reason: text to image reads only some of the files. A strict load catches a wrong file before a job runs,
-as diffusepal's `models.py:44-50` does.
+as the diffusers reference does.
 
 - The engine loads the text tower of the encoder: `embed_tokens` and the 36 layers. It does not load the vision tower
   (`visual`), `lm_head`, or the final norm. Thus the encoder holds about 14.10 GiB of the 16.33 GiB file.
@@ -4303,12 +4127,12 @@ as diffusepal's `models.py:44-50` does.
 - A tensor that the engine needs and the file lacks refuses the plan and the open. So does a tensor that is in no
   list of the engine, whether it loads it or skips it.
 - The engine loads the VAE decoder and `post_quant_conv` only. The VAE encoder comes with img2img (11.9b).
-- The VAE file holds F32. The engine rounds it to bf16 at the open, because diffusers runs the VAE in bf16
-  (diffusepal `models.py:44`).
+- The VAE file holds F32. The engine rounds it to bf16 at the open, because the diffusers reference runs the VAE
+  in bf16.
 - The plan counts the weights from the file headers, with no load: the transformer is 13.25 GiB and the text tower
   14.10 GiB. The VAE decoder adds less than 1 GiB in bf16. The scratch of a slot is a mandatory term (engine-abi
   "Core").
-- The scratch of the largest slot is 7 GiB. `examples/measure.rs` measured it on gfx1151host on 2026-11-01
+- The scratch of the largest slot is 7 GiB. `examples/measure.rs` measured it on the Strix Halo machine
   (`crates/nagaya-mk-qwenimage21-gfx1151/src/plan.rs:136-140`). `docs/deploy.md`, "Two engines on gfx1151host", gives the
   pool.
 
@@ -4346,8 +4170,8 @@ it (11.3). Reason: these rules give the ids of the processor that FUSAL trained 
   prefix rows of a slot (engine-abi "Image").
 - The family does not parse A1111 weights, such as `(word:1.2)`. Brackets are plain text. Reason: this encoder has no
   weight for each token, and diffusers gives it the text as it is.
-- The family does not add the trigger phrase `fusal style.` The client writes it, as diffusepal and the FUSAL README
-  do. Reason: the family never changes a prompt, and the A1111 chunk then gives the request's prompt.
+- The family does not add the trigger phrase `fusal style.` The client writes it, as the diffusers reference and the
+  FUSAL README do. Reason: the family never changes a prompt, and the A1111 chunk then gives the request's prompt.
 - The identity's `template` is the template text above. Thus a new template is a new recipe (12.1).
 
 **The served Qwen-Image model.** Reason: these rules follow the served
@@ -4369,16 +4193,16 @@ image model of 11.9a, and they refuse each member that this engine cannot run.
   message is a 400 that names it, because the model lists no inputs.
 - `previews: true` gives the `progress` events and no `preview`. The latent has 64 channels, and no map to RGB is fitted
   yet. Reason: gogi's contract lets a served model send no
-  preview, and that is not an error ("Steps and previews"). The first rule here was a 400, and gogi's suite failed it.
+  preview, and that is not an error ("Steps and previews").
 - The sizes are multiples of 32. The VAE scales by 16, and the transformer reads the latent in groups of 2 by 2
   (`pipeline.py:396`, `:752-754`). 2,097,152 pixels is 8192 latent tokens, the `max_image_seq_len` of the scheduler.
 - The default of 40 steps is the default of `pipeline.py:519`. The FUSAL README asks for 30 to 40.
 - `cfg` above 1.0 and a `negative` prompt are refused now. FUSAL and the pipeline both use 1.0 (`pipeline.py:550`).
-  True CFG is a design for a later variant, and nothing builds it now (Amy, 2026-11-01, by interview). It runs a
+  True CFG is a design for a later variant, and nothing builds it now. It runs a
   second pass of the transformer for each step, with the negative prompt as its condition.
-- The PNG is RGBA (Amy, 2026-11-01, by interview). The nagaya does not flatten it to RGB.
-- The output is `image/png` in RGBA, because the VAE gives 4 channels (`vae.py` config `out_channels` 4). diffusepal
-  writes RGBA PNGs too.
+- The PNG is RGBA. The nagaya does not flatten it to RGB.
+- The output is `image/png` in RGBA, because the VAE gives 4 channels (`vae.py` config `out_channels` 4). The
+  diffusers reference writes RGBA PNGs too.
 - The A1111 chunk gives `Steps`, `Sampler: Euler`, `CFG scale: 1`, `Seed`, `Size` and `Model`, with no `Clip skip`.
 
 **The schedule.** Reason: these rules give the sigmas of `pipeline.py:733-746` and `scheduler.py`, bit for bit. The
@@ -4415,16 +4239,16 @@ and values is exact, so it is a rule and not an approximation.
   The oracle size of 256 also gives an even side.
 - Each step gives the output of the latent tokens only (`pipeline.py:796`).
 
-**The attention.** "choose a balance of
-accuracy & speed". The engine runs attention in a fused flash kernel (`nagaya-mk-hip`, `hip/flash.hip`). The scores stay
-in registers, with a running max and sum for each row, and the probabilities round to bf16 before the values.
+**The attention.** Reason: a balance of accuracy and speed. The engine runs attention in a fused flash kernel
+(`nagaya-mk-hip`, `hip/flash.hip`). The scores stay in registers, with a running max and sum for each row, and the
+probabilities round to bf16 before the values.
 
 - The other path runs the scores as a GEMM in f32, a softmax kernel, and a GEMM with the values. The profile key
   `attention = "gemm"` selects it. Both paths pass every gate of 8.3.
-- On gfx1151host on 2026-11-01, a step of 1024 by 1024 took 5.8 s on the GEMM path and 4.2 s with flash. A step of 1440
-  by 1440 took 18.3 s and 11.0 s. The GEMM path moved about 200 GB of scores through memory for each step.
-- The gaps were nearly the same. The step gate gave 2.24e-5 and 2.51e-5 at step 0. The run gave 5.14e-5 and
-  5.58e-5. The image gate gave mean byte gaps of 0.721 and 0.680.
+- On the Strix Halo machine, a step of 1024 by 1024 takes 5.8 s on the GEMM path and 4.2 s with flash. A step of
+  1440 by 1440 takes 18.3 s and 11.0 s. The GEMM path moves about 200 GB of scores through memory for each step.
+- The gaps are nearly the same. The step gate gives 2.24e-5 and 2.51e-5 at step 0. The run gives 5.14e-5 and
+  5.58e-5. The image gate gives mean byte gaps of 0.721 and 0.680.
 - The flash kernel takes heads of 128 values. The single head of the VAE's attention, of 1152 values, keeps the GEMM
   path.
 
@@ -4445,25 +4269,22 @@ in bf16.
   the keys and values of the conditioning rows in each of the 32 blocks. On a hit, it does only the second part.
 - Each `image_step` is one quantum of kind `step`. The decode is one quantum of kind `step`. The images of a request
   share each quantum (5.2).
-- A step of 1024 by 1024 runs 4096 latent tokens through 7.1 billion parameters. diffusepal took 4.5 s for it on
-  gfx1151host (diffusepal `README.md`, "Speed"). `max_quantum_ms` is 60000 until a measurement sets it, as for SDXL.
-  Milestone 22 did not measure it (`crates/nagaya-mk-qwenimage21-gfx1151/src/plan.rs:22-23`).
-- Thus a step of Qwen-Image can hold gfx1151host's device for seconds. A Qwen3.8 job then waits up to one quantum (D8).
-- A step never splits into quanta of some blocks each. Amy decided this on 2026-11-01, by interview. A chat job on
-  gfx1151host can wait up to one step while an image renders.
+- A step of 1024 by 1024 runs 4096 latent tokens through 7.1 billion parameters. `max_quantum_ms` is 60000 until a
+  measurement sets it, as for SDXL (`crates/nagaya-mk-qwenimage21-gfx1151/src/plan.rs:22-23`).
+- Thus a step of Qwen-Image can hold the device for seconds. A Qwen3.8 job then waits up to one quantum (D8).
+- A step never splits into quanta of some blocks each. A chat job on the same device can wait up to one step while an
+  image renders.
 
-**11.10 Embeddings.** Amy decided these rules on 2026-10-30, by interview (`AGENTS.md` milestone 19). gogi's contract
-is "Embeddings" in gogi `docs/council-api.md`, at gogi `6db7e98`.
+**11.10 Embeddings.** gogi's contract is "Embeddings" in gogi `docs/council-api.md`.
 
-- The first embedding model is EmbeddingGemma 2 (`google/embeddinggemma-2`), for the semantic search of kaijutsu.
+- The first embedding model is EmbeddingGemma 2 (`google/embeddinggemma-2`), for semantic search.
 - The route is `POST /council/v2/embeddings`. It is native to the council API, not an extension (11.4a).
 - The request names its `task`. The family renders the prompt of the task, and a client never writes it.
 - `dimensions` asks for a shorter vector: 768, 512, 256 or 128. The nagaya cuts the vector and normalizes it again.
 - The inputs are text now. The model also reads audio and images, and those come later.
 - The engine runs on a B70 card on the shared interpreter. It is resident beside Gemma 4.
 
-Built on 2026-10-30: the route, in `432cf8b`. Milestone 19 step 6 built the served embedding model, its job and the
-cut on the host.
+The route, the served embedding model, its job and the cut on the host are built.
 
 **The served embedding model.**
 Reason: these rules follow the served image model (11.9a) and gogi's rules for a model that only embeds.
@@ -4542,31 +4363,29 @@ Reason: the image job (11.9a) gives the shape, and an embedding holds no state.
   test that needs no card.
 - A cut vector of zeros has no direction, so it cannot be normalized. The request then fails with a 500 `internal` that
   names the input, and no vector goes out. Reason:
-  the division gave NaN, and a 200 with NaN values hides a defect of the engine.
+  the division gives NaN, and a 200 with NaN values hides a defect of the engine.
 - A job charges no context and stores nothing. The plan of the engine holds its weights and the work of one input of
   `context_tokens`.
 
-**The residency of the embedding engine.** Amy: "I will generally want an
-EmbeddingGemma always loaded somewhere. Maybe we even need a pin."
+**The residency of the embedding engine.** Reason: an embedding engine is always loaded somewhere.
 
 - The embedding engine is resident and pinned (3.3a, "Explicit layout"). No load removes it, and no idle time unloads
   it. A swap of Gemma 4 moves it for the time of the swap, so its requests can get a 503 for a few seconds.
-- Memory: card 1 has 2,469,944,308 bytes beside gemma, and card 0 has 4,394,792,436 (the profile of b70host,
+- Memory: card 1 has 2,469,944,308 bytes beside gemma. Card 0 has 4,394,792,436 (the profile of the B70 machine,
   budgets). The text tower of EmbeddingGemma 2 is 542,005,296 bytes in bf16 (the header of `model.safetensors`).
 - The placement is card 1. Reason: card 0 has four on-demand engines (`voice`, `sdxl-0`,
   `pony-0` and `lightning-0`), and card 1 has two.
 
-**11.11 LFM3.** Amy decided these rules on 2026-11-06, by interview (`AGENTS.md` milestone 24).
+**11.11 LFM3.**
 
 - Two served models run on one engine kind, `mk-lfm3-bmg`: `LFM3-Omni-2B` and `LFM3-1.7B`. Each is other weights.
 - Omni reads text, images and audio. It writes text, speech, or text and speech in turn. Video comes later.
-- Both models are resident on card 0 of b70host. Gemma 4 is on demand, and only the load routes load it (3.3b).
+- Both models are resident on card 0 of the B70 machine. Gemma 4 is on demand, and only the load routes load it (3.3b).
 - Qwen3-TTS VoiceDesign stays the speech engine (11.8). Omni's speech is a second choice, with its own voices.
-- The nagaya does not check a model license. Amy: "anyone using it has to accept the model license on their own when
-  they download it for use imo. so we just build, let users make their own decisions".
+- The nagaya does not check a model license. The user accepts it at the download.
 
 The checkpoints are LiquidAI `LFM3-Omni-2B` at `21d75123f86c1f7ffb4bef1ea202710c4e7ebe67` and `LFM3-1.7B` at
-`0dc4268b561499c648c7ba7c9466bf3d8d01517a`. `AGENTS.md` milestone 24 gives the shapes from their `config.json`.
+`0dc4268b561499c648c7ba7c9466bf3d8d01517a`.
 
 **The served LFM3 models.** Reason: these rules follow the served text model
 (11.1) and the speech model (11.8a), and they add no member to gogi.
@@ -4577,12 +4396,11 @@ The checkpoints are LiquidAI `LFM3-Omni-2B` at `21d75123f86c1f7ffb4bef1ea202710c
   Its replies hold text, so it serves builds, decisions and raw reads too.
 - Each served model gets its own `tokenizer_hash` and `template`, because the two checkpoints ship different files.
 - A slot holds 32,768 positions by default, the context of Omni's model card. A profile can list the positions of
-  each slot, up to 262,144 (engine-abi "Slot sizes", Decided 2026-11-12). `context_tokens` is the longest slot.
+  each slot, up to 262,144 (engine-abi "Slot sizes"). `context_tokens` is the longest slot.
 
-**The served name of an LFM3 engine.** Reason: the profile of b70host
-has two engines of `LFM3-1.7B`, `lfm3` and `lfm3-1` (milestone 29). The rule of 11.1 gives both the served name
-`lfm3`, because both identities have the `model` `lfm3`. A served name is unique (2.3), so the start exited 3 at 12:59
-on 2026-11-10. The profile comment already said: "Each engine name is its served name."
+**The served name of an LFM3 engine.** Reason: a profile can have two engines of `LFM3-1.7B`, such as `lfm3` and
+`lfm3-1`. The rule of 11.1 gives both the served name `lfm3`, because both identities have the `model` `lfm3`. A
+served name is unique (2.3), so the start exits with 3.
 
 - The served model of an engine of the kind `mk-lfm3-bmg` is its engine name in the profile. This replaces the rule
   of 11.1 for this kind only.
@@ -4590,8 +4408,7 @@ on 2026-11-10. The profile comment already said: "Each engine name is its served
 - The kind gives its served name before the open (`Factory::served_names`, 2.3, "The check of a name").
 - The engines `lfm3` and `lfm3-omni` keep their served names, because their engine names are the same.
 - Other text kinds keep the rule of 11.1. Gemma 4 and the Qwen3.8 engine serve the `model` of their identity.
-- The other choice was a served name in the config of the engine. It adds a key, and the engine name already gives a
-  name that is unique.
+- A served name in the config of the engine is not used. It adds a key, and the engine name is already unique.
 
 **The LFM3 family.** The crate `nagaya-text-lfm3` holds the family library
 of both models (11.3).
@@ -4619,8 +4436,8 @@ above leave these choices open, and each one is the simplest choice that the ref
   after a later user message, and a held prefix stays a prefix. The Gemma 4 library does the same.
 - **The thinking of Omni.** `lfm3-omni` does not reason, so its family does not think, and its served model does not
   declare `thinking`. A context with `thinking: true` is a 400 that names `thinking`, as the first rule said. The
-  reply parser of Omni starts in the content. `lfm3` declares `thinking`. Changed on 2026-11-07: gogi now requires
-  `thinking`, and its suite sends `thinking: true` only to a model that declares it (Amy, 2026-11-07).
+  reply parser of Omni starts in the content. `lfm3` declares `thinking`. gogi requires
+  `thinking`, and its suite sends `thinking: true` only to a model that declares it.
 - **Escapes.** Each of the 140 added tokens of `tokenizer.json` is a marker. This includes the tokens that the file
   does not mark special, such as `<think>` and `<tool_call>`. Client text that spells a marker is content.
 - **Reads.** A read closes the thinking with `<think></think>`, the prompt of the template for thinking off. A read
@@ -4647,8 +4464,7 @@ above leave these choices open, and each one is the simplest choice that the ref
 - **Media.** `Family::render` reads each media part through the object reader of the process. The header of the
   part gives its count of positions. `Lfm3Family::prepare` also gives the rows of each part for the engine. The
   family writes the placeholder token that many times between `<|vision_start|>` and `<|vision_end|>`, as Liquid's
-  processor does. `lfm3` refuses each media part. This replaced the first rule on 2026-11-06, in which
-  `Family::render` refused each media part until the media preprocessing was built.
+  processor does. `lfm3` refuses each media part.
 - **The marker of a mode.** `<|audio_start|>` or `<|mixed_start|>` follows the whole generation prompt, after
   `<think></think>`. transformers appends it there (`generate` in `modeling_lfm3_omni.py`).
 
@@ -4679,19 +4495,17 @@ the note above leaves these choices open, and each one is the simplest choice th
   computes in f32, so its bins of low power hold the noise of that rounding. The test bounds the gap at each level.
 - **Assistant audio.** The rule of "The generation
   modes" below holds. An `assistant` audio part names an output of this served model, and its positions are the
-  frames of the codes that the service keeps. Until milestone 24 step 12 builds it, the part is a 400 that names it.
+  frames of the codes that the service keeps. Until the nagaya builds it, the part is a 400 that names it.
 
 **Video, and audio at any rate.** These rules
-replace the rule above that a WAV must be 16 kHz mono. Step 10 built them on 2026-11-08. A build with no feature
-`video` keeps the rule above.
+replace the rule above that a WAV must be 16 kHz mono. A build with no feature `video` keeps the rule above.
 
 - A `user` part can be a video object, such as `video/mp4` or `video/webm`. The family decodes it on the CPU with
   ffmpeg's libraries. Reason: the reference loads a video through ffmpeg, so its frames are the closest to the oracle.
 - The decoder is behind a cargo feature. A build with no feature refuses a video part with a 400 that names the part,
   and `media.inputs` lists no video type.
-- The versions of the ffmpeg libraries are build facts of the engine identity (12.1). Reason: a new decoder can give
-  other frames from the same bytes, and the recipe of a part (below) names only the bytes.
-  the recipe item of a video part names them ("The video of a request", below).
+- The recipe item of a video part names the versions of the ffmpeg libraries ("The video of a request", below).
+  Reason: a new decoder can give other frames from the same bytes.
 - The frames follow the video processor of the checkpoint: 2 frames each second, from 4 to 384 frames, and at most
   768 video tokens. Each frame goes through the vision tower.
 - The sound track of a video becomes an audio part beside its frames, in the order of the reference processor.
@@ -4707,11 +4521,10 @@ above leaves these choices open. Each follows the checkpoint's own processors (`
 - **A reading of the note above.** The processor caps a frame at 768 video tokens only with `cap_pixels_per_frame`,
   and the checkpoint sets it false. So the bound is a pixel budget: all the frames together hold from 4,096 to
   25,165,824 pixels.
-- **The decoder version.** Today the build facts are in the identity digest (12.1). So with the versions in the
-  identity, an update of ffmpeg would make each held context fill again, text contexts too. The media type in the
-  recipe item of a video part (tag 9) names the versions of libavformat, libavcodec, libswscale and libswresample.
-  Thus an update changes only the recipes of video parts.
-  This replaces the rule of the identity above.
+- **The decoder version.** The media type in the recipe item of a video part (tag 9) names the versions of
+  libavformat, libavcodec, libswscale and libswresample. Thus an update of ffmpeg changes only the recipes of video
+  parts. Reason: the build facts are in the identity digest (12.1). With the versions in the identity, an update
+  would make each held context fill again, text contexts too.
 - **Sampling.** The frame count is the floor of the frames of the stream divided by its rate and multiplied by 2. It
   is then at least 4, at most 384, and at most the frames of the stream. The indices are evenly spaced from the first
   frame to the last, rounded half to even.
@@ -4729,7 +4542,7 @@ above leaves these choices open. Each follows the checkpoint's own processors (`
   encoder rows are split at the time of the first frame of each pair, as the reference splits them. Each part follows
   the video tokens of its pair. This needs a new span kind in the engine: a run of the rows of one clip.
 - **The decode gate.** The frames come from ffmpeg in the family, and from torchcodec in the reference. Both use
-  ffmpeg's decoder, its color conversion and its resampler. On 2026-11-08 with ffmpeg 9.0.2, both gave the same bits
+  ffmpeg's decoder, its color conversion and its resampler. With ffmpeg 9.0.2, both give the same bits
   of the frames and of the sound. So the decode gate is a gate of bits with the same ffmpeg build.
 - **Limits.** A pair of more than 2,048 positions is a 400 that names the part. So is a sound of more than 4,096 mel
   frames, about 41 s. These are the limits of the engine's tower and encoder. The family checks them before its work.
@@ -4807,7 +4620,7 @@ notes above leave these choices open. Each one is the simplest choice that follo
   the slot bounds the frames, as for Qwen3-TTS (11.8a).
 - **After the end frame.** The reply goes on in text until a stop token, as the reference does. In `interleaved` mode
   after `<|text_end|>`, the end frame ends the reply. The reference samples one more token there, `<|im_end|>` in the
-  oracle. The nagaya does not, because its reply parser ended at `<|text_end|>`.
+  oracle. The nagaya does not, because its reply parser ends at `<|text_end|>`.
 - **A stop before the audio ends.** A stop token, `max_tokens` or a full slot ends the reply and its audio. The WAV
   holds the frames so far, and the codec gives its last samples.
 - **One output.** The text sampler never picks `<|audio_start|>` or `<|mixed_start|>`, in a speech reply too. Thus a
@@ -4819,8 +4632,8 @@ notes above leave these choices open. Each one is the simplest choice that follo
   is a 400 that names it.
 - **Continuations.** A generation with an `output` and an open message is a 400 that names `continue`. Reason: an
   open message holds text only (gogi "Continuations").
-- **No head.** A reply with audio holds no head. Reason: the family refuses an `assistant` audio part until a later
-  step reads its codes ("Assistant audio" above).
+- **No head.** A reply with audio holds no head. Reason: the family refuses an `assistant` audio part ("Assistant
+  audio" above).
 - **Codes.** The service keeps the codes of each output in host memory, under its content id. A restart drops them,
   and 11.8a gives the 404 for codes that the service does not hold.
 - **PCM.** A sample is clamped to [-1, 1], then rounded to `round(v × 32767)` with ties to even. The codec op of
@@ -4846,26 +4659,24 @@ the backbone. A ring keeps the window of a sliding layer, as Gemma 4 does (engin
 engine").
 
 - The 6 full attention layers keep their keys and values for each position, as cells.
-- The 5 sliding attention layers keep their keys and values in rings. **Amended** by Claude Opus 5.5, 2026-11-06
-  (milestone 24 step 6), and Proposed. A ring holds the last 2,048 positions, and a snapshot holds the positions that
-  its ring holds. A restore needs the last 256. Reason: the feed gate of 8.3 reads each row part from position 0
-  (engine-abi "The first LFM3 binding").
+- The 5 sliding attention layers keep their keys and values in rings. A ring holds the last 2,048 positions, and a
+  snapshot holds the positions that its ring holds. A restore needs the last 256. Reason: the feed gate of 8.3 reads
+  each row part from position 0 (engine-abi "The first LFM3 binding").
 - The 13 convolution layers keep a state of the last 6 inputs of each channel. It is a fixed part of the slot, not a
   row part, so a snapshot holds it whole at each boundary.
 - The encoders of the media and the depth decoder hold no state between quanta.
 
-**The LFM3 oracle.** Reason: each stage has its own gate (`AGENTS.md`
-milestone 24, step 2), so a defect shows in the stage that has it.
+**The LFM3 oracle.** Reason: each stage has its own gate, so a defect shows in the stage that has it.
 
 - `tools/lfm3_golden.sh` writes the oracle from transformers on the CPU, in f32, with the pinned revisions.
 - The gates are the vision rows, the audio rows and the logits of the backbone. Two more are the depth logits with
   forced codes, and the decoded audio of fixed codes.
 - The codes of a reply are random, so the gate of the depth decoder forces the codes and compares the logits. The
-  oracle of Qwen3-TTS forced its codes in the same way (`AGENTS.md` milestone 17).
+  oracle of Qwen3-TTS forces its codes in the same way.
 - The tolerance of each gate is measured first, as for each family (8.3).
 
-**The tolerances of the LFM3 gates.** Reason: the card run of 2026-11-06
-measured each gate. These bounds keep the margin of Gemma 4's logit gate, 1e-3 over a measured 3.4e-5.
+**The tolerances of the LFM3 gates.** Reason: a card run measured each gate. These bounds keep the margin of Gemma 4's
+logit gate, 1e-3 over a measured 3.4e-5.
 
 - A stage asserts a relative error below 1e-4. The worst stage was 6.8e-6, the projector of the vision tower. The
   layers of the backbone gave 7.3e-7, the audio rows 2.0e-6, the depth logits 7.0e-7 and the codec 5.7e-6.
@@ -4874,7 +4685,7 @@ measured each gate. These bounds keep the margin of Gemma 4's logit gate, 1e-3 o
 - A wrong rotation, window or gate gave a relative error of 0.09 or more, and a wrong audio op 1.3e-2 or more.
 - The constants are `STAGE_TOL` and `LOGIT_TOL` in `crates/nagaya-mk-lfm3-bmg/tests/common/mod.rs`.
 
-**11.12 Control vectors.** Amy decided these rules on 2026-11-07, by interview (`AGENTS.md` milestone 25). A control
+**11.12 Control vectors.** A control
 vector changes the residual of a model while it runs (`docs/cv.md`). gogi's contract is "Control vectors", and a
 context names its list in `control` (gogi "Contexts"). The first models are `lfm3`, then `lfm3-omni`.
 
@@ -4886,11 +4697,11 @@ context names its list in `control` (gogi "Contexts"). The first models are `lfm
   or of another width, is a 400 that names `control[i].vector`.
 - **The order.** The items apply in their order in the list. An item changes the residual after each layer that
   the vector holds, before the next layer reads it. The prompt pass and each decode step get the same items.
-- **Strengths.** The client sets each strength. The nagaya searches for no strength (Amy: "Hand strength first").
-- **Omni.** Omni's vector acts on its text passes only (Amy, 2026-11-07: "we would only need to do this for omni's
-  text"). The prompt pass and each text step get the items, also over the rows of a media part. A speech frame is a
-  `frame` call (engine-abi "LFM3"), and it takes no control list. Its position still holds the rows that the steered
-  passes before it gave. The control list is in the root recipe, so the frames of a steered reply have its recipe.
+- **Strengths.** The client sets each strength. The nagaya searches for no strength.
+- **Omni.** Omni's vector acts on its text passes only. The prompt pass and each text step get the items, also over the
+  rows of a media part. A speech frame is a `frame` call (engine-abi "LFM3"), and it takes no control list. Its position
+  still holds the rows that the steered passes before it gave. The control list is in the root recipe, so the frames of
+  a steered reply have its recipe.
 
 **The recipe of a control list.** A non-empty list goes into the root
 recipe as the lab state, tag 4 (6.2). Its bytes are these, little-endian:
@@ -4899,14 +4710,13 @@ recipe as the lab state, tag 4 (6.2). Its bytes are these, little-endian:
 - for each item, the 32 bytes of the vector's content id, one byte for the operation, and the `f64` strength.
 
 The operation byte is 1 for `add`, 2 for `ablate` and 3 for `clamp`. An empty list gives tag 4 with no bytes, as
-each plain context has now (`recipe_root`, `crates/nagaya-store/src/lib.rs:478`). Thus the recipe of a plain context
+each plain context has (`recipe_root`, `crates/nagaya-store/src/lib.rs:478`). Thus the recipe of a plain context
 does not change. A list of `add` and `ablate` items with strength 0 gives the bits of the plain
 model, but it still has its own recipe. Reason: one rule with no special case, and the cost is one fill of the
 cache for each such list.
 
-**The strength of each layer.** Amy decided that the
-strength by layer is a member of the control item (`AGENTS.md` milestone 28). Reason for the shape: an agent sets one
-strength and a shape over the layers. A layer that it leaves out stays untouched, also for `clamp`.
+**The strength of each layer.** The strength by layer is a member of the control item. Reason for the shape: an agent
+sets one strength and a shape over the layers. A layer that it leaves out stays untouched, also for `clamp`.
 
 - **The member.** An item can have `layers`: an object from a layer number, in decimal, to a finite number. With
   `layers`, the item acts only on the listed layers, at `strength` times the number of each. Without it, the item acts
@@ -4915,7 +4725,7 @@ strength and a shape over the layers. A layer that it leaves out stays untouched
   layer number, and a number that is not finite. A layer that the vector does not hold is untouched.
 - **The recipe.** An item with `layers` sets the bit `0x80` of its operation byte. A `u32` count of layers follows
   its strength, then each layer as a `u32` with its `f64` number, in rising layer order. An item without `layers`
-  keeps its bytes, so the recipes of the lists of today do not change.
+  keeps its bytes, so the recipes of lists with no `layers` do not change.
 - **The engine.** The control item of the engine ABI gets the strength of each listed layer (engine-abi "Control
   vectors"). An `add` or an `ablate` of strength 0 at a layer gets no task there, as for a whole item.
 
@@ -4949,10 +4759,9 @@ choices below are open in the rules above and in gogi.
 
 Reason: each choice is the smallest one that keeps every promise of the capability true.
 
-**11.13 Context records.** gogi "Context records" has the rules (`AGENTS.md` milestone 32). 6.17 says where the
-nagaya holds a record, and 11.1a says what the cluster does. The notes below are **Proposed** by Claude Fable 5.2,
-2026-11-11, for milestone 32 step 2. Reason: gogi leaves these choices to the server, and each is the simplest one.
-Amy decides.
+**11.13 Context records.** gogi "Context records" has the rules. 6.17 says where the nagaya holds a record, and
+11.1a says what the cluster does. The notes below fill the choices that gogi leaves to the server. Reason: each is
+the simplest one.
 
 - **Whole before the decode.** The routes `contexts`, `decisions`, `reads`, `generations` and `control-vectors` call
   `gogi_proto::resolve_request` on the body as JSON, before they decode it. Only a generation reads an open message
@@ -4978,8 +4787,7 @@ Amy decides.
 
 **11.14 Requests in flight share a prefix.**
 Two requests can be in flight together with contexts that begin with the same tokens, while the store holds no
-snapshot of them. Then the nagaya feeds those tokens once. The notes below are **Proposed** (claude-fable-5-2,
-2026-11-11), and each is the simplest way to keep the rule:
+snapshot of them. Then the nagaya feeds those tokens once. Each note below is the simplest way to keep the rule:
 
 - **A book for each engine.** The book holds the recipe of each boundary that a job in flight will hold
   (`council/in_flight.rs`). A build and a generation enter the book before they take a charge or a slot.
@@ -4991,32 +4799,30 @@ snapshot of them. Then the nagaya feeds those tokens once. The notes below are *
 - **The numbers do not change.** The later job looks up its boundaries when it starts, as each job does (6.6). It
   finds the snapshot, and it gives the numbers that it gives alone.
 - **Not yet.** A decision, a raw read, a control-vector request and the lab routes do not enter the book.
-- **Measured before the rule.** On 2026-11-11, 8 generations ran at once on `lfm3`, each with the same new head of
-  217 tokens. Each one fed the head: 1,736 tokens, where 217 were needed.
+- **The reason.** Take 8 generations at once on `lfm3`, each with the same new head of 217 tokens. Without the book,
+  each one feeds the head: 1,736 tokens, where 217 are needed.
 
 The tests are in `crates/nagaya/tests/council_in_flight.rs`.
 
 **11.15 Several replies.** gogi "Several replies" has the rules: a generation with `forks` or `contexts` gives one
-reply for each (`AGENTS.md` milestone 32 step 6). The route makes each `parent` whole first (11.13). Then
+reply for each. The route makes each `parent` whole first (11.13). Then
 `gogi_proto::replies::split` gives one plain generation body for each reply. The route runs each body as a plain
 generation and joins the results with `gogi_proto::replies::join`.
 
-The notes below are **Proposed** by Claude Fable 5.2 (claude-fable-5-2), 2026-11-11. Reason: gogi leaves these
-choices to the server, and each is the simplest one. @tobert decides.
+The notes below fill the choices that gogi leaves to the server. Reason: each is the simplest one.
 
 - **The replies run at the same time.** Each reply is a call of 11.7 with its own call thread and its own job. Thus
   a request with 8 replies takes 8 of the 64 calls. Reason: the book of 11.14 then feeds a shared prompt once. Also,
   the decode quanta of the replies join in one pass on an engine that joins (engine-abi D11).
 - **A reply waits for a slot of its own request.** A reply takes a slot as any job does, and a reply with no free
   slot is `busy` (11.3c). Then the reply waits for the replies of its request that run. When one or more of them
-  ended, the route runs the waiting replies again. Thus a request for 8 replies on an engine with 4 free slots runs
-  4 replies, then 4 more. When no reply of the request ended, the request has nothing to wait for, and it is a 429,
+  end, the route runs the waiting replies again. Thus a request for 8 replies on an engine with 4 free slots runs
+  4 replies, then 4 more. When no reply of the request has ended, the request has nothing to wait for, and it is a 429,
   as a plain generation is.
-- **The reason for the wait** (claude-fable-5-2, 2026-11-11): a client must not count the free slots of an engine
+- **The reason for the wait:** a client must not count the free slots of an engine
   before it asks.
 - **The limit.** `replies_per_generation` is 8 for each served model that declares `replies`. It does not depend on
-  the slot count of the engine, because a reply can wait. Reason: the LFM3 engine joins 8 segments in one pass
-  (milestone 27).
+  the slot count of the engine, because a reply can wait. Reason: the LFM3 engine joins 8 segments in one pass.
 - **Which served models declare `replies`.** Each text served model declares it: its replies hold text. A speech
   model, an image model and an embedding model do not declare it. There, `forks` or `contexts` in a generation is a
   400 that names the member. Only the check of `model` runs before it.
@@ -5057,44 +4863,40 @@ speech model is in `crates/nagaya/tests/speech_context.rs`.
 The identity digest names each entry of the store (6.2). An engine with a new identity digest thus cannot read the
 old entries of the old digest. The profile has no key that pins an identity: the canary checks the bits (8.1).
 
-**The canary decides for a new build.** This replaces the note
-"A GPU binary in the identity" of 2026-10-21. That note put the compiler and the driver in the identity digest. Then
-each driver update makes every held entry unusable, also when the bits do not change. Amy, 2026-10-22: "if I have a long
-running context and upgrade I don't want to have to refill it just because I built a new binary that is not very
-different most of the time."
+**The canary decides for a new build.** The identity digest does not cover the compiler or the driver. Reason: a
+driver update must not make each held entry unusable when the bits do not change.
 
-- The identity gets a member `build`, with the facts of the build. It holds the SHA-256 of each kernel binary and
+- The identity has a member `build`, with the facts of the build. It holds the SHA-256 of each kernel binary and
   engine library, and the compiler version. It also holds the driver or runtime version, and the PCI ids of the card.
 - The identity digest does not cover `build`. It covers the other fields of 12.1, also the canary hash.
 - `numbers` keeps the values that change bits by choice, such as the `fast_qmm` and `tiles` of the Qwen3.8 engine. A
-  file path is not a number. The `engine_lib` path is gone, because the binary links the Qwen3.8 engine (Amy,
-  2026-10-22, AGENTS.md milestone 15). The Qwen3.8 engine keeps its build facts in `build`: `engine_build_sha256`,
+  file path is not a number. The identity has no `engine_lib` path, because the binary links the Qwen3.8 engine. The
+  Qwen3.8 engine keeps its build facts in `build`: `engine_build_sha256`,
   `engine_compiler` and `engine_hip` (`crates/nagaya-mk-qwen38-gfx1151/src/spec.rs`, `identity`). Another engine
   keeps them in `numbers`, and in the digest, until it has a canary.
 - Thus a new build with the same canary bits has the same digest. Its held entries stay usable, and the gate
-  thresholds still fit. A new build with other canary bits has a new digest, as now.
-- Each entry records the `build` that made it. A context with rows of two builds is then visible. Not built.
+  thresholds still fit. A new build with other canary bits has a new digest.
+- Each entry records the `build` that made it. A context with rows of two builds is then visible.
 - A Level Zero engine reads the driver version with `zeDriverGetProperties`. A HIP engine reads the HIP runtime
   version. A kernel that compiles at load is hashed after the compile.
 - The canary covers the shapes of the oracle fixture (8.3): a short prompt, a long prompt and a greedy decode. A
   staged engine runs each stage, and a ring part wraps.
-- Order: build the canary (8.1) first. The Qwen3.8 engine is done: `build` is out of its digest. Another engine keeps
-  `build` in its digest until its own canary runs.
+- The Qwen3.8 engine has its canary (8.1), so `build` is out of its digest. Another engine keeps `build` in its digest
+  until its own canary runs.
 
 Reason: the bits decide if a build changed the numbers, not the facts of the build. A canary covers only the paths
 that it runs, so its inputs must run each path that the limits allow.
 
-Not built yet, though the canary of the Qwen3.8 engine is built (2026-11-12).
+These parts are not built yet:
 
 - The `build` of an entry. An entry does not yet record the build that made it.
 - The fatal state of 8.2.
 
 Reason: the canary needs neither. Each one is a larger change, so it is a later step.
 
-**The plan table of a HIP engine.** Amy decided on 2026-10-31 that hipBLASLt does the large bf16 matrix multiplies of
-Qwen-Image (11.9c). Amy: "hipBLASLt for GEMMs but we let it ride with changes over time, ok with some change in behavior
-if upstream changes". The rules below are Decided by senpai 2026-11-01, and accepted by Amy 2026-11-02. Reason: the plan
-table of the ontology holds such choices, and the Qwen3.8 engine has none (ontology "Plan table").
+**The plan table of a HIP engine.** hipBLASLt does the large bf16 matrix multiplies of Qwen-Image (11.9c). A change of
+hipBLASLt upstream can change the bits, and the nagaya accepts that. The plan table of the ontology holds such choices
+(ontology "Plan table"). The Qwen3.8 engine has no plan table.
 
 - The engine declares the determinism `pinned` (D3). Each GEMM runs the hipBLASLt algorithm that the plan table names
   for its shape.
@@ -5105,22 +4907,21 @@ table of the ontology holds such choices, and the Qwen3.8 engine has none (ontol
 - The engine also refuses a candidate that splits the sum over K with atomic adds, because its bits can change from
   run to run. Tensile writes the split into the kernel name. `GSUAMB` sums the parts of each buffer in order, with no
   atomics. `GSUASB` adds the parts with atomics, and `SK<n>` with `n` other than 0 is stream-K. The engine refuses
-  the last two (`nagaya-mk-hip` `plan::refused`). hipBLASLt 1.2.2 on gfx1151 gave 128 candidates for 8 shapes of
-  Qwen-Image, each `GSUAMB` with `SK0` (milestone 22 step 4, 2026-11-01).
+  the last two (`nagaya-mk-hip` `plan::refused`). hipBLASLt 1.2.2 on gfx1151 gives 128 candidates for 8 shapes of
+  Qwen-Image, each `GSUAMB` with `SK0`.
 - The table only grows: a shape keeps its pick. It is a file in the store directory, one for each lineage. The engine
   writes a pick to the file before a job uses it. Thus a restart keeps each pick.
 - Each image of a slot runs its own GEMMs, so `count` changes no shape. Thus image `i` of a request does not depend
   on the other images (engine-abi "Image").
 - The lineage is the hipBLASLt version, the HIP runtime version, the gfx target and the PCI ids of the device. A new
   lineage is a new identity (ontology "Plan table").
-- Thus an update of ROCm can give new bits and a new digest. Each held conditioning (6.16) then fills again once. Amy
-  accepts this ("let it ride").
+- Thus an update of ROCm can give new bits and a new digest. Each held conditioning (6.16) then fills again once.
 - The pick stays the first candidate with equal bits, not the fastest one. A table that picks by time can pick another
   kernel when it fills again under the same lineage. Then the same identity gives other bits.
-- The test of that rule, on gfx1151host on 2026-11-01: `examples/gemm_timing.rs` timed each candidate of the large GEMMs
-  of a step alone. The fastest picks took 21% less time than the first picks. In the engine, a step of 1024 by 1024
-  went from 4.2 s to 4.06 s. A step of 1440 by 1440 went from 11.0 s to 10.9 s. The first job of a new size took 20
-  to 50 s more for the timing.
+- A pick by time gains little. `examples/gemm_timing.rs` times each candidate of the large GEMMs of a step alone.
+  There, the fastest picks take 21% less time than the first picks. In the engine, a step of 1024 by 1024 takes 4.06 s,
+  against 4.2 s. A step of 1440 by 1440 takes 10.9 s, against 11.0 s. The timing adds 20 to 50 s to the first job
+  of a new size.
 - The `build` of the identity holds the hipBLASLt version too. The oracle tolerance (8.3) holds the change of bits
   from a new lineage. A new lineage that breaks a gate is a defect to report.
 
@@ -5129,23 +4930,22 @@ so a new packing does not change it. The arena id is the content id of the packe
 `arena_export` returns it.
 
 The identity carries the checkpoint digest. The arena records its own id and the strength of its check. The Qwen3.8
-engine's `weight_hash` and mkviolet's `header_hash` hash only the shard headers and sizes. They are spot checks, and the
-identity labels them as spot checks until we replace them.
+engine's `weight_hash` and the Gemma 4 engine's `header_hash` hash only the shard headers and sizes. They are spot
+checks, and the identity labels them as spot checks until we replace them.
 
 **12.3 Identity defects to correct in the port.**
 
-- mkviolet loads EmbeddingGemma 2's `tokenizer.json` for Gemma 4 (`main.rs:132`). The file "differs ... by a few
-  hundred bytes; which entries differ is not yet checked" (`tokenizer.rs:4-5`). Thus its tokenizer hash names the
-  wrong file. The port loads the `tokenizer.json` of the Gemma 4 checkpoint (`checkpoints/gemma-4-26B-A4B/`).
+- The first Gemma 4 engine loads EmbeddingGemma 2's `tokenizer.json` for Gemma 4. Thus its tokenizer hash names the
+  wrong file. The port loads the `tokenizer.json` of the Gemma 4 checkpoint.
 
-  The two files differ only in the post-processor (checked 2026-10-21). EmbeddingGemma 2's adds `<bos>` and `<eos>`.
-  mkviolet encodes with no post-processor, so the ids are the same, and only the hash differs.
-- mkviolet's `tokenizer_hash` is the first 16 hex digits of the SHA-256 of the file (`tokenizer.rs:22`). The port hashes
+  The two files differ only in the post-processor. EmbeddingGemma 2's adds `<bos>` and `<eos>`. The first Gemma 4
+  engine encodes with no post-processor, so the ids are the same, and only the hash differs.
+- The first Gemma 4 engine's `tokenizer_hash` is the first 16 hex digits of the SHA-256 of the file. The port hashes
   the whole file and writes `sha256:` and 64 hex digits, as the Qwen3.8 library does. Reason: one form for every family.
-- mkviolet's `weight_hash` hashes the shard headers only (`main.rs:216`). The port labels it `spot-sha256:`, as the
+- The first Gemma 4 engine's `weight_hash` hashes the shard headers only. The port labels it `spot-sha256:`, as the
   Qwen3.8 engine binding does (12.2).
-- mkviolet's metrics label card 1 `google/embeddinggemma-2` (`telemetry.rs:492`, `:523`). The port takes the label
-  from the identity.
+- The metrics of the first Gemma 4 engine label card 1 `google/embeddinggemma-2`. The port takes the label from the
+  identity.
 
 ## 13. Taps, lenses and composition
 
@@ -5153,12 +4953,11 @@ identity labels them as spot checks until we replace them.
 these outputs: a residual at a layer (rows), routes, or gates. The store keeps large tap outputs as content-addressed
 artifacts, with an owner and a budget. (The Qwen3.8 engine keeps traces as per-layer `.npy` files.)
 
-**mkviolet's taps, for later.** These taps are not in the first port. They are noted here so that the port does not
-close a door.
+**The taps of the Gemma 4 engine, for later.** These taps are not in the port. They are noted here so that the port
+does not close a door.
 
-- **Routes.** mkviolet writes each layer's expert picks (`MoERouteDecision`, 128 bytes) into host memory
-  (`gemma4.rs:521`), and `count_routes` reads them after each stage (`gemma4.rs:1219-1230`). A route tap costs no
-  copy.
+- **Routes.** The Gemma 4 engine writes each layer's expert picks (`MoERouteDecision`, 128 bytes) into host memory,
+  and `count_routes` reads them after each stage. A route tap costs no copy.
 - **Residuals.** A J-Lens reads the residual at layer l (13.2). The residual after layer 14 already crosses host
   memory between the stages (D1).
 - **Steering.** A control vector (11.12) is an input that changes bits. Thus it goes into the recipe (6.12), and a
@@ -5174,238 +4973,70 @@ that names it gets the output `lens`. For each layer, it holds the logit row of 
 the final norm and the head. The rows are `f32` in layer order, and each has the width of a logit row. A pass that names
 `lens` and not one logit row is refused, because the `lens` of one row of LFM3-1.7B is 12 MiB.
 
-**13.2 Lenses.** A lens (mkviolet J-Lens) is a state object of its own. It belongs to one model, has a content id,
+**13.2 Lenses.** A lens (a J-Lens) is a state object of its own. It belongs to one model, has a content id,
 and runs on a CPU device (2.1). Two models cannot share a lens. Models are compared in the lens's concept
 coordinates, not in raw residuals.
 
-The J-Lens exists outside the nagaya: gmk on gfx1151host fitted one for Gemma 4 12B on 2026-10-11 to 14, with Anthropic's
-`jacobian-lens` code. mkviolet did not build its port. `docs/lab.md` designs the fit, the lens object and the routes
+The J-Lens exists outside the nagaya: the first J-Lens fit, of Gemma 4 12B, used Anthropic's `jacobian-lens` code.
+The nagaya has no port of it yet. `docs/lab.md` designs the fit, the lens object and the routes
 `project` and `trace` that read through it.
 
 **13.3 Composition between models.** kaijutsu composes models through the council API, for example a judge that
 follows a coder. The nagaya keeps the engines loaded side by side and schedules their classes. Tensor transfer
-between engines is out of v0. (mkviolet `docs/02` designs KV bridges and residual splices.) If it comes, these
-rules apply:
+between engines is out of v0. If it comes, these rules apply:
 
 - it stays on one machine;
 - it uses an `inject` capability;
 - each adapter is a state object with its own identity.
 
-## 14. Porting notes
-
-The inventories found these items. We correct each one when its code moves. We do not copy them.
-
-- The first Qwen3.8 engine splits a prefill in its Python service (`_feed` in `service/contexts.py`). The split moves
-  under `max_quantum_ms` (5.1).
-- The first Qwen3.8 engine's `prefill` field of its old `generate` route (`_with_prefill`) becomes a gogi
-  continuation. Its prefix check at the seam moved with it (11.3c, the seam check). The new name keeps "prefill" for
-  the prompt pass.
-- The first Qwen3.8 engine orders jobs first in, first out in its one high tier. The nagaya uses the order in 5.4.
-- The first Qwen3.8 engine's "park" writes through to disk and seals at each "hold". In nagaya terms, a hold is a
-  declared boundary, and a write to disk is a park to NVMe (D7).
-- The first Qwen3.8 engine's MemAvailable floor becomes the safety floor in 4.7. It does not set any size.
-- mkviolet's three caches merge into the store (6.1). Its fixed budgets become ledger terms.
-- mkviolet's telemetry setup leaks a runtime (`Box::leak`). Its HTTP server is hand-written, and its bind address is
-  in its code.
-- mkviolet has instruments without call sites (9.5) and wrong model labels (12.3).
-- mkviolet's README gives `GEN_SEQ` 16384 and its `main.rs` gives 65536. Its `docs/07` is out of date.
-- mkviolet declares `always` with a feed rule (6.14, engine-abi D11). The first port runs one recipe in two
-  processes and compares the content ids. The test shows if mkviolet meets the class.
-
 ## 15. Open questions
 
-1. Do an idle engine's GPU queues slow the other engines on its device (3.3)? A measurement answers this.
-2. Answered by engine-abi "The close of the Qwen3.8 engine", Decided 2026-11-01: what makes `close()` safe for the
-   Qwen3.8 engine (3.3)? The close frees the weights and keeps the HIP runtime.
-3. How long does the conversion to canonical safetensors take on the Qwen3.8 engine and mkviolet (10.3, D10)?
-4. Answered 2026-10-20: on the Qwen3.8 engine, one pass of many tokens gives the same bits as one pass for each token
-   (6.13). On 2026-10-21, splits across 256 and 512 tokens gave the same bits in both classes of context (6.13).
-5. How does a profile `PUT` work across machines (2.3, 2.4, 11.5)? The machine that takes the `PUT` cannot
-   return the target's 507, and 2.3 ignores an old version where 11.5 answers 409 (kaibo, 2026-10-20). Since
-   2026-10-28, `PUT /nagaya/v1/profile` changes only its own machine (3.3). Answered 2026-11-08 (Amy accepted the
-   note of 2026-11-02): the query `host` and a `version`, through `profile:desired:<host>` (2.4, "The routes of a
-   profile for another host").
-6. The template engine differs from jinja2 on integers past 2^127 and on a float key that is not finite (milestone
-   11.5 text step). The chat template uses none of them. Which ones do we match?
-7. How far does the Qwen3.8 engine's fast path (`QWEN38_FAST_QMM` unset) move council decisions? At 249 tokens it moved
-   logits by up to 1.03, and the argmax and the top 8 held (8.3). Amy, 2026-10-20: "we'll measure later".
-8. What causes the oracle gap past about 640 tokens, and how large is it at 2,000 tokens and more? The contexts
-   hold 4,096 and 32,768 tokens now, and a long prompt takes several passes. On the exact path, the findings are
-   these:
-   - The Qwen3.8 engine agrees with the oracle up to 630 tokens. The largest logit difference is 5.2e-5 at 478 tokens,
-     1.9e-5 at 604 and 1.5e-5 at 630 (diagnostic prompts).
-   - At 655 tokens the difference is 0.29. At 684 it is 0.16. At 721 it is 0.23.
-   - The split into passes does not change the Qwen3.8 engine's bits, so the pass split is not the cause.
-   - The cause is not known: the Qwen3.8 engine or the reference. The indexer is dense below about 2,050 tokens in both.
+Each question keeps its number, because other docs cite it. A number that is not here belongs to an answered question.
 
-   Amy, 2026-10-20: "we can save and do the measurement later".
-9. Should the control threads run at elevated priority (3.2, 3.2a)? A raised priority needs `CAP_SYS_NICE` or a
-   setting in the unit, such as `Nice=`. A measurement under load shows whether the pinned cores are enough.
+1\. Do an idle engine's GPU queues slow the other engines on its device (3.3)? A measurement answers this.
 
-10. Can a restart keep a pinned entry of the host tier (6.11)? Yes: the stop parks it to NVMe.
-11. How does the park charge the host copy of a state (10.3 "Open", 4.2 "Staging")? The copy has no staging charge
-    today. The charge path refuses while the process stops.
-12. Can a copy quantum run past the 30 s watchdog timeout on a slow NVMe (7.4)? We have not measured it (kaibo review
-    job-1, finding 4).
-13. How does the Qwen3.8 engine reset a context without a new allocation (engine-abi "v0 binding choices")? `slot_clear`
-    frees the context and allocates a new one. A `hipMalloc` that fails stops the process. The Qwen3.8 engine needs a
-    reset call.
-14. Can the nagaya pin the two HIP runtime threads of the Qwen3.8 engine (3.2a)? The HIP runtime starts them and sets
-    their masks. The mask of both is 0-31 on gfx1151.
-15. Should the template id (11.3a) cover more than the tokens of the test renders? A change in how the family parses a
-    reply keeps the id today.
-16. Answered 2026-10-21: the job path uses `ObservedScheduler` and the evidence module (9.2, 9.6). Two things stay
-    open (9.2). The council thread loses the parent of `nagaya.job` for an HTTP request. The engine receives no trace
-    context.
-17. Which masks do the threads of the Level Zero runtime and IGC get on b70host (3.2b)? The nagaya does not pin
-    them, so a measurement shows whether they leave the pool set.
-18. How does a build find a reply that a client cut and sent back (11.3c, "the cuts from the index")? Today a build
-    tries each sealed snapshot that a pass over the index finds. Amy, 2026-10-22: "could we put something in the
-    index to make this more targeted? maybe a few tokens of prefix/suffix?"
+3\. How long does the conversion to canonical safetensors take on the Qwen3.8 engine and the Gemma 4 engine (10.3,
+D10)?
 
-## 16. Decided by senpai
+6\. The template engine differs from jinja2 on integers past 2^127 and on a float key that is not finite. The chat
+template uses none of them. Which ones do we match?
 
-Senpai chose each rule below where the spec left a choice open. Each rule has the mark "Decided by senpai" in its
-section, and Amy accepted all of them on 2026-11-02. Each line gives the section and the rule in a few words. The lists
-before the last one are from 2026-10-20 night.
+7\. How far does the Qwen3.8 engine's fast path (`QWEN38_FAST_QMM` unset) move council decisions? At 249 tokens it
+moved logits by up to 1.03, and the argmax and the top 8 held (8.3).
 
-**In this spec**
+8\. What causes the oracle gap past about 640 tokens, and how large is it at 2,000 tokens and more? The contexts
+hold 4,096 and 32,768 tokens, and a long prompt takes several passes. On the exact path, the findings are these:
 
-- 2.1: a CPU number of 1024 or more is a probe error.
-- 2.1: the probe gives a true size or stops, and it refuses a model or a driver that it cannot size.
-- 2.1: the file tree for sm121host is made by hand, and each guessed value is marked. The tree for b70host is real.
-- 2.1: a build with the feature `fake` keeps a made-up inventory.
-- 2.1: a probe error at start exits 3, and a build with no `fake` probes the files of `/`.
-- 3.2a: the housekeeping set is the two lowest online CPUs, and the pool set is the others.
-- 3.2a: the Qwen3.8 engine's worker thread keeps the pool set of its group thread.
-- 3.2a: the group threads run on the pool set.
-- 3.2a: the sets use logical CPUs and do not know SMT siblings.
-- 4.2: a staging charge covers each host copy of engine state, up to one slot.
-- 4.3: the admission of a profile keeps the live context and staging charges, or it refuses with the shortfall.
-- 6.13: the Qwen3.8 engine declares a checkpoint grain of 256 tokens.
-- 6.13: the job path makes the interval copy as the next quantum, and a build restores the longest copy.
-- 6.13: a refused charge or a put with no space skips the copy, and a client cannot pin a copy.
-- 7.4: the wait for the opens is 300 s.
-- 9.1: a log line is the message and `key=value` fields, with no time and no prefix.
-- 9.1: `RUST_LOG` sets the log filter, and a filter that does not parse refuses the start.
-- 9.1: the telemetry starts before the config is read, and after the inventory.
-- 9.1: the resource attributes are five fixed names, and an unreadable one is left out with a warning.
-- 9.1: the process drops the telemetry before it exits, and the drop waits at most 2 s for each signal.
-- 9.1: the exporters run on a runtime of their own with one worker.
-- 9.2: the HTTP span is named by axum's route template, and a status of 500 or more marks an error.
-- 9.2: the `engine` of a group with several engines is the names joined with `+`, and `request` has a fixed set.
-- 9.6: a decode quantum is not watched, and its failure line says so.
-- 9.4: the labels of the metrics that exist (device group, tier, wait, gauges, lookups, restores, state).
-- 9.5: `http.server.request.duration` runs from the request to the response head.
-- 10.1: during the open, the process extends the start timeout by 30 s every 5 s.
-- 10.3: the stop parks each state that holds tokens, and it needs the `slots` capability for rows.
-- 10.3: the stop parks a held entry to NVMe with its own recipe, and it replaces an interval copy.
-- 10.4: the binary ends through one function that calls `_exit(2)` after the flushes.
-- 11.3a: every render uses the reasoning effort `medium`.
-- 11.3a: thinking follows the context, and the renders differ only in the generation prompt.
-- 11.3a: a read closes the thinking with the template's prompt for thinking off.
-- 11.3a: a plain read keeps mkviolet's layout, with a leading space on the letter.
-- 11.3a: a plain read tokenizes in one pass and checks that the tokens begin as the context does.
-- 11.3a: a queue read writes the call in Qwen3.8's form with one `answers` object.
-- 11.3a: a queue read asks the questions in the order of the schema.
-- 11.3a: the workspace turns on `preserve_order` and `float_roundtrip` of `serde_json`.
-- 11.3a: a failed tool result gets the prefix `Error: `.
-- 11.3a: a system message after another role renders as a system turn.
-- 11.3a: a marked message is a boundary, but a tool message inside a run is not.
-- 11.3a: the template keeps the reasoning of every assistant message.
-- 11.3a: `rendered_hash` hashes the text that the read was conditioned on.
-- 11.3a: the reply parser takes the stop token as a pushed token and puts early-phase text in no step.
-- 11.3c: a dry run reports `recipe:` and the hex of the head's recipe when the store does not hold the head. `blake3:`
-  is Decided in its place (2026-10-27).
-- 11.3c: a raw read, a decision read and a generation are each one job for each context.
-- 11.3c: a decision read feeds its prefix once and writes a kept copy back for each later question.
-- 11.3c: the usage of a read counts the shared prefix once.
-- 11.3c: the reads of a decision run in request order, and `timeout_ms` is checked before each.
-- 11.3c: a raw read lists 8 top tokens by default and at most 64.
-- 11.3c: the text of a top token is its detokenized text, or U+FFFD for part of a character.
-- 11.3c: the council `engine` is `nagaya:` and 16 hex digits of the identity digest.
-- 11.3c: a generation holds its head after the reply when the slot is at most 8 tokens short.
-- 11.3c: a build can start at a cut, and the cut stays among the boundaries of its state.
-- 11.3c: the service adds the text a parser held back to the piece of the last token.
-- 11.3c: the call ids are `call_<16 hex digits>_<index>`, from a hash of the prompt and the reply.
-- 11.3c: a generation with no seed takes one from the operating system.
-- 11.3c: the sample defaults are temperature 1 with no filter.
-- 11.3c: a reply that reaches the context size ends with `context_full`, also when it reached `max_tokens`. gogi
-  `a07d85e` changed this order on 2026-10-21.
-- 11.3c: the decision limits are mkviolet's until the profile names others.
-- 11.7: the process serves an engine only when its kind has a family library with the same tokenizer hash. The
-  engine registry of 11.3 (Decided 2026-10-22) replaces this rule: the family of the identity selects the library.
-- 11.7: the served model is the engine's `model`, with 4096 tokens of context, or the Qwen3.8 engine's maximum. The
-  engine registry of 11.3 replaces the context size: it is the largest slot of the engine.
-- 11.7: a process serves at most one model.
-- 11.7: the specs, pins and snapshots routes use the one service, or give 503.
-- 11.7: each service call runs on its own thread, at most 64 at once, and the 65th gets 429.
-- 11.7: a request body has at most 16 MiB.
-- 11.7: an unknown route is a 404, also for a known path with another method.
-- 11.7: a request id is `req_<start time in hex>_<count>`.
-- 11.7: a refused charge is 429 `busy`, and a job that a stop cancelled is 503.
-- 11.7: an internal error is a 500, and the process stops with exit 1.
-- 11.7: a stream waits for its first event before the status, and its queue holds 256 events.
-- 11.7: a closed stream stops the generation, which holds no head.
-- 11.7: a response does not report a control-text hit in a message of a context.
-- 11.7: a stop sets every served model to `draining`, and the server waits at most 2 s for open requests.
+- The Qwen3.8 engine agrees with the oracle up to 630 tokens. The largest logit difference is 5.2e-5 at 478 tokens,
+  1.9e-5 at 604 and 1.5e-5 at 630 (diagnostic prompts).
+- At 655 tokens the difference is 0.29. At 684 it is 0.16. At 721 it is 0.23.
+- The split into passes does not change the Qwen3.8 engine's bits, so the pass split is not the cause.
+- The cause is not known: the Qwen3.8 engine or the reference. The indexer is dense below about 2,050 tokens in both.
 
-**In gogi (`docs/council-api.md`, `thinking`)**
+9\. Should the control threads run at elevated priority (3.2, 3.2a)? A raised priority needs `CAP_SYS_NICE` or a
+setting in the unit, such as `Nice=`. A measurement under load shows whether the pinned cores are enough.
 
-- A template may render a context the same with thinking on and off. Then both contexts have one head. gogi
-  `c98fe1f` changes the conformance check to match.
+11\. How does the park charge the host copy of a state (10.3 "Open", 4.2 "Staging")? The copy has no staging charge.
+The charge path refuses while the process stops.
 
-**In `docs/engine-abi.md`**
+12\. Can a copy quantum run past the 30 s watchdog timeout on a slow NVMe (7.4)? It is not measured.
 
-- "v0 binding choices": the Qwen3.8 engine declares `slots` and `coverage`, and `slot_clear` frees and allocates a
-  context.
-- "v0 binding choices": the factory plans from the config key `weights_bytes`, and a wrong size exits 3.
-- "v0 binding choices": the pool is 12 contexts of 4,096 tokens and 4 of 32,768.
-- "v0 binding choices": the Qwen3.8 engine declares a checkpoint grain of 256 tokens.
+13\. How does the Qwen3.8 engine reset a context without a new allocation (engine-abi "v0 binding choices")?
+`slot_clear` frees the context and allocates a new one. A `hipMalloc` that fails stops the process. The Qwen3.8
+engine needs a reset call.
 
-**In `docs/deploy.md`, section "Decided by senpai 2026-10-20 night"**
+14\. Can the nagaya pin the two HIP runtime threads of the Qwen3.8 engine (3.2a)? The HIP runtime starts them and
+sets their masks. The mask of both is 0-31 on gfx1151.
 
-- The engine kind in the profile is `mk-qwen38-gfx1151`, and the engine is named `qwen38`.
-- `TimeoutStopSec` is 60 s.
-- The unit makes the store directory with `ExecStartPre`.
-- The gossip port is 8091, next to the HTTP port 8090.
-- The pool is 112 GiB, the store's host budget is 2 GiB, and its NVMe budget is 50 GiB. The host budget was 16 GiB
-  until "Two engines on gfx1151host" (Decided 2026-11-02).
-- `interval_copies` is 0, so the scheduler makes no interval copy.
-- `QWEN38_FAST_QMM` stays unset. Milestone 15 removed the library pin.
-- The profile is copied into the store directory once, and it is not a link.
-- The release binary is built with `--features hip`.
-- `weights_bytes` is the size of the Qwen3.8 engine's weight arena, and a wrong size exits 3.
-- A probe error at start exits 3.
+15\. Should the template id (11.3a) cover more than the tokens of the test renders? A change in how the family parses
+a reply keeps the id.
 
-**On 2026-10-22, from Proposed notes**
+16\. The job path uses `ObservedScheduler` and the evidence module (9.2, 9.6). Two things stay open (9.2). The
+council thread loses the parent of `nagaya.job` for an HTTP request. The engine receives no trace context.
 
-- 3.2: a machine whose cards have their own memory has no pause rule for background CPU work.
-- 11.3c: a build runs `lookup` and `restore` on the group thread, and the store sits behind a mutex.
-- 11.3c: the first quantum of a build is a `copy` that chooses the slot and restores the longest prefix.
-- 11.3c: a feed is `prefill` of at most `max_pass_inputs` tokens, or one block of a feed rule.
-- 11.3c: a build seals each boundary that it passes, before it reads the parts.
-- 11.3c: a build takes the lowest free slot that fits, or it is `too_large` or `busy`.
-- 11.3c: a build lists the boundaries that the store holds when it ends.
-- 11.3c: the store's owner key is the first 8 bytes of the BLAKE3 hash of the owner text.
-- 12.1: the canary decides for a new build. When the canary runs at each start, the digest does not cover `build`.
-- engine-abi D1: a stage thread calls `wake` 3 ms after its last device call, only while a job of its group holds
-  a slot lease.
-- 9.7a: the status feed has two events, `snapshot` and `quantum`, with the members of its tables. Not built.
-- 9.7a: a decode quantum makes an event, and the events of one group are in order.
-- 9.7a: the queries `engine` and `kind` filter the feed. An engine that is not on the machine, or a kind that does
-  not exist, is a 400.
-- 9.7a: the keepalive comes every 15 s, at most 16 feeds are open, and a stop ends each feed after `draining`.
-- 9.7b: the group thread sends each event to a `StatusBus`, and a full channel of 256 drops its subscriber. Not built.
-- 11.4b: each text route needs `model`, refuses an unknown member, and gives 503 while the model is not `ready`.
-- 11.4b: the text routes use no engine, count toward the 64 calls, and make no job span.
-- 11.4b: a family error with no `param` gets the request member at fault.
-- 11.4c: `render` calls `Family::render`, and `text` is the detokenized tokens of the rendering.
-- 11.4c: `render` reports the hits of `message:<i>`, checks no context limit, and shows the context only.
-- 11.4c: `generation_prompt` is `false` by default, the context is one member, and there is no `reasoning_effort`.
-- 11.4d: `tokenize` keeps a marker as text unless `special` is on, and `detokenize` refuses a split character.
-- 11.4d: a piece has U+FFFD for a cut, and the members of each route are its own.
-- 11.4d: `Family` has `tokenize_special` and `pieces`, both required.
-- 11.4e: the first set has no `model` route and no `health` route, because `identity` covers most of them.
-- 11.4f: `identity.extensions` lists `/nagaya/v1` when the process serves a model, and only routes that exist answer.
-- 11.5: the text routes and the status feed add no error code to the table.
+17\. Which masks do the threads of the Level Zero runtime and IGC get on the B70 machine (3.2b)? The nagaya does not
+pin them, so a measurement shows whether they leave the pool set.
+
+18\. How does a build find a reply that a client cut and sent back (11.3c, "the cuts from the index")? A build tries
+each sealed snapshot that a pass over the index finds. **Open:** can the index hold a few tokens of prefix and suffix,
+so that the search is more targeted?

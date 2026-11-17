@@ -741,7 +741,7 @@ def run_video(model, processor, out, facts):
 
 
 def run_audio_out(model, processor, out, facts):
-    """The gate of an assistant audio part (spec 11.11, "Read it back"): a conversation whose assistant turn holds the
+    """The gate of an assistant audio part (spec 11.11): a conversation whose assistant turn holds the
     text and the speech of the TTS run of the speech stage, through the model with its codes. The processor would
     encode a waveform with the codec; the nagaya holds the codes, so this stage gives the model the codes."""
     from safetensors.torch import load_file
