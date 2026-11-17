@@ -1068,7 +1068,7 @@ mod tests {
     fn the_model_name_drops_the_split_suffix() {
         assert_eq!(
             model_name(Some(Path::new(
-                "/tank/models/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf"
+                "/srv/models/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf"
             ))),
             "Qwen3.8-Flash-Next-UD-IQ4_XS"
         );

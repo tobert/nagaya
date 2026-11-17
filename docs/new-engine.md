@@ -118,7 +118,7 @@ file"). The helpers are `crates/nagaya-text-qwen38/tests/common/model.rs`,
 `crates/nagaya-text-gemma4/tests/common/model.rs` and `crates/nagaya-mk-gemma4-bmg/tests/common/mod.rs`. Each test
 calls `absent()` first.
 
-The variable is one for each family: `NAGAYA_QWEN38_GGUF` has a default path, and `GEMMA4_MODEL_DIR` has none.
+The variable is one for each family: `NAGAYA_QWEN38_GGUF` and `GEMMA4_MODEL_DIR` have no default.
 Before a merge that touches the crates of a model, run the checks with `NAGAYA_REQUIRE_MODELS=1` on the machine
 that holds the model.
 

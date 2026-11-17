@@ -6,7 +6,7 @@
 #
 #   QWEN3TTS_MODEL_DIR=<snapshot of Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign> tools/qwen3tts_golden.sh
 #
-# REF_PYTHON overrides the python (default ~/.venvs/tts-proto/bin/python). The files go to $QWEN3TTS_GOLDEN_DIR,
+# REF_PYTHON names the Python of the reference venv, with no default. The files go to $QWEN3TTS_GOLDEN_DIR,
 # or to target/qwen3tts-golden. Do not commit them. The request: instruct "A calm female voice, clear and soft,
 # unhurried.", text "The nagaya is awake.", language english, torch.manual_seed(1234), max_new_tokens 24.
 # Each file carries the request, the processors and the versions in its safetensors metadata.
@@ -79,7 +79,7 @@
 #                                       decode up to rounding until frame 28, the first chunk with a cut context
 set -euo pipefail
 cd "$(dirname "$0")/.."
-PY="${REF_PYTHON:-$HOME/.venvs/tts-proto/bin/python}"
+PY="${REF_PYTHON:?set REF_PYTHON to the Python of the reference venv}"
 MODEL="${QWEN3TTS_MODEL_DIR:?set QWEN3TTS_MODEL_DIR to the Qwen3-TTS VoiceDesign checkpoint directory}"
 OUT="${QWEN3TTS_GOLDEN_DIR:-target/qwen3tts-golden}"
 mkdir -p "$OUT"

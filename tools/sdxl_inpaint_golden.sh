@@ -8,7 +8,7 @@
 #   SDXL_INPAINT_MODEL_DIR=<snapshot of diffusers/stable-diffusion-xl-1.0-inpainting-0.1> \
 #   tools/sdxl_inpaint_golden.sh
 #
-# REF_PYTHON overrides the python (default ~/.venvs/sdxl-ref/bin/python). The files go to $SDXL_GOLDEN_DIR, or to
+# REF_PYTHON names the Python of the reference venv, with no default. The files go to $SDXL_GOLDEN_DIR, or to
 # target/sdxl-golden, beside the files of tools/sdxl_golden.sh. Do not commit them. Each safetensors file carries the
 # request, the runs, the scheduler config and the versions in its metadata.
 #
@@ -89,7 +89,7 @@
 #                                               in integers, with a = mask.blurred (spec 11.9b, "The paste")
 set -euo pipefail
 cd "$(dirname "$0")/.."
-PY="${REF_PYTHON:-$HOME/.venvs/sdxl-ref/bin/python}"
+PY="${REF_PYTHON:?set REF_PYTHON to the Python of the reference venv}"
 MODEL="${SDXL_MODEL_DIR:?set SDXL_MODEL_DIR to the SDXL base 1.0 checkpoint directory}"
 INPAINT="${SDXL_INPAINT_MODEL_DIR:?set SDXL_INPAINT_MODEL_DIR to the SDXL inpainting 0.1 checkpoint directory}"
 OUT="${SDXL_GOLDEN_DIR:-target/sdxl-golden}"

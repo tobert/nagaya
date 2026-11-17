@@ -293,7 +293,8 @@ get ran sometimes, perhaps just a bump in our AGENTS.md"
 - On a machine that holds a model, run the checks with `NAGAYA_REQUIRE_MODELS=1` and the model variables set.
   Then an absent file fails the test.
 - Do this at least before each merge that touches the crates of that model.
-- gfx1151host holds the Qwen3.8 GGUF at the default path of `NAGAYA_QWEN38_GGUF`.
+- gfx1151host holds the Qwen3.8 GGUF. `NAGAYA_QWEN38_GGUF` names its first shard, and it has no default. `signoff.md`
+  gives the path.
 - b70host holds Gemma 4 in `~/models/gemma-4-26B-A4B`. The `xe` tests of
   `nagaya-mk-gemma4-bmg` and the tests of `nagaya-text-gemma4` read it from `GEMMA4_MODEL_DIR`. The variable has no
   default, so the tests of `nagaya-text-gemma4` skip when it is unset.
