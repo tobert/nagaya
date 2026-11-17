@@ -1513,58 +1513,6 @@ impl KvSnapshot {
         self.layers.iter().map(|l| l.len() * 4).sum()
     }
 
-    const MAGIC: &'static [u8; 8] = b"MKVSNAP1";
-
-    /// Writes `MKVSNAP1`, the length, then each layer's float count and little-endian floats. A
-    /// layer holding fewer rows than the length holds the last positions.
-    pub fn write_to(&self, w: &mut impl std::io::Write) -> std::io::Result<()> {
-        w.write_all(Self::MAGIC)?;
-        w.write_all(&(self.len as u64).to_le_bytes())?;
-        w.write_all(&(self.layers.len() as u64).to_le_bytes())?;
-        for l in &self.layers {
-            w.write_all(&(l.len() as u64).to_le_bytes())?;
-            let bytes = unsafe { std::slice::from_raw_parts(l.as_ptr() as *const u8, l.len() * 4) };
-            w.write_all(bytes)?;
-        }
-        Ok(())
-    }
-
-    /// Reads what `write_to` wrote, checking every size against the model's layer shapes.
-    pub fn read_from(r: &mut impl std::io::Read) -> Result<Self, String> {
-        let mut magic = [0u8; 8];
-        r.read_exact(&mut magic).map_err(|e| e.to_string())?;
-        if &magic != Self::MAGIC {
-            return Err("not an mkviolet KV snapshot".into());
-        }
-        let mut u = [0u8; 8];
-        let mut next = |r: &mut dyn std::io::Read| -> Result<u64, String> {
-            r.read_exact(&mut u).map_err(|e| e.to_string())?;
-            Ok(u64::from_le_bytes(u))
-        };
-        let len = next(r)? as usize;
-        let n_layers = next(r)? as usize;
-        if n_layers != NUM_LAYERS {
-            return Err(format!("{} layers, expected {}", n_layers, NUM_LAYERS));
-        }
-        let mut layers = Vec::with_capacity(n_layers);
-        for l in 0..n_layers {
-            let n = next(r)? as usize;
-            let g = layer_geom(l);
-            let row = 2 * g.kv_heads * g.head_dim;
-            if n % row != 0 || n / row > len {
-                return Err(format!(
-                    "layer {} holds {} floats, not whole rows of {} positions or fewer",
-                    l, n, len
-                ));
-            }
-            let mut v = vec![0.0f32; n];
-            let bytes = unsafe { std::slice::from_raw_parts_mut(v.as_mut_ptr() as *mut u8, n * 4) };
-            r.read_exact(bytes).map_err(|e| e.to_string())?;
-            layers.push(v);
-        }
-        Ok(Self { len, layers })
-    }
-
     /// Joins a chain of snapshots, newest first, into one of `chain[0].len` positions holding
     /// what a slot of `seq` positions keeps to go on from there: each layer's positions
     /// `kv_keep_from(seq, l, len)..len`, or for a ring at least the sliding window. Each
@@ -2276,34 +2224,5 @@ mod tests {
             !kv_can_rewind(seq, high.max(9100), 8990),
             "the window before 8990 starts before the snapshot's rows"
         );
-    }
-
-    fn snapshot(len: usize) -> KvSnapshot {
-        let layers = (0..NUM_LAYERS)
-            .map(|l| {
-                let g = layer_geom(l);
-                (0..2 * len * g.kv_heads * g.head_dim)
-                    .map(|i| (i as f32) * 0.5 - l as f32)
-                    .collect()
-            })
-            .collect();
-        KvSnapshot { len, layers }
-    }
-
-    #[test]
-    fn snapshot_files_round_trip_and_reject_truncation() {
-        let snap = snapshot(3);
-        let mut bytes = Vec::new();
-        snap.write_to(&mut bytes).unwrap();
-        let back = KvSnapshot::read_from(&mut bytes.as_slice()).unwrap();
-        assert_eq!(back.len, 3);
-        assert_eq!(back.layers, snap.layers);
-        assert!(KvSnapshot::read_from(&mut bytes[..bytes.len() - 4].as_ref()).is_err());
-        let mut longer = bytes.clone();
-        longer[8] = 4; // each layer then holds the last 3 of 4 positions, as a ring saves them
-        assert_eq!(KvSnapshot::read_from(&mut longer.as_slice()).unwrap().len, 4);
-        let mut wrong = bytes.clone();
-        wrong[8] = 2; // 3 rows cannot be positions of a length of 2
-        assert!(KvSnapshot::read_from(&mut wrong.as_slice()).is_err());
     }
 }
