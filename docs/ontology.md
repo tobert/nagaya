@@ -1,30 +1,24 @@
 # Ontology
 
 This doc has one term for each thing that the nagaya needs. The nagaya is an exokernel for megakernels: one process
-owns a machine, and each engine keeps its own abstractions. Each entry gives the definition, then where the thing
-came from in the first Qwen3.8 engine or mkviolet. A term in bold inside an entry is defined there. The spec
+owns a machine, and each engine keeps its own abstractions. Each entry gives the definition, then often an example
+from the Qwen3.8 engine or the Gemma 4 engine. A term in bold inside an entry is defined there. The spec
 (`docs/spec.md`) and the ABI (`docs/engine-abi.md`) hold the rules and the details.
 
 The terms are in four groups: places, things, time and holding. Places are where things are, and things are what is
-held. Time is what runs, and holding is who keeps what, and until when. `docs/reviews.md` records how the terms
-changed.
+held. Time is what runs, and holding is who keeps what, and until when.
 
 ## The other projects
 
-The docs name four other projects. Each one is defined here and nowhere else. A file path after "the first Qwen3.8
-engine" or "mkviolet" in a doc names the source of a copy or of a measurement. It is not a place that a reader must go.
+The docs name these other projects. Each one is defined here and nowhere else.
 
-**The first Qwen3.8 engine.** The practice project that became the Qwen3.8 engine of `nagaya-mk-qwen38-gfx1151`.
-`docs/history.md` keeps its story.
+**The first Qwen3.8 engine.** The practice engine whose code the nagaya copied into `nagaya-mk-qwen38-gfx1151`.
 
-**mkviolet.** Our second megakernel: Gemma 4 on two Intel Arc Pro B70 cards, with OpenCL C kernels and a Rust
-host. It served council v2 on b70host until 2026-10-21. Milestone 15s copied its engine into
-`nagaya-mk-gemma4-bmg` and its text code into `nagaya-text-gemma4`. Its repository is an archive in the same
-way. Both archives keep their megakernels (Amy, 2026-10-22: "their megakernels live on").
+**The first Gemma 4 engine.** The practice engine whose code the nagaya copied into `nagaya-mk-gemma4-bmg`.
 
-**gogi.** The council v2 contract: the text `docs/council-api.md`, the types in `gogi-proto`, the suite
-`gogi-conformance`, and the toy family `gogi-toy`. gogi is normative today. When `docs/spec.md` and gogi differ
-about the API, gogi is the rule (`docs/spec.md` 11.1).
+**gogi.** The council v2 contract (github.com/tobert/gogi): the text `docs/council-api.md`, the types in `gogi-proto`,
+the suite `gogi-conformance`, and the toy family `gogi-toy`. gogi is normative today. When `docs/spec.md` and gogi
+differ about the API, gogi is the rule (`docs/spec.md` 11.1).
 
 **kaijutsu.** The agent. It coordinates models through council v2: casts, seats, judges and bumps (`docs/spec.md`
 1). It is the first client of the nagaya, and the nagaya follows its telemetry conventions (`docs/spec.md` 9).
@@ -32,14 +26,14 @@ about the API, gogi is the rule (`docs/spec.md` 11.1).
 ## Places
 
 **Machine.** One computer. It runs one nagaya process, and that process owns all of the machine's GPUs. The machines
-today are gfx1151host, b70host and sm121host (`docs/spec.md` 2.1), plus rented machines. The processes gossip their
+today are a Strix Halo machine and a B70 machine (`docs/spec.md` 2.1), plus rented machines. The processes gossip their
 inventory, active profile, and engine identities through `chitchat` (`docs/spec.md` 2.3). Any machine can act as the
 **coordinator** for a client request (`docs/spec.md` 11.1).
 
-**Device.** One thing that runs quanta: a GPU, or the CPU when an engine runs work there (mkviolet's AVX-512 lens).
+**Device.** One thing that runs quanta: a GPU, or the CPU when an engine runs work there.
 A **device group** is the set of devices that one or more engines use. Each device group has one long-lived nagaya
 thread, and every engine call for the group comes from that thread. Two engines that use one device share one group.
-mkviolet's Gemma 4 spans both B70 cards, so its group is the two cards. Each card runs one stage, on a stage thread
+The Gemma 4 engine spans both B70 cards, so its group is the two cards. Each card runs one stage, on a stage thread
 of its own (`docs/engine-abi.md` D1).
 
 A device has two names. Its **machine device id** is its id on the machine, as the inventory gives it. The profile,
@@ -55,9 +49,9 @@ addresses, the store directory, the seed peers, the node name and the park budge
 engine.
 
 **Tier.** A place where a state object can be: device memory, host memory, NVMe, or another machine. Tiers are a
-graph with measured edges per machine, not a fixed list. On gfx1151host and sm121host, device memory and host memory are one
-pool. On b70host they are separate: 608 GB/s GDDR6 per card, about 90 GB/s DDR5, about 14.8 GB/s NVMe (mkviolet
-`docs/03`).
+graph with measured edges per machine, not a fixed list. On a machine with unified memory, device memory and host
+memory are one pool. On the B70 machine they are separate: 608 GB/s GDDR6 per card, about 90 GB/s DDR5, about
+14.8 GB/s NVMe.
 
 ## Things
 
@@ -81,38 +75,37 @@ append-only: the engine times a new shape once and keeps its pick. A new library
 plan table.
 
 **Arena.** The memory that holds an engine's weights and can outlive the process: a set of named file descriptors.
-An arena records how strong its check is: the first Qwen3.8 engine had one arena, with a full check. The nagaya's
-Qwen3.8 engine has no check of a stored arena yet (`docs/engine-abi.md`, "How the Qwen3.8 engine maps"). mkviolet had 30
-DMA-BUF slabs, one for each layer, with a spot check of the first and last 64 bytes of each tensor
-(`gemma4.rs:284-287`). The nagaya's Gemma 4 engine has 31: the head has a slab too (`docs/spec.md` 10.2). An
-inference engine opens its arena read-only, and a training engine writes it.
+An arena records how strong its check is. The Qwen3.8 engine has no check of a stored arena yet (`docs/engine-abi.md`,
+"How the Qwen3.8 engine maps"). The Gemma 4 engine has 31 DMA-BUF slabs, one for each of its 30 layers and one for
+the head. It checks the first and last 64 bytes of each tensor (`docs/spec.md` 10.2). An inference engine opens its
+arena read-only, and a training engine writes it.
 
 **State object.** Everything that a pass reads besides its inputs, made of parts. There are three kinds:
 
 - **weights**: fixed parts only, with no inputs. Inference reads them, and training writes them.
 - a **context**: what passes run on and extend.
-- a **snapshot**: a context sealed at a boundary. Reads run on a copy (`fork` of the first Qwen3.8 engine), or load it
-  into a slot (mkviolet `load_kv`).
+- a **snapshot**: a context sealed at a boundary. Reads run on a copy, or load it into a slot (`load_kv` of
+  the Gemma 4 engine).
 
 **Part.** One named piece of a state object. There are four kinds:
 
 | Kind | What it is | Examples |
 |---|---|---|
-| fixed | a constant-size block that each pass replaces whole | Qwen3.8 GDN recurrent state, GDN conv, PLE history (`engine.h:63-75`); a diffusion latent |
-| cells | rows indexed by position, only appended | Qwen3.8 KV and index keys; mkviolet KV on global layers |
-| ring | rows in a window that wraps: new rows overwrite the oldest | mkviolet sliding layers (`KV_RING_ROWS` 4096, `gemma4.rs:30-46`) |
+| fixed | a constant-size block that each pass replaces whole | Qwen3.8 GDN recurrent state, GDN conv, PLE history (`engine.h`); a diffusion latent |
+| cells | rows indexed by position, only appended | Qwen3.8 KV and index keys; Gemma 4 KV on global layers |
+| ring | rows in a window that wraps: new rows overwrite the oldest | Gemma 4 sliding layers (`KV_RING_ROWS` 4096) |
 | derived | rebuilt from other parts, never stored | Qwen3.8 pooled index keys (`idx_pooled`) |
 
 **Chain.** The history of how a context was made: its inputs and boundaries, in order. The store can keep a
 snapshot as pieces of its chain, and each piece names its parent's content id. The Qwen3.8 engine stores its snapshots
-whole, about 316 MB at n = 3584. mkviolet stores chains and joins them for a slot (`KvSnapshot::join`,
-`gemma4.rs:941-979`).
+whole, about 316 MB at n = 3584. The Gemma 4 engine stores chains and joins them for a slot
+(`KvSnapshot::join`).
 
 **Boundary.** A position in a chain where a context may be sealed. Clients mark boundaries: council's `snap: true`
 messages and spec layers.
 
 **Seal.** The engine's rule at a boundary. It may change bits: the Qwen3.8 engine rounds the GDN recurrent state to bf16
-in place (`round_gdn_bf16`, `engine.h:189-193`). mkviolet's seal changes nothing.
+in place (`round_gdn_bf16`). The Gemma 4 engine declares no seal.
 
 **Park.** A move of a state object to another tier, bit for bit. A park never seals. Thus when the scheduler parks a
 context to free its slot, later results do not change (`docs/engine-abi.md` D7).
@@ -120,7 +113,7 @@ context to free its slot, later results do not change (`docs/engine-abi.md` D7).
 **Interval copy.** A store entry of a context's parts at a multiple of the engine's checkpoint **grain**, taken
 between quanta. It is not sealed, so the context's later bits do not change. Thus it is not a snapshot, which is
 sealed. Its recipe has the item "not sealed", so a lookup for a snapshot never finds it. It lives only in host memory
-(`docs/spec.md` 6.13). DeepInfer copies its window state each 128 tokens in the same way (`docs/deepinfer.md` 3).
+(`docs/spec.md` 6.13).
 
 **Content id.** The name of a stored snapshot: the BLAKE3 hash of its canonical safetensors file. For a piece of a
 chain, the hash also covers the parent's content id (`docs/engine-abi.md` D3, D10). Each stored snapshot also
@@ -136,12 +129,11 @@ lease with an owner and an expiry (`docs/spec.md` 6.15). kaijutsu's CAS holds th
 
 **Control vector.** An object that holds one vector for each layer of one model. A context names it with an
 operation and a strength, and the engine changes the residual after each such layer (`docs/spec.md` 11.12). Other
-texts call it a steering vector. Amy accepted the term on 2026-11-08 (`docs/cv.md`, "The term").
+texts call it a steering vector.
 
 **Recipe.** What a snapshot was made from: a hash of the engine identity, the inputs and the boundaries. For an
 engine that declares a geometry key, the recipe holds that key too. The store maps a recipe to the content ids made
-from it, so the nagaya can ask "do we already have this?" before it builds. mkviolet's `snapshot_id` is the input
-part of a recipe (`held.rs:329-342`).
+from it, so the nagaya can ask "do we already have this?" before it builds.
 
 **Tolerance.** What a served model accepts in place of exact bits: `exact`, or named approximations. Each
 approximation has a quality budget that its approver measured once. A snapshot made by an approximation has its own
@@ -159,25 +151,26 @@ and on NVMe, with budgets from the ledger (`docs/spec.md` section 6).
 - An **owner** is the client principal that created an entry or a job. Each owner has a **quota**: a byte limit,
   so one owner cannot evict another owner's entries.
 
-**Slot.** Device memory that an engine reserves for one live context. mkviolet fixes its slots and their sizes at
-load (`new_slots`, `gemma4.rs:445-475`). The Qwen3.8 engine allocates contexts on demand (`ctx_new`). An engine's limits
+**Slot.** Device memory that an engine reserves for one live context. The Gemma 4 engine fixes its slots and their
+sizes at load (`new_slots`). The Qwen3.8 engine allocates contexts on demand (`ctx_new`). An engine's limits
 say how many fit.
 
 A slot's **geometry** is its size and its ring rows. Geometry changes coverage: a small slot keeps every row, and a
-large one keeps a ring's worth (`gemma4.rs:44-63`). It changes bits only for an engine that declares a geometry key.
+large one keeps a ring's worth. It changes bits only for an engine that declares a geometry key.
 
 ## Time
 
-**Op.** A step inside one pass, private to the engine. The nagaya never sees ops. mkviolet's ops are 64-byte task
-descriptors (`protocol.rs`). The ops of the Qwen3.8 engine are the entries of a pass's stage list: "A stage is one op
-with its arguments" (`stage.h`). Its word "stage" names an op, not a stage in the sense below.
+**Op.** A step inside one pass, private to the engine. The nagaya never sees ops. The ops of the B70 engines are 64-byte
+task descriptors (`crates/nagaya-mk-bmg/src/protocol.rs`). The ops of the Qwen3.8 engine are the entries of a pass's
+stage list: "A stage is one op with its arguments" (`stage.h`). Its word "stage" names an op, not a stage in the sense
+below.
 
 **Pass.** One run of an engine over a set of segments. Qwen3.8 engine: one cooperative launch over all 48 layers.
-mkviolet: one block through both cards.
+Gemma 4 engine: one block through both cards.
 
-**Stage.** The part of a pass that runs on one device. mkviolet has two: layers 0-14 on card 0, and layers 15-29 and
-the head on card 1 (`gemma4.rs:84`). The rows that one stage hands to the next are the **residual**. The Qwen3.8 engine
-has one stage.
+**Stage.** The part of a pass that runs on one device. The Gemma 4 engine has two: layers 0-14 on card 0, and layers
+15-29 and the head on card 1 (`CARD_LAYERS`). The rows that one stage hands to the next are the **residual**. The
+Qwen3.8 engine has one stage.
 
 **Quantum.** The unit that the nagaya schedules: one pass, or one stage of a pass. It is not longer than the
 engine's `max_quantum_ms` (D8), and it runs to its end. The nagaya changes what runs only between quanta. Other work
@@ -191,17 +184,14 @@ between quanta gives the same bits as a run without it, when all of these condit
 6. lab-only state that changes bits (the attention cell mask of the Qwen3.8 engine) counts as an input;
 7. engine history that feeds arithmetic is the same. This fails for an engine that declares `bit_dependence`.
 
-The `YieldHook` of the first Qwen3.8 engine showed this for diffusion: a paused run matched the run without a pause.
-
 **Kind.** What a quantum does: `read`, `prefill`, `decode`, `embed`, `copy`, `step` (an image step), or `train` (a
-micro-batch). Metrics and the cost model use kinds. A kind does not set urgency; a class does (the first Qwen3.8 engine
-did the same).
+micro-batch). Metrics and the cost model use kinds. A kind does not set urgency; a class does.
 
 **Segment.** One job's share of a pass: a context, its new inputs, where they go, and which outputs it wants. A pass
-carries segments of one class, from one or more jobs. Each segment gets the bits that a pass of it alone would give.
-The Qwen3.8 engine takes up to 16 segments in a pass (`Segment` in `engine.h`). mkviolet's branch block is not a
-segment. It puts a prefix and its branches in one slot, and the next forward overwrites the branch rows (`branch_block`,
-`gemma4.rs:1521-1554`).
+carries segments of one class, from one or more jobs. Each segment gets the bits that a pass of it alone would give. The
+Qwen3.8 engine takes up to 16 segments in a pass (`Segment` in `engine.h`). The Gemma 4 engine's branch block is not a
+segment. It puts a prefix and its branches in one slot, and the next forward overwrites the branch rows
+(`branch_block`).
 
 **Job.** The quanta of one request, in order, with a class. A council decision is prefill quanta, then read quanta.
 A generation is prefill, then one decode quantum per token. An image is encode, steps, decode. Training is
@@ -212,8 +202,7 @@ quantum. The scheduler chooses only among ready jobs. A filler job declares a **
 its checkpoints.
 
 **Class.** How urgently a job's quanta run: `interactive`, `batch`, or `filler`. Filler runs only when no other work
-is ready on its device. mkviolet had two classes: a council decision goes before a generation's next stage
-(`CardLock`, `GpuLock`). The term is "class", not "tier", because tier names a place.
+is ready on its device. The term is "class", not "tier", because tier names a place.
 
 ## Holding
 
@@ -230,15 +219,16 @@ To drain a lease:
 4. Release the resource.
 
 **Pin.** A lease on a snapshot and the chain under it. It keeps them out of eviction until it expires. Pins outlive
-a restart (mkviolet `pins.json`, `held.rs` `PinSet`).
+a restart.
 
 **Ledger.** One machine's account of its memory, with a budget per tier. The ledger admits every engine's mandatory
 bytes first. It divides what remains among the engines' elastic terms by the shares in the machine's placement
 profile (D9). Each elastic term gets at least its minimum. Counts come from the ledger's arithmetic, never from
-probes of free memory (ds4-recipe's memory ledger).
+probes of free memory.
 
 - A **budget** is a byte target for one or more tiers, from the placement profile. It is not a measurement of free
-  memory. On gfx1151host and sm121host, one budget holds both `device(0)` and `host` (`docs/spec.md` 4.1).
+  memory. On a machine with unified memory, one budget holds both `device(0)` and
+  `host` (`docs/spec.md` 4.1).
 - A **term** is one claim of an engine on a budget, from `limits().memory`. A **mandatory term** has fixed bytes.
   An **elastic term** has a unit size, a minimum and a maximum count of units (`docs/spec.md` 4.2).
 - A **share** is an engine's weight in the division of spare bytes (D9).

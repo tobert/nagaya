@@ -1,51 +1,19 @@
 # Lab tools
 
-This doc studies tools that look inside a model while it runs, and inside its weights. It asks what the nagaya can
-give, and where each tool lives. It is a design note, not a milestone. Amy accepted each Proposed note here on
-2026-11-08 (spec, header).
+This doc gives the contract of the lab routes. They are tools that look inside a model while it runs, and inside
+its weights. The doc says what each route does, and where each route lives.
 
-Amy, 2026-11-07, after the first refusal vector worked: "got a couple places where it got stuck in a loop. without
-digging in quite yet, how might we analyze that? could we build something into the nagaya for looking at weights to
-see what's up?" Then: "do some doc updates first then let's see project and trace".
-
-## What came before
-
-**Weights only.** `~/src/research/weights-only-replication` replays an MIT CSAIL paper (Takehi, Teoh, Zhang and
-Khattab, "Sparks of Weight-Space Programming", 2026). There, GPT-6 Astra named the game of four small PPO policies
-from their weights. In the replay, Claude Opus 5.5 named all four from the numbers alone, with no tools.
-
-- The networks are small: 17,253 weights for a game, and 1,218 for a physics system.
-- Opus used three rules. A row that copies the bias belongs to an input that is always on. A row near its initial
-  values belongs to an input that is never on. Two equal rows belong to two inputs that are on together.
-- On the physics systems, Opus found the kind of system 4 times in 5, and the constants once in 5. The limit was the
-  arithmetic of the chain rule by hand. `physics/jac.py` computes the exact Jacobian in a few lines.
-
-The lesson for the nagaya: a model reads structure well and computes badly by hand. Thus a lab tool computes the
-quantities and gives back small results. LFM3-1.7B has 1.7 billion weights, so nobody reads them raw.
-
-**The J-Lens of gmk.** gmk on gfx1151host fitted a Jacobian lens for Gemma 4 12B on 2026-10-11 to 14
-(`tools/jlens_fit.py`). It uses Anthropic's `jacobian-lens` code (Gurnee et al., "Verbalizable Representations Form a
-Global Workspace in Language Models", 2026), cloned on gfx1151host to `~/src/research/jacobian-lens`.
-
-- The lens of layer `l` is `J_l`, the mean of `d h_final / d h_l` over generic text. `lens_l(h)` is the unembedding
-  of `J_l h`, with the final norm.
-- The corpus was WikiText-103 paragraphs of more than 700 characters. The cost was one forward pass and
-  `ceil(3840 / 8)` backward passes for each prompt.
-- The lens of 48 layers at a width of 3,840 is 1.39 GB (`/tank/ml/gmk/jlens/gemma4-12b-it.pt`).
-- `jlens_listen`, `jlens_wander` and `jlens_vary` read Gemma's residual through it.
-
-**mkviolet.** mkviolet `docs/04-jlens-and-multi-model-stack.md` designs a tap and a steer op, and a lens on the CPU.
-Its `AGENTS.md` names `src/jlens.rs`, but the file does not exist. The port was not built.
+A lab tool computes the quantities, and it gives back small results. Reason: a model reads structure well and computes
+badly by hand, and a model of 1.7 billion weights is too large to read raw.
 
 ## The terms
 
 - The **logit lens** of a residual row is its unembedding, as if the later layers did nothing.
-- The **J-Lens** of a residual row at layer `l` is the unembedding of `J_l h`. It corrects the logit lens for the
-  later layers. Spec 13.2 calls it a lens.
+- The **J-Lens** of a residual row at layer `l` is the unembedding of `J_l h`, with the final norm. It corrects the
+  logit lens for the later layers. Spec 13.2 calls it a lens.
+- `J_l` is the mean of `d h_final / d h_l` over generic text (Gurnee et al., "Verbalizable Representations Form a
+  Global Workspace in Language Models", 2026).
 - A **trace** is a record of one generation: for each step and each layer, numbers that the taps and the lenses give.
-
-Add "lens" and "trace" to the ontology with these meanings. Reason: the
-routes below use both words, and spec 13.2 uses "lens" now with no definition.
 
 ## `project`: a vector through a matrix
 
@@ -65,12 +33,9 @@ POST /nagaya/v1/lab/project
 - With `unembed`, the vector first gets the weight of the final norm, element by element, and no division by its
   root mean square. Reason: a vector is a direction, so it has no scale to normalize.
 
-The first use is the loops. Project the refusal vector through `unembed`, and look at the rank of `<|im_end|>`.
+To study a loop, project a refusal vector through `unembed`, and look at the rank of `<|im_end|>`.
 
 ### The rules of `project`
-
-The route follows these rules. Reason: lab.md
-gives the shape and leaves these choices open. Each rule is the simplest choice that answers the loop question.
 
 ```json
 POST /nagaya/v1/lab/project
@@ -88,7 +53,7 @@ POST /nagaya/v1/lab/project
   model is a 400 that names `model`. A model of a peer is a 400 too: the route does not forward.
 - **No engine.** The route reads the checkpoint of the model folder of the profile, not the engine. Thus it runs
   while the engine is `unloaded` or `loading`, and it never gives a 503.
-- **`through`.** Only `unembed` now. Another value is a 400 that names `through`. `jlens` comes in step 5.
+- **`through`.** `unembed`, or `jlens` ("The rules of the J-Lens"). Another value is a 400 that names `through`.
 - **An object.** A `blake3:` id names a control vector object. The route checks it as a context checks its control
   list. It checks a held object, the media type, the bytes and the fit with the served model. An object that the
   store does not hold is a 404 that names `vector`. Each other fault is a 400 that names `vector`.
@@ -106,27 +71,18 @@ POST /nagaya/v1/lab/project
 - **The bits.** Each product of a BF16 weight and an `f32` value is exact in `f64`. The sums run in `f64`, in a fixed
   order. Thus the same request gives the same bytes on each run.
 
-**The cost of `project`.** The route maps `model.safetensors` for each request,
-and it holds no copy of the table. The page cache holds the file, and the kernel can take those pages back. Reason:
-a copy of the table of LFM3-1.7B is 500 MiB of host memory outside the ledger (spec 4). The work runs on a call
-thread and on at most 8 threads of the CPUs of that thread. The scores are 500 KiB for each layer, for the time of
-the request.
+**The cost of `project`.** The route maps `model.safetensors` for each request, and it holds no copy of the table. The
+page cache holds the file, and the kernel can take those pages back. Reason: a copy of the table of LFM3-1.7B is 500 MiB
+of host memory outside the ledger (spec 4). The work runs on a call thread and on at most 8 threads of the CPUs of that
+thread. The scores are 500 KiB for each layer, for the time of the request.
 
 **The gate of `project`.** The oracle stage `project` of `tools/lfm3_reference.py` puts layers 0, 12 and 23 of the
 control vector of the stage `control` through the modules of transformers. Its self check shows that the final norm of
 LFM3 multiplies by its weight, not by 1 plus its weight.
 
-The gap of each score is under the error bound of an `f32` sum
-of 2,048 products. That bound is 2,048 times half of the `f32` epsilon, times the sum of the sizes of the products. The
-worst gap was 0.001 of that bound (2026-11-07). The ids of the top 64 and the bottom 64 match. The test allows a swap
-only within the bounds of the two scores.
-
-**The facts of the first run** (2026-11-07, `crates/nagaya-mk-lfm3-bmg/tests/lab.rs`, a build with `--release` on
-b70host):
-
-- At layer 23 of the sea vector, " seawater" (id 62590) has the rank 5, with the score 1.116. The top is " seafood".
-- At that layer, `<|im_end|>` (id 124900) has the rank 122,593 of 128,000, with the score -0.285.
-- The product of 1 layer took 9.7 ms, and the product of 24 layers took 137 ms, with the file in the page cache.
+The gap of each score must be under the error bound of an `f32` sum of 2,048 products. That bound is 2,048 times half
+of the `f32` epsilon, times the sum of the sizes of the products. The ids of the top 64 and the bottom 64 must match.
+The test allows a swap only within the bounds of the two scores.
 
 ## `trace`: a generation with its numbers
 
@@ -162,9 +118,6 @@ For a loop, the trace shows which number collapses first. The entropy can fall, 
 
 ### The rules of `trace`
 
-The route follows these rules. Reason: the shape above
-leaves these choices open. Each rule is the simplest choice that lets a client compare a plain and a steered reply.
-
 - **Members.** The request is a generation request (gogi "Generations") and the member `trace`, which is required. The
   members of `trace` are `layers`, `vectors`, `top_k`, `lens` and `rows`, and each one is optional. Another member of
   `trace` is a 400 that names it, such as `trace.layer`.
@@ -174,7 +127,8 @@ leaves these choices open. Each rule is the simplest choice that lets a client c
 - **The engine.** A trace is a job of the engine, so a model that is not `ready` is a 503 `model_unavailable`.
 - **No stream.** `stream: true` is a 400 that names `stream`. The object is complete only at the end of the reply.
 - **The response.** It is the generation response, with each member and value as the same generation with no trace
-  gives. One member follows: `trace`, the id of the object. No keep holds the object, so the client keeps it.
+  gives. One member follows: `trace`, the id of the object. No keep holds the object, so the client keeps it. The
+  store evicts an object with no keep by its usual rule (spec 6.15).
 - **Steps.** Step `i` is the logit row that gave the token `i` of the reply. Thus step 0 is the last prompt position,
   and `S` is `usage.completion`. The tokens that the job feeds after the reply to hold a head are not steps.
 - **The distribution.** `entropy`, `top_logprobs` and `end_logprob` come from the softmax of the logit row over the
@@ -192,7 +146,7 @@ leaves these choices open. Each rule is the simplest choice that lets a client c
 - **The end tokens.** They are the ids of `eos_token_id` in `generation_config.json`, as in `project`. The tensor
   `end_ids` `[E]` gives them in that order.
 - **`lens`.** `"logit"` gives the logit lens of each layer. With no `lens`, the object has no lens tensors. Another
-  value is a 400 that names `trace.lens`. `"jlens"` comes in step 5.
+  value is a 400 that names `trace.lens`. `"jlens"` gives the J-Lens ("The rules of the J-Lens").
 - **`rows`.** `true` puts the residual rows into the object. The default is `false`.
 
 **The object.** The tensors are in bytewise order of their names, and the header follows D10 rules 3 and 5. The ids
@@ -201,7 +155,7 @@ are `U32`, and the numbers are `F32`. The tensor `layers` `[L]` gives the layer 
 ids. The same request with the same seed gives the same bytes. The object has the media type
 `application/x-safetensors`, as a control vector has.
 
-**The logit lens of a row.** This answers open question 3. The lens of a residual row is the final RMSNorm of the
+**The logit lens of a row.** The lens of a residual row is the final RMSNorm of the
 model, with its division and its epsilon, then the head. A row has a scale, so the lens divides by it, as the model
 does before the head. The log softmax sums over the whole vocabulary in `f64`.
 
@@ -223,35 +177,22 @@ the rows of `LFM3-1.7B` are 192 KiB for each step.
 **The bits.** The taps do not change the generation. The tap `residual` copies each row, and the lens runs after the
 head, into its own buffers. Thus a trace gives the tokens and the logit bits of the same generation with no trace.
 
-**The facts of the first trace** (2026-11-07, `LFM3-1.7B` on card 0 of b70host, builds with `--release`):
-
-- `crates/nagaya-mk-lfm3-bmg/tests/xe_trace.rs`: a pass of one token took 9.05 ms with no tap, 9.11 ms with the tap
-  `residual`, and 12.69 ms with both taps. These are means of 200 greedy steps.
-- `crates/nagaya/tests/xe_lab_trace.rs`: a generation of 200 tokens took 1,875 ms. Its trace took 2,017 ms with no
-  lens, and 3,504 ms with the lens of 24 layers. With the lens of 4 layers, it took 3,032 ms.
-- The taps changed no logit bit in 32 greedy steps, plain and with an ablate of 1.
-- The lens of layer 23 differed from the logits by at most 2.7e-5, and it gave the same top token at each step.
-- After an ablate of 1, `along` was at most 7.5e-8 of the norm of the row. Plain `along` at step 0 differed from the
-  oracle's rows by at most 4.7e-7 of the row.
-
 ## The J-Lens in the nagaya
 
 A lens is a state object of one model (spec 13.2). The nagaya applies it, and a tool outside the process fits it.
 
 - **The fit.** The fit needs backward passes, and the engines run forward only. One backward pass gives a row of
-  `J_l` for every layer at once. Thus a fit of LFM3-1.7B copies gmk's `jlens_fit` into a reference tool, on the CPU
-  or on gfx1151host's GPU, with no job of the nagaya.
+  `J_l` for every layer at once. Thus a reference tool fits the lens of LFM3-1.7B on the CPU, with no job of the
+  nagaya and no GPU job. The cards stay free for the served models.
 - **The object.** The lens is canonical safetensors with one tensor `layers.<l>` of `[W, W]` for each layer. Its
   metadata names the weight hash and the corpus. For LFM3-1.7B in BF16, that is 24 × 2,048² × 2 bytes, about 201 MB.
 - **The use.** `project` with `through: "jlens"` and `trace` with `lens: "jlens"` multiply on the CPU, as spec 13.2
-  says. A row of `W_U J_l` is a concept vector of one token at layer `l`. With `add`, it pushes that concept
-  (`docs/cv.md`, "With the J-Lens and the other tools").
+  says. A row of `W_U J_l` is a concept vector of one token at layer `l`. With `add`, it pushes that concept.
 
-**The lens of a served model.** The profile entry of the
-served model names its lens, and a request names only `jlens`. Thus a served model has at most one lens.
+**The lens of a served model.** The profile entry of the served model names its lens, and a request names only `jlens`.
+Thus a served model has at most one lens.
 
-**The rules of the J-Lens.** Reason: the decision
-above and the reference leave these choices open, and each is the simplest one that a test can check.
+**The rules of the J-Lens.** The lab follows these rules.
 
 - **The profile.** The entry gets the table `[engines.lab]` with one key, `jlens`, the path of the lens file. Another
   key, or the table on an engine kind that the lab does not read, stops the start with exit 3.
@@ -273,10 +214,9 @@ above and the reference leave these choices open, and each is the simplest one t
 - **`trace`.** With `lens: "jlens"`, the job reads the tap `residual`, not the tap `lens`. For each traced layer, the
   CPU computes `J_l h`, the final norm with its division, and the head. The trace keeps the shape of the logit lens,
   and its metadata names `jlens` and the content id of the lens. The head of LFM3 has 128,000 rows for 125,033 ids.
-  Thus the trace keeps the first 125,033 values of each row, as the engine does with its logits. The first live trace
-  found it on 2026-11-09.
+  Thus the trace keeps the first 125,033 values of each row, as the engine does with its logits.
 - **The cost.** The readout runs in the step of the trace, on the group thread. Thus the other jobs of the group
-  wait for it at each step. Each step reads the head once for all traced layers. The deploy measures the time.
+  wait for it at each step. Each step reads the head once for all traced layers.
 - A served model with no lens refuses `jlens` with a 400 that names `through` or `trace.lens`.
 
 A fit with forward passes only is possible: an `add` of a small step at layer `l` and a tap give one column of `J_l`.
@@ -285,9 +225,8 @@ backward fit. Thus it is not the plan.
 
 ## `compose`: a control vector from parts
 
-Amy wants an agent to compose a control vector set and tune
-it with the J-Lens. Reason for the shape: each part is one idea that a projection can show, and the result is a plain
-control vector object. Thus every client can use it with no new member.
+An agent composes a control vector set and tunes it with the J-Lens. Reason for the shape: each part is one idea that a
+projection can show, and the result is a plain control vector object. Thus every client can use it with no new member.
 
 ```json
 POST /nagaya/v1/lab/compose
@@ -324,9 +263,7 @@ POST /nagaya/v1/lab/compose
 
 ### Latent steps in a request
 
-Amy, 2026-11-10: "I feel like it might be most
-effective on the summarizer. but probably everywhere we can over time, and somewhat tunable per api call ideally."
-Thus a request of `ensemble` takes the member `latent`. One context with `logprob_sum` is a generation, so any
+A request of `ensemble` takes the member `latent`. One context with `logprob_sum` is a generation, so any
 generation of the lab can think in latent steps first.
 
 ```json
@@ -348,7 +285,7 @@ generation of the lab can think in latent steps first.
 - **Errors.** `steps` past 256, or not a whole number, is a 400 that names `latent.steps`. A model with no tap
   `residual` is a 400 that names `latent`.
 
-The choices that the rules above leave open.
+These rules also hold.
 
 - **No head.** A reply after latent steps holds no head, and its slot makes no interval copy after the first step.
   Reason: a recipe names tokens, and a latent row is not a token.
@@ -357,18 +294,14 @@ The choices that the rules above leave open.
 - **The seed.** The sampler takes the position in the slot, so the first token of the reply is at the prompt length
   plus the step count.
 - **The norm.** The host takes the mean of the squares in `f64`, then each value in `f32` takes the weight. The scale
-  is the mean of the row norms of the BF16 table, in `f64`. On the CPU it is 0.90660375 for `LFM3-1.7B`; the
-  oracle gives 0.9066035.
+  is the mean of the row norms of the BF16 table, in `f64`.
 - **Members.** `latent` has only `steps` and `read`. Another member is a 400 that names `latent.<member>`, and
   `read` that is not a boolean names `latent.read`.
 
 ### Soft inputs in a request
 
-Amy, 2026-11-12: "I'm curious if there is a middle
-ground where we get some of the compute cost and precision (not round tripping through English, or does that help?)
-benefits of latent steps, while making them more productive."
-
-Three papers measured this. Each is training-free, and each feeds a mix of embedding rows in place of one token:
+A soft input is a middle ground between a token and a latent step. Three papers measured it. Each is training-free, and
+each feeds a mix of embedding rows in place of one token:
 
 - **Mixture of Inputs.** Yufan Zhuang et al., *Text Generation Beyond Discrete Token Sampling*, arXiv 2505.14827,
   NeurIPS 2025. The sampler picks a token as before, and the next input mixes it with the distribution. The weight of
@@ -381,9 +314,6 @@ Three papers measured this. Each is training-free, and each feeds a mix of embed
 - **Stochastic Soft Thinking.** Junhong Wu et al., *LLMs are Single-threaded Reasoners: Demystifying the Working
   Mechanism of Soft Thinking*, arXiv 2508.03440, ICLR 2026. A plain mix follows its top token, and it scored below
   sampled text. Gumbel noise in the mix, with `tau` 0.5, scored above sampled text on each of the three models.
-
-All three used reasoning models of 27B parameters and more, on math, code and questions. Nobody measured a small model
-or creative text. LFM3 is both, so these trials are new.
 
 ```json
 "soft": {"map": "moi", "beta": 1.0, "top": 16, "span": "all"}
@@ -412,16 +342,15 @@ or creative text. LFM3 is both, so these trials are new.
 - **One context.** `soft` takes one context with the weight 1, and the ensemble runs it as a generation. Another count
   is a 400 that names `soft`.
 - **Joins.** A soft row is a latent row, and a latent row shares no pass (engine-abi "Batched passes"). Thus the first
-  build feeds each soft row in a pass alone. A join of soft rows is later work, if the trials show a gain.
+  build feeds each soft row in a pass alone. A join of soft rows is not built.
 - **The response.** `soft` echoes the request with each default filled in. It also gives `mixed`, the count of soft
   rows, and `mean_share`. The share of a step is 1 minus the weight of its token. `mean_share` is the mean over the
   steps of the span, and a token that feeds as a token has a share of 0.
 - **Errors.** An unknown `map` is a 400 that names `soft.map`. A member of the other map, or an unknown member, is a
   400 that names `soft.<member>`. A value out of range is a 400 that names its member.
 
-**Proposed**: a stop for steps that do not end by themselves. Amy, 2026-11-12: "I think detecting </think> or
-other end tokens would be helpful so the model isn't trapped in a loop it has no use for." She accepted the build
-of `latent.stop` on the same day. `soft.cold` is later.
+**The stop.** This is a stop for steps that do not end by themselves. Reason: a model must not stay in a loop that
+it has no use for. `latent.stop` is built, and `soft.cold` is not built yet.
 
 - **`latent.stop`.** With `true`, the latent steps end at the first step whose top token ends the reasoning or the
   turn. The reply starts after that step, from its logit row. `steps` is then the most steps.
@@ -434,12 +363,10 @@ of `latent.stop` on the same day. `soft.cold` is later.
 - **`soft.cold`.** This is "Cold Stop" of Soft Thinking: `{"entropy": 0.05, "run": 128}`. After `run` tokens in a row
   with an entropy below `entropy`, the reply takes the token that ends the reasoning. It needs `span: "think"`.
 
-The trials of these rules are in `docs/cv.md`, "The stream of thought". The paper files are not in git.
-
 ### The score of a text
 
-The trials of soft inputs found broken words that no counter saw
-(`docs/cv.md`). Amy accepted a measure: the log probability of each token of a reply, with no soft input.
+The score of a text is the log probability of each token of a reply, with no soft input. Reason: a count of tokens
+does not show a broken word.
 
 ```json
 "force": "The owl collected buttons."
@@ -450,7 +377,7 @@ The trials of soft inputs found broken words that no counter saw
   it, and each token goes into the reply as if the sampler had picked it.
 - **The score** is `stats` of the response, as gogi gives it for a generation. Each token gives its untempered
   probability in the logit row before it. Thus a generation and the force of its own text give the same `stats`.
-- **The response** of `ensemble` gives `stats` and `reasoning` for each request now, with `force` or without it.
+- **The response** of `ensemble` gives `stats` and `reasoning` for each request, with `force` or without it.
 - **The end.** The reply ends after the last token of the text, or before it when the parser ends the reply.
 - **Errors.** An empty text is a 400 that names `force`. `force` with `max_tokens` is a 400 that names
   `max_tokens`, because the text gives the count. `force` with `soft` is a 400 that names `force`, because the score
@@ -458,8 +385,7 @@ The trials of soft inputs found broken words that no counter saw
 
 ## `latent` and `merge`: the parts of a swarm
 
-Amy chose a text swarm first, then latent steps and
-the merge as a pair (`docs/swarm-ideas.md`). Reason for the shape: each route makes a held snapshot, so a generation,
+These two routes are the parts of a swarm. Reason for the shape: each route makes a held snapshot, so a generation,
 a decision or another route continues from it with no new member.
 
 ```json
@@ -492,8 +418,7 @@ POST /nagaya/v1/lab/merge
 
 ## `ensemble`: joined forks
 
-Amy chose plan, then code (`docs/swarm-ideas.md`, "Plan, then
-code"). Joined forks are one way to code a plan, or to distill ideas into one plan. Reason for a lab route: the rules of
+Joined forks are one way to code a plan, or to distill ideas into one plan. Reason for a lab route: the rules of
 the combination are a trial, and a council v2 contract can follow when one rule wins.
 
 ```json
@@ -531,9 +456,8 @@ POST /nagaya/v1/lab/ensemble
 
 ## Context records in the lab routes
 
-`trace` and `ensemble` read council v2 contexts, so
-they take a context that names a `parent` (gogi "Context records", spec 11.13). Reason: a client of a swarm names the
-record of its shared head in each route that reads it. @tobert decides.
+`trace` and `ensemble` read council v2 contexts, so they take a context that names a `parent` (gogi "Context records",
+spec 11.13). Reason: a client of a swarm names the record of its shared head in each route that reads it.
 
 - **Whole before the decode.** Each route makes each context whole before it decodes the body, as a generation does.
   A parent that the node does not hold is gogi's 404. It names `context.parent` for `trace`, and
@@ -549,9 +473,8 @@ record of its shared head in each route that reads it. @tobert decides.
 
 ## Where the routes live
 
-Put `project` and `trace` on nagaya routes under
-`/nagaya/v1/lab/` first. Move `trace` into gogi when its shape settles and a client needs it. Keep the routes that read
-tensors in the nagaya.
+`project` and `trace` are nagaya routes under `/nagaya/v1/lab/`. `trace` can move into gogi when its shape settles
+and a client needs it. The routes that read tensors stay in the nagaya.
 
 - `project` and `trace` use ideas that each language model has: layers, a residual width, an unembedding and tokens.
   gogi already has layers and widths in its control vectors, so they can go there later.
@@ -560,16 +483,6 @@ tensors in the nagaya.
 - A route that names tensors exposes the engine's own layout. That is not part of a council contract.
 - The requests use gogi's types now: a context, a control list, object ids and a generation request. Thus a move to
   gogi changes the path, and little else.
-
-## Later: the weights
-
-These read the weights only, and give small results, as the replay asks. They wait until `project` and `trace` show
-what is needed.
-
-- `GET /nagaya/v1/lab/tensors`: the name, the shape, the type and the norms of each tensor.
-- `POST /nagaya/v1/lab/rows`: the rows nearest to a row, the rows near the spread of their initial values, and the
-  pairs of rows that are almost equal.
-- `POST /nagaya/v1/lab/jacobian`: the Jacobian of the output at one point, as `jac.py` gives for a small network.
 
 ## Tests
 
@@ -582,10 +495,4 @@ what is needed.
 
 ## Open questions
 
-1. Answered 2026-11-08: `trace` writes the object at the end, and the stream carries the tokens only. The note of
-   milestone 26 step 2 says so, and Amy accepted it.
-2. Answered 2026-11-08 (Amy, by interview): the J-Lens fit of LFM3-1.7B runs on the CPU of b70host, at `nice` 19
-   and with no GPU job. The cards stay free for the served models. Measure the time on a small corpus first.
-3. Answered 2026-11-08: yes ("The logit lens of a row"), accepted by Amy.
-4. Answered 2026-11-08 (Amy, by interview): the client keeps a trace object with a keep. The route sets no keep, and
-   the store evicts an object with no keep by its usual rule (6.15). The web app keeps each trace under its owner.
+No question is open.
