@@ -1,6 +1,6 @@
 //! The sampler of spec 11.2. One sampler serves all engines.
 //!
-//! The filters match `service/sampling.py` of the reference: top_k, top_p, min_p, then temperature. The draw keeps no
+//! The filters match `tools/qwen38_reference/sampling.py`: top_k, top_p, min_p, then temperature. The draw keeps no
 //! state: it is a hash of the seed, the position and the purpose. This crate never reads OS randomness. The caller
 //! gives the seed, and it chooses one when the client sent none.
 

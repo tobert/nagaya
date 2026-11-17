@@ -1,4 +1,4 @@
-//! The tokenizer against the outputs of the reference's Python (`harness/tokenizer.py`), id for id.
+//! The tokenizer against the outputs of the reference's Python (`tools/qwen38_reference/tokenizer.py`), id for id.
 
 mod common;
 

@@ -1,4 +1,4 @@
-//! The sampler against fixed outputs of `service/sampling.py` of the reference (tools/sampler_fixture.py).
+//! The sampler against fixed outputs of `tools/qwen38_reference/sampling.py` (tools/sampler_fixture.py).
 //!
 //! Tolerance for probabilities: 1e-12 absolute. Both sides use float64. They differ only in the order of the summation
 //! (numpy's pairwise sum, a plain loop here) and in `exp`. Each differs by a few units of 2^-53 (1.1e-16) for each

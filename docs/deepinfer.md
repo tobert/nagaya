@@ -61,7 +61,8 @@ absolute position, plus a case: sample, resample, or accept test (`random_sampli
 integer CDF over fixed-point probabilities, so the thread layout does not change the result.
 
 The sampler of the first Qwen3.8 engine is different. It draws from one PCG64 stream for each request, one uniform for
-each step (`service/sampling.py:23`, `:106`, `:153`). The draw at step k thus depends on how many draws came before it.
+each step (`tools/qwen38_reference/sampling.py:21`, `:104`, `:151`). The draw at step k thus depends on how many draws
+came before it.
 
 Proposed rule: the draw for a token is a function of the seed, the absolute position, and the purpose of the draw.
 The sampler holds no state between tokens. A fork gets a child seed: a hash of the parent seed and a branch number.

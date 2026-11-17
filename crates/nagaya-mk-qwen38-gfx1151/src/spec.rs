@@ -118,7 +118,7 @@ pub const IDX_ROW_BYTES: u64 = 4 * 12 * 128;
 /// The bytes of the PLE history, part 5.
 pub const PLE_HIST_BYTES: u64 = 8;
 
-/// The context bytes that the reference allocates for one capacity (`harness/engine.py` `context_bytes`).
+/// The context bytes that the first Qwen3.8 engine allocated for one capacity.
 pub fn context_bytes(capacity: u32) -> u64 {
     // The fixed state and history, then K/V, index keys and the derived pooled keys, for each token of capacity.
     let fixed = 36 * 48 * 128 * 128 + 36 * 3 * 10_240 + 9 * 10_240;

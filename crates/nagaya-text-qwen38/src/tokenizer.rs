@@ -1,6 +1,6 @@
 //! The byte-level BPE tokenizer of Qwen3.8, from the vocabulary in the GGUF metadata.
 //!
-//! This is a port of the reference's `harness/tokenizer.py`. Special tokens match as whole tokens before BPE, longest
+//! This is a port of `tools/qwen38_reference/tokenizer.py`. Special tokens match as whole tokens before BPE, longest
 //! text first. Content that a client sends is escaped first: each special token's text becomes one Unicode
 //! noncharacter, so that the client cannot forge a role of the chat template.
 
