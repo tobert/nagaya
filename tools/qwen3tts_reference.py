@@ -3,10 +3,10 @@
 
 Run it through tools/qwen3tts_golden.sh. The direct command is:
 
-  HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 nice -n 10 ~/.venvs/tts-proto/bin/python -I \
+  HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 nice -n 10 <reference venv>/bin/python -I \
       tools/qwen3tts_reference.py --model "$QWEN3TTS_MODEL_DIR" --out target/qwen3tts-golden
 
-The script uses the `qwen_tts` package of ~/.venvs/tts-proto (torch CPU, transformers 4.57). It loads the
+The script uses the `qwen_tts` package of the reference venv (torch CPU, transformers 4.57). It loads the
 checkpoint in float32 with eager attention. It runs on the CPU only. It writes four safetensors files into
 --out, and the tensor names, shapes and meanings are in tools/qwen3tts_golden.sh.
 

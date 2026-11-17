@@ -9,7 +9,7 @@ the text as id 0.
 
 The tool reads only the tokenizer files. It uses no GPU and little RAM. Run it with the venv of the reference:
 
-    HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 ~/.venvs/sdxl-ref/bin/python -I tools/sdxl_family_fixture.py \
+    HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 <reference venv>/bin/python -I tools/sdxl_family_fixture.py \
         --model DIR [--out DIR]
 """
 import argparse

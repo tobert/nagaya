@@ -6,7 +6,7 @@ The reference is plain torch on the CPU, in f32. Each function below copies the 
 at the pinned revision of LFM3-Omni-2B, and the comment of each names the lines. The tool does not import the remote
 code. The inputs come from a generator with no state, so Rust makes them again. The fixture holds only the outputs.
 
-    PYTHONDONTWRITEBYTECODE=1 nice -n 19 ionice -c3 ~/.venvs/nagaya-ref/bin/python -I tools/lfm3_op_fixture.py
+    PYTHONDONTWRITEBYTECODE=1 nice -n 19 ionice -c3 <reference venv>/bin/python -I tools/lfm3_op_fixture.py
 
 The tool writes `lfm3_ops.json` and `lfm3_ops.bin` into `crates/nagaya-mk-bmg/tests/fixtures`, in the format of
 `tools/op_fixtures.py`. It runs no GPU job.

@@ -12,7 +12,7 @@ The tool writes two files into crates/nagaya-text-gemma4/tests/fixtures:
 The tool reads the checkpoint and the template, and it writes only the two fixtures. It uses no GPU. Run it with the
 reference venv:
 
-    PYTHONDONTWRITEBYTECODE=1 nice -n 10 ~/.venvs/nagaya-ref/bin/python -I tools/gemma4_text_fixture.py \
+    PYTHONDONTWRITEBYTECODE=1 nice -n 10 <reference venv>/bin/python -I tools/gemma4_text_fixture.py \
         [--model DIR] [--template FILE] [--out DIR]
 
 --model defaults to GEMMA4_MODEL_DIR. One of them must name the checkpoint folder.

@@ -3,11 +3,11 @@
 
 Run it through tools/sdxl_inpaint_golden.sh. The direct command is:
 
-  HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 nice -n 19 ionice -c3 ~/.venvs/sdxl-ref/bin/python -I \
+  HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 nice -n 19 ionice -c3 <reference venv>/bin/python -I \
       tools/sdxl_inpaint_reference.py --model "$SDXL_MODEL_DIR" --inpaint-model "$SDXL_INPAINT_MODEL_DIR" \
       --out target/sdxl-golden
 
-The script uses diffusers in ~/.venvs/sdxl-ref, on the CPU only. It loads the fp16 weights as float32. It takes the
+The script uses diffusers in the reference venv, on the CPU only. It loads the fp16 weights as float32. It takes the
 prompt, the size, the step count, the CFG scale, the seed and the samplers of tools/sdxl_reference.py. The tensor
 names, shapes and meanings are in tools/sdxl_inpaint_golden.sh.
 

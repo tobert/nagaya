@@ -304,7 +304,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("job", help="the job file, a TOML file")
     parser.add_argument("--out", help="the folder of the images (default: out/<name> beside the job)")
-    parser.add_argument("--url", default=nagaya_image.DEFAULT_URL, help=f"the base URL of the nagaya (default {nagaya_image.DEFAULT_URL})")
+    parser.add_argument("--url", default=nagaya_image.default_url(),
+                        help=f"the base URL of the nagaya (default: NAGAYA_URL, else {nagaya_image.DEFAULT_URL})")
     parser.add_argument("--dry-run", action="store_true", help="print the renders and send nothing")
     parser.add_argument("--no-load", action="store_true", help="do not load the engines; a model not ready is a 503")
     parser.add_argument("--unload-after", action="store_true", help="unload each engine after the batch")

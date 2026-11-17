@@ -19,7 +19,7 @@ larger than the image tests the other branch of Pillow's line blur.
 
 The tool needs Pillow, numpy, torch and diffusers. It uses no GPU and little RAM. Run it with the venv of the reference (Pillow 13.0.0):
 
-    PYTHONDONTWRITEBYTECODE=1 ~/.venvs/sdxl-ref/bin/python -I tools/sdxl_inputs_fixture.py [--out DIR]
+    PYTHONDONTWRITEBYTECODE=1 <reference venv>/bin/python -I tools/sdxl_inputs_fixture.py [--out DIR]
 """
 import argparse
 import io

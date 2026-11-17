@@ -6,11 +6,12 @@ import time
 import urllib.error
 import urllib.request
 
-DEFAULT_URL = "http://198.51.100.10:8091"
+# The nagaya when neither --url nor NAGAYA_URL gives one: a nagaya on this machine.
+DEFAULT_URL = "http://127.0.0.1:8090"
 
 
 def base_url(arg=None):
-    """The base URL: the argument, else NAGAYA_URL, else b70host's nagaya."""
+    """The base URL: the argument, else NAGAYA_URL, else DEFAULT_URL."""
     return (arg or os.environ.get("NAGAYA_URL") or DEFAULT_URL).rstrip("/")
 
 

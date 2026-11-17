@@ -3,7 +3,7 @@
 
 Run it through tools/lfm3_golden.sh, which names each file and tensor. The direct command is:
 
-  PYTHONDONTWRITEBYTECODE=1 HF_HUB_OFFLINE=1 nice -n 19 ionice -c3 ~/.venvs/nagaya-lfm3-ref/bin/python -I \
+  PYTHONDONTWRITEBYTECODE=1 HF_HUB_OFFLINE=1 nice -n 19 ionice -c3 <reference venv>/bin/python -I \
       tools/lfm3_reference.py --omni "$LFM3_OMNI_MODEL_DIR" --text "$LFM3_MODEL_DIR" --out target/lfm3-golden
 
 The reference is transformers with the checkpoint's own code (`trust_remote_code`), in float32 with eager

@@ -9,7 +9,7 @@ format is the format of the Qwen3.8 fixture (`tools/oracle_fixture.py`).
 The tool reads the checkpoint, and it never writes into it. Each prompt runs the reference in its own
 process, which writes its tensors into a temporary directory. Run it with the reference venv and no GPU job:
 
-    PYTHONDONTWRITEBYTECODE=1 nice -n 19 ionice -c3 ~/.venvs/nagaya-ref/bin/python -I tools/gemma4_oracle_fixture.py \
+    PYTHONDONTWRITEBYTECODE=1 nice -n 19 ionice -c3 <reference venv>/bin/python -I tools/gemma4_oracle_fixture.py \
         OUT.json [--model DIR] [--layers N]
 
 --model defaults to GEMMA4_MODEL_DIR. One of them must name the checkpoint folder.

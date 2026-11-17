@@ -3,10 +3,10 @@
 
 Run it through tools/sdxl_golden.sh. The direct command is:
 
-  HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 nice -n 10 ~/.venvs/sdxl-ref/bin/python -I \
+  HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 nice -n 10 <reference venv>/bin/python -I \
       tools/sdxl_reference.py --model "$SDXL_MODEL_DIR" --out target/sdxl-golden
 
-The script uses diffusers in ~/.venvs/sdxl-ref, on the CPU only. It loads the fp16 weights of the checkpoint as
+The script uses diffusers in the reference venv, on the CPU only. It loads the fp16 weights of the checkpoint as
 float32. The tensor names, shapes and meanings are in tools/sdxl_golden.sh.
 
 The engine makes its noise with its own random stream (spec 11.9), so the script draws the noise with torch, saves it,

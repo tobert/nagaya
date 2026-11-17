@@ -24,11 +24,11 @@ def page_script():
     return "\n".join(WEB.joinpath(name).read_text() for name in names)
 
 
-# The served models and the profile of b70host, cut to what the page reads.
+# The served models and the profile of a machine with two B70 cards, cut to what the page reads.
 IDENTITY = {"models": [
     {"model": "gemma-4-26b-a4b", "engine": "nagaya:84828966646e6ce1", "status": "ready",
      "capabilities": ["generate", "thinking"]},
-    # As on b70host, identity gives an LFM3 model the hash of its engine, not the name of the engine in the profile.
+    # As on that machine, identity gives an LFM3 model the hash of its engine, not the name of the engine in the profile.
     {"model": "lfm3-omni", "engine": "nagaya:f3f9adb00b28ace0", "status": "ready",
      "capabilities": ["generate", "control_vectors"],
      "media": {"inputs": ["image/png", "image/jpeg", "audio/wav"], "outputs": ["audio/wav"], "text_replies": True}},
@@ -57,7 +57,7 @@ PROFILE = {"engines": [
     {"name": "lfm3", "kind": "mk-lfm3-bmg", "devices": [0]},
 ]}
 
-# A trace object of lfm3 from b70host (2026-11-08): 4 steps, the layers 8 and 23, top_k 3, the logit lens, and the
+# A trace object of lfm3 from a B70 card (2026-11-08): 4 steps, the layers 8 and 23, top_k 3, the logit lens, and the
 # vector LAB_VECTOR, which holds the layers 9 to 23. Thus its `along` at layer 8 is NaN.
 TRACE_BYTES = list(pathlib.Path(__file__).with_name("fixtures").joinpath("lab_trace.safetensors").read_bytes())
 LAB_VECTOR = "blake3:58c25c11d174204c4e0a0f1f37574c25136e08828fa6167a81a9ad4ccf7760b3"
@@ -91,20 +91,20 @@ function reply(status, v) {
                           json: () => Promise.resolve(v)});
 }
 function fetch(path, o) {
-  // The first nagaya answers its paths under /at/b70host/ as the plain paths, and the calls record them plain.
-  path = path.replace(/^\/at\/b70host\//, "/");
+  // The first nagaya answers its paths under /at/north/ as the plain paths, and the calls record them plain.
+  path = path.replace(/^\/at\/north\//, "/");
   o = o || {}; calls.push([o.method || "GET", path, o.body || null]);
-  if (path === "/app/nagayas") return reply(200, {nagayas: [{name: "b70host", url: "http://a"}, {name: "gfx1151host", url: "http://b"}]});
-  if (path === "/at/gfx1151host/council/v2/identity") return reply(200, {models: [{model: "qwen-image-fusal",
+  if (path === "/app/nagayas") return reply(200, {nagayas: [{name: "north", url: "http://a"}, {name: "south", url: "http://b"}]});
+  if (path === "/at/south/council/v2/identity") return reply(200, {models: [{model: "qwen-image-fusal",
     engine: "qwen-image-fusal", status: "ready", capabilities: ["generate"],
     media: {inputs: [], outputs: ["image/png"], text_replies: false}}]});
-  if (path === "/at/gfx1151host/nagaya/v1/profile") return reply(200, {engines: [{name: "qwen-image-fusal",
+  if (path === "/at/south/nagaya/v1/profile") return reply(200, {engines: [{name: "qwen-image-fusal",
     kind: "qwenimage21", devices: [0]}]});
   if (path === "/council/v2/identity") return reply(200, IDENTITY);
   // The cluster route names the served models of each engine of this node (spec 2.3).
   if (path === "/nagaya/v1/cluster") return reply(200, {nodes: [
-    {name: "gfx1151host", self: false, engines: [{name: "lfm3", state: "ready", models: ["elsewhere"]}]},
-    {name: "b70host", self: true, engines: [{name: "lfm3-omni", state: "ready", models: ["lfm3-omni"]},
+    {name: "south", self: false, engines: [{name: "lfm3", state: "ready", models: ["elsewhere"]}]},
+    {name: "north", self: true, engines: [{name: "lfm3-omni", state: "ready", models: ["lfm3-omni"]},
                                                {name: "lfm3", state: "ready", models: ["lfm3"]}]}]});
   if (path === "/nagaya/v1/profile" && o.method === "PUT") {
     return reply(202, {actions: JSON.parse(o.body).engines.map((e) => ({engine: e.name, action: "keep"})), restart: false});
@@ -314,18 +314,18 @@ class Page(unittest.TestCase):
     def test_the_choice_of_a_nagaya_sends_each_request_to_it_and_each_image_keeps_its_nagaya(self):
         out = self.run_page("""
             out.hosts = document.getElementById("host").innerHTML;
-            document.getElementById("host").value = "gfx1151host";
+            document.getElementById("host").value = "south";
             await document.getElementById("host").onchange();
             out.models = document.getElementById("img-model").innerHTML;
             out.paths = calls.map((c) => c[1]).filter((p) => p.endsWith("/identity"));
-            out.here = tile({id: "blake3:" + "b".repeat(64), host: "gfx1151host", model: "m", prompt: "p", seed: 1,
+            out.here = tile({id: "blake3:" + "b".repeat(64), host: "south", model: "m", prompt: "p", seed: 1,
                              size: "64x64", steps: 1});
             out.there = tile({id: "blake3:" + "c".repeat(64), model: "m", prompt: "p", seed: 1, size: "64x64",
                               steps: 1});""")
-        self.assertIn('<option value="gfx1151host" title="http://b">gfx1151host</option>', out["hosts"])
+        self.assertIn('<option value="south" title="http://b">south</option>', out["hosts"])
         self.assertEqual(out["models"], '<option value="qwen-image-fusal">qwen-image-fusal</option>')
-        self.assertEqual(out["paths"][-1], "/at/gfx1151host/council/v2/identity")
-        self.assertIn('src="/at/gfx1151host/council/v2/objects/blake3:bbbb', out["here"])
+        self.assertEqual(out["paths"][-1], "/at/south/council/v2/identity")
+        self.assertIn('src="/at/south/council/v2/objects/blake3:bbbb', out["here"])
         # An image from before the choice of nagayas belongs to the first nagaya, which serves the plain paths.
         self.assertIn('src="/council/v2/objects/blake3:cccc', out["there"])
 
@@ -350,7 +350,7 @@ class Page(unittest.TestCase):
 
     def test_a_qwen_image_request_sends_only_the_options_that_the_model_takes(self):
         out = self.run_page(self.FORM + """
-            document.getElementById("host").value = "gfx1151host";
+            document.getElementById("host").value = "south";
             await document.getElementById("host").onchange();
             set("img-model", "qwen-image-fusal"); drawImageForm();
             out.off = ["img-negative", "img-cfg", "img-sampler", "img-spacing", "img-clip", "img-lora-file"]
@@ -407,7 +407,7 @@ class Page(unittest.TestCase):
 
     def test_a_model_with_no_image_input_hides_the_start_image_and_refuses_to_send_one(self):
         out = self.run_page(self.FORM + "let mask = null;" + self.INPUTS + """
-            document.getElementById("host").value = "gfx1151host";
+            document.getElementById("host").value = "south";
             await document.getElementById("host").onchange();
             set("img-model", "qwen-image-fusal"); drawImageForm();
             out.box = document.getElementById("img-init-box").hidden;
@@ -456,7 +456,7 @@ class Page(unittest.TestCase):
         self.assertEqual(out["set"], {"seed": 5, "temperature": 0.7, "top_k": 20})
         self.assertIsNone(out["empty"])
 
-    # The end of a chat stream as the nagaya of b70host sent it on 2026-11-11, with a system message at index 0.
+    # The end of a chat stream as a nagaya on a B70 card sent it on 2026-11-11, with a system message at index 0.
     CHAT_DONE = {"model": "lfm3", "content": "Hi there!", "reasoning": "", "finish": "end_turn",
                  "usage": {"prompt": 23, "kept": 18, "fed": 5, "completion": 4, "reasoning": 0},
                  "stats": {"reasoning": None, "content": {"tokens": 4, "mean_logprob": -0.2362, "min_logprob": -0.6274,
@@ -482,7 +482,7 @@ class Page(unittest.TestCase):
         self.assertEqual(out["failed"], "")
         user, reply = out["log"].split('<div class="msg assistant">')
         # The message of the person carries the content id of the snapshot at its end, as a link to the snapshot.
-        self.assertIn('href="/at/b70host/council/v2/snapshots/blake3:390ed0d6' + "1" * 56 + '"', user)
+        self.assertIn('href="/at/north/council/v2/snapshots/blake3:390ed0d6' + "1" * 56 + '"', user)
         self.assertIn("390ed0d6", user)
         self.assertIn("18 tokens", user)
         self.assertIn("device", user)
@@ -540,7 +540,7 @@ class Page(unittest.TestCase):
                                   "messages": [{"role": "user", "content": "two", "snap": True}]})
         # The reply shows that only the new message went, and the record of each reply as a link.
         self.assertEqual(out["log"].count("(new message only)"), 1)
-        self.assertIn(f'href="/at/b70host/council/v2/contexts/{self.R2}"', out["log"])
+        self.assertIn(f'href="/at/north/council/v2/contexts/{self.R2}"', out["log"])
         self.assertEqual(out["log"].count("(whole chat)"), 1)
         # Each of the 4 messages has one status line or none.
         self.assertLessEqual(out["log"].count('class="stat"'), 4)
@@ -645,7 +645,7 @@ class Page(unittest.TestCase):
         self.assertEqual(body["output"], {"mime": "audio/wav", "options": {"language": "english"}})
         self.assertIn("message 2", out["tray"])
         self.assertIn("voice", out["tray"])
-        self.assertIn('<audio controls src="/at/b70host/council/v2/objects/blake3:' + "a" * 64 + '"', out["clips"])
+        self.assertIn('<audio controls src="/at/north/council/v2/objects/blake3:' + "a" * 64 + '"', out["clips"])
         self.assertIn("1 clip", out["status"])
         self.assertIn("blake3:" + "a" * 64, out["keep"])
 
@@ -1126,7 +1126,7 @@ class Page(unittest.TestCase):
 
     def test_forget_removes_the_vector_of_its_row_when_another_nagaya_has_vectors_first(self):
         out = self.run_page(f"""
-            vectors = [{{name: "far", id: "blake3:" + "f".repeat(64), model: "lfm3", host: "gfx1151host"}},
+            vectors = [{{name: "far", id: "blake3:" + "f".repeat(64), model: "lfm3", host: "south"}},
                        {{name: "near", id: "{self.VECTOR}", model: "lfm3", host}}];
             fillVectors();
             const row = document.getElementById("cv-list").innerHTML.match(/data-drop-vector="(\\d+)"/)[1];
