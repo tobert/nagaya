@@ -4,10 +4,10 @@
 //! The gates: a tap changes no bit of the logits or of the stored parts; the rows match the oracle on the exact path;
 //! a tap in a pass of 16 segments gives the rows of each pass alone.
 //!
-//! Run on gfx1151host with `nagaya.service` stopped, one thread, and with `QWEN38_SHARDS` set. Run it twice: with
-//! `QWEN38_FAST_QMM` unset, and with `QWEN38_FAST_QMM=0`. Only the exact path gates the oracle rows. The fixture and the
-//! golden files come from `tools/oracle_fixture.py --residual`. A test that needs them skips with one line when they are
-//! absent, or fails with `NAGAYA_REQUIRE_MODELS=1`.
+//! Run on the Strix Halo machine with `nagaya.service` stopped, one thread, and with `QWEN38_SHARDS` set. Run it twice:
+//! with `QWEN38_FAST_QMM` unset, and with `QWEN38_FAST_QMM=0`. Only the exact path gates the oracle rows. The fixture
+//! and the golden files come from `tools/oracle_fixture.py --residual`. A test that needs them skips with one line when
+//! they are absent, or fails with `NAGAYA_REQUIRE_MODELS=1`.
 
 #![cfg(feature = "hip")]
 
@@ -83,8 +83,8 @@ fn the_fold_has_the_bits_of_a_pass_with_no_cut() {
     assert_eq!(bits(&one.logits[0]), bits(&cut.logits[0]));
 }
 
-/// Compare the rows of a run of the fixture with the rows of the engine, and print the gap of each layer. Only the exact
-/// path gates.
+/// Compare the rows of a run of the fixture with the rows of the engine, and print the gap of each layer. Only the
+/// exact path gates.
 fn check_run(test: &str, run_name: &str) {
     let Some(fixture) = oracle::residual_fixture(test) else {
         return;

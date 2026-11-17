@@ -305,7 +305,7 @@ gossip alone (11.1a). Thus gossip must hold each served model, the HTTP address 
 - **The sizes.** An identity of the B70 machine with nine served models has 4,524 bytes. The largest entry has 738
   bytes (`embeddinggemma-2`). Each engine has its own key, so a key holds one entry, far below 8192 bytes.
 - The largest value of a node is `profile:active`. The profile of the B70 machine, with nine engines, is 1,791 bytes as
-  compact JSON (`deploy/b70host/profile.toml`, without its comments).
+  compact JSON (`deploy/b70-pair/profile.toml`, without its comments).
 - **A value that does not fit.** At the start, a value of `engine:<name>` or `server` past 8192 bytes refuses the
   start (exit 3). The message names the key and its size. After the start, it stops the process (8.5).
 - Reason for the stop: a served model that no peer sees is a silent fallback.
@@ -1304,7 +1304,7 @@ The NVMe tier makes room by its own rules. The put removes a victim that a park 
 - a victim with no room on NVMe.
 
 Reason: with two engines on the Strix Halo machine, the host tier is 2 GiB (`docs/deploy.md`, "Two engines on
-gfx1151host"). The Qwen3.8 engine's snapshots of about 135 MB can leave the tier before a client reads them again. The
+one GPU"). The Qwen3.8 engine's snapshots of about 135 MB can leave the tier before a client reads them again. The
 NVMe tier has 50 GiB. A refused put still changes nothing: the store checks the room before it parks a
 victim.
 
@@ -2090,7 +2090,7 @@ job from an HTTP request starts a trace of its own today. A test shows the paren
   engine. `GroupJobs` holds the engine of each job, so the name is known.
 - The joined name above stays for what belongs to the whole group, such as the heartbeat of the group thread.
 - Reason: a group can hold many engines. Group 0 of the B70 machine has nine engines, from `gemma` to `inpaint-0`
-  (`deploy/b70host/profile.toml`). With the joined name, each job has the same long name, and a metric cannot tell
+  (`deploy/b70-pair/profile.toml`). With the joined name, each job has the same long name, and a metric cannot tell
   the engines apart.
 
 Built. `GroupJobs` and the jobs of a staged group take the names of the engines in profile order. A job
@@ -2370,10 +2370,10 @@ the scheduler stays a pure recorder of metrics and spans.
 **10.1 systemd.** The unit is `Type=notify`. The process sends `READY=1` when every engine in the profile has
 opened, passed its canary, and woken its pinned state. `STATUS=` gives the state of each engine.
 
-**One unit file for each machine.** The unit of the Strix Halo machine is `deploy/nagaya.service`. The unit of the
-B70 machine is `deploy/b70host/nagaya.service`, next to its config and profile.
-Reason: the units differ in the engine variables, the cargo feature of the build and the OTLP line. One shared unit
-needs a drop-in file on each machine, and a drop-in is not in the repository.
+**One unit file for each machine.** The unit of the Strix Halo example is `deploy/strix-halo/nagaya.service`. The unit
+of the B70 example is `deploy/b70-pair/nagaya.service`, next to its config and profile. Reason: the units differ in the
+engine variables, the cargo feature of the build and the OTLP line. One shared unit needs a drop-in file on each
+machine, and a drop-in is not in the repository.
 
 When `<store_dir>/profile.toml` does not exist, the process starts with an empty profile. An empty profile is valid,
 because a machine with no engine can serve as a coordinator or hold a store tier (2.1). A process with an empty
@@ -2458,7 +2458,7 @@ Built: the process side (`crates/nagaya/src/arena.rs`, `crates/nagaya/src/proces
 Gemma 4 engine, with its head slab (`Loaded::attach`). A cold `Loaded::load` takes about 7.1 s, and an attach from
 the 31 slabs takes about 1.2 s (`tests/xe_arena.rs`, release build). A process restart takes about 7.1 s to
 `READY=1` cold and 1.2 s hot (`crates/nagaya/tests/xe_restart.rs`). The unit of the B70 machine sets
-`FileDescriptorStoreMax=512` (`deploy/b70host/nagaya.service`). The Qwen3.8 engine exports no arena yet.
+`FileDescriptorStoreMax=512` (`deploy/b70-pair/nagaya.service`). The Qwen3.8 engine exports no arena yet.
 
 **10.3 Stop.** On SIGTERM, the nagaya does these steps:
 
@@ -3104,9 +3104,11 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
 
 - A raw read, a decision read and a generation are each one job for each context. The job builds the context, as a
   build does, and its work goes on in the same slot. When the store holds the head, the job restores it.
-- A decision read feeds the prefix of its plan once. The first question that starts after the prefix keeps a copy of
-  the state in memory. Each later question of that kind writes the copy back into the slot first. A raw read does
-  the same for each suffix after the first.
+- A decision read feeds the prefix of its plan once. A plan can say that its prefix ends at a boundary. Then the
+  job builds the prefix with the context, and the store holds its head (11.11, "The plain read of the LFM3
+  family"). The first question that starts after the prefix keeps a copy of the state in memory. Each later
+  question of that kind writes the copy back into the slot first. A raw read does the same for each suffix after
+  the first.
 - The usage of a read counts the tokens that it fed: the shared prefix once, and no letter after the last question.
   gogi-fake counts the prefix once for each question, and the last letter of a queue read. Both keep
   `kept + fed = prompt`.
@@ -3151,8 +3153,12 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
 - The sample defaults of a served model are temperature 1 with no filter, until the profile names others.
 - A reply ends with `context_full` when the prompt and the reply reach `context_tokens`. When it also reaches
   `max_tokens`, it ends with `context_full` (gogi "Generations", `finish`).
-- The decision limits are those of the first Gemma 4 engine until the profile names others: `decision_context_tokens`
-  3072, `contexts_per_decision` 8, `case_bytes` 65536 and `default_timeout_ms` 30000.
+- `decision_context_tokens` is `context_tokens`: a decision reads its context in the slots of a build, and the job
+  takes the lowest slot that fits. **Proposed** (Claude Fable 5.2). Reason: the owner said on 2026-11-17 that a
+  decision of LFM3 Omni uses its slots of 32,768 positions. The limit was 3,072, and one large image has 1,875
+  positions. The same rule for each engine is the simplest one.
+- The other decision limits are those of the first Gemma 4 engine: `contexts_per_decision` 8, `case_bytes` 65536
+  and `default_timeout_ms` 30000.
 
 Continuations follow gogi's rules (`docs/council-api.md`, "Continuations"). The nagaya uses them in
 these ways. Each served model declares the capability `continuation` (`crates/nagaya/src/http/mod.rs`).
@@ -4133,7 +4139,7 @@ as the diffusers reference does.
   14.10 GiB. The VAE decoder adds less than 1 GiB in bf16. The scratch of a slot is a mandatory term (engine-abi
   "Core").
 - The scratch of the largest slot is 7 GiB. `examples/measure.rs` measured it on the Strix Halo machine
-  (`crates/nagaya-mk-qwenimage21-gfx1151/src/plan.rs:136-140`). `docs/deploy.md`, "Two engines on gfx1151host", gives the
+  (`crates/nagaya-mk-qwenimage21-gfx1151/src/plan.rs:136-140`). `docs/deploy.md`, "Two engines on one GPU", gives the
   pool.
 
 **The LoRA fold.** Reason: a LoRA of the profile is part of the weights of the variant. A fold costs nothing at each
@@ -4483,8 +4489,10 @@ the note above leaves these choices open, and each one is the simplest choice th
 
 - **Objects.** The process gives the family a reader of the objects of this machine. The family reads the bytes of
   each media part through it. A family with no reader refuses a media part with a 400 that names the part.
-- **Depth.** A PNG with 16 bits in a sample is a 400 that names the part. Pillow reads it, but its convert of a gray
-  of 16 bits clips each value. The SDXL family refuses it too (11.9b). A PNG of 1, 2 or 4 bits expands to 8 bits.
+- **Depth.** A PNG with 16 bits in a sample keeps the high byte of each sample. Reason: common tools write such a
+  PNG, and the owner accepts a conversion on the CPU (2026-11-17). Pillow clips each value of a gray of 16 bits,
+  and the family does not copy that. The SDXL family refuses such a PNG (11.9b). A PNG of 1, 2 or 4 bits expands
+  to 8 bits.
 - **JPEG.** The decoder is the crate `zune-jpeg`, not libjpeg-turbo of Pillow. On the fixture, 305 of 9,216 bytes
   differ, each by 2 or less. Thus a JPEG has no gate of bits, and a PNG has one.
 - **Orientation.** The family does not turn an image by its EXIF orientation. The reference processor does not
@@ -4582,8 +4590,8 @@ above leave these choices open, and each one is the simplest choice that a fake 
 Reason: gogi reads `case_media` "with the case in order", and a decision context is a context. Each choice below is
 the simplest one that the suite and a fake can check.
 
-- **The case.** In a plain read, the case turn is one user message. It holds the label and the case as one text
-  part, then each object of `case_media` in its order, as object parts.
+- **The case.** In a plain read, the case turn is one user message. It holds each object of `case_media` in its
+  order, as object parts, then the label and the case as one text part ("The plain read of the LFM3 family").
 - **The context.** A decision context may hold media parts. The build reads them as a build of that context does.
 - **The rows.** The family prepares the rows of each span of the read's text, and the job feeds them by position, as
   a build does. A count of positions comes from the header of the object, as in a rendering.
@@ -4592,6 +4600,59 @@ the simplest one that the suite and a fake can check.
 - **A queue read.** Its case is the result of a call, so it holds no media. A `case_media` of a queue read, or a media
   part in its context, is a 400 that names it.
 - A family with no media refuses `case_media` with a 400 that names `case_media[0]`, as the check of objects does.
+
+**The plain read of the LFM3 family.** **Proposed** (Claude Fable 5.2).
+Reason: a trial of 2026-11-17 on both LFM3 models. The layout of the first Gemma 4 engine puts every question in one
+spec turn. With it, a spec of 4 questions gave 236 right answers of 324 on 9 images, and 229 of 324 on 9 text cases.
+One question in each read gave 324 of 324 and 321 of 324.
+
+The owner chose the shape: the case first, one question in each read, and a held head after the case. The words of
+each turn are the proposal.
+
+- **The case turn.** The read puts one user message after the context. It holds each object of `case_media` in its
+  order, then one text part: the label, `:`, a line feed and the case.
+- **The head of the case.** The end of the case turn is a boundary. The job builds through it, as a build does, so
+  the store holds a head there. A later decision with the same context and the same case starts from that head. This
+  is true for each spec and each question, because the case turn holds no text of the spec.
+- **The question turn.** Each asked question is a user message of its own after the case turn. It holds the
+  instructions of the spec and a blank line, when the spec has instructions. Then it holds this line, a blank line,
+  and the question with its lettered options:
+  `Answer this question about the <label> with the letter of one option, as "Answer: X".`
+- **The read.** The question turn ends with the prompt of the template for thinking off, then `Answer:`. The letter
+  token has a leading space.
+- **Each question alone.** Each question starts from the head of the case. No question sees another question or its
+  answer. A narrowed question keeps its letters, as before.
+- **The hash.** `rendered_hash` covers the text through the case turn, then the text of each question turn in the
+  order of the asked questions. With media, the id of each object of the read follows, as before.
+- **The room.** The job asks for a slot that holds the context, the case turn and the longest question turn.
+- **A queue read** does not change.
+- The Qwen3.8 library and the Gemma 4 library keep the old layout. The trial did not run on them.
+
+**Text questions of the LFM3 family.** **Proposed** (Claude Fable 5.2).
+Reason: the owner asked for the capability `describe` on 2026-11-17. gogi gives the contract ("Specs",
+"Decisions"), but no server and no suite check has it. Each rule below is the simplest one that keeps gogi's words.
+
+- **Which.** A read writes each `text` question of the spec, in the order of the spec. `ask` names no `text`
+  question, and it removes none.
+- **The turn.** A `text` question is a user message of its own. It holds the instructions of the spec and a blank
+  line, when the spec has instructions. Then it holds the line `Answer this question about the <label> in plain
+  text.`, a blank line, and the instructions of the question. The turn ends with the prompt for thinking off.
+- **The answer.** The model writes the answer after that prompt. Each token is the most likely token of its logit
+  row, and the lowest id wins a tie. The marker tokens that a text reply never picks are not candidates (11.11,
+  "The generation modes").
+- **The end.** A stop token of the family ends the answer, and it is not part of the text. `max_tokens` of the
+  question ends it too. `text_stop` in identity is `stop_token`.
+- **What follows.** The job then feeds the end of the assistant turn. That state is the start of each later
+  question of the spec, until the next `text` question. A question before the first `text` question starts from the
+  head of the case. No answer of a `choice`, `score` or `noul` question enters the state.
+- **The response.** `described` of a read holds each written text by its question id, in the order of the spec. A
+  read of a spec with no `text` question has no `described`. `usage.completion` counts the written tokens.
+- **The hash.** `rendered_hash` covers the text of each turn of the read in order, with each written answer.
+- **A queue read** writes no text. A decision with a queue context and a spec with a `text` question is a 400 that
+  names `spec_id`.
+- **The limit.** `text_tokens` is 256.
+- Only the LFM3 models declare `describe`. A decision of another served model with such a spec is a 400 that names
+  `spec_id`. The server holds a spec with a `text` question when one of its served models declares `describe`.
 
 **The generation modes.** Reason: gogi's `output` already names a reply
 with an object (gogi "Outputs"), so no new member is needed.

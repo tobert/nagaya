@@ -27,7 +27,7 @@ use nagaya::serving::{FamilyRegistry, council};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-/// The iGPU of b70host drives the display. The b70host config ignores it (spec 2.1, `ignore_devices`).
+/// The iGPU of the B70 machine drives the display. Its config ignores it (spec 2.1, `ignore_devices`).
 const IGNORE: &str = "0000:80:00.0";
 
 /// The most that the probability of the first token may differ from the oracle's. The card gates of the engine
@@ -72,7 +72,7 @@ fn golden() -> Option<PathBuf> {
     }
 }
 
-/// Omni resident on device 0, with one slot and an object store, as step 9 puts it on b70host.
+/// Omni resident on device 0, with one slot and an object store, as step 9 puts it on the B70 machine.
 fn profile(dir: &Path) -> PlacementProfile {
     let card = card_support::device();
     let dir = dir.display();

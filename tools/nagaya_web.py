@@ -10,6 +10,7 @@ the names, and the page shows them.
 Examples:
 
     tools/nagaya_web.py                      # http://127.0.0.1:8096, in front of each node of the cluster
+    tools/nagaya_web.py --seed http://192.0.2.10:8091 --seed http://192.0.2.20:8090
     tools/nagaya_web.py --port 9000 --nagaya local=http://127.0.0.1:8091
     tools/nagaya_web.py --url http://127.0.0.1:8091    # one nagaya, with the name `nagaya`
 
@@ -21,16 +22,27 @@ import argparse
 import http.client
 import http.server
 import json
+import os
 import pathlib
 import re
 import socket
 import sys
 import urllib.parse
 
-# The seeds of the lab. The app asks the first seed that answers for the cluster route, and the nodes there become the
-# nagayas of the page. The first nagaya also serves the plain paths, so `local_first` puts the machine of the proxy
-# first.
-DEFAULT_NAGAYAS = [("b70host", "http://198.51.100.10:8091"), ("gfx1151host", "http://198.51.100.20:8090")]
+# The seed when no flag and no environment variable gives one: a nagaya on this machine. The app asks the first seed
+# that answers for the cluster route, and the nodes there become the nagayas of the page. The first nagaya also
+# serves the plain paths, so `local_first` puts the machine of the proxy first.
+DEFAULT_SEED = "http://127.0.0.1:8090"
+# The environment variable that gives the seeds, with `,` between them.
+SEEDS_VARIABLE = "NAGAYA_URLS"
+
+
+def seeds(flags, environ):
+    """The seed URLs: the --seed flags, else the URLs in NAGAYA_URLS, else DEFAULT_SEED."""
+    if flags:
+        return [u.rstrip("/") for u in flags]
+    listed = [u.strip().rstrip("/") for u in environ.get(SEEDS_VARIABLE, "").split(",") if u.strip()]
+    return listed or [DEFAULT_SEED]
 
 
 def local_first(nagayas, host):
@@ -65,7 +77,8 @@ def discover(seeds, host):
                 continue
             nagayas.append((node["name"], "http://" + node["http"]))
         return local_first(nagayas, host)
-    sys.exit("no seed gave the cluster route: " + "; ".join(failures) + ". Start a nagaya, or give --nagaya.")
+    sys.exit("no seed gave the cluster route: " + "; ".join(failures) + ". Start a nagaya, or give --seed or "
+             "--nagaya.")
 # The folder of the page: `index.html`, its stylesheet and its scripts (web/README.md).
 WEB = pathlib.Path(__file__).with_name("web")
 # The kinds of file that the app serves from the folder. A file of another kind, such as the README, is a 404.
@@ -203,19 +216,20 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--nagaya", type=nagaya, action="append", metavar="NAME=URL",
                         help="a nagaya to pass requests to; give it once for each nagaya. The first one serves the "
-                             "plain paths. Default: the nodes of the cluster route of the first seed that answers, "
-                             "from " + ", ".join(u for _, u in DEFAULT_NAGAYAS))
+                             "plain paths. Default: the nodes of the cluster route of the first seed that answers")
+    parser.add_argument("--seed", action="append", metavar="URL",
+                        help="the base URL of a nagaya to ask for the cluster route; give it once for each seed. "
+                             f"Default: the URLs in {SEEDS_VARIABLE}, with `,` between them, else {DEFAULT_SEED}")
     parser.add_argument("--url", help="the base URL of one nagaya, with the name `nagaya`, in place of --nagaya")
     parser.add_argument("--host", default="127.0.0.1", help="the address to bind (default 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8096, help="the port to bind (default 8096)")
     args = parser.parse_args()
-    if args.url and args.nagaya:
-        parser.error("give --url or --nagaya, not both")
+    if sum(map(bool, (args.url, args.nagaya, args.seed))) > 1:
+        parser.error("give one of --url, --nagaya and --seed, not two")
     if args.url:
         nagayas = [("nagaya", args.url.rstrip("/"))]
     else:
-        nagayas = args.nagaya or discover([u for _, u in local_first(DEFAULT_NAGAYAS, socket.gethostname())],
-                                          socket.gethostname())
+        nagayas = args.nagaya or discover(seeds(args.seed, os.environ), socket.gethostname())
     server = http.server.ThreadingHTTPServer((args.host, args.port), handler(nagayas))
     names = ", ".join(f"{n} at {u}" for n, u in nagayas)
     print(f"nagaya web app on http://{args.host}:{args.port}, in front of {names}", file=sys.stderr)

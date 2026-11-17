@@ -166,8 +166,8 @@ class Nagayas(unittest.TestCase):
     def setUpClass(cls):
         cls.first = serve(http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeNagaya))
         cls.other = serve(http.server.ThreadingHTTPServer(("127.0.0.1", 0), OtherNagaya))
-        cls.nagayas = [("b70host", f"http://127.0.0.1:{cls.first.server_address[1]}"),
-                       ("gfx1151host", f"http://127.0.0.1:{cls.other.server_address[1]}")]
+        cls.nagayas = [("north", f"http://127.0.0.1:{cls.first.server_address[1]}"),
+                       ("south", f"http://127.0.0.1:{cls.other.server_address[1]}")]
         cls.app = serve(http.server.ThreadingHTTPServer(("127.0.0.1", 0), nagaya_web.handler(cls.nagayas)))
 
     @classmethod
@@ -188,34 +188,41 @@ class Nagayas(unittest.TestCase):
         self.assertEqual(json.loads(body), {"nagayas": [{"name": n, "url": u} for n, u in self.nagayas]})
 
     def test_a_path_under_at_a_name_goes_to_that_nagaya_and_a_plain_path_to_the_first(self):
-        self.assertEqual(json.loads(self.get("/at/gfx1151host/council/v2/identity")[1]), {"models": [{"model": "qwen-image-fusal"}]})
-        self.assertEqual(json.loads(self.get("/at/b70host/council/v2/identity")[1]), {"models": []})
+        self.assertEqual(json.loads(self.get("/at/south/council/v2/identity")[1]), {"models": [{"model": "qwen-image-fusal"}]})
+        self.assertEqual(json.loads(self.get("/at/north/council/v2/identity")[1]), {"models": []})
         self.assertEqual(json.loads(self.get("/council/v2/identity")[1]), {"models": []})
 
     def test_a_redirect_under_at_a_name_keeps_the_name(self):
-        r, _ = self.get("/at/gfx1151host/council/v2/objects/pending:" + "0" * 64)
-        self.assertEqual((r.status, r.getheader("location")), (308, "/at/gfx1151host/council/v2/objects/blake3:ab"))
+        r, _ = self.get("/at/south/council/v2/objects/pending:" + "0" * 64)
+        self.assertEqual((r.status, r.getheader("location")), (308, "/at/south/council/v2/objects/blake3:ab"))
 
     def test_an_unknown_name_is_a_404_and_does_not_pass(self):
         before = len(FakeNagaya.seen)
         r, body = self.get("/at/elsewhere/council/v2/identity")
         self.assertEqual(r.status, 404)
-        self.assertIn(b"b70host, gfx1151host", body)
-        r, _ = self.get("/at/gfx1151host/elsewhere")
+        self.assertIn(b"north, south", body)
+        r, _ = self.get("/at/south/elsewhere")
         self.assertEqual(r.status, 404)
         self.assertEqual(len(FakeNagaya.seen), before)
 
     def test_the_names_parse_from_the_command_line(self):
-        self.assertEqual(nagaya_web.nagaya("gfx1151host=http://h:8090/"), ("gfx1151host", "http://h:8090"))
-        for bad in ("gfx1151host", "=http://h:1", "a/b=http://h:1"):
+        self.assertEqual(nagaya_web.nagaya("south=http://h:8090/"), ("south", "http://h:8090"))
+        for bad in ("south", "=http://h:1", "a/b=http://h:1"):
             with self.assertRaises(Exception):
                 nagaya_web.nagaya(bad)
 
-    def test_the_machine_of_the_proxy_comes_first_in_the_default_list(self):
-        names = lambda host: [n for n, _ in nagaya_web.local_first(nagaya_web.DEFAULT_NAGAYAS, host)]
-        self.assertEqual(names("gfx1151host"), ["gfx1151host", "b70host"])
-        self.assertEqual(names("b70host"), ["b70host", "gfx1151host"])
-        self.assertEqual(names("sm121host"), ["b70host", "gfx1151host"], "another machine keeps the order of the list")
+    def test_the_machine_of_the_proxy_comes_first_in_the_list(self):
+        names = lambda host: [n for n, _ in nagaya_web.local_first(self.nagayas, host)]
+        self.assertEqual(names("south"), ["south", "north"])
+        self.assertEqual(names("north"), ["north", "south"])
+        self.assertEqual(names("east"), ["north", "south"], "another machine keeps the order of the list")
+
+    def test_the_seeds_come_from_the_flags_else_the_variable_else_this_machine(self):
+        env = {"NAGAYA_URLS": "http://192.0.2.10:8091/, http://192.0.2.20:8090"}
+        self.assertEqual(nagaya_web.seeds(["http://192.0.2.30:1/"], env), ["http://192.0.2.30:1"])
+        self.assertEqual(nagaya_web.seeds(None, env), ["http://192.0.2.10:8091", "http://192.0.2.20:8090"])
+        self.assertEqual(nagaya_web.seeds(None, {"NAGAYA_URLS": " , "}), ["http://127.0.0.1:8090"])
+        self.assertEqual(nagaya_web.seeds(None, {}), ["http://127.0.0.1:8090"])
 
 
 
@@ -249,10 +256,10 @@ class Discovery(unittest.TestCase):
         closed = http.server.HTTPServer(("127.0.0.1", 0), ClusterSeed)
         cls.dead_url = f"http://127.0.0.1:{closed.server_address[1]}"
         closed.server_close()
-        ClusterSeed.view = {"node": "b70host", "dead": ["sm121host"], "nodes": [
-            {"name": "b70host", "self": True, "http": "198.51.100.10:8091"},
+        ClusterSeed.view = {"node": "north", "dead": ["east"], "nodes": [
+            {"name": "north", "self": True, "http": "192.0.2.10:8091"},
             {"name": "yuki", "self": False, "http": None},
-            {"name": "gfx1151host", "self": False, "http": "198.51.100.20:8090"}]}
+            {"name": "south", "self": False, "http": "192.0.2.20:8090"}]}
 
     @classmethod
     def tearDownClass(cls):
@@ -260,16 +267,16 @@ class Discovery(unittest.TestCase):
         cls.seed.server_close()
 
     def test_the_nodes_come_from_the_first_seed_that_answers(self):
-        found = nagaya_web.discover([self.dead_url, self.seed_url], "sm121host")
-        self.assertEqual(found, [("b70host", "http://198.51.100.10:8091"), ("gfx1151host", "http://198.51.100.20:8090")])
+        found = nagaya_web.discover([self.dead_url, self.seed_url], "east")
+        self.assertEqual(found, [("north", "http://192.0.2.10:8091"), ("south", "http://192.0.2.20:8090")])
 
     def test_the_machine_of_the_proxy_comes_first(self):
-        found = nagaya_web.discover([self.seed_url], "gfx1151host")
-        self.assertEqual([n for n, _ in found], ["gfx1151host", "b70host"])
+        found = nagaya_web.discover([self.seed_url], "south")
+        self.assertEqual([n for n, _ in found], ["south", "north"])
 
     def test_no_seed_that_answers_is_an_error_that_names_the_seeds(self):
         with self.assertRaises(SystemExit) as caught:
-            nagaya_web.discover([self.dead_url], "gfx1151host")
+            nagaya_web.discover([self.dead_url], "south")
         self.assertIn(self.dead_url, str(caught.exception))
 
 

@@ -10,24 +10,24 @@ store_dir = "/tmp/nagaya"
 "#;
 
 const FULL: &str = r#"
-http_bind = "198.51.100.20:8090"
-gossip_bind = "198.51.100.20:8091"
+http_bind = "192.0.2.10:8090"
+gossip_bind = "192.0.2.10:8091"
 store_dir = "/var/lib/nagaya/store"
-seed_peers = ["198.51.100.21:8091", "198.51.100.22:8091"]
+seed_peers = ["192.0.2.11:8091", "192.0.2.12:8091"]
 park_budget_secs = 12
 "#;
 
 #[test]
 fn the_config_reads_every_key() {
     let config = Bootstrap::parse(FULL).unwrap();
-    assert_eq!(config.http_bind, "198.51.100.20:8090".parse::<SocketAddr>().unwrap());
-    assert_eq!(config.gossip_bind, "198.51.100.20:8091".parse::<SocketAddr>().unwrap());
+    assert_eq!(config.http_bind, "192.0.2.10:8090".parse::<SocketAddr>().unwrap());
+    assert_eq!(config.gossip_bind, "192.0.2.10:8091".parse::<SocketAddr>().unwrap());
     assert_eq!(config.store_dir, Path::new("/var/lib/nagaya/store"));
     assert_eq!(
         config.seed_peers,
         vec![
-            "198.51.100.21:8091".parse::<SocketAddr>().unwrap(),
-            "198.51.100.22:8091".parse::<SocketAddr>().unwrap(),
+            "192.0.2.11:8091".parse::<SocketAddr>().unwrap(),
+            "192.0.2.12:8091".parse::<SocketAddr>().unwrap(),
         ]
     );
     assert_eq!(config.park_budget_secs, 12);
@@ -77,9 +77,9 @@ fn a_missing_file_is_an_error_that_names_the_path() {
 
 #[test]
 fn the_node_name_is_read_from_the_config() {
-    let text = format!("{REQUIRED_ONLY}node_name = \"gfx1151host\"\n");
+    let text = format!("{REQUIRED_ONLY}node_name = \"node-a\"\n");
     let config = Bootstrap::parse(&text).unwrap();
-    assert_eq!(config.node_name().unwrap(), "gfx1151host");
+    assert_eq!(config.node_name().unwrap(), "node-a");
 }
 
 #[test]
@@ -144,7 +144,7 @@ fn an_unspecified_http_address_is_refused() {
 
 #[test]
 fn a_specified_gossip_address_is_read() {
-    for address in ["127.0.0.1:8091", "[::1]:8091", "198.51.100.20:8091"] {
+    for address in ["127.0.0.1:8091", "[::1]:8091", "192.0.2.10:8091"] {
         let text = REQUIRED_ONLY.replace("127.0.0.1:8091", address);
         assert_eq!(
             Bootstrap::parse(&text).unwrap().gossip_bind,

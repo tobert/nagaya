@@ -6,7 +6,7 @@
 #
 #   SDXL_MODEL_DIR=<snapshot of stabilityai/stable-diffusion-xl-base-1.0> tools/sdxl_golden.sh
 #
-# REF_PYTHON overrides the python (default ~/.venvs/sdxl-ref/bin/python). The files go to $SDXL_GOLDEN_DIR, or to
+# REF_PYTHON names the Python of the reference venv, with no default. The files go to $SDXL_GOLDEN_DIR, or to
 # target/sdxl-golden. Do not commit them. Each file carries the request, the scheduler config and the versions in its
 # safetensors metadata.
 #
@@ -57,7 +57,7 @@
 # S.rgb.npy: the same RGB bytes, for a look with any viewer of numpy files.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-PY="${REF_PYTHON:-$HOME/.venvs/sdxl-ref/bin/python}"
+PY="${REF_PYTHON:?set REF_PYTHON to the Python of the reference venv}"
 MODEL="${SDXL_MODEL_DIR:?set SDXL_MODEL_DIR to the SDXL base 1.0 checkpoint directory}"
 OUT="${SDXL_GOLDEN_DIR:-target/sdxl-golden}"
 mkdir -p "$OUT"

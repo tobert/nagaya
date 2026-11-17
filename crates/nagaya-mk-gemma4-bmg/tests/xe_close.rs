@@ -1,11 +1,11 @@
 //! `close` of the Gemma 4 engine on the two B70 cards (engine-abi "`close` in Rust", spec 3.3a): a drop of the engine
 //! frees its device memory, so a swap can load another engine on the cards. Run alone, with `--test-threads=1`.
 //!
-//! The test reads the device memory of this process from DRM fdinfo (`drm-total-vram0` of each `xe` client). The
-//! Level Zero driver keeps some device memory for the process after its first init: 400,707,584 bytes on b70host
-//! on 2026-10-24, the same after each of three inits. The test measures that first, with a cluster and no weights.
-//! Then it loads, runs a pass and drops three times. A drop that leaks fails the first check, and a leak that grows
-//! fails a later one.
+//! The test reads the device memory of this process from DRM fdinfo (`drm-total-vram0` of each `xe` client). The Level
+//! Zero driver keeps some device memory for the process after its first init: 400,707,584 bytes on the B70 machine on
+//! 2026-10-24, the same after each of three inits. The test measures that first, with a cluster and no weights. Then it
+//! loads, runs a pass and drops three times. A drop that leaks fails the first check, and a leak that grows fails a
+//! later one.
 #![cfg(feature = "xe")]
 
 mod common;

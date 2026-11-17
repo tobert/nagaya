@@ -131,7 +131,7 @@ fn a_pin_or_a_store_entry_has_no_gossip_key() {
         Key::Inventory,
         Key::ProfileActive,
         Key::ProfileRefused,
-        Key::ProfileDesired("gfx1151host".to_owned()),
+        Key::ProfileDesired("node-a".to_owned()),
         Key::Engine("qwen38".to_owned()),
         Key::Server,
         Key::ModelConflict,
@@ -142,7 +142,10 @@ fn a_pin_or_a_store_entry_has_no_gossip_key() {
     assert_eq!(Key::Server.name(), "server");
     assert_eq!(Key::ModelConflict.name(), "model:conflict");
     assert_eq!(Key::Engine("qwen38".to_owned()).name(), "engine:qwen38");
-    assert_eq!(Key::ProfileDesired("gfx1151host".to_owned()).name(), "profile:desired:gfx1151host");
+    assert_eq!(
+        Key::ProfileDesired("node-a".to_owned()).name(),
+        "profile:desired:node-a"
+    );
 }
 
 #[test]

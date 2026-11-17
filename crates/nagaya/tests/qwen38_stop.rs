@@ -43,7 +43,7 @@ fn feed(engine: &mut dyn Engine, slot: u32, count: usize) {
 #[test]
 fn a_stop_with_the_qwen38_engine_parks_the_states_that_hold_tokens_and_is_clean() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let profile = PlacementProfile::read(&repo.join("deploy/gfx1151host").join(PROFILE_FILE)).unwrap();
+    let profile = PlacementProfile::read(&repo.join("deploy/strix-halo").join(PROFILE_FILE)).unwrap();
     let inventory = FileProbe::new("/").probe().expect("the inventory of this machine");
     let store = tempfile::tempdir().unwrap();
     let mut ready = lifecycle::start(

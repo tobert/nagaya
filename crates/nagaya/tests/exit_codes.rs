@@ -91,8 +91,9 @@ fn an_internal_error_after_the_last_tick_is_a_crash_at_every_clean_stop() {
     );
 }
 
-/// Each event that stops the process has a reason for the log; an event that stops nothing has none (spec 8.5, 9.1).
-/// On 2026-11-01 a stall on gfx1151host stopped the process with only systemd's status line, and the log had no cause.
+/// Each event that stops the process has a reason for the log; an event that stops nothing has none (spec 8.5, 9.1). On
+/// 2026-11-01 a stall on the Strix Halo machine stopped the process with only systemd's status line, and the log had no
+/// cause.
 #[test]
 fn a_stopping_event_has_a_reason_for_the_log() {
     let stall = Event::Stalled {

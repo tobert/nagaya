@@ -31,7 +31,7 @@ use nagaya::serving::{FamilyRegistry, council};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-/// The iGPU of b70host drives the display. The b70host config ignores it (spec 2.1, `ignore_devices`).
+/// The iGPU of the B70 machine drives the display. Its config ignores it (spec 2.1, `ignore_devices`).
 const IGNORE: &str = "0000:80:00.0";
 
 /// The samples of one frame, and the bytes of the WAV header.
@@ -60,7 +60,7 @@ fn golden() -> Option<PathBuf> {
     }
 }
 
-/// Omni resident on device 0 with one slot, as step 9 puts it on b70host, with a budget of objects.
+/// Omni resident on device 0 with one slot, as step 9 puts it on the B70 machine, with a budget of objects.
 fn profile(dir: &Path) -> PlacementProfile {
     let card = card_support::device();
     let dir = dir.display();

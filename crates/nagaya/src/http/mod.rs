@@ -539,7 +539,8 @@ impl Council {
             template: identity.template,
             engine: identity.engine,
             device: served.device.clone(),
-            text_stop: None,
+            // spec 11.11, "Text questions of the LFM3 family": a stop token of the family ends a written answer.
+            text_stop: service.family().describes().then(|| "stop_token".to_owned()),
             // A family that reads media lists its types, and a model that speaks writes `audio/wav` beside its text
             // (spec 11.11). Its replies hold text.
             media: {
@@ -558,7 +559,10 @@ impl Council {
                 snapshot_bytes: service.snapshot_bytes(),
                 contexts_per_decision: config.contexts_per_decision as u64,
                 default_timeout_ms: config.default_timeout_ms,
-                text_tokens: None,
+                text_tokens: service
+                    .family()
+                    .describes()
+                    .then_some(config.spec_rules.text_tokens as u64),
                 replies_per_generation: Some(replies::REPLIES_PER_GENERATION),
             },
             // Each family library renders an open message and checks its seams, so each served model continues a
@@ -575,6 +579,7 @@ impl Council {
             ]
             .into_iter()
             .chain(service.family().thinks().then_some(Capability::Thinking))
+            .chain(service.family().describes().then_some(Capability::Describe))
             .chain(service.controls().then_some(Capability::ControlVectors))
             .collect(),
         }

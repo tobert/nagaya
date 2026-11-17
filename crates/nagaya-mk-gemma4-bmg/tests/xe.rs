@@ -352,7 +352,7 @@ fn a_long_slot_parks_and_restores_through_the_store() {
 }
 
 /// One recipe gives one content id (spec 6.7). Thus the same feed gives the same bits in a slot of 4,096 positions and
-/// in a slot of 65,536, the two slots of the b70host profile. A block of 64 after 256 keys is the case where
+/// in a slot of 65,536, the two slots of the B70 profile. A block of 64 after 256 keys is the case where
 /// `attn_pv_segments` (`nagaya-mk-bmg/kernels/megakernel.cl:486`) can give each slot its own count of segments.
 #[test]
 fn the_same_feed_gives_the_same_bits_in_each_slot_size() {

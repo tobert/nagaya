@@ -29,7 +29,7 @@ use nagaya::serving::{FamilyRegistry, council};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-/// The iGPU of b70host drives the display (spec 2.1, `ignore_devices`).
+/// The iGPU of the B70 machine drives the display (spec 2.1, `ignore_devices`).
 const IGNORE: &str = "0000:80:00.0";
 /// The prompt of `run_latent` (`tools/lfm3_reference.py`, `LATENT_PROMPT`).
 const PROMPT: &str = "Plan a short story about a lighthouse keeper who finds a map. Think before you write.";

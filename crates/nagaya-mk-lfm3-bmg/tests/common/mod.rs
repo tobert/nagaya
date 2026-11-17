@@ -209,8 +209,8 @@ pub fn max_abs(got: &[f32], want: &[f32]) -> f64 {
         .fold(0.0f64, |m, (g, w)| m.max((*g as f64 - *w as f64).abs()))
 }
 
-/// The engine of `which` on card 0, the card of both LFM3 models on b70host (spec 11.11), with `slots` slots and a
-/// feed block of `max_block`.
+/// The engine of `which` on card 0, the card of both LFM3 models on the B70 machine (spec 11.11), with `slots` slots
+/// and a feed block of `max_block`.
 #[cfg(feature = "xe")]
 pub fn open(which: Which, slots: usize, max_block: usize) -> nagaya_mk_lfm3_bmg::Lfm3Engine {
     let config = nagaya_mk_lfm3_bmg::Config {

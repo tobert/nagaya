@@ -80,8 +80,8 @@ fn facts(
 }
 
 #[test]
-fn gfx1151host_has_one_unified_gfx1151() {
-    let machine = machine("gfx1151host");
+fn the_strix_halo_machine_has_one_unified_gfx1151() {
+    let machine = machine("strix-halo");
     assert_eq!(
         machine.devices,
         vec![facts(
@@ -107,9 +107,9 @@ fn gfx1151host_has_one_unified_gfx1151() {
 }
 
 #[test]
-fn b70host_has_two_xe_cards_with_32_gib_each() {
-    let machine = machine("b70host");
-    // The tree is a capture of b70host on 2026-10-21. The ids follow the PCI address (spec 2.1): the two cards are
+fn the_b70_machine_has_two_xe_cards_with_32_gib_each() {
+    let machine = machine("b70-pair");
+    // The tree is a capture of the B70 machine. The ids follow the PCI address (spec 2.1): the two cards are
     // devices 0 and 1, and the display GPU (the AMD iGPU at 0000:80:00.0) is device 2.
     assert_eq!(
         machine.devices,
@@ -160,8 +160,8 @@ fn b70host_has_two_xe_cards_with_32_gib_each() {
 }
 
 #[test]
-fn sm121host_has_one_unified_gb10_that_uses_the_host_memory() {
-    let machine = machine("sm121host");
+fn the_gb10_machine_has_one_unified_gb10_that_uses_the_host_memory() {
+    let machine = machine("dgx-spark");
     let host_bytes = 124_538_176 * 1024;
     assert_eq!(
         machine.devices,
@@ -192,7 +192,7 @@ fn sm121host_has_one_unified_gb10_that_uses_the_host_memory() {
 
 #[test]
 fn the_probe_trait_gives_the_inventory_of_the_machine() {
-    let probe = FileProbe::new(fixture("gfx1151host"));
+    let probe = FileProbe::new(fixture("strix-halo"));
     let inventory = probe.probe().unwrap();
     assert_eq!(inventory, probe.machine().unwrap().inventory());
     assert_eq!(
@@ -231,7 +231,7 @@ fn the_fixtures_stay_small() {
 
 #[test]
 fn a_missing_meminfo_is_an_error_that_names_the_file() {
-    let (_dir, root) = broken_copy("gfx1151host");
+    let (_dir, root) = broken_copy("strix-halo");
     fs::remove_file(root.join("proc/meminfo")).unwrap();
     let message = probe_error(&root);
     assert!(message.contains("proc/meminfo"), "{message}");
@@ -245,7 +245,7 @@ fn an_empty_root_is_an_error_and_not_an_empty_machine() {
 
 #[test]
 fn a_malformed_memtotal_is_an_error() {
-    let (_dir, root) = broken_copy("gfx1151host");
+    let (_dir, root) = broken_copy("strix-halo");
     fs::write(root.join("proc/meminfo"), "MemTotal:       lots kB\n").unwrap();
     let message = probe_error(&root);
     assert!(message.contains("MemTotal"), "{message}");
@@ -253,7 +253,7 @@ fn a_malformed_memtotal_is_an_error() {
 
 #[test]
 fn a_meminfo_without_memtotal_is_an_error() {
-    let (_dir, root) = broken_copy("gfx1151host");
+    let (_dir, root) = broken_copy("strix-halo");
     fs::write(root.join("proc/meminfo"), "MemFree:       100 kB\n").unwrap();
     let message = probe_error(&root);
     assert!(message.contains("MemTotal"), "{message}");
@@ -261,7 +261,7 @@ fn a_meminfo_without_memtotal_is_an_error() {
 
 #[test]
 fn a_gpu_node_without_memory_banks_is_an_error() {
-    let (_dir, root) = broken_copy("gfx1151host");
+    let (_dir, root) = broken_copy("strix-halo");
     fs::remove_dir_all(root.join("sys/class/kfd/kfd/topology/nodes/1/mem_banks")).unwrap();
     let message = probe_error(&root);
     assert!(message.contains("mem_banks"), "{message}");
@@ -269,7 +269,7 @@ fn a_gpu_node_without_memory_banks_is_an_error() {
 
 #[test]
 fn a_gpu_memory_that_matches_neither_gtt_nor_vram_is_an_error() {
-    let (_dir, root) = broken_copy("gfx1151host");
+    let (_dir, root) = broken_copy("strix-halo");
     let path = root.join("sys/bus/pci/devices/0000:c2:00.0/mem_info_gtt_total");
     fs::write(path, "1073741824\n").unwrap();
     let message = probe_error(&root);
@@ -279,7 +279,7 @@ fn a_gpu_memory_that_matches_neither_gtt_nor_vram_is_an_error() {
 
 #[test]
 fn a_machine_with_no_kfd_has_no_amd_device() {
-    let (_dir, root) = broken_copy("gfx1151host");
+    let (_dir, root) = broken_copy("strix-halo");
     fs::remove_dir_all(root.join("sys/class/kfd")).unwrap();
     let machine = FileProbe::new(&root).machine().unwrap();
     assert!(machine.devices.is_empty());
@@ -288,7 +288,7 @@ fn a_machine_with_no_kfd_has_no_amd_device() {
 
 #[test]
 fn an_xe_card_with_a_small_bar_is_an_error() {
-    let (_dir, root) = broken_copy("b70host");
+    let (_dir, root) = broken_copy("b70-pair");
     let path = root.join("sys/class/drm/card0/device/resource");
     let text = fs::read_to_string(&path).unwrap().replace(
         "0x000000e000000000 0x000000e7ffffffff",
@@ -301,7 +301,7 @@ fn an_xe_card_with_a_small_bar_is_an_error() {
 
 #[test]
 fn an_nvidia_model_that_the_probe_does_not_know_is_an_error() {
-    let (_dir, root) = broken_copy("sm121host");
+    let (_dir, root) = broken_copy("dgx-spark");
     let path = root.join("proc/driver/nvidia/gpus/000f:01:00.0/information");
     let text = fs::read_to_string(&path)
         .unwrap()
@@ -313,7 +313,7 @@ fn an_nvidia_model_that_the_probe_does_not_know_is_an_error() {
 
 #[test]
 fn a_malformed_cpu_list_is_an_error() {
-    let (_dir, root) = broken_copy("gfx1151host");
+    let (_dir, root) = broken_copy("strix-halo");
     fs::write(root.join("sys/devices/system/cpu/online"), "0-x\n").unwrap();
     let message = probe_error(&root);
     assert!(message.contains("sys/devices/system/cpu/online"), "{message}");
@@ -324,7 +324,7 @@ fn a_malformed_cpu_list_is_an_error() {
 #[test]
 fn a_cpu_list_past_the_size_of_a_mask_is_an_error() {
     for list in ["0-1024", "0-50000000", "0-4294967295", "1024", "0-7,2000"] {
-        let (_dir, root) = broken_copy("gfx1151host");
+        let (_dir, root) = broken_copy("strix-halo");
         fs::write(root.join("sys/devices/system/cpu/online"), format!("{list}\n")).unwrap();
         let message = probe_error(&root);
         assert!(message.contains("sys/devices/system/cpu/online"), "{list}: {message}");
@@ -334,7 +334,7 @@ fn a_cpu_list_past_the_size_of_a_mask_is_an_error() {
 
 #[test]
 fn a_malformed_nvme_size_is_an_error() {
-    let (_dir, root) = broken_copy("gfx1151host");
+    let (_dir, root) = broken_copy("strix-halo");
     fs::write(root.join("sys/block/nvme0n1/size"), "big\n").unwrap();
     let message = probe_error(&root);
     assert!(message.contains("nvme0n1/size"), "{message}");

@@ -393,10 +393,10 @@ fn object(id: &str, mime: &str) -> gogi_proto::objects::ObjectRef {
     serde_json::from_value(json!({"id": id, "mime": mime})).unwrap()
 }
 
-/// A plain read of Omni takes the case media after the case text, in order, and gives the rows of each at its
+/// A plain read of Omni takes the case media before the case text, in order, and gives the rows of each at its
 /// position in the whole read (spec 11.11, "Media in a decision").
 #[test]
-fn a_plain_read_puts_the_case_media_after_the_case_and_gives_their_rows() {
+fn a_plain_read_puts_the_case_media_before_the_case_and_gives_their_rows() {
     use nagaya_council::family::{Advance, Asked, DecisionInput};
     if absent_omni() {
         return;
@@ -429,7 +429,7 @@ fn a_plain_read_puts_the_case_media_after_the_case_and_gives_their_rows() {
         (clip.id.as_str(), clip.mime.as_str(), clip.count),
         (CLIP, "audio/wav", 19)
     );
-    // The spans are in the prefix, after the case text, the photo first.
+    // The spans are in the prefix, before the case text, the photo first.
     let prefix = plan.prefix().to_vec();
     let at = |p: usize| prefix[p - end];
     assert!(photo.first > end && photo.first + photo.count <= clip.first);
@@ -438,9 +438,11 @@ fn a_plain_read_puts_the_case_media_after_the_case_and_gives_their_rows() {
     let audio = omni().tokenize_special("<|audio|>").unwrap()[0];
     assert!(photo.positions().all(|p| at(p) == image));
     assert!(clip.positions().all(|p| at(p) == audio));
-    // The template opens an image with its marker, so the case text comes just before the marker.
+    // The case turn opens with the marker of the photo, and the case text ends the turn after the clip.
     let before = omni().detokenize(&prefix[..photo.first - end]).unwrap();
-    assert!(before.ends_with("x:\na case<|vision_start|>"), "{before:?}");
+    assert_eq!(before, "<|im_start|>user\n<|vision_start|>");
+    let after = omni().detokenize(&prefix[clip.first + clip.count - end..]).unwrap();
+    assert_eq!(after, "<|vision_end|>x:\na case<|im_end|>\n");
     // The rows are the rows that a rendering of the same objects gives.
     let prepared = omni()
         .prepare(
@@ -517,7 +519,7 @@ fn a_plain_read_of_a_context_with_media_goes_on_from_its_rendering() {
             ..input
         })
         .unwrap();
-    // The read after the context is the same text in both: the spec turn and the case turn.
+    // The read after the context is the same text in both: the case turn.
     let tail = |p: &[u32]| omni().detokenize(p).unwrap();
     assert_eq!(tail(plan.prefix()), tail(text_plan.prefix()));
 }

@@ -887,6 +887,10 @@ impl Family for Lfm3Family {
         read::decision_read(self, input, &[])
     }
 
+    fn describes(&self) -> bool {
+        true
+    }
+
     fn decision_read_with_media(
         &self,
         input: &DecisionInput<'_>,

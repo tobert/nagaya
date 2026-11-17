@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::model::{Found, check};
+use common::model::{Found, check, check_variable};
 use std::path::Path;
 
 fn present_file() -> std::path::PathBuf {
@@ -46,4 +46,25 @@ fn a_file_that_cannot_be_reached_fails_and_never_skips() {
     // A path below a plain file gives "not a directory", which is not an absence.
     let path = present_file().join("model.gguf");
     check(&path, false, "the_test");
+}
+
+#[test]
+fn an_unset_variable_skips_the_test() {
+    let found = check_variable(None, false, "the_test");
+    let Found::Skip(line) = found else {
+        panic!("want a skip, got {found:?}")
+    };
+    assert!(line.starts_with("skipped: the_test: "), "{line}");
+    assert!(line.contains("NAGAYA_QWEN38_GGUF is not set"), "{line}");
+}
+
+#[test]
+#[should_panic(expected = "NAGAYA_QWEN38_GGUF is not set, and NAGAYA_REQUIRE_MODELS is set")]
+fn an_unset_variable_fails_when_models_are_required() {
+    check_variable(None, true, "the_test");
+}
+
+#[test]
+fn a_set_variable_checks_its_file() {
+    assert_eq!(check_variable(Some(present_file()), true, "the_test"), Found::Present);
 }

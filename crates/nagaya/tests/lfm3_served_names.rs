@@ -1,5 +1,5 @@
 //! An LFM3 engine serves under its engine name (spec 11.11, "The served name of an LFM3 engine"). The start of
-//! 12:59 on 2026-11-10 exited 3, because `lfm3` and `lfm3-1` of b70host both served `lfm3`.
+//! 12:59 on 2026-11-10 exited 3, because `lfm3` and `lfm3-1` of the B70 machine both served `lfm3`.
 //!
 //! It needs `LFM3_MODEL_DIR` and `LFM3_OMNI_MODEL_DIR`. An absent folder skips the test, and fails it with
 //! `NAGAYA_REQUIRE_MODELS=1`. No card is needed: the test plans the family as the start does, from a fake identity.

@@ -5,7 +5,7 @@ The tool makes a few images with diffusers on the CPU at 512 by 512, decodes the
 and averages each 8 by 8 block of the image in [0, 1]. Each latent pixel and its block give one sample. It prints the
 3 x 4 matrix A, the bias b, and the error of the fit, for `PREVIEW` in src/host.rs of nagaya-mk-sdxl-bmg.
 
-    HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 nice -n 10 ~/.venvs/sdxl-ref/bin/python -I tools/sdxl_preview_fit.py \
+    HF_HUB_OFFLINE=1 PYTHONDONTWRITEBYTECODE=1 nice -n 10 <reference venv>/bin/python -I tools/sdxl_preview_fit.py \
         --model DIR
 """
 import argparse
