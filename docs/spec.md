@@ -4628,6 +4628,32 @@ each turn are the proposal.
 - **A queue read** does not change.
 - The Qwen3.8 library and the Gemma 4 library keep the old layout. The trial did not run on them.
 
+**Text questions of the LFM3 family.** **Proposed** (Claude Fable 5.2).
+Reason: the owner asked for the capability `describe` on 2026-11-17. gogi gives the contract ("Specs",
+"Decisions"), but no server and no suite check has it. Each rule below is the simplest one that keeps gogi's words.
+
+- **Which.** A read writes each `text` question of the spec, in the order of the spec. `ask` names no `text`
+  question, and it removes none.
+- **The turn.** A `text` question is a user message of its own. It holds the instructions of the spec and a blank
+  line, when the spec has instructions. Then it holds the line `Answer this question about the <label> in plain
+  text.`, a blank line, and the instructions of the question. The turn ends with the prompt for thinking off.
+- **The answer.** The model writes the answer after that prompt. Each token is the most likely token of its logit
+  row, and the lowest id wins a tie. The marker tokens that a text reply never picks are not candidates (11.11,
+  "The generation modes").
+- **The end.** A stop token of the family ends the answer, and it is not part of the text. `max_tokens` of the
+  question ends it too. `text_stop` in identity is `stop_token`.
+- **What follows.** The job then feeds the end of the assistant turn. That state is the start of each later
+  question of the spec, until the next `text` question. A question before the first `text` question starts from the
+  head of the case. No answer of a `choice`, `score` or `noul` question enters the state.
+- **The response.** `described` of a read holds each written text by its question id, in the order of the spec. A
+  read of a spec with no `text` question has no `described`. `usage.completion` counts the written tokens.
+- **The hash.** `rendered_hash` covers the text of each turn of the read in order, with each written answer.
+- **A queue read** writes no text. A decision with a queue context and a spec with a `text` question is a 400 that
+  names `spec_id`.
+- **The limit.** `text_tokens` is 256.
+- Only the LFM3 models declare `describe`. A decision of another served model with such a spec is a 400 that names
+  `spec_id`. The server holds a spec with a `text` question when one of its served models declares `describe`.
+
 **The generation modes.** Reason: gogi's `output` already names a reply
 with an object (gogi "Outputs"), so no new member is needed.
 
