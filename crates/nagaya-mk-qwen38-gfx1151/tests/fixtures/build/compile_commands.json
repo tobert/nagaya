@@ -1,56 +1,38 @@
 [
   {
-    "directory": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/build",
-    "command": "/opt/rocm/llvm/bin/clang++  -DUSE_PROF_API=1 -D__HIP_PLATFORM_AMD__=1 -D__HIP_ROCclr__=1 -Dqwen38engine_EXPORTS -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/engine -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/ops -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/rt -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/gguf -O2 -g -DNDEBUG -std=gnu++20 --offload-arch=gfx1151 -fPIC -Wall -Wextra -Wno-unused-parameter -ffp-contract=off -fno-fast-math -O3 -o src/engine/CMakeFiles/mkengine.dir/engine.hip.o -x hip -c /home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/engine/engine.hip",
-    "file": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/engine/engine.hip",
-    "output": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/build/src/engine/CMakeFiles/mkengine.dir/engine.hip.o"
+    "command": "/opt/rocm/llvm/bin/clang++  -DUSE_PROF_API=1 -D__HIP_PLATFORM_AMD__=1 -D__HIP_ROCclr__=1 -Dqwen38engine_EXPORTS -I/reference/src/engine -I/reference/src/ops -I/reference/src/rt -I/reference/src/gguf -O2 -g -DNDEBUG -std=gnu++20 --offload-arch=gfx1151 -fPIC -Wall -Wextra -Wno-unused-parameter -ffp-contract=off -fno-fast-math -O3 -o src/engine/engine.hip.o -x hip -c /reference/src/engine/engine.hip",
+    "file": "/reference/src/engine/engine.hip"
   },
   {
-    "directory": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/build",
-    "command": "/opt/rocm/llvm/bin/clang++  -DUSE_PROF_API=1 -D__HIP_PLATFORM_AMD__=1 -D__HIP_ROCclr__=1 -Dqwen38engine_EXPORTS -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/engine -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/ops -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/rt -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/gguf -O2 -g -DNDEBUG -std=gnu++20 --offload-arch=gfx1151 -fPIC -Wall -Wextra -Wno-unused-parameter -ffp-contract=off -fno-fast-math -O3 -o src/engine/CMakeFiles/mkengine.dir/mega.hip.o -x hip -c /home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/engine/mega.hip",
-    "file": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/engine/mega.hip",
-    "output": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/build/src/engine/CMakeFiles/mkengine.dir/mega.hip.o"
+    "command": "/opt/rocm/llvm/bin/clang++  -DUSE_PROF_API=1 -D__HIP_PLATFORM_AMD__=1 -D__HIP_ROCclr__=1 -Dqwen38engine_EXPORTS -I/reference/src/engine -I/reference/src/ops -I/reference/src/rt -I/reference/src/gguf -O2 -g -DNDEBUG -std=gnu++20 --offload-arch=gfx1151 -fPIC -Wall -Wextra -Wno-unused-parameter -ffp-contract=off -fno-fast-math -O3 -o src/engine/mega.hip.o -x hip -c /reference/src/engine/mega.hip",
+    "file": "/reference/src/engine/mega.hip"
   },
   {
-    "directory": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/build",
-    "command": "/opt/rocm/llvm/bin/clang++  -DUSE_PROF_API=1 -D__HIP_PLATFORM_AMD__=1 -D__HIP_ROCclr__=1 -Dqwen38engine_EXPORTS -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/engine -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/ops -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/rt -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/gguf -O2 -g -DNDEBUG -std=gnu++20 --offload-arch=gfx1151 -fPIC -Wall -Wextra -Wno-unused-parameter -ffp-contract=off -fno-fast-math -O3 -o src/engine/CMakeFiles/mkengine.dir/blocks.hip.o -x hip -c /home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/engine/blocks.hip",
-    "file": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/engine/blocks.hip",
-    "output": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/build/src/engine/CMakeFiles/mkengine.dir/blocks.hip.o"
+    "command": "/opt/rocm/llvm/bin/clang++  -DUSE_PROF_API=1 -D__HIP_PLATFORM_AMD__=1 -D__HIP_ROCclr__=1 -Dqwen38engine_EXPORTS -I/reference/src/engine -I/reference/src/ops -I/reference/src/rt -I/reference/src/gguf -O2 -g -DNDEBUG -std=gnu++20 --offload-arch=gfx1151 -fPIC -Wall -Wextra -Wno-unused-parameter -ffp-contract=off -fno-fast-math -O3 -o src/engine/blocks.hip.o -x hip -c /reference/src/engine/blocks.hip",
+    "file": "/reference/src/engine/blocks.hip"
   },
   {
-    "directory": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/build",
-    "command": "/opt/rocm/llvm/bin/clang++  -DUSE_PROF_API=1 -D__HIP_PLATFORM_AMD__=1 -D__HIP_ROCclr__=1 -Dqwen38engine_EXPORTS -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/engine -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/ops -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/rt -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/gguf -O2 -g -DNDEBUG -std=gnu++20 --offload-arch=gfx1151 -fPIC -Wall -Wextra -Wno-unused-parameter -ffp-contract=off -fno-fast-math -O3 -o src/engine/CMakeFiles/mkengine.dir/capi.hip.o -x hip -c /home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/engine/capi.hip",
-    "file": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/engine/capi.hip",
-    "output": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/build/src/engine/CMakeFiles/mkengine.dir/capi.hip.o"
+    "command": "/opt/rocm/llvm/bin/clang++  -DUSE_PROF_API=1 -D__HIP_PLATFORM_AMD__=1 -D__HIP_ROCclr__=1 -Dqwen38engine_EXPORTS -I/reference/src/engine -I/reference/src/ops -I/reference/src/rt -I/reference/src/gguf -O2 -g -DNDEBUG -std=gnu++20 --offload-arch=gfx1151 -fPIC -Wall -Wextra -Wno-unused-parameter -ffp-contract=off -fno-fast-math -O3 -o src/engine/capi.hip.o -x hip -c /reference/src/engine/capi.hip",
+    "file": "/reference/src/engine/capi.hip"
   },
   {
-    "directory": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/build",
-    "command": "/opt/rocm/llvm/bin/clang++  -DUSE_PROF_API=1 -D__HIP_PLATFORM_AMD__=1 -D__HIP_ROCclr__=1 -Dqwen38engine_EXPORTS -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/engine -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/ops -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/rt -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/gguf -O2 -g -DNDEBUG -std=gnu++20 --offload-arch=gfx1151 -fPIC -Wall -Wextra -Wno-unused-parameter -ffp-contract=off -fno-fast-math -O3 -o src/engine/CMakeFiles/mkengine.dir/convert.hip.o -x hip -c /home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/engine/convert.hip",
-    "file": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/engine/convert.hip",
-    "output": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/build/src/engine/CMakeFiles/mkengine.dir/convert.hip.o"
+    "command": "/opt/rocm/llvm/bin/clang++  -DUSE_PROF_API=1 -D__HIP_PLATFORM_AMD__=1 -D__HIP_ROCclr__=1 -Dqwen38engine_EXPORTS -I/reference/src/engine -I/reference/src/ops -I/reference/src/rt -I/reference/src/gguf -O2 -g -DNDEBUG -std=gnu++20 --offload-arch=gfx1151 -fPIC -Wall -Wextra -Wno-unused-parameter -ffp-contract=off -fno-fast-math -O3 -o src/engine/convert.hip.o -x hip -c /reference/src/engine/convert.hip",
+    "file": "/reference/src/engine/convert.hip"
   },
   {
-    "directory": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/build",
-    "command": "/opt/rocm/llvm/bin/clang++  -DUSE_PROF_API=1 -D__HIP_PLATFORM_AMD__=1 -D__HIP_ROCclr__=1 -Dqwen38engine_EXPORTS -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/engine -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/ops -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/rt -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/gguf -O2 -g -DNDEBUG -std=gnu++20 --offload-arch=gfx1151 -fPIC -Wall -Wextra -Wno-unused-parameter -ffp-contract=off -fno-fast-math -O3 -o src/engine/CMakeFiles/mkengine.dir/round.hip.o -x hip -c /home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/engine/round.hip",
-    "file": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/engine/round.hip",
-    "output": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/build/src/engine/CMakeFiles/mkengine.dir/round.hip.o"
+    "command": "/opt/rocm/llvm/bin/clang++  -DUSE_PROF_API=1 -D__HIP_PLATFORM_AMD__=1 -D__HIP_ROCclr__=1 -Dqwen38engine_EXPORTS -I/reference/src/engine -I/reference/src/ops -I/reference/src/rt -I/reference/src/gguf -O2 -g -DNDEBUG -std=gnu++20 --offload-arch=gfx1151 -fPIC -Wall -Wextra -Wno-unused-parameter -ffp-contract=off -fno-fast-math -O3 -o src/engine/round.hip.o -x hip -c /reference/src/engine/round.hip",
+    "file": "/reference/src/engine/round.hip"
   },
   {
-    "directory": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/build",
-    "command": "/opt/rocm/llvm/bin/clang++  -DUSE_PROF_API=1 -D__HIP_PLATFORM_AMD__=1 -D__HIP_ROCclr__=1 -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/rt -O2 -g -DNDEBUG -std=gnu++20 --offload-arch=gfx1151 -fPIC -Wall -Wextra -Wno-unused-parameter -ffp-contract=off -fno-fast-math -o src/rt/CMakeFiles/mkrt.dir/rt.cpp.o -x hip -c /home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/rt/rt.cpp",
-    "file": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/rt/rt.cpp",
-    "output": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/build/src/rt/CMakeFiles/mkrt.dir/rt.cpp.o"
+    "command": "/opt/rocm/llvm/bin/clang++  -DUSE_PROF_API=1 -D__HIP_PLATFORM_AMD__=1 -D__HIP_ROCclr__=1 -I/reference/src/rt -O2 -g -DNDEBUG -std=gnu++20 --offload-arch=gfx1151 -fPIC -Wall -Wextra -Wno-unused-parameter -ffp-contract=off -fno-fast-math -o src/rt/CMakeFiles/mkrt.dir/rt.cpp.o -x hip -c /reference/src/rt/rt.cpp",
+    "file": "/reference/src/rt/rt.cpp"
   },
   {
-    "directory": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/build",
-    "command": "/opt/rocm/llvm/bin/clang++ -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/gguf -x c++ -O2 -g -DNDEBUG -std=gnu++20 -fPIC -Wall -Wextra -Wno-unused-parameter -ffp-contract=off -fno-fast-math @src/gguf/CMakeFiles/mkgguf_static.dir/gguf.cpp.o.modmap -o src/gguf/CMakeFiles/mkgguf_static.dir/gguf.cpp.o -c /home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/gguf/gguf.cpp",
-    "file": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/gguf/gguf.cpp",
-    "output": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/build/src/gguf/CMakeFiles/mkgguf_static.dir/gguf.cpp.o"
+    "command": "/opt/rocm/llvm/bin/clang++ -I/reference/src/gguf -x c++ -O2 -g -DNDEBUG -std=gnu++20 -fPIC -Wall -Wextra -Wno-unused-parameter -ffp-contract=off -fno-fast-math @src/gguf/CMakeFiles/mkgguf_static.dir/gguf.cpp.o.modmap -o src/gguf/CMakeFiles/mkgguf_static.dir/gguf.cpp.o -c /reference/src/gguf/gguf.cpp",
+    "file": "/reference/src/gguf/gguf.cpp"
   },
   {
-    "directory": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/build",
-    "command": "/opt/rocm/llvm/bin/clang++ -I/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/gguf -x c++ -O2 -g -DNDEBUG -std=gnu++20 -fPIC -Wall -Wextra -Wno-unused-parameter -ffp-contract=off -fno-fast-math @src/gguf/CMakeFiles/mkgguf_static.dir/dequant.cpp.o.modmap -o src/gguf/CMakeFiles/mkgguf_static.dir/dequant.cpp.o -c /home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/gguf/dequant.cpp",
-    "file": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/src/gguf/dequant.cpp",
-    "output": "/home/atobey/src/megakernel-qwen38-flashnext-strixhalo/build/src/gguf/CMakeFiles/mkgguf_static.dir/dequant.cpp.o"
+    "command": "/opt/rocm/llvm/bin/clang++ -I/reference/src/gguf -x c++ -O2 -g -DNDEBUG -std=gnu++20 -fPIC -Wall -Wextra -Wno-unused-parameter -ffp-contract=off -fno-fast-math @src/gguf/CMakeFiles/mkgguf_static.dir/dequant.cpp.o.modmap -o src/gguf/CMakeFiles/mkgguf_static.dir/dequant.cpp.o -c /reference/src/gguf/dequant.cpp",
+    "file": "/reference/src/gguf/dequant.cpp"
   }
 ]
