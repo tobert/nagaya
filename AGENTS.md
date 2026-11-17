@@ -326,13 +326,15 @@ Set `QWEN38_FAST_QMM=0` for the gate: the exact path must match the reference. L
 
 The bench prints the SHA-256 of the logits of each prompt. A port step that keeps the bits keeps each hash.
 
-Make the fixture again with the Python of the reference venv (`signoff.md` gives it):
+The reference of Qwen3.8 is the package `tools/qwen38_reference`. Each fixture tool of the Qwen3.8 crates imports it.
+Make a venv from its `requirements.txt`, and set `QWEN38_SHARDS`. Then make the fixture again:
 
 ```
-PYTHONDONTWRITEBYTECODE=1 nice -n 19 ionice -c3 <python> -I tools/oracle_fixture.py OUT.json
+PYTHONDONTWRITEBYTECODE=1 nice -n 19 ionice -c3 <venv>/bin/python -I tools/oracle_fixture.py OUT.json
 ```
 
-It needs about 30 GiB of RAM, and it must not run with a GPU job.
+It needs about 30 GiB of RAM, and it must not run with a GPU job. Test the package from `tools/` with
+`<venv>/bin/python -m unittest qwen38_reference.test_reference`.
 
 `tools/ste_check.py` checks Markdown only, and it allows 25 words in each sentence. Comments and commit messages
 have no check. Keep instructions at 20 words or fewer yourself.

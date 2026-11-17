@@ -6,11 +6,10 @@ selects, and the reference `attn_out` of two heads only (head 0 of the first key
 keep the fixture small: the Rust test takes the relative L2 error over those two heads of each token.
 """
 import hashlib
-import sys
 
 import numpy as np
 
-SOURCE_FILES = ["tests/ops/test_attn_mask.py"]
+SOURCE_FILES = ["tools/op_groups/attn_a.py", "tools/qwen38_reference/attn_mask.py"]
 HEADS = (0, 12)
 
 
@@ -33,8 +32,7 @@ def case_arrays(lib, idx, p0, t, m):
 
 
 def make(g, lib):
-    sys.path.insert(0, str(lib.REFERENCE))
-    import tests.ops.test_attn_mask as m
+    from qwen38_reference import attn_mask as m
 
     g.add("inv_freq", m.inv_freq())
     g.meta["cases"] = []

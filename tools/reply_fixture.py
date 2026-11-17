@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Write the reply-parser fixture of nagaya-text-qwen38 from the reference's Python (milestone 12, step 4).
+"""Write the reply-parser fixture of nagaya-text-qwen38 from the reference's Python.
 
-The fixture holds replies as token ids. For each reply it holds what the reference's `service/generate.py` gives for each token
-(the piece of text and the phase) and what `ReplyTracker.finish()` gives at the end. The tool runs no service and uses
-no GPU. It reads the reference, and the GGUF file for the tokenizer. It never writes into reference.
+The fixture holds replies as token ids. For each reply it holds what the token loop of the first Qwen3.8 server gives
+for each token (the piece of text and the phase) and what `ReplyTracker.finish()` gives at the end. The tool runs no
+server and uses no GPU. It reads `tools/qwen38_reference`, and the first GGUF shard for the tokenizer: `--gguf`, or the
+first path of `QWEN38_SHARDS`. Run it with the venv of `tools/qwen38_reference/requirements.txt`:
 
-    PYTHONDONTWRITEBYTECODE=1 ~/src/megakernel-qwen38-flashnext-strixhalo/.venv/bin/python -I \
-        tools/reply_fixture.py [--reference REFERENCE] [--gguf GGUF] [--out OUT]
+    PYTHONDONTWRITEBYTECODE=1 <venv>/bin/python -I tools/reply_fixture.py [--gguf GGUF] [--out OUT]
 
-The loop below copies the token loop of `Generation._loop` in the reference's `service/generate.py`: `Utf8Stream.push` of the
+The loop below copies the token loop of the first Qwen3.8 server (`Generation._loop`): `Utf8Stream.push` of the
 token's bytes, then `ReplyTracker.feed`. The phase of a token is the phase of the last released segment, or the phase
 of the tracker when nothing was released. At the end the loop flushes the UTF-8 stream into the tracker.
 """
@@ -18,18 +18,15 @@ import argparse
 import json
 import platform
 import random
-import subprocess
 import sys
 from pathlib import Path
 
 sys.dont_write_bytecode = True
 
-DEFAULT_REFERENCE = Path.home() / "src/megakernel-qwen38-flashnext-strixhalo"
-DEFAULT_GGUF = ("/tank/ml/models/llama.cpp/Qwen3.8-Flash-Next-GGUF/UD-IQ4_XS/"
-                "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf")
+TOOLS = Path(__file__).resolve().parent
 DEFAULT_OUT = Path(__file__).resolve().parent.parent / "crates/nagaya-text-qwen38/tests/fixtures/reply.json"
 
-# The tool sets. "reference" is the set of the reference's own tests (tests/svc/test_chatfmt.py): one tool with every
+# The tool sets. "reference" is the set of the tests of the first Qwen3.8 server: one tool with every
 # type, a tool with no parameters, and a tool with a required parameter.
 TOOLSETS = {
     "none": None,
@@ -52,10 +49,6 @@ def call(name, **args):
     body = "".join(f"<parameter={k}>\n{v if isinstance(v, str) else json.dumps(v)}\n</parameter>\n"
                    for k, v in args.items())
     return f"<tool_call>\n<function={name}>\n{body}</function>\n</tool_call>"
-
-
-def git(reference: Path, *args: str) -> str:
-    return subprocess.run(["git", "-C", str(reference), *args], check=True, capture_output=True, text=True).stdout.strip()
 
 
 # Each reply: (name, thinking, toolset, text, ending). The text is the reply without the stop token.
@@ -187,8 +180,8 @@ def make_token_ids(tok, text: str, mode: str, rnd: random.Random) -> list[int]:
     return [i for a, b in zip(points, points[1:]) for i in tok.encode(text[a:b])]
 
 
-def run_mk(chatfmt, tok, thinking: bool, tools, ids: list[int], ending: str) -> dict:
-    """The token loop of the reference's Generation._loop, with the ids given. `released` is what `feed` gave for the token."""
+def run_reference(chatfmt, tok, thinking: bool, tools, ids: list[int], ending: str) -> dict:
+    """The token loop of the first Qwen3.8 server, with the ids given. `released` is what `feed` gave for the token."""
     tracker = chatfmt.ReplyTracker(thinking, tools)
     utf8 = chatfmt.Utf8Stream()
     events = []
@@ -225,17 +218,17 @@ def check_rule(case: dict) -> dict:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--reference", type=Path, default=DEFAULT_REFERENCE)
-    ap.add_argument("--gguf", type=Path, default=Path(DEFAULT_GGUF))
+    ap.add_argument("--gguf", type=Path, default=None, help="the first GGUF shard; else the first of QWEN38_SHARDS")
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--report-rule", action="store_true", help="print the cases that break gogi's piece rule")
     args = ap.parse_args()
-    reference = args.reference.resolve()
-    if git(reference, "status", "--porcelain"):
-        sys.exit(f"{reference} has local changes. Commit or stash them first, so that the recorded revision is exact.")
-    sys.path.insert(0, str(reference))
-    from harness.tokenizer import Tokenizer
-    from service import chatfmt
+    sys.path.insert(0, str(TOOLS))
+    import qwen38_reference
+    from qwen38_reference import chatfmt
+    from qwen38_reference.tokenizer import Tokenizer
+
+    if args.gguf is None:
+        args.gguf = Path(qwen38_reference.shards_from_env()[0])
 
     tok = Tokenizer.from_gguf(args.gguf)
     rnd = random.Random(20261020)
@@ -251,26 +244,26 @@ def main() -> None:
             assert all(i not in (248046, 248044) for i in ids), name
             case = {"name": f"{name}:{mode}{n}" if mode == "cuts" else f"{name}:{mode}", "thinking": thinking,
                     "tools": toolset, "ids": ids}
-            case.update(run_mk(chatfmt, tok, thinking, tools, ids, ending))
+            case.update(run_reference(chatfmt, tok, thinking, tools, ids, ending))
             cases.append(case)
     # A cut in the middle of a character: drop the last byte token of a UTF-8 reply.
     for name, thinking, toolset, text, ending in replies():
         if ending == "length" and name.startswith("utf8_cut"):
             ids = make_token_ids(tok, text, "bytes", rnd)[:-1]
             case = {"name": f"{name}:half", "thinking": thinking, "tools": toolset, "ids": ids}
-            case.update(run_mk(chatfmt, tok, thinking, TOOLSETS[toolset], ids, ending))
+            case.update(run_reference(chatfmt, tok, thinking, TOOLSETS[toolset], ids, ending))
             cases.append(case)
     # Bytes that are not UTF-8: a stray continuation byte, a bad lead byte, a surrogate.
     for name, raw in (("bad_continuation", b"a\x80b"), ("bad_lead", b"a\xffb"), ("bad_surrogate", b"a\xed\xa0\x80b"),
                       ("bad_overlong", b"\xc0\xafx"), ("bad_truncated_then_ascii", b"\xe4\xb8z")):
         ids = [tok.token_to_id[tok._byte_encoder[b]] for b in raw]
         case = {"name": f"utf8_{name}:bytes", "thinking": False, "tools": "none", "ids": ids}
-        case.update(run_mk(chatfmt, tok, False, None, ids, "stop"))
+        case.update(run_reference(chatfmt, tok, False, None, ids, "stop"))
         cases.append(case)
 
     header = {
-        "reference_rev": git(reference, "rev-parse", "HEAD"),
-        "source_files": ["service/chatfmt.py", "service/generate.py", "harness/tokenizer.py"],
+        "reference_sha": qwen38_reference.digest(),
+        "source_files": [qwen38_reference.source(name) for name in ("chatfmt.py", "tokenizer.py")] + ["tools/reply_fixture.py"],
         "gguf": args.gguf.name,
         "python": platform.python_version(),
         "generator": "tools/reply_fixture.py",

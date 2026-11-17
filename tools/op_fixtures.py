@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
-"""Write the fixtures of the op tests of nagaya-mk-qwen38-gfx1151 from the reference's Python (milestone 15, step 2).
+"""Write the fixtures of the op tests of nagaya-mk-qwen38-gfx1151 from the reference's Python.
 
-The Rust tests in `crates/nagaya-mk-qwen38-gfx1151/tests/ops` port the op tests of the reference (`tests/ops`). Rust remakes the
+The Rust tests in `crates/nagaya-mk-qwen38-gfx1151/tests/ops` port the op tests of the first Qwen3.8 engine. Rust remakes the
 inputs with the generator below, which has no state: each value is a function of a seed and an index. This tool
 uses the same generator, runs the reference code on the same inputs, and writes the expected outputs. No Python runs at
-test time. The tool runs no GPU job and writes nothing into the reference.
+test time. The tool runs no GPU job.
 
-    PYTHONDONTWRITEBYTECODE=1 nice -n 19 ionice -c3 \
-        ~/src/megakernel-qwen38-flashnext-strixhalo/.venv/bin/python -I tools/op_fixtures.py [--out DIR] [GROUP ...]
+    PYTHONDONTWRITEBYTECODE=1 nice -n 19 ionice -c3 <venv>/bin/python -I tools/op_fixtures.py [--out DIR] [GROUP ...]
+
+The venv is the one of `tools/qwen38_reference/requirements.txt`. The groups `attn` and `gdn` read the real weights of
+the GGUF, so they need `QWEN38_SHARDS`.
 
 A group is a module in `tools/op_groups`. It writes a pair of files, `<group>.json` and `<group>.bin`. The JSON file holds
 the header, the metadata and an index of the arrays. The BIN file holds the little-endian bytes of the arrays. With no
-group the tool writes every group. The metadata of a group names the files of the reference that the group reads.
+group the tool writes every group. The metadata of a group names the files of this repository that compute its values.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import math
-import os
 import platform
-import subprocess
 import sys
 from pathlib import Path
 
@@ -28,8 +28,10 @@ sys.dont_write_bytecode = True
 
 import numpy as np  # noqa: E402
 
-REFERENCE = Path(os.environ.get("QWEN38_REFERENCE_REPO", Path.home() / "src/megakernel-qwen38-flashnext-strixhalo"))
-GGUF_PY = Path.home() / "src/wt/llama.cpp-master-0924/gguf-py"
+TOOLS = Path(__file__).resolve().parent
+sys.path.insert(0, str(TOOLS))
+
+import qwen38_reference  # noqa: E402
 DEFAULT_OUT = Path(__file__).resolve().parent.parent / "crates/nagaya-mk-qwen38-gfx1151/tests/fixtures/ops"
 AUTHOR = "written by Claude Sonnet 5.5 for this tool, 2026-10-22"
 
@@ -131,10 +133,6 @@ class Group:
         print(f"{self.name}: {len(self.blob)} bytes of arrays, {len(text)} bytes of index")
 
 
-def git(repo: Path, *args: str) -> str:
-    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True).stdout.strip()
-
-
 # ---- the groups --------------------------------------------------------------------------------------------------------
 
 
@@ -162,7 +160,7 @@ def main() -> None:
         if name not in groups:
             sys.exit(f"no group {name}; the groups are {', '.join(groups)}")
     header = {
-        "reference_rev": git(REFERENCE, "rev-parse", "HEAD"),
+        "reference_sha": qwen38_reference.digest(),
         "python": platform.python_version(),
         "numpy": np.__version__,
         "generator": "tools/op_fixtures.py",

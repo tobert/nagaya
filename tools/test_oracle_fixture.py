@@ -117,12 +117,12 @@ class Entries(unittest.TestCase):
 
 class Document(unittest.TestCase):
     def test_the_layout_names_the_formula_the_strength_the_layers_and_the_runs(self):
-        document = tool.residual_document([{"name": "plain"}], {"reference_rev": "abc"}, 0.5)
+        document = tool.residual_document([{"name": "plain"}], {"reference_sha": "abc"}, 0.5)
         self.assertEqual(document["dtype"], "float32")
         self.assertEqual(document["layers"], 48)
         self.assertEqual(document["width"], 10240)
         self.assertEqual(document["fold_width"], 2560)
-        self.assertEqual(document["reference_rev"], "abc")
+        self.assertEqual(document["reference_sha"], "abc")
         self.assertEqual(document["sample_indices"], tool.sample_indices(10240))
         self.assertEqual(document["fold_sample_indices"], tool.sample_indices(2560))
         self.assertEqual(document["add"]["layers"], [8, 24, 40])

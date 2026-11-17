@@ -1,9 +1,8 @@
 """The group `tiles`: dequantized values of gguf-py for raw rows of the generator, for the round trips of the tile layouts."""
-import sys
 
 import numpy as np
 
-SOURCE_FILES = ["tests/ops/test_tiles.py"]
+SOURCE_FILES = ["tools/op_groups/tiles.py"]
 
 # (format, type, rows, k, seed). A tile needs rows % 16 == 0. The reference used rows of real tensors; these shapes are
 # small.
@@ -20,7 +19,6 @@ CASES = [
 
 
 def make(g, lib):
-    sys.path.insert(0, str(lib.GGUF_PY))
     import gguf
     g.meta["cases"] = []
     for i, (fmt, qtype, rows, k, seed) in enumerate(CASES):

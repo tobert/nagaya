@@ -3,11 +3,10 @@
 The weights and the inputs come from the generator, so Rust remakes them. The reference is `ref_gdn` of the reference's test, run on
 the CPU. The fixture holds the output `y` of three value heads and a corner of the final recurrent state of the same heads.
 """
-import sys
 
 import numpy as np
 
-SOURCE_FILES = ["tests/ops/test_gdn.py"]
+SOURCE_FILES = ["tools/op_groups/gdn.py", "tools/qwen38_reference/reference.py"]
 
 KH, VH, KD, VD, CONV = 16, 48, 128, 128, 4
 CDIM = 2 * KH * KD + VH * VD
@@ -37,10 +36,9 @@ def inputs(lib, t, scale):
 
 
 def make(g, lib):
-    sys.path.insert(0, str(lib.REFERENCE))
     import torch
     import torch.nn.functional as F
-    from harness import reference
+    from qwen38_reference import reference
     from transformers.models.qwen4_exp.modeling_qwen4_exp import (
         Qwen4ExpTextRMSNormGated, causal_conv1d_fn, torch_chunk_gated_delta_rule)
 

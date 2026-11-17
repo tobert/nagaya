@@ -97,7 +97,7 @@ fn made() -> Fixture {
         "width": 10240,
         "streams": 4,
         "fold_width": 2560,
-        "reference_rev": "0123abc",
+        "reference_sha": "0123abc",
         "vocab": 248320,
         "sample_indices": indices(RESIDUAL_WIDTH),
         "fold_sample_indices": indices(FOLD_WIDTH),
@@ -127,7 +127,7 @@ fn a_good_fixture_is_accepted() {
     let fixture = made();
     let parsed = parse(&fixture.json).expect("a good fixture parses");
     assert_eq!(parsed.runs.len(), 3);
-    assert_eq!(parsed.reference_rev, "0123abc");
+    assert_eq!(parsed.reference_sha, "0123abc");
     assert_eq!(parsed.add.layers, [8, 24, 40]);
     assert_eq!(parsed.add.strength_f32, 0.5);
     assert_eq!(parsed.run("plain_add").rows.len(), 48);
@@ -204,7 +204,7 @@ fn a_wrong_dtype_is_refused() {
 
 #[test]
 fn a_missing_field_is_refused() {
-    for key in ["dtype", "reference_rev", "add", "sample_indices", "runs"] {
+    for key in ["dtype", "reference_sha", "add", "sample_indices", "runs"] {
         let mut fixture = made();
         fixture.json.as_object_mut().expect("object").remove(key);
         let error = parse(&fixture.json).expect_err(key);
@@ -373,7 +373,7 @@ fn the_real_fixture_parses_when_it_is_there() {
         return;
     };
     assert_eq!(fixture.runs.len(), 3);
-    assert!(!fixture.reference_rev.is_empty());
+    assert!(!fixture.reference_sha.is_empty());
     if let Some(rows) = oracle::read_rows(
         "the_real_fixture_parses_when_it_is_there",
         &oracle::golden_dir(),

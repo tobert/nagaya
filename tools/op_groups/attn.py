@@ -14,11 +14,10 @@ The outputs hold the heads 0, 11, 12 and 23 only (one on each side of the border
 fixture small.
 """
 import math
-import sys
 
 import numpy as np
 
-SOURCE_FILES = ["tests/ops/test_attn.py", "tests/ops/test_attn_long.py"]
+SOURCE_FILES = ["tools/op_groups/attn.py", "tools/qwen38_reference/reference.py"]
 
 H, KVH, HD, IH, ID = 24, 2, 256, 4, 128
 HEADS = [0, 11, 12, 23]
@@ -33,10 +32,9 @@ SEL_WIDTH = {"dense": DENSE_T, "sparse": SPARSE_BUDGET + 3}
 
 
 def make(g, lib):
-    sys.path.insert(0, str(lib.REFERENCE))
     import torch
     from torch import nn
-    from harness import reference
+    from qwen38_reference import reference
 
     torch.set_num_threads(8)
 

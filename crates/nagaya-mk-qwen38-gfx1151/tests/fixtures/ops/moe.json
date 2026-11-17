@@ -216,16 +216,12 @@
  "header": {
   "author": "written by Claude Sonnet 5.5 for this tool, 2026-10-22",
   "generator": "tools/op_fixtures.py",
-  "reference_rev": "555a2a3b01457eafbc64f3b9d14931df09ea0e02",
   "numpy": "2.5.3",
-  "python": "3.14.8"
+  "python": "3.14.8",
+  "reference_sha": "9c052c9826e42b3a"
  },
  "meta": {
   "block_t": 6,
-  "source_files": [
-   "tests/ops/test_moe_route.py",
-   "tests/ops/test_moe.py"
-  ],
   "pool_bases": {
    "a": 7000,
    "b": 7100
@@ -471,6 +467,9 @@
     "maker": "skewed",
     "t": 256
    }
+  ],
+  "source_files": [
+   "tools/op_groups/moe.py"
   ]
  }
 }

@@ -4,12 +4,11 @@
 makes at the real shapes (the reference used the real weights of layer 0). The Rust test remakes the weights and calls `qwen38_hc_pre`.
 `hc_combine` is `h + out x inject` in torch, which must match the op bit for bit.
 """
-import sys
 import types
 
 import numpy as np
 
-SOURCE_FILES = ["tests/ops/test_hc.py"]
+SOURCE_FILES = ["tools/op_groups/hc.py"]
 
 E, R, T_PRE = 2560, 320, 3
 # The f16 d of the Q8_0 weights: small, so that the activations of the module do not saturate (the Rust test does the same).
@@ -25,7 +24,6 @@ def fixed_d(raw, bits):
 
 
 def make(g, lib):
-    sys.path.insert(0, str(lib.GGUF_PY))
     import gguf
     import torch
 

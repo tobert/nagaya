@@ -9,11 +9,10 @@ tensors, so this group follows the same maths in numpy: a softmax router, the to
 shared expert with a sigmoid gate. Only the experts that the router selects are dequantized.
 """
 import hashlib
-import sys
 
 import numpy as np
 
-SOURCE_FILES = ["tests/ops/test_moe_route.py", "tests/ops/test_moe.py"]
+SOURCE_FILES = ["tools/op_groups/moe.py"]
 
 E, K = 512, 10
 GU_ROWS, DN_ROWS = 640, 2560
@@ -128,7 +127,6 @@ def make(g, lib):
                 "digest": {"idx": digest(idx), "cnt": digest(cnt), "off": digest(off), "asg": digest(asg),
                            "tok": digest(tok), "igu0": digest(igu0), "idn0": digest(idn0), "igu1": digest(igu1),
                            "idn1": digest(idn1)}})
-    sys.path.insert(0, str(lib.GGUF_PY))
     import gguf
     T = gguf.GGMLQuantizationType
     types = {"IQ3_S": T.IQ3_S, "IQ4_NL": T.IQ4_NL, "Q8_0": T.Q8_0}

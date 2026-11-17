@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
 """Write `tests/fixtures/council.json`: fixed renders of the Qwen3.8 council rendering, from the reference's Python front-end.
 
-The chat template and the tokenizer are the reference's (`service/common.py` `render_messages`, `harness/tokenizer.py`). The
-layout of a council read (spec layer, case turn, letter menu, queue call) is written out again below in Python. That
-text is a second port of mkviolet's `src/template.rs` to Qwen3.8's chat format. It was checked by hand against
-mkviolet's `template.rs` on 2026-10-20. The script does not take it from mkviolet. The Rust library must give the same
-text and the same token ids. The script runs no service and uses no GPU. It only reads the reference and the GGUF file.
+The chat template and the tokenizer are those of `tools/qwen38_reference` (`common.py` `render_messages`,
+`tokenizer.py`). The layout of a council read (spec layer, case turn, letter menu, queue call) is written out again
+below in Python. That text is a second port of the council layout of the first Gemma 4 engine to Qwen3.8's chat
+format, checked by hand on 2026-10-20. The Rust library must give the same text and the same token ids. The script runs
+no server and uses no GPU. It reads the reference and the first GGUF shard: `--gguf`, or the first path of
+`QWEN38_SHARDS`. Run it from this crate's folder, with the venv of `tools/qwen38_reference/requirements.txt`:
 
-    MEGAKERNEL_LLAMA_CPP=~/src/wt/llama.cpp-master-0924 \
-    ~/src/megakernel-qwen38-flashnext-strixhalo/.venv/bin/python \
-        crates/nagaya-text-qwen38/tools/make_council_fixture.py \
-        --reference ~/src/megakernel-qwen38-flashnext-strixhalo \
-        --gguf /tank/ml/models/llama.cpp/Qwen3.8-Flash-Next-GGUF/UD-IQ4_XS/Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf
+    PYTHONDONTWRITEBYTECODE=1 <venv>/bin/python -I tools/make_council_fixture.py [--gguf GGUF]
 
-The fixture keeps the text of each render and the SHA-256 of its token ids, to stay small. The script refuses a reference
-tree with local changes, and it never writes into the reference.
+The fixture keeps the text of each render and the SHA-256 of its token ids, to stay small.
 """
 from __future__ import annotations
 
@@ -22,7 +18,6 @@ import argparse
 import hashlib
 import json
 import struct
-import subprocess
 import sys
 from pathlib import Path
 
@@ -76,26 +71,22 @@ CONTEXTS = {
 }
 
 
-def git(reference: Path, *args: str) -> str:
-    return subprocess.run(["git", "-C", str(reference), *args], check=True, capture_output=True, text=True).stdout.strip()
-
-
 def sha(ids: list[int]) -> str:
     return hashlib.sha256(struct.pack(f"<{len(ids)}I", *ids)).hexdigest()
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--reference", required=True, type=Path)
-    ap.add_argument("--gguf", required=True, type=Path)
+    ap.add_argument("--gguf", type=Path, default=None, help="the first GGUF shard; else the first of QWEN38_SHARDS")
     args = ap.parse_args()
-    reference = args.reference.resolve()
-    if git(reference, "status", "--porcelain"):
-        sys.exit(f"{reference} has local changes. Commit or stash them first, so that the recorded revision is exact.")
-    sys.path.insert(0, str(reference))
-    from harness.tokenizer import Tokenizer
-    from service.common import render_messages
-    from service.template import Template
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tools"))
+    import qwen38_reference
+    from qwen38_reference.common import render_messages
+    from qwen38_reference.template import Template
+    from qwen38_reference.tokenizer import Tokenizer
+
+    if args.gguf is None:
+        args.gguf = Path(qwen38_reference.shards_from_env()[0])
 
     tok = Tokenizer.from_gguf(args.gguf)
     template = Template.from_gguf(str(args.gguf))
@@ -146,7 +137,7 @@ def main() -> None:
         context_cases.append({"context": name, **text, **digest(ids), "boundaries": bounds,
                               "gen_sha256": sha(gen_ids)})
 
-    # The text of a spec layer, as mkviolet's `spec_block` writes it.
+    # The text of a spec layer, as `spec_block` of the Gemma 4 engine writes it.
     def spec_text(spec: dict) -> str:
         t = ""
         if spec["instructions"]:
@@ -216,8 +207,8 @@ def main() -> None:
     header = {
         "author": "written by Claude Sonnet 5.5 for this tool, 2026-10-20",
         "generator": "crates/nagaya-text-qwen38/tools/make_council_fixture.py",
-        "reference_rev": git(reference, "rev-parse", "HEAD"),
-        "source_files": ["service/common.py", "service/template.py", "harness/tokenizer.py"],
+        "reference_sha": qwen38_reference.digest(),
+        "source_files": [qwen38_reference.source(name) for name in ("common.py", "template.py", "tokenizer.py")],
         "gguf": args.gguf.name,
         "effort": EFFORT,
     }

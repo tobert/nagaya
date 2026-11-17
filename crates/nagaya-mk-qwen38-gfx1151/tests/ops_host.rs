@@ -88,14 +88,14 @@ fn the_raw_rows_match_the_python_generator() {
 }
 
 #[test]
-fn all_fixtures_come_from_one_run_of_one_revision_of_the_reference() {
+fn all_fixtures_come_from_one_run_of_one_reference() {
     let names = groups();
     let first = Fixture::load(&names[0]);
     let header = &first.json["header"];
-    let rev = header["reference_rev"].as_str().expect("reference_rev");
+    let sha = header["reference_sha"].as_str().expect("reference_sha");
     assert!(
-        rev.len() == 40 && rev.bytes().all(|b| b.is_ascii_hexdigit()),
-        "reference_rev {rev:?} is not a git revision"
+        sha.len() == 16 && sha.bytes().all(|b| b.is_ascii_hexdigit()),
+        "reference_sha {sha:?} is not the digest of tools/qwen38_reference"
     );
     for name in &names {
         assert_eq!(&Fixture::load(name).json["header"], header, "the header of {name}");
@@ -157,25 +157,26 @@ fn no_bare_builtin_trap_outside_the_trap_header() {
     assert!(found.is_empty(), "a bare __builtin_trap: {found:?}");
 }
 
-/// Each group but `gen` names the files of the reference that it ports, as paths in the reference's `tests/ops`.
+/// Each group names the Python files of this repository that compute its values: its own module first.
 #[test]
 fn each_group_names_the_source_files_it_reads() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     for name in groups() {
         let files = Fixture::load(&name)
             .meta("source_files")
             .as_array()
             .expect("source_files")
             .clone();
-        if name == "gen" {
-            assert!(files.is_empty(), "gen reads no file of the reference");
-            continue;
-        }
-        assert!(!files.is_empty(), "the group {name} names no file of the reference");
+        let files: Vec<&str> = files.iter().map(|file| file.as_str().expect("a path")).collect();
+        assert_eq!(
+            files.first().copied(),
+            Some(format!("tools/op_groups/{name}.py").as_str()),
+            "the group {name} names its own module first"
+        );
         for file in files {
-            let file = file.as_str().unwrap();
             assert!(
-                file.starts_with("tests/ops/") && file.ends_with(".py"),
-                "{name}: {file} is not an op test of the reference"
+                file.ends_with(".py") && root.join(file).is_file(),
+                "{name}: {file} is not a Python file of this repository"
             );
         }
     }

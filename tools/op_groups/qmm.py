@@ -1,14 +1,12 @@
 """The group `qmm`: dequantized values of gguf-py for the raw rows of the generator, one case for each type."""
-import sys
 
 import numpy as np
 
-SOURCE_FILES = ["tests/ops/test_qmm.py", "tests/ops/test_qmmh.py"]
+SOURCE_FILES = ["tools/op_groups/qmm.py"]
 
 
 def make(g, lib):
-    raw_rows, GGUF_PY = lib.raw_rows, lib.GGUF_PY
-    sys.path.insert(0, str(GGUF_PY))
+    raw_rows = lib.raw_rows
     import gguf
     types = {"F32": gguf.GGMLQuantizationType.F32, "BF16": gguf.GGMLQuantizationType.BF16,
              "Q8_0": gguf.GGMLQuantizationType.Q8_0, "IQ4_NL": gguf.GGMLQuantizationType.IQ4_NL,

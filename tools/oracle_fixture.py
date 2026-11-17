@@ -5,10 +5,10 @@ The tool runs the reference on the CPU. The reference is the model's own transfo
 at a time over the GGUF weights. For each fixed prompt the tool records the token ids and, for the last position, the
 top-64 logits (ids and f32 values) and the logsumexp over the whole vocabulary.
 
-The tool imports only from the reference's repository, by an explicit path, and it never writes there. Run it with the reference's venv:
+The reference is the package `tools/qwen38_reference`. Run the tool with the venv of its `requirements.txt`, with
+`QWEN38_SHARDS` set, and with no GPU job. It needs about 30 GiB of memory:
 
-    PYTHONDONTWRITEBYTECODE=1 nice -n 19 ionice -c3 \
-        ~/src/megakernel-qwen38-flashnext-strixhalo/.venv/bin/python -I tools/oracle_fixture.py OUT.json [--layers N]
+    PYTHONDONTWRITEBYTECODE=1 nice -n 19 ionice -c3 <venv>/bin/python -I tools/oracle_fixture.py OUT.json [--layers N]
 
 With --layers N the reference stops after N layers. That output is a smoke test, not an oracle.
 
@@ -30,12 +30,11 @@ import json
 import math
 import os
 import struct
-import subprocess
 import sys
 import time
 from pathlib import Path
 
-REFERENCE = Path(os.environ.get("QWEN38_REFERENCE_REPO", Path.home() / "src/megakernel-qwen38-flashnext-strixhalo"))
+TOOLS = Path(__file__).resolve().parent
 TOP = 64
 
 # The most tokens that the engine binding takes in one context of the small class: 4096 (spec.rs CONTEXT_CLASSES). A
@@ -185,15 +184,15 @@ def residual_main(args) -> None:
         sys.exit("--strength must be a finite number")
     if args.golden is None:
         sys.exit("--residual needs --golden DIR for the full rows")
-    sys.path.insert(0, str(REFERENCE))
+    sys.path.insert(0, str(TOOLS))
     import torch
-    from harness import reference
-    from harness.paths import SHARDS
-    from harness.tokenizer import Tokenizer
+    import qwen38_reference
+    from qwen38_reference import reference
+    from qwen38_reference.tokenizer import Tokenizer
     import transformers
 
     torch.set_num_threads(int(os.environ.get("QWEN38_REFERENCE_THREADS", "16")))
-    tokenizer = Tokenizer.from_gguf(SHARDS[0])
+    tokenizer = Tokenizer.from_gguf(qwen38_reference.shards_from_env()[0])
     runs = [run for run in RUNS if run[2] is False or args.strength is not None]
     ids = [tokenizer.encode(PROMPTS[prompt][1]) for _, prompt, _ in runs]
     model = reference.GGUFModel()
@@ -254,9 +253,7 @@ def residual_main(args) -> None:
         })
     header = {
         "transformers": transformers.__version__,
-        "reference_rev": subprocess.run(["git", "-C", str(REFERENCE), "rev-parse", "HEAD"], capture_output=True,
-                                        text=True, check=True).stdout.strip(),
-        "reference_sha": hashlib.sha256((REFERENCE / "harness" / "reference.py").read_bytes()).hexdigest()[:16],
+        "reference_sha": qwen38_reference.digest(),
         "seconds": round(time.time() - started),
         "vocab": int(logits.shape[0]),
         "author": AUTHOR,
@@ -285,15 +282,15 @@ def main() -> None:
     if args.golden is not None or args.strength is not None:
         parser.error("--golden and --strength belong to --residual")
 
-    sys.path.insert(0, str(REFERENCE))
+    sys.path.insert(0, str(TOOLS))
     import torch
-    from harness import reference
-    from harness.paths import SHARDS
-    from harness.tokenizer import Tokenizer
+    import qwen38_reference
+    from qwen38_reference import reference
+    from qwen38_reference.tokenizer import Tokenizer
     import transformers
 
     torch.set_num_threads(int(os.environ.get("QWEN38_REFERENCE_THREADS", "16")))
-    tokenizer = Tokenizer.from_gguf(SHARDS[0])
+    tokenizer = Tokenizer.from_gguf(qwen38_reference.shards_from_env()[0])
     ids = [tokenizer.encode(text) for _, text, _ in PROMPTS]
     for (name, _, _), row in zip(PROMPTS, ids):
         if len(row) > MAX_TOKENS:
@@ -326,7 +323,7 @@ def main() -> None:
         "layers": args.layers if args.layers is not None else model.config.num_hidden_layers,
         "vocab": int(logits.shape[0]),
         "transformers": transformers.__version__,
-        "reference_sha": hashlib.sha256((REFERENCE / "harness" / "reference.py").read_bytes()).hexdigest()[:16],
+        "reference_sha": qwen38_reference.digest(),
         "seconds": round(time.time() - started),
         "prompts": entries,
     }

@@ -387,7 +387,7 @@ pub struct AddSpec {
 /// The fixture of the residual.
 #[derive(Clone, Debug)]
 pub struct ResidualFixture {
-    pub reference_rev: String,
+    pub reference_sha: String,
     pub vocab: usize,
     pub sample_indices: Vec<usize>,
     pub fold_sample_indices: Vec<usize>,
@@ -572,7 +572,7 @@ pub fn parse_residual(text: &str) -> Result<ResidualFixture, String> {
         return Err(format!("only the run {} has the add", add.run));
     }
     Ok(ResidualFixture {
-        reference_rev: text_of(&document, "reference_rev")?,
+        reference_sha: text_of(&document, "reference_sha")?,
         vocab: number_of(&document, "vocab")? as usize,
         sample_indices: indices_of(&document, "sample_indices", RESIDUAL_WIDTH)?,
         fold_sample_indices: indices_of(&document, "fold_sample_indices", FOLD_WIDTH)?,
