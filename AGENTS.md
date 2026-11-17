@@ -111,7 +111,7 @@ The nagaya is a Cargo workspace in Rust. It has engines for two targets:
 - The spec is the contract. When the code and a doc do not agree, stop and report. Do not choose one.
 - When two docs do not agree, or a doc leaves a choice open, do not guess in code. Write the simplest choice into the
   doc with the mark **Proposed**, your reason, and your model name. Commit it alone, then continue. Amy decides later.
-  When she accepts it, write it as a rule with the mark "Decided <date>" (spec, header).
+  When she accepts it, remove the mark and the model name. Git keeps the history of the rule (spec, header).
 - Engines that we build give the same bits for the same identity and inputs. A change that moves bits changes the
   engine identity, and the commit message says so.
 - Do not edit other repositories. The exception is gogi (Amy, 2026-10-30). An agent may edit it on a branch, merge

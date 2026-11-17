@@ -181,7 +181,7 @@ map the next one. The two engines took different capabilities for the same rule:
   `numbers`, the plan table lineage, the bit settings with their class, `canary_hash` and `build`. Today `numbers`
   holds the kernel's SHA-256, the compiler versions and the driver version. The plan table names the PCI ids of the card
   (engine-abi "The first Gemma 4 binding"). The digest does not cover `family`.
-- **Build facts.** Decided by senpai 2026-10-22, accepted by Amy 2026-11-02: the canary decides for a new build, and
+- **Build facts.** The canary decides for a new build, and
   the digest does not cover the member `build`. The Qwen3.8
   engine has its canary, so it keeps its build facts in `build`. Another engine gives an empty `build` until it has a
   canary. Its build facts stay in `numbers`, and thus in the digest (spec 12.1).

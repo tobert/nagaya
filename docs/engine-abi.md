@@ -36,7 +36,7 @@ mkviolet's group is both B70 cards, with two stages.
 
 ### Rust shape
 
-Decided 2026-10-18 (Amy chose it in an interview). The `Engine` trait holds the core calls. Each capability is its
+The `Engine` trait holds the core calls. Each capability is its
 own trait. `Engine` has one accessor for each capability, and the accessor returns `None` when the engine does not
 have it. Thus an engine has no stub methods, and `limits().capabilities` comes from the accessors.
 
@@ -62,7 +62,7 @@ trait Factory {                  // in the `nagaya` crate, crates/nagaya/src/adm
 The config is a TOML table from the placement profile. The engine parses it and refuses a field that it does not
 know. Thus the nagaya holds every engine as `Box<dyn Engine>`.
 
-**The factory gets its devices.** Decided 2026-10-22 (Amy: "accepted"). Before this rule, `open` took only the
+**The factory gets its devices.** Before this rule, `open` took only the
 config. The Qwen3.8 engine uses the HIP device that is current on the calling thread.
 
 ```rust
@@ -87,7 +87,7 @@ trait Factory {
 
 Reason: the profile names the devices, so the engine must run on those devices and no others.
 
-**Arena calls in v0.** Decided 2026-10-22 (Amy: "accepted"). These are the Rust shapes of the `arena`
+**Arena calls in v0.** These are the Rust shapes of the `arena`
 capability and of `attach` (spec 10.2).
 
 ```rust
@@ -195,10 +195,9 @@ control      control_write(index, bytes) / segment.control   control vectors in 
 ```
 
 An engine without `close` stays open until the process exits. The nagaya changes such an engine only through a
-planned restart (spec 3.3, exit code 4). Its `Drop` does not free it, and a comment says why. Decided 2026-10-18.
+planned restart (spec 3.3, exit code 4). Its `Drop` does not free it, and a comment says why.
 
-**`close` in Rust.** Proposed by senpai (Claude Opus 5.5), 2026-10-24, for the swap in place (spec 3.3a), and
-Decided 2026-10-28 (Amy, by interview).
+**`close` in Rust.**
 
 - `close` is the `Drop` of the engine. The trait gets no new method.
 - An engine that declares `close` frees each device allocation and each host allocation of its own in `Drop`. After
@@ -210,7 +209,7 @@ Decided 2026-10-28 (Amy, by interview).
 Reason: the `Box<dyn Engine>` already drops at the end of the group thread. A drop that frees everything needs no
 second path, and a test can count the memory after it.
 
-**The close of the Qwen3.8 engine.** Decided 2026-11-01 (Amy, by interview): "mk can stay loaded and use some memory. I
+**The close of the Qwen3.8 engine.** "mk can stay loaded and use some memory. I
 was thinking we'd let some model weights get freed, should clear up a bulk of memory". HIP teardown stops the process
 (spec 3.3), so the Qwen3.8 engine's close frees the weights and keeps the runtime.
 
@@ -223,7 +222,7 @@ was thinking we'd let some model weights get freed, should clear up a bulk of me
 - A load after a close refuses shards whose spot digest or arena size changed, because the identity names the first
   ones. A restart takes the new shards.
 
-**Per-part coverage.** Decided 2026-10-22 (Amy: "accepted"). This closes the old note: the park used one row
+**Per-part coverage.** This closes the old note: the park used one row
 count, `slot_high`, for every row part of a slot.
 
 - The park and the staging charge (spec 4.2) read `coverage(state, part)` for each cells part and each ring part.
@@ -246,7 +245,7 @@ instead, so a new packing does not change the identity.
 
 ### The first row of a cells write
 
-Decided 2026-10-20 (reading). `cells_write` takes `from`, the position of its first row. The call
+`cells_write` takes `from`, the position of its first row. The call
 matches `cells_read(state, part, from, n, out)`. A Cells part appends from 0, so its write names the number of rows it
 holds; the first write names 0. A Ring part may name a later position, because its window moves.
 
@@ -258,7 +257,7 @@ silent loss of state (spec 8.5).
 
 ## v0 Rust shapes
 
-Decided 2026-10-20 (reading). The ABI text names the calls and the fields, but it does not fix the Rust types.
+The ABI text names the calls and the fields, but it does not fix the Rust types.
 This section gives the simplest shapes that fit the decisions.
 
 - `State` is `Slot(u32)` in v0. A context handle arrives with the `contexts` capability.
@@ -285,7 +284,7 @@ This section gives the simplest shapes that fit the decisions.
 - The `fake` feature is enabled for this crate's tests by a dev-dependency on the crate itself. The plain
   house test runs the fake tests; a normal build leaves them out.
 
-**Corrected** 2026-10-18: a default feature still let the tests be skipped. The dev-dependency ties the
+A default feature still let the tests be skipped. The dev-dependency ties the
 feature to the test build. This is a plain correction, not a new design choice.
 
 **Amended** by deepseek-flash, 2026-10-18: `Coverage::coverage` takes the `State`. The ring's base position
@@ -294,7 +293,7 @@ is in the state, not in the part bytes. The old call reported 0..n after a wrap.
 ### A pass that did not run
 
 **A refused pass returns an error.** A pass that the Qwen3.8 binding refuses before it calls the Qwen3.8 engine returns
-an error, not `PassStatus::Ok`. `PassStatus` stays `Ok | Poison | Timeout` for passes that ran. Decided 2026-10-18.
+an error, not `PassStatus::Ok`. `PassStatus` stays `Ok | Poison | Timeout` for passes that ran.
 
 The Qwen3.8 binding refuses a pass before it calls the Qwen3.8 engine when a segment breaks a rule of the Qwen3.8
 engine. The rule can be a position that is not the context's n, a token past the vocabulary, or rows instead of tokens.
@@ -310,7 +309,7 @@ the full buffer, so the test calls the builder and not a pass.
 
 ### Canonical file bytes
 
-Decided 2026-10-20 (reading). The `safetensors` crate reads the canonical file, but its writer
+The `safetensors` crate reads the canonical file, but its writer
 aligns the header to 8 bytes and does not order the tensors. Thus this code writes the header and data itself.
 The metadata keys are:
 
@@ -323,7 +322,7 @@ Reason: D10 rules 3 and 5 need sorted keys and a 4 KiB data start. The crate can
 still reads the file.
 
 `PartLimits` has a field `block_format: Option<String>`, so `snapshot_from_engine` can write the block format. The
-store refuses a block format on a dtype that is not `U8`. Decided 2026-10-20 (reading).
+store refuses a block format on a dtype that is not `U8`.
 
 ### Fake engines
 
@@ -354,8 +353,7 @@ the same bits. `FakeFeed::reverse_residual` breaks the stage path, and `FakeFeed
 
 ### Logit outputs
 
-The Qwen3.8 binding gives logits one way, and the fake engine follows it. Decided 2026-10-20 (reading, from a note by
-Sonnet 5.5 in milestone 12).
+The Qwen3.8 binding gives logits one way, and the fake engine follows it.
 
 - `logit_rows` holds positions that the segment feeds. A position outside `positions` is a refused pass.
 - A pass gives one output for each entry of `logit_rows`, named `logits`.
@@ -392,7 +390,7 @@ Reason: the fake engine must serve a family with a vocabulary, and the output ro
 
 ### v0 binding choices
 
-Decided 2026-10-20 (reading). The milestone 8 binding needs these choices. Each is the simplest choice that fits
+The milestone 8 binding needs these choices. Each is the simplest choice that fits
 the ABI.
 
 - **A context is a state.** `State` is `Slot(u32)` in v0, so each the Qwen3.8 engine context has a slot index.
@@ -401,8 +399,8 @@ the ABI.
   - Slots 0 to 11 hold 4,096 tokens each. Slots 12 to 15 hold 32,768 tokens each.
   - The process opens one handle. The conformance suite opens a handle for each gate.
   - The engine has no call that forks a context (`context.rs`: "the engine has no fork").
-- **The Qwen3.8 engine declares `slots` and `coverage`.** Decided by senpai 2026-10-20 night, accepted by Amy
-  2026-11-02. The park on stop (spec 10.3) and the council build (spec 11.3c) need both.
+- **The Qwen3.8 engine declares `slots` and `coverage`.** The park on stop (spec 10.3) and the council build (spec
+  11.3c) need both.
   - `slot_high(slot)` is the context's token count (`ctx_n` in `context.rs`). A slot with no context gives 0.
   - `slot_clear(slot)` frees the context and makes a new one of the same capacity, under the same slot. The Qwen3.8
     engine has no call that empties a context. The free comes first, because the context term holds one context for each
@@ -420,7 +418,7 @@ the ABI.
   allocator holds the bytes. The Qwen3.8 engine needs a reset call that keeps the buffers, so that a clear does not
   allocate.
   - The factory of the process crate gives `plan(config)` (next rule), and this binding fixes the pool.
-- **The factory plans from `weights_bytes`.** Decided by senpai 2026-10-20 night, accepted by Amy 2026-11-02.
+- **The factory plans from `weights_bytes`.**
   - The size of the weight arena comes from `arena::plan`, which reads the tensor records of the shards at open. The
     arena is a repacked copy of the tensors, and `plan` reads no shard, so it cannot compute the size.
   - The config of the engine has one key, `weights_bytes`. The factory refuses any other key.
@@ -430,9 +428,8 @@ the ABI.
   - The factory reads `QWEN38_SHARDS` from the environment. The engine is in the binary, so no variable names a library.
   - `plan` refuses a missing `QWEN38_SHARDS`, or a shard that is not a file. The message names the variable.
   - The kind in the profile is `mk-qwen38-gfx1151`. A build with the feature `hip` registers it.
-- **The pool is 12 contexts of 4,096 tokens and 4 of 32,768.** Decided by senpai 2026-10-20 night, accepted by Amy
-  2026-11-02. The pool had 16 contexts of 256 tokens (Amy, 2026-10-20: "grow the pool"). A kaijutsu context needs
-  thousands of tokens, so 256 cannot serve council v2.
+- **The pool is 12 contexts of 4,096 tokens and 4 of 32,768.** The pool had 16 contexts of 256 tokens (Amy, 2026-10-20:
+  "grow the pool"). A kaijutsu context needs thousands of tokens, so 256 cannot serve council v2.
   - The count stays 16, which equals `max_segments`. A pass can hold one segment for each context.
   - The Qwen3.8 engine takes any capacity that is a multiple of 256, up to 32,768 (`context.rs` `ctx_new`).
   - Two sizes keep the long contexts few and the short ones many.
@@ -441,9 +438,9 @@ the ABI.
 - **A long prompt takes several passes.** A pass holds at most 256 tokens (`kMaxPassTokens`), so `max_pass_inputs`
   stays 256. The caller feeds a prompt in passes of at most 256 tokens. Each pass starts at the context's token
   count. The Qwen3.8 engine gives the same bits for any split (spec 6.13).
-- **The Qwen3.8 engine declares a checkpoint grain of 256 tokens.** Decided by senpai 2026-10-20 night, accepted by Amy
-  2026-11-02. The GPU tests of spec 6.13 measured a copy round trip and pass splits across 256 tokens. The Qwen3.8
-  engine also declares `segments_exact`, which a grain needs. The grain is `CHECKPOINT_GRAIN` in `spec.rs`.
+- **The Qwen3.8 engine declares a checkpoint grain of 256 tokens.** The GPU tests of spec 6.13 measured a copy round
+  trip and pass splits across 256 tokens. The Qwen3.8 engine also declares `segments_exact`, which a grain needs. The
+  grain is `CHECKPOINT_GRAIN` in `spec.rs`.
   - A profile with `interval_copies = 0` makes no copies. The gfx1151host profile has 0.
 - **`max_quantum_ms` is 10000.** The Qwen3.8 engine splits a pass at 256 tokens (`kMaxPassTokens`). A prefill chunk of
   that size takes about 2 s. The Qwen3.8 engine's watchdog stops the program at a 10 s deadline (`worker.rs`
@@ -499,7 +496,7 @@ the ABI.
 
 Reason for all: the code must not guess.
 
-**Corrected** by deepseek-flash, 2026-10-18: `max_quantum_ms` was 30000. The Qwen3.8 engine's watchdog aborts a pass at
+`max_quantum_ms` was 30000. The Qwen3.8 engine's watchdog aborts a pass at
 10 s (`engine.h:302-306`), so a 30 s bound promises a quantum that the Qwen3.8 engine would stop. Review finding 13.
 
 **The binary links the Qwen3.8 engine statically.** Amy decided this on 2026-10-22, by interview (AGENTS.md milestone
@@ -548,7 +545,7 @@ is a mandatory term. The Qwen3.8 engine allocates one scratch pool at its first 
 9c), lifetime: engine, kinds: [prefill, decode]}`.
 
 The Qwen3.8 engine has no call for the size. The process measures the pool once on gfx1151 and declares that constant.
-It refuses the engine when a later measurement is larger than the constant. Decided 2026-10-18. **Open**
+It refuses the engine when a later measurement is larger than the constant. **Open**
 (nagaya-coder-12, 2026-10-18): the declared bytes are the measured device cost, which is 59 800 564 bytes above the
 pool's 263 934 988-byte ask. The HIP runtime's first launch is the likely source of 38 522 880 bytes that the pool and
 the allocator's rounding do not explain.
@@ -557,7 +554,7 @@ The wrapper's host buffers also wait for the process crate (the review's note on
 
 ### Test limits of the spin-timeout opt-in and the poisoned set_n path
 
-Decided 2026-10-20 (reading): these limits stay, and this section records them.
+These limits stay, and this section records them.
 
 The first binding called a C function that turns on recovery from a spin-timeout, with `on = 1` at open (`566446c`).
 Milestone 15 step 6 moved the rule into Rust, and the flag went. A pass can stop on a spin-timeout that the watchdog did
@@ -573,7 +570,7 @@ check. A lab hook for the first case is not in v0.
 
 ### Test limit of the open-time part check
 
-Decided 2026-10-20 (reading): this limit stays, and this section records it.
+This limit stays, and this section records it.
 
 The wrapper calls `parts_problem` at open (in the open path of `worker.rs`), and it
 refuses a library with other part sizes before any write. The real engine matches the declared shapes, so the check
@@ -588,7 +585,7 @@ check.
 
 ### The residual of the Qwen3.8 engine
 
-Decided 2026-11-12. The state between two layers of the Qwen3.8 engine is 4 streams of 2,560 values each. The residual
+The state between two layers of the Qwen3.8 engine is 4 streams of 2,560 values each. The residual
 of a token is the 4 streams in stream order: 10,240 `f32` values. The tap `residual` and a control vector have this
 width.
 
@@ -599,13 +596,13 @@ is decided. Each other rule is **Proposed**, and it follows from the decided rul
   47. Each row is the residual after the control items of its layer. It has no row for the head. The size is 1,966,080
   bytes for each logit row. Reason: spec 13.1 and the process give a tap one width, and this width equals the width
   of `limits().control`.
-- **The tap `fold`.** Decided 2026-11-12. For each logit row, it gives the row that the head reads: 2,560 `f32`
+- **The tap `fold`.** For each logit row, it gives the row that the head reads: 2,560 `f32`
   values. The 4 streams fold into this row after layer 47. It is a tap of its own. Reason: the head's row is not a
   residual of the layers, and a latent step reads it.
 - **The order of the outputs.** A pass gives one output for each tap and each logit row. The outputs follow the
   `logits` outputs. All the `residual` outputs come first, then all the `fold` outputs. Each group follows the order
   of the segments.
-- **The launch cuts.** Decided 2026-11-12, with the op on the host as the first form. A pass with a tap or a control
+- **The launch cuts.** A pass with a tap or a control
   item runs as several fused launches of the same kernel, cut at layer ends. The host reads or changes the rows
   between two launches. A pass with neither runs as one launch. The mutation knobs of the stage list refuse a pass
   with cuts, because they name stage indices of one launch.
@@ -628,7 +625,7 @@ is decided. Each other rule is **Proposed**, and it follows from the decided rul
   the scratch of the logits holds 16. The lab routes that need it come later.
 - **The latent rows.** A latent step reads the tap `fold`. The host scales the row to the mean norm of the rows of
   `token_embd`. The pass copies the row over the embedding row of the position. The record is the kind 5 with the
-  width 2,560, as for LFM3. Decided 2026-11-12: the placeholder of a latent position is the padding token that the
+  width 2,560, as for LFM3. The placeholder of a latent position is the padding token that the
   GGUF tokenizer keys name.
 
 ## How the Gemma 4 engine maps
@@ -654,7 +651,7 @@ names and the lines are those of the first engine, as they were when the copy wa
 
 ### The parts of the Gemma 4 engine
 
-Decided 2026-10-22. The first engine kept only KV (`new_slots`, `gemma4.rs:444-475`). The device
+The first engine kept only KV (`new_slots`, `gemma4.rs:444-475`). The device
 holds each layer's K and V as F32 planes. These parts follow from that layout:
 
 - Each layer has two parts, `k.<ll>` and `v.<ll>`, with `ll` the layer in two digits. The dtype is F32, so the store
@@ -674,7 +671,7 @@ holds each layer's K and V as F32 planes. These parts follow from that layout:
 
 ### The first Gemma 4 binding
 
-Decided 2026-10-22 (Amy: "accepted"). The trait on the copy (`crates/nagaya-mk-gemma4-bmg/src/engine.rs`) needs
+The trait on the copy (`crates/nagaya-mk-gemma4-bmg/src/engine.rs`) needs
 these choices. Each is the simplest choice that fits the rules above.
 
 - **The config.** The kind is `mk-gemma4-bmg`. Its config has three keys. `slots` lists the positions of each slot.
@@ -716,11 +713,11 @@ On 2026-10-21, decode after 20 tokens gave 46.1 tokens/s on the stage threads an
 that woke both cards each 3 ms gave 47.6. A fix needs a call on the stage thread between quanta. That is a change
 of the ABI, so Amy decides.
 
-**The wake call.** Decided 2026-10-22 (Amy: "add the call"). A stage thread keeps its card awake between the quanta
+**The wake call.** A stage thread keeps its card awake between the quanta
 of a job.
 
-**The shape of the wake call**, and when the stage thread makes it. Decided by senpai 2026-10-22, accepted by Amy
-2026-11-02. Amy reads it in her review of the docs. Not built yet.
+**The shape of the wake call**, and when the stage thread makes it. Amy reads it in her review of the docs. Not built
+yet.
 
 ```rust
 trait StageHandle {
@@ -752,15 +749,14 @@ machines needs the same residual boundary later. But (b) needs the full segment 
 a snapshot to restore, and the slot. It must also stop another job from writing the slot between a block's two
 stages.
 
-Decided 2026-10-17 (Amy: "yeah that sound reasonable"): mkviolet starts with (a). Option (b) comes when the segment
+Mkviolet starts with (a). Option (b) comes when the segment
 shape is settled, and first for splits across machines.
 
-Decided 2026-10-21 (Amy: "I want the dual card architecture in place sooner than later to make sure it fits in the
-overall nagaya architecture well: move stage_pass up"). Option (b) comes in the first port of mkviolet. This replaces
+Option (b) comes in the first port of mkviolet. This replaces
 the start with (a). The rules below settle the segment shape and the hold of the slot.
 
 A group can serve more than one engine: two engines that use one device share one group, one thread and one
-scheduler. Decided 2026-10-17: "one thread per device group". With stages, that thread runs the scheduler, and it has
+scheduler. "one thread per device group". With stages, that thread runs the scheduler, and it has
 stage threads under it.
 
 **The stage segment.** A stage pass takes segments. Each segment has these members:
@@ -774,16 +770,16 @@ stage threads under it.
 - the residual: a host buffer that the nagaya owns (D5). Stage s writes it, and stage s + 1 reads it. A row is
   `limits().residual_row_bytes`: 2,816 F32 values (11,264 bytes) for mkviolet.
 
-Decided 2026-10-22 (Amy: "seems ok, approved."), updated 2026-10-24 (Amy): a restore is not a member of the segment.
+A restore is not a member of the segment.
 mkviolet restores a held snapshot into the slot inside a pipelined pass: each card writes its layers first
 (`PipeJob.kv`, `gemma4.rs:1477-1490`, `council_server.rs:859-874`). In the nagaya, `StageScheduler` has `Item::Restore`
 for a per-stage copy quantum. The v0 job path (`StagedJobs`) runs a restore in a whole-group `copy` quantum
 (`Item::Whole(Kind::Copy)`). Each stage thread writes its own parts before the first block.
 
-Decided 2026-10-22 (Amy: "accepted"): each part names its stage, `limits().parts[].stage`. A stage handle reads
+Each part names its stage, `limits().parts[].stage`. A stage handle reads
 and writes only the parts of its stage. mkviolet's parts are the KV of one layer, so each part has one card.
 
-Decided 2026-10-22 (Amy: "accepted"): the Rust shape of `stages`.
+The Rust shape of `stages`.
 
 ```rust
 trait Stages {
@@ -802,7 +798,7 @@ trait StageHandle {
   call that touches a device then goes through the handle of that device.
 - `identity`, `limits` and `last_error` stay on the `Engine`, on the group thread.
 
-Decided 2026-10-22 (Amy: "accepted"): the threads of a group with stages.
+The threads of a group with stages.
 
 - The group thread runs the one scheduler of the group (spec 5.5). It sends each stage quantum to the stage thread
   of its device, and it gets the end back.
@@ -833,12 +829,12 @@ council read takes card 0 while a generation's stage 1 runs on card 1. mkviolet 
 the engine chooses its `feed.block` to fit it. Each stage thread beats a heartbeat of its own. The watchdog reports a
 stage quantum past the bound, and a stall of any stage thread stops the process (spec 7.4).
 
-**The residual term.** Decided 2026-10-22 (Amy: "accepted"). The residual buffers are a mandatory host term of
+**The residual term.** The residual buffers are a mandatory host term of
 the engine, `residual`, with lifetime `engine`. It has two buffers for each boundary between stages. One holds a
 block for stage s + 1, while stage s writes the next block. Each buffer holds `feed.block` rows. mkviolet's term is 2 ×
 512 × 11,264 = 11,534,336 bytes.
 
-**The stage path in v0.** Decided 2026-10-22 (Amy: "accepted"). The rules above leave these choices open. The
+**The stage path in v0.** The rules above leave these choices open. The
 first build of the stage path takes the simplest choice for each.
 
 - **A free residual buffer is a ready condition.** A block holds a residual buffer from the start of stage s to the
@@ -868,7 +864,7 @@ embedding engine uses one card. It is in the group of Gemma 4, and it runs on th
 
 **D2. Inputs.** An engine declares tokens, rows, or both. The Qwen3.8 engine needs token ids even when it gets rows. Its
 per-layer embeddings (PLE) hash the token ids, and its PLE history is a fixed part (`engine.h:75`, `ple_rows`). gmk's
-audio rows and diffusion latents have no tokens. Proposed, and Decided 2026-10-28 (Amy, by interview):
+audio rows and diffusion latents have no tokens.
 `inputs = tokens | rows | tokens+rows`, declared per engine.
 
 Deferred 2026-10-17 (Amy: "sort it out with the first engine"). mkviolet's Gemma 4 is the first port.
@@ -881,7 +877,7 @@ embedding row on the host, scales it, and writes it into card 0's residual (`wri
 `gemma4.rs:1376-1384`). Thus mkviolet declares `inputs = tokens`, as the Qwen3.8 engine does. The embedding stays inside
 the engine. The ABI keeps `rows` and `tokens+rows` for gmk's audio rows and diffusion latents.
 
-**D3. Snapshots are named by content ids.** Decided 2026-10-17 (Amy: "yeah, 1, cas is awesome"). There are two keys:
+**D3. Snapshots are named by content ids.** There are two keys:
 
 - The **content id** names a stored snapshot: the BLAKE3 hash of its sealed bytes (`blake3:<hex>` in council v2).
   When the snapshot is a piece of a chain, the hash also covers its parent's content id. (mkviolet holds only the
@@ -901,7 +897,7 @@ rows, not on different bits.
 Thus each stored snapshot records its coverage (positions held, per part), and fit is a separate check (`coverage`
 capability). This corrects review finding 3, which put geometry in the id.
 
-**The bits do not depend on the slot size.** Decided 2026-11-06 by Amy. The split attention of a block
+**The bits do not depend on the slot size.** The split attention of a block
 (`attn_pv_segments`, `megakernel.cl`) chose its count of key segments by the size of the slot. Thus the slots of 4,096
 and 65,536 positions gave other bits for one feed. The card test `the_same_feed_gives_the_same_bits_in_each_slot_size`
 showed it in 18 of 18 logit rows.
@@ -938,30 +934,29 @@ engine also declares `bit_dependence: residency`. Then these rules apply:
 
 Engines we build are `always` or `pinned`, with no bit dependence.
 
-When the refusal is off, an **audit** takes its place. Decided 2026-10-17: the audit runs "across restarts". After
+When the refusal is off, an **audit** takes its place. The audit runs "across restarts". After
 each start, a filler job in the nagaya builds a sample of stored recipes again and compares the content ids. The new
 start is the fresh process, so there is no second GPU client. The audit reports each mismatch and uses only idle
 time. ds4-recipe does this by hand ("pinned plans for every experiment and byte-equality gate").
 
-**D4. Cost before a pass.** Decided 2026-10-18. Neither engine estimates a cost, and both report the time after the
+**D4. Cost before a pass.** Neither engine estimates a cost, and both report the time after the
 pass. There is no estimate call in v0. The nagaya fits a cost model per engine from pass times and segment sizes. It
 uses the fit for store eviction value-per-byte and deadline checks between quanta. The engine picks its own chunk
 sizes for `max_quantum_ms`.
 
-**D5. Rust trait first, C ABI as a binding.** Decided 2026-10-18. Handles are opaque pointers. Errors are a status
+**D5. Rust trait first, C ABI as a binding.** Handles are opaque pointers. Errors are a status
 plus `last_error`. The caller owns the buffers.
 
-**D6. Poison stays fatal.** Decided 2026-10-18. The nagaya frees a poisoned context and never reads it. For a slot
+**D6. Poison stays fatal.** The nagaya frees a poisoned context and never reads it. For a slot
 engine, it marks a poisoned slot dirty until `slot_clear`, `part_write`, or a pass from position 0 resets it. A pass
 that returns a poison status poisons every context or slot in it (the Qwen3.8 engine: "-1, every context poisoned"). The
 nagaya fails those jobs, keeps the others, and runs the canary before more work runs (spec 8.2).
 
-**D7. Seal and park are separate calls.** Decided 2026-10-18. Seal runs only at boundaries in the chain, and it can
+**D7. Seal and park are separate calls.** Seal runs only at boundaries in the chain, and it can
 change bits. Park uses the `parts` calls to move state between tiers bit for bit, for both contexts and slots. The
 scheduler parks. It never seals to free a slot.
 
-**D8. Quanta have a declared length bound.** Decided 2026-10-17 (Amy: "a lil head of line blocking is okay in this
-design. max_quantum_ms seems like a good call"). An engine declares `max_quantum_ms` in `limits()`. The engine
+**D8. Quanta have a declared length bound.** An engine declares `max_quantum_ms` in `limits()`. The engine
 cannot know a pass's time before it runs. Thus it splits long work into chunks whose size it measures to fit the
 bound (the Qwen3.8 engine: 256-token prefill chunks). In v0 there are no yields inside a pass. A quantum still runs to
 its end, so the worst wait behind other work is one quantum.
@@ -971,12 +966,12 @@ A watchdog thread reports each quantum that runs past the bound.
 ds4-recipe chose cooperative yields after a short turn waited 283.95 s behind a long prefill (`docs/prior-art.md`
 3). We take the bounded wait instead.
 
-**D9. Spare memory goes by share.** Decided 2026-10-17 (Amy: "we'll assign some weight per machine"). Each
+**D9. Spare memory goes by share.** Each
 machine's placement profile gives every engine on it a share. The ledger first charges all mandatory bytes. It then
 divides what remains among the engines' elastic terms by those shares (`docs/prior-art.md` 2). Each elastic term
 gets at least its minimum. A profile whose mandatory bytes and minimums do not fit is refused at start.
 
-**D10. Snapshots at rest are canonical safetensors.** Decided 2026-10-17 (Amy: "yeah, seems like a good call"). In
+**D10. Snapshots at rest are canonical safetensors.** In
 device memory, each engine keeps its own layout. The model and the kernels decide that layout, and it stays private.
 
 In the store, every snapshot is a safetensors file in one canonical form. Thus any tool can read any engine's parts
@@ -1004,7 +999,7 @@ weights and state at rest use one format. These rules apply:
 Coverage is in `__metadata__`, so it is in the content id. The same rows at other positions are a different state,
 because a position changes the bits that later passes read (RoPE). Fit to a slot is not in the content id.
 
-Decided 2026-10-18: name order, 4 KiB data start, shapes, and coverage in the id.
+Name order, 4 KiB data start, shapes, and coverage in the id.
 
 The content id is the BLAKE3 hash of this canonical file. Each engine converts between its layout and the canonical
 form on the way into and out of the store. For the Qwen3.8 engine, that is close to the copy it already does: its copy
@@ -1014,8 +1009,7 @@ A park from device memory to host memory can keep the engine's native bytes, if 
 parks. Such a park has no content id. It gets one when it goes into the store. **Open:** measure the conversion on
 both engines before we use this exception.
 
-**D11. A feed rule.** Decided 2026-10-21 (Amy, interview: "we should do what mkviolet does now? maybe change nagaya
-if we have a better approach."). An engine whose bits depend on the token count of a pass declares a feed rule. The
+**D11. A feed rule.** An engine whose bits depend on the token count of a pass declares a feed rule. The
 scheduler then feeds every kept span in one fixed split, so the bits depend only on the inputs.
 
 mkviolet chooses the reduction of a matmul by the token count of the pass (`megakernel.cl:54-57`, `:478-760`):
@@ -1049,7 +1043,7 @@ The rules:
 
 Spec 6.14 gives how decode steps, drafts and branch blocks meet the rule.
 
-**Proposed** (claude-fable-5-2, 2026-11-11), for the decoded head (spec 6.14, milestone 32 step 4). The store now
+The store now
 keeps the decode rows of a reply, under the recipe of a decoded head. Two rules change their reading:
 
 - In rule 2, a span also starts at a decoded head. A decoded head is a seal, as a boundary is.
@@ -1062,7 +1056,7 @@ change inside mkviolet's kernels.
 
 ## Training
 
-Decided 2026-10-18. A training engine declares the `train` capability:
+A training engine declares the `train` capability:
 
 - The weights are a state object that the engine writes. The engine opens its arena read-write.
 - A `train` quantum is one micro-batch (`train_pass`): a forward pass, a backward pass, and an optimizer step.
@@ -1077,14 +1071,13 @@ Decided 2026-10-18. A training engine declares the `train` capability:
 
 ## Image
 
-Decided 2026-10-18, before any image engine. An image engine used `pass(segments, taps)` with quantum kind `step`. A
+An image engine used `pass(segments, taps)` with quantum kind `step`. A
 diffusion latent was a fixed part, and each `step` quantum replaced it. The Qwen3.8 engine's painter was the first case
 (the Qwen3.8 engine `docs/painter.md`). The Qwen3.8 engine's `YieldHook` showed that a paused run matched the unpaused
 one, max pixel difference 0.
 
-**The image capability.** Proposed by senpai (Claude Opus 5.5), 2026-10-28, for spec 11.9, and Decided 2026-10-28 (Amy,
-by interview). It replaces the rule of 2026-10-18 above. Reason: SDXL has two text encoders, token weights, a sampler
-with history, a VAE decode and previews. A segment of tokens has no place for them, as it had none for speech
+**The image capability.** It replaces the rule of 2026-10-18 above. Reason: SDXL has two text encoders, token weights, a
+sampler with history, a VAE decode and previews. A segment of tokens has no place for them, as it had none for speech
 ("Speech").
 
 An image engine declares the `image` capability. Its `pass` refuses. It has these calls:
@@ -1114,12 +1107,11 @@ image_clear(slot)                       frees the state of the slot
 - **Later inputs.** img2img, inpainting and a hires pass are optional members of the job (spec 11.9, "The design of
   later image work"). An engine that lacks one refuses a job that names it. A VAE encode is one more quantum of
   kind `step`. The SDXL engine has img2img and inpainting since milestone 20 (spec 11.9b), and no hires pass.
-- **Spacing and LoRAs.** Proposed by senpai (Claude Haiku 5.5), 2026-10-29. Decided 2026-10-29 (Amy, by interview):
-  the limits are those of spec 11.9a, with a rank of at most 128. `ImageJob` takes `spacing` (`leading` or
-  `trailing`) and `loras`, a list of each LoRA's bytes and weight. The engine parses the bytes and adds each delta
-  to its module's output (spec 11.9a). The engine refuses `trailing` with a DPM++ sampler. Reason: the spacing of the
-  schedule is the engine's, and the spec gives the rule.
-- **Image inputs.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30, for spec 11.9b. Reason: the
+- **Spacing and LoRAs.**   the limits are those of spec 11.9a, with a rank of at most 128. `ImageJob` takes `spacing`
+  (`leading` or `trailing`) and `loras`, a list of each LoRA's bytes and weight. The engine parses the bytes and adds
+  each delta to its module's output (spec 11.9a). The engine refuses `trailing` with a DPM++ sampler. Reason: the
+  spacing of the schedule is the engine's, and the spec gives the rule.
+- **Image inputs.** Reason: the
   nagaya decodes and checks each PNG on the route, so the engine takes pixels, as it takes tokens and not text (D2).
   - `ImageJob` takes `init`: the RGB bytes of the image, 3 for each pixel, and `strength`. It also takes `mask`: the
     blurred gray mask, 1 byte for each pixel. The engine makes the binary mask from it.
@@ -1130,8 +1122,7 @@ image_clear(slot)                       frees the state of the slot
     without `init` and `mask`. A 4-channel UNet blends the latent after each step.
   - `image_decode` gives the decode with no paste. The nagaya pastes the kept pixels back before the PNG encode.
 
-**The declaration of a 9-channel UNet.** Decided 2026-11-02 (Amy: "propsal is good, approved"), proposed by Claude Opus
-5.5, 2026-11-02, for milestone 20 step 6. Reason: spec 11.9b says that a 9-channel UNet without an image and a mask is a
+**The declaration of a 9-channel UNet.** Reason: spec 11.9b says that a 9-channel UNet without an image and a mask is a
 400 that names `messages[i].content`. A refusal of `image_begin` does not say which part the engine refused, so the
 route named `output`.
 
@@ -1141,8 +1132,7 @@ route named `output`.
   last `user` message. Other refusals keep their parts.
 - The engine still checks the job itself, and the call adds no quantum. Thus `PassError` keeps its form.
 
-**Qwen-Image 2.1.** Decided by senpai 2026-11-01, and accepted by Amy 2026-11-02. Proposed by Claude Opus 5.5,
-2026-10-31, for spec 11.9c and 6.16. Reason: the job above has the shape of SDXL. Qwen-Image has one encoder with no
+**Qwen-Image 2.1.** Reason: the job above has the shape of SDXL. Qwen-Image has one encoder with no
 chunks, a flow sampler, a cached conditioning and an RGBA decode. Each change adds a form or a member, and no call.
 
 - `ImageJob.prompt` takes one of two forms. `chunks` is the form of SDXL above. `tokens` is the form of Qwen-Image:
@@ -1171,9 +1161,8 @@ chunks, a flow sampler, a cached conditioning and an RGBA decode. Each change ad
 
 ## Embedding
 
-**The embedding capability.** Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5 (a senpai fork), 2026-10-30, for
-spec 11.10. Reason: an embedding reads tokens and gives one vector. It has no slot state, no logits and no sampler. A
-segment of a pass has no place for the pooled vector, as it had none for an image ("Image").
+**The embedding capability.** Reason: an embedding reads tokens and gives one vector. It has no slot state, no logits
+and no sampler. A segment of a pass has no place for the pooled vector, as it had none for an image ("Image").
 
 An embedding engine declares the `embedding` capability. Its `pass` refuses. It has one call:
 
@@ -1200,7 +1189,7 @@ embed(ids) -> vector | why      runs one input and gives its pooled vector
 
 ## Speech
 
-Proposed by senpai (Claude Opus 5.5), 2026-10-24, for milestone 17, and Decided 2026-10-27 (Amy, by interview). The
+The
 first speech engine is Qwen3-TTS VoiceDesign on a B70 card (`AGENTS.md` milestone 17).
 
 A speech engine declares the `speech` capability. It takes no pass through `pass`; its `pass` refuses, as the pass of
@@ -1228,8 +1217,8 @@ speech_clear(slot)                                frees the state of the slot
   the counter of the random stream and the codes of the left context. Until M18, the store kept no speech state:
   a request started with an empty slot, and `speech_clear` ended it.
 
-**Held speech state.** Proposed by senpai (Claude Opus 5.5), 2026-10-25, for spec 11.8a. Decided 2026-10-27 (Amy, by
-interview). Amy decided that a speech context holds state as a chat does ("Level 2 sounds awesome"). This replaces the
+**Held speech state.** Amy decided that a speech context holds state as a chat does ("Level 2 sounds awesome"). This
+replaces the
 reason that a speech slot had no part to snapshot. The speech calls become these:
 
 ```
@@ -1258,9 +1247,8 @@ the store keeps a speech snapshot as it keeps any snapshot, with no call of its 
 - **Determinism.** A restore and a feed can give the same codes as one feed of all the positions into an empty slot.
   They do when the engine's passes keep the bits of a split (`segments_exact`), which the engine declares.
 
-**Passes on separate cards of one group.** Proposed by senpai (Claude Opus 5.5), 2026-10-24, and Decided 2026-10-27
-(Amy, by interview). Amy decided the rule on 2026-10-24 (`AGENTS.md` milestone 17, "Yes, design it now"); this is its
-text.
+**Passes on separate cards of one group.** Amy decided the rule on 2026-10-24 (`AGENTS.md` milestone 17, "Yes, design it
+now"); this is its text.
 
 - A pass of an engine with one device can run on its device. A stage of an engine with stages can run at that time
   on another device of the group.
@@ -1271,15 +1259,14 @@ text.
 Reason: during one-token decode of an engine with two stages, each card waits while the other runs its stage. A pass
 of a small engine on the waiting card costs the large engine nothing.
 
-**How a group loads both.** Proposed by senpai (Claude Opus 5.5), 2026-10-24, for milestone 17 step 8. Decided
-2026-10-27 (Amy, by interview). The rule above leaves the load open.
+**How a group loads both.** The rule above leaves the load open.
 
 - An engine with one device loads beside a loaded engine with stages when the ledger admits both. It opens on the
   stage thread of its device, and its quanta run there. No engine unloads.
 - When it does not fit, the load is a 409. The client names the engine with stages in `unload` (spec 3.3a).
 - A load of an engine with stages unloads only the engines that the load names. Each other engine stays loaded on its
   device thread, and the engine with stages gives its handles to those threads (spec 3.2, "The device threads live as
-  long as the group"). Decided 2026-11-02 (Amy), proposed by Claude Opus 5.5, 2026-10-30. This replaces the moves of
+  long as the group"). This replaces the moves of
   2026-10-30.
 - An unload of an engine on a stage thread runs there. The engine with stages stays loaded.
 - A quantum of the engine with one device holds only its device. The scheduler ranks it with the stage quanta of
@@ -1291,7 +1278,7 @@ engine loaded when the small one fits.
 
 ## LFM3
 
-Proposed by Claude Opus 5.5, 2026-11-06, for milestone 24. The engine kind `mk-lfm3-bmg` serves `LFM3-1.7B` and
+The engine kind `mk-lfm3-bmg` serves `LFM3-1.7B` and
 `LFM3-Omni-2B` on one B70 card (spec 11.11). Amy decides.
 
 **Inputs.** The engine declares `inputs = tokens+rows` (D2). The tokens are the ids of the family, with one
@@ -1300,7 +1287,7 @@ bins of a clip, in f32, from the family. `meta` names each media span: its first
 and its kind. The encoder of the span runs inside the pass, and its rows replace the placeholders. Reason: the
 recipe names the object, not the rows of the encoder (spec 11.11), so the encoder output need not leave the card.
 
-**The rows of a span.** Proposed by Claude Opus 5.5, 2026-11-06 (milestone 24 step 4). Reason: the rows above have
+**The rows of a span.** Reason: the rows above have
 no layout yet, and this is the layout of the reference with the fewest changes.
 
 - An image gives one row of 1,536 values for each patch of 16 by 16 pixels. A row is the 3 channels, then the 2
@@ -1330,14 +1317,14 @@ weights, and the open checks that the config has no vision tower, audio encoder 
 
 ### The first LFM3 binding
 
-Proposed by Claude Opus 5.5, 2026-11-06, for milestone 24 step 6. The text path of the backbone
+The text path of the backbone
 (`crates/nagaya-mk-lfm3-bmg`) needs these choices. The docs above leave each one open, and each is the simplest
 choice that the gates can check. Amy decides.
 
 - **The config.** The kind is `mk-lfm3-bmg`. Its config has three keys. `model_dir` names the model folder, and it
   has no default, because one kind serves two models. `slots` is a count of slots of 32,768 positions, or a list of
   the positions of each slot. `max_block` is the feed block: 512 when the key is absent, and 1 to 512.
-- **Slot sizes.** Decided 2026-11-12 (Amy: "mixed slot sizes seems fine"). A slot holds 1 to 262,144 positions, the
+- **Slot sizes.** A slot holds 1 to 262,144 positions, the
   `max_position_embeddings` of LFM3-1.7B. The list goes from short to long, and the engine refuses another order.
   The host gives a job the lowest free slot that holds it (`slots::take`), so the order makes it the shortest. A
   long job then takes a long slot, and a short job leaves it free while a short slot is free.
@@ -1380,7 +1367,7 @@ choice that the gates can check. Amy decides.
 
 ### The audio encoder of LFM3
 
-Proposed by Claude Opus 5.5, 2026-11-06, for milestone 24 step 7. The rules above leave these choices open, and each
+The rules above leave these choices open, and each
 is the simplest choice that the audio gate can check. Amy decides.
 
 - **The entry.** The module `audio` of `nagaya-mk-lfm3-bmg` gives the tasks of one clip. The tasks read the mel rows
@@ -1397,7 +1384,7 @@ is the simplest choice that the audio gate can check. Amy decides.
 
 ### The speech calls of LFM3
 
-Proposed by Claude Opus 5.5, 2026-11-06, for milestone 24 step 8. The calls of "Speech" above leave these choices
+The calls of "Speech" above leave these choices
 open. Each one is the simplest choice that the oracle can check. Amy decides.
 
 ```
@@ -1437,7 +1424,7 @@ codec_clear(slot) -> samples                          the last 480 samples; it f
 
 ### The LFM3 vision binding
 
-Proposed by Claude Opus 5.5, 2026-11-06, for milestone 24 step 7. The vision tower of Omni needs these choices. The
+The vision tower of Omni needs these choices. The
 notes above leave each one open, and each is the simplest choice that the gates can check. Amy decides.
 
 - **The meta of a span.** `meta` holds one record of 32 bytes for each media span, in the order of the positions.
@@ -1465,7 +1452,7 @@ notes above leave each one open, and each is the simplest choice that the gates 
 - **The output.** The rows of the encoder stay on the card. The pass copies them over the embedding rows of the
   placeholders, before the first layer of the backbone.
 
-**Batched passes.** Decided 2026-11-09 (Amy, by interview, milestone 27). Several contexts share one decode pass of
+**Batched passes.** Several contexts share one decode pass of
 the LFM3 engine:
 
 - A context's bits never depend on the other segments of its pass. Each row of the matrix multiply for 2 to 8 rows
@@ -1482,7 +1469,7 @@ the LFM3 engine:
 
 ### Latent rows of LFM3
 
-**Proposed** by Claude Opus 5.5, 2026-11-09, for milestone 29 step 4 (`docs/lab.md`, "`latent` and `merge`"). Amy
+Amy
 decides.
 
 - **A latent span.** A new kind of media span carries rows of `width` f32 values. The pass copies each row over the
@@ -1495,7 +1482,7 @@ decides.
   full attention layers, and it writes the result with `cells_write`. The rotated half of a key turns by the difference
   of its new and old positions, with the theta of its layer.
 
-**Proposed** by Claude Opus 5.5, 2026-11-10, for milestone 29 step 4: the layout of a latent span. Reason: the note
+The layout of a latent span. Reason: the note
 above leaves the record and the placeholder open, and the engine must check both.
 
 - **The record.** The kind is 5. The first of the four words is the width of a row, and the other three are 0.
@@ -1508,7 +1495,7 @@ above leaves the record and the placeholder open, and the engine must check both
 
 ## Control vectors
 
-Proposed by Claude Opus 5.5, 2026-11-07, for milestone 25 (spec 11.12). Amy decided the operations, the context
+Amy decided the operations, the context
 field and the extraction on the card. This section holds the engine's part of those rules.
 
 ```
@@ -1536,7 +1523,7 @@ taps: lens                                   the final norm and the head of each
 Reason: a table that `open` sizes keeps the rule that `pass` never allocates. A vector of 24 layers at 2,048 values
 is 196,608 bytes. Thus a table of 8 entries is 1.5 MiB on a card of 32 GiB.
 
-**The worker of the table.** Proposed by Claude Opus 5.5, 2026-11-07, for milestone 25 step 7. The rule above says
+**The worker of the table.** The rule above says
 that the worker keeps the content id of each entry. These rules are open there.
 
 - A job claims its vectors when it goes into the queue. The claim ends when the job ends.

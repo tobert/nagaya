@@ -44,7 +44,7 @@ Its `AGENTS.md` names `src/jlens.rs`, but the file does not exist. The port was 
   later layers. Spec 13.2 calls it a lens.
 - A **trace** is a record of one generation: for each step and each layer, numbers that the taps and the lenses give.
 
-**Proposed** (Claude Opus 5.5, 2026-11-07): add "lens" and "trace" to the ontology with these meanings. Reason: the
+Add "lens" and "trace" to the ontology with these meanings. Reason: the
 routes below use both words, and spec 13.2 uses "lens" now with no definition.
 
 ## `project`: a vector through a matrix
@@ -69,7 +69,7 @@ The first use is the loops. Project the refusal vector through `unembed`, and lo
 
 ### The rules of `project`
 
-**Proposed** (Claude Opus 5.5, 2026-11-07, milestone 26 step 1). The route follows these rules. Reason: lab.md
+The route follows these rules. Reason: lab.md
 gives the shape and leaves these choices open. Each rule is the simplest choice that answers the loop question.
 
 ```json
@@ -106,7 +106,7 @@ POST /nagaya/v1/lab/project
 - **The bits.** Each product of a BF16 weight and an `f32` value is exact in `f64`. The sums run in `f64`, in a fixed
   order. Thus the same request gives the same bytes on each run.
 
-**The cost of `project`.** Proposed (Claude Opus 5.5, 2026-11-07). The route maps `model.safetensors` for each request,
+**The cost of `project`.** The route maps `model.safetensors` for each request,
 and it holds no copy of the table. The page cache holds the file, and the kernel can take those pages back. Reason:
 a copy of the table of LFM3-1.7B is 500 MiB of host memory outside the ledger (spec 4). The work runs on a call
 thread and on at most 8 threads of the CPUs of that thread. The scores are 500 KiB for each layer, for the time of
@@ -162,7 +162,7 @@ For a loop, the trace shows which number collapses first. The entropy can fall, 
 
 ### The rules of `trace`
 
-**Proposed** (Claude Opus 5.5, 2026-11-07, milestone 26 step 2). The route follows these rules. Reason: the shape above
+The route follows these rules. Reason: the shape above
 leaves these choices open. Each rule is the simplest choice that lets a client compare a plain and a steered reply.
 
 - **Members.** The request is a generation request (gogi "Generations") and the member `trace`, which is required. The
@@ -247,10 +247,10 @@ A lens is a state object of one model (spec 13.2). The nagaya applies it, and a 
   says. A row of `W_U J_l` is a concept vector of one token at layer `l`. With `add`, it pushes that concept
   (`docs/cv.md`, "With the J-Lens and the other tools").
 
-**The lens of a served model.** Decided 2026-11-08 (Amy, by interview: "Profile names it"). The profile entry of the
+**The lens of a served model.** The profile entry of the
 served model names its lens, and a request names only `jlens`. Thus a served model has at most one lens.
 
-**The rules of the J-Lens.** **Proposed** (Claude Opus 5.5, 2026-11-08, milestone 26 step 5). Reason: the decision
+**The rules of the J-Lens.** Reason: the decision
 above and the reference leave these choices open, and each is the simplest one that a test can check.
 
 - **The profile.** The entry gets the table `[engines.lab]` with one key, `jlens`, the path of the lens file. Another
@@ -285,7 +285,7 @@ backward fit. Thus it is not the plan.
 
 ## `compose`: a control vector from parts
 
-**Proposed** (Claude Opus 5.5, 2026-11-09, milestone 28). Amy wants an agent to compose a control vector set and tune
+Amy wants an agent to compose a control vector set and tune
 it with the J-Lens. Reason for the shape: each part is one idea that a projection can show, and the result is a plain
 control vector object. Thus every client can use it with no new member.
 
@@ -324,7 +324,7 @@ POST /nagaya/v1/lab/compose
 
 ### Latent steps in a request
 
-**Proposed** (Claude Opus 5.5, 2026-11-10, milestone 29 step 4). Amy, 2026-11-10: "I feel like it might be most
+Amy, 2026-11-10: "I feel like it might be most
 effective on the summarizer. but probably everywhere we can over time, and somewhat tunable per api call ideally."
 Thus a request of `ensemble` takes the member `latent`. One context with `logprob_sum` is a generation, so any
 generation of the lab can think in latent steps first.
@@ -348,7 +348,7 @@ generation of the lab can think in latent steps first.
 - **Errors.** `steps` past 256, or not a whole number, is a 400 that names `latent.steps`. A model with no tap
   `residual` is a 400 that names `latent`.
 
-**Proposed** by Claude Opus 5.5, 2026-11-10, for milestone 29 step 4: the choices that the rules above leave open.
+The choices that the rules above leave open.
 
 - **No head.** A reply after latent steps holds no head, and its slot makes no interval copy after the first step.
   Reason: a recipe names tokens, and a latent row is not a token.
@@ -364,7 +364,7 @@ generation of the lab can think in latent steps first.
 
 ### Soft inputs in a request
 
-**Proposed** (Claude Opus 5.5, 2026-11-12, milestone 33 step 2). Amy, 2026-11-12: "I'm curious if there is a middle
+Amy, 2026-11-12: "I'm curious if there is a middle
 ground where we get some of the compute cost and precision (not round tripping through English, or does that help?)
 benefits of latent steps, while making them more productive."
 
@@ -438,7 +438,7 @@ The trials of these rules are in `docs/cv.md`, "The stream of thought". The pape
 
 ### The score of a text
 
-**Proposed** (Claude Opus 5.5, 2026-11-12). The trials of soft inputs found broken words that no counter saw
+The trials of soft inputs found broken words that no counter saw
 (`docs/cv.md`). Amy accepted a measure: the log probability of each token of a reply, with no soft input.
 
 ```json
@@ -458,7 +458,7 @@ The trials of these rules are in `docs/cv.md`, "The stream of thought". The pape
 
 ## `latent` and `merge`: the parts of a swarm
 
-**Proposed** (Claude Opus 5.5, 2026-11-09, milestone 29 step 2). Amy chose a text swarm first, then latent steps and
+Amy chose a text swarm first, then latent steps and
 the merge as a pair (`docs/swarm-ideas.md`). Reason for the shape: each route makes a held snapshot, so a generation,
 a decision or another route continues from it with no new member.
 
@@ -492,7 +492,7 @@ POST /nagaya/v1/lab/merge
 
 ## `ensemble`: joined forks
 
-**Proposed** (Claude Opus 5.5, 2026-11-10, milestone 29). Amy chose plan, then code (`docs/swarm-ideas.md`, "Plan, then
+Amy chose plan, then code (`docs/swarm-ideas.md`, "Plan, then
 code"). Joined forks are one way to code a plan, or to distill ideas into one plan. Reason for a lab route: the rules of
 the combination are a trial, and a council v2 contract can follow when one rule wins.
 
@@ -531,7 +531,7 @@ POST /nagaya/v1/lab/ensemble
 
 ## Context records in the lab routes
 
-**Proposed** (Claude Fable 5.2, 2026-11-11, milestone 32 step 2). `trace` and `ensemble` read council v2 contexts, so
+`trace` and `ensemble` read council v2 contexts, so
 they take a context that names a `parent` (gogi "Context records", spec 11.13). Reason: a client of a swarm names the
 record of its shared head in each route that reads it. @tobert decides.
 
@@ -549,7 +549,7 @@ record of its shared head in each route that reads it. @tobert decides.
 
 ## Where the routes live
 
-Decided 2026-11-07 (Amy: "ok yeah, start on /nagaya/v1/lab/"): put `project` and `trace` on nagaya routes under
+Put `project` and `trace` on nagaya routes under
 `/nagaya/v1/lab/` first. Move `trace` into gogi when its shape settles and a client needs it. Keep the routes that read
 tensors in the nagaya.
 
