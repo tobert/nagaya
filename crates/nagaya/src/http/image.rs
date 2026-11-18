@@ -1146,6 +1146,7 @@ pub fn served_model(service: &ImageService, status: gogi_proto::identity::ModelS
             replies_per_generation: None,
         },
         embeddings: None,
+        layer_loops: None,
         capabilities: vec![gogi_proto::identity::Capability::Generate],
         media: Some(gogi_proto::identity::Media {
             // An SDXL model reads an image and a mask (spec 11.9b). Qwen-Image runs text to image only (spec 11.9c).

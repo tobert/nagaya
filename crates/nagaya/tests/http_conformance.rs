@@ -285,6 +285,8 @@ fn gogi_conformance_passes_against_the_process_with_the_fake_engine() {
     // The generation and continuation checks ran: none of them is a skip.
     for name in [
         "the server answers again after the restart",
+        // No engine of the fake declares layer loops yet, so the suite checks the refusal (gogi "Layer loops").
+        "a build with a loop to a model without layer_loops is a 400 naming loop",
         "a held spec survives a restart",
         "a pinned snapshot survives a restart",
         "a context whose head is pinned feeds 0 tokens after a restart",
@@ -429,6 +431,7 @@ fn gogi_conformance_passes_on_each_of_two_text_models_of_one_process() {
             "a held spec survives a restart".to_owned(),
             "a pinned snapshot survives a restart".to_owned(),
             "generation holds its head".to_owned(),
+            "a build with a loop to a model without layer_loops is a 400 naming loop".to_owned(),
         ] {
             assert!(ok(&name), "{model}: {name}");
         }
