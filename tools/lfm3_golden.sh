@@ -108,6 +108,12 @@
 #   layers [3] i64                   the layers of the gate
 #   layer<l>.scores [128000]         the score of each row of the head
 #   layer<l>.up_ids [64] i64, layer<l>.down_ids [64] i64   the ids of the 64 largest and the 64 smallest scores
+# lfm3.loop.safetensors (--stages loop, not in the default): the layer loop gate of LFM3-1.7B (spec 11.16). The prompt
+#   is LOOP_PROMPT of the tool, as one user message with thinking off. Each forward runs the whole sequence with no
+#   cache. For <p> in plain, loop10_14_2 and loop6_10_3 (start, end and count of LOOP_PLANS):
+#   ids [P] i64                      the prompt ids
+#   <p>.logits [9, 128000]           the logits of the last prompt position, then after each greedy token
+#   <p>.tokens [8] i64               the greedy tokens
 # facts.json: the measured facts for spec 11.11: sizes, counts, the codec checks and the run patterns.
 set -euo pipefail
 cd "$(dirname "$0")/.."
