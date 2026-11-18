@@ -531,8 +531,33 @@ Measure each plan with the score of a text over a fixed set of prompts ("The sco
 A swarm can mix plans: each context of `contexts` has its own loop. `ensemble` with `contrast` of a looped context
 and a plain one shows what the extra runs add.
 
+The trial ran on 2026-11-18, on `lfm3` with a reserve of 8 runs. Each plan wrote a greedy reply to 8 creative
+prompts and to 12 short questions with known answers. The plain model scored each creative reply with `force`.
+
+| Plan | Right answers | Plain score of the creative replies | Entropy | Replies that reasoned |
+|---|---|---|---|---|
+| no `loop` | 12 of 12 | -0.636 | 1.54 | 2 of 20 |
+| `{6, 10, 2}` | 12 of 12 | -0.775 | 1.32 | 1 of 20 |
+| `{10, 14, 2}` | 9 of 12 | -0.848 | 1.48 | 11 of 20 |
+| `{6, 14, 2}` | 9 of 12 | -0.891 | 1.43 | 11 of 20 |
+| `{10, 14, 3}` | 1 of 12 | -1.282 | 1.42 | 13 of 20 |
+
+- **The middle group starts reasoning.** With thinking off, a loop over layers 10 to 13 writes a reasoning first in
+  most replies. A second turn of `lfm3` does the same (milestone 33 step 2). With a third run, the reasoning
+  seldom ends in 200 tokens. The answers that the reasoning reached were right.
+- **The early group keeps the answers.** `{6, 10, 2}` answered each question, with less entropy than the plain
+  model. Its creative replies drift from the plain model's text, and they stay fluent.
+- **Each run costs.** The plain score falls with each run, as the papers found.
+
+A call to `lfm3-omni` with each feature at once ran on the same day. It had a swarm of 4 contexts with other loops
+and one control vector, and 8 latent steps under a loop. It also had decisions under 3 loops, and speech. The
+vector came from 3 pairs of contexts, and an `add` on each layer at strength 1 or 4 broke the text of each loop.
+Thus a vector needs a smaller strength or fewer layers before a loop shows. A reply with audio refused a loop.
+
 These are open, and none is built:
 
+- **A frame under a loop.** A reply with audio refuses a loop today. The fix feeds each frame under the loop of
+  its slot.
 - **A damped loop.** A member for the damped step. It needs a mix of two residual rows, which no op of the LFM3
   binary does yet.
 - **Each layer K times.** A member for the order of runs of a mixture of experts, for Qwen3.8.
