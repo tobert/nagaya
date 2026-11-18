@@ -12,6 +12,8 @@ mod binding;
 pub mod canary;
 mod context;
 mod control;
+#[cfg(all(test, feature = "hip"))]
+mod control_card;
 mod cuts;
 mod dequant;
 mod engine;

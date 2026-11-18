@@ -43,7 +43,14 @@ const HIP_DEFINES: &[&str] = &["-DUSE_PROF_API=1", "-D__HIP_PLATFORM_AMD__=1", "
 /// `extern.hip` is the thin extern layer that took the place of the C ABI `capi.hip` of the reference in milestone 15
 /// step 4. The file `blocks.hip` of the reference built the stages of the model's blocks; the Rust pass build
 /// (`src/pass.rs`) took its place in step 6.
-const ENGINE_UNITS: &[&str] = &["engine.hip", "mega.hip", "extern.hip", "convert.hip", "round.hip"];
+const ENGINE_UNITS: &[&str] = &[
+    "engine.hip",
+    "mega.hip",
+    "extern.hip",
+    "convert.hip",
+    "round.hip",
+    "control.hip",
+];
 
 /// The compiler writes each object to stdout, and the script writes it to `OUT_DIR`.
 ///

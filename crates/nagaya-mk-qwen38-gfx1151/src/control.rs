@@ -2,12 +2,12 @@
 //! taps (engine-abi "The residual of the Qwen3.8 engine").
 //!
 //! The residual of a token is the 4 streams, 10,240 `f32` values. A pass with a tap or a control item runs as several
-//! launches, cut at layer ends. The host reads the rows of `h` at a cut, or it changes them with the op below, and the
-//! next launch goes on from them. No device code changes.
+//! launches, cut at layer ends. At a cut, the host reads the rows of a tap, and the device op of
+//! `hip/src/engine/control.hip` changes the rows. The next launch goes on from them.
 //!
-//! This code is pure: it needs no GPU and no library. Pieces 6 to 8 of the plan of milestone 34 call it: the pass host
-//! launches the ranges of a `CutPlan`, the taps use `tap_layout`, and the control table uses `write_sums` and
-//! `apply_actions`. Until then no caller exists, so the module allows dead code.
+//! This code is pure: it needs no GPU and no library. The pass host launches the ranges of a `CutPlan`, the taps use
+//! `tap_layout`, and the control table uses `write_sums`. The host op (`apply_row`, `apply_actions`) is the oracle of
+//! the device op: the fake device runs it, and the card gate `control_card.rs` compares the bits.
 
 #![allow(dead_code)]
 
@@ -81,6 +81,25 @@ pub(crate) fn dot(a: &[f32], b: &[f32]) -> f32 {
 /// written.
 pub(crate) fn sum_squares(v: &[f32]) -> f32 {
     dot(v, v)
+}
+
+/// The code of an op in the call of the device op (`hip/src/engine/control.hip`).
+pub(crate) fn op_code(op: ControlOp) -> u32 {
+    match op {
+        ControlOp::Add => 0,
+        ControlOp::Ablate => 1,
+        ControlOp::Clamp => 2,
+    }
+}
+
+/// The op of a code of the device op, or `None` for a code that names no op.
+pub(crate) fn op_of_code(code: u32) -> Option<ControlOp> {
+    match code {
+        0 => Some(ControlOp::Add),
+        1 => Some(ControlOp::Ablate),
+        2 => Some(ControlOp::Clamp),
+        _ => None,
+    }
 }
 
 /// Change one row `h` with the vector `v` of its layer, whose sum of squares is `vv` (engine-abi "The residual of the
