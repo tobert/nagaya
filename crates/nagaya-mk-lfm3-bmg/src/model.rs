@@ -209,7 +209,7 @@ impl Control {
 
 /// What one ring runs: a block of `n` tokens at `pos0` of one slot, and how far it goes.
 #[derive(Clone, Copy, Debug)]
-pub struct Run<'a> {
+pub struct TaskRing<'a> {
     pub slot: &'a SlotMemory,
     pub pos0: usize,
     pub n: usize,
@@ -245,8 +245,8 @@ fn tiled(mut task: MkTaskDescriptor) -> MkTaskDescriptor {
 
 /// The tasks of one run. The ids are in `bufs.ids`. After the run, `bufs.x` holds the residual stream after the layers
 /// that ran, `bufs.h` holds the final norm, and `bufs.logits` row `i` holds the logits of logit row `i`.
-pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskDescriptor> {
-    let Run {
+pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, ring: TaskRing<'_>) -> Vec<MkTaskDescriptor> {
+    let TaskRing {
         slot,
         pos0,
         n,
@@ -257,7 +257,7 @@ pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskD
         tap,
         lens,
         layer_loop,
-    } = run;
+    } = ring;
     let plan = runs(b, layer_loop, slot.extra(b)).expect("the engine checks the loop first");
     assert!(
         layers <= plan.len() && (layers == plan.len() || logit_rows.is_none()),
@@ -701,7 +701,7 @@ mod tests {
             &b,
             &w,
             &bufs,
-            Run {
+            TaskRing {
                 slot: &slot,
                 pos0: 0,
                 n: 8,
@@ -739,7 +739,7 @@ mod tests {
             &b,
             &w,
             &bufs,
-            Run {
+            TaskRing {
                 slot: &slot,
                 pos0: 5,
                 n: 1,
@@ -885,7 +885,7 @@ mod tests {
                 &b,
                 &w,
                 &bufs,
-                Run {
+                TaskRing {
                     slot: &slot,
                     pos0: 0,
                     n: 4,
@@ -955,7 +955,7 @@ mod tests {
             b,
             w,
             &bufs(b),
-            Run {
+            TaskRing {
                 slot,
                 pos0: 0,
                 n,
@@ -1217,7 +1217,7 @@ mod tests {
                 &b,
                 &w,
                 &bufs,
-                Run {
+                TaskRing {
                     slot: &slot,
                     pos0: 0,
                     n: 8,
@@ -1288,7 +1288,7 @@ mod tests {
             &b,
             &w,
             &bufs,
-            Run {
+            TaskRing {
                 slot: &slot,
                 pos0: 0,
                 n: 8,
@@ -1323,7 +1323,7 @@ mod tests {
             &b,
             &w,
             &bufs,
-            Run {
+            TaskRing {
                 slot: &slot,
                 pos0: 0,
                 n: 8,
@@ -1350,7 +1350,7 @@ mod tests {
                 &b,
                 &w,
                 &bufs,
-                Run {
+                TaskRing {
                     slot: &slot,
                     pos0: 0,
                     n: 8,
@@ -1403,7 +1403,7 @@ mod tests {
             &b,
             &w,
             &bufs,
-            Run {
+            TaskRing {
                 slot: &slot,
                 pos0: 0,
                 n: 8,
@@ -1450,7 +1450,7 @@ mod tests {
             &b,
             &w,
             &bufs,
-            Run {
+            TaskRing {
                 slot: &slot,
                 pos0: 0,
                 n: 90,
@@ -1481,7 +1481,7 @@ mod tests {
             &b,
             &w,
             &bufs,
-            Run {
+            TaskRing {
                 slot: &slot,
                 pos0: 100,
                 n: 1,
@@ -1501,7 +1501,7 @@ mod tests {
             &b,
             &w,
             &bufs,
-            Run {
+            TaskRing {
                 slot: &slot,
                 pos0: 2000,
                 n: 100,

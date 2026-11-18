@@ -25,7 +25,7 @@ use nagaya_text_lfm3::{Kind as FamilyKind, Lfm3Family};
 use crate::audio::{self, AudioBufs, AudioWeights, Clip, MAX_CLIP_POSITIONS, Stage};
 use crate::device::{Device, OnCard};
 use crate::media::{self, MAX_IMAGE_PATCHES, PATCH_ROW, SpanKind};
-use crate::model::{self, Batch, Bufs, Run, SlotMemory, bufs_bytes, scratch_floats};
+use crate::model::{self, Batch, Bufs, SlotMemory, TaskRing, bufs_bytes, scratch_floats};
 use crate::spec::{self, Backbone, Block, Config, FAMILY, Held, LayerKind, Model, Part, RING_ROWS, VisionBytes};
 use crate::spec::{LENS_TAP, MAX_SEGMENTS, RESIDUAL_TAP};
 use crate::vision::{self, HeldRows, Until, Vision, VisionBufs, VisionWeights};
@@ -454,7 +454,7 @@ impl Lfm3Engine {
             &self.b,
             &self.weights,
             &self.bufs,
-            Run {
+            TaskRing {
                 slot: &self.slots[slot],
                 pos0,
                 n: tokens.len(),
@@ -708,9 +708,9 @@ impl Lfm3Engine {
                         })
                         .collect()
                 }
-                SpanKind::Audio { frames } | SpanKind::Run { frames, .. } => {
+                SpanKind::Audio { frames } | SpanKind::ClipPart { frames, .. } => {
                     let start = match used.span.kind {
-                        SpanKind::Run { start, .. } => start,
+                        SpanKind::ClipPart { start, .. } => start,
                         _ => 0,
                     };
                     let (w, bufs) = self

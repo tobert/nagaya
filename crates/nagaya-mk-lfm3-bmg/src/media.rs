@@ -23,7 +23,7 @@ pub const KIND_IMAGE: u32 = 1;
 pub const KIND_AUDIO: u32 = 2;
 
 /// The kind of a run of a clip in a record: the sound of one pair of a video (spec 11.11, "The video of a request").
-pub const KIND_RUN: u32 = 3;
+pub const KIND_CLIP_PART: u32 = 3;
 
 /// The kind of the speech of an `assistant` audio part in a record: the codes of its frames, the end frame last
 /// (spec 11.11, "Assistant audio").
@@ -60,7 +60,7 @@ pub enum SpanKind {
     /// A clip of `frames` mel frames.
     Audio { frames: usize },
     /// The encoder rows from `start` of a clip of `frames` mel frames. The rows of the segment are the whole clip.
-    Run { frames: usize, start: usize },
+    ClipPart { frames: usize, start: usize },
     /// Frames of speech: one position for each frame, whose row is the sum of its 12 codebook rows. The rows of the
     /// segment are the codes, 12 `u32` for each frame.
     Codes,
@@ -89,7 +89,7 @@ impl Span {
     pub fn rows(&self) -> usize {
         match self.kind {
             SpanKind::Image { grid } => grid.iter().product(),
-            SpanKind::Audio { frames } | SpanKind::Run { frames, .. } => frames,
+            SpanKind::Audio { frames } | SpanKind::ClipPart { frames, .. } => frames,
             SpanKind::Codes | SpanKind::Latent { .. } => self.count,
         }
     }
@@ -98,7 +98,7 @@ impl Span {
     pub fn width(&self) -> usize {
         match self.kind {
             SpanKind::Image { .. } => PATCH_ROW,
-            SpanKind::Audio { .. } | SpanKind::Run { .. } => MEL_ROW,
+            SpanKind::Audio { .. } | SpanKind::ClipPart { .. } => MEL_ROW,
             SpanKind::Codes => FRAME_CODES,
             SpanKind::Latent { width } => width,
         }
@@ -117,7 +117,7 @@ pub fn encode(spans: &[Span]) -> Vec<u8> {
         let (kind, rest) = match span.kind {
             SpanKind::Image { grid } => (KIND_IMAGE, [grid[0] as u32, grid[1] as u32, grid[2] as u32, 0]),
             SpanKind::Audio { frames } => (KIND_AUDIO, [frames as u32, 0, 0, 0]),
-            SpanKind::Run { frames, start } => (KIND_RUN, [frames as u32, start as u32, 0, 0]),
+            SpanKind::ClipPart { frames, start } => (KIND_CLIP_PART, [frames as u32, start as u32, 0, 0]),
             SpanKind::Codes => (KIND_CODES, [FRAME_CODES as u32, 0, 0, 0]),
             SpanKind::Latent { width } => (KIND_LATENT, [width as u32, 0, 0, 0]),
         };
@@ -198,7 +198,7 @@ pub fn decode(meta: &[u8]) -> Result<Vec<Span>, String> {
                 }
                 SpanKind::Audio { frames }
             }
-            KIND_RUN => {
+            KIND_CLIP_PART => {
                 let (frames, start) = (rest[0], rest[1]);
                 if rest[2..] != [0, 0] {
                     return Err(format!("media record {i} is a run of a clip with words {rest:?}"));
@@ -213,7 +213,7 @@ pub fn decode(meta: &[u8]) -> Result<Vec<Span>, String> {
                          past the {rows} rows of the clip"
                     ));
                 }
-                SpanKind::Run { frames, start }
+                SpanKind::ClipPart { frames, start }
             }
             KIND_CODES => {
                 if rest != [FRAME_CODES, 0, 0, 0] {
@@ -301,7 +301,9 @@ impl MediaRules {
             SpanKind::Image { .. } => self.image_token.ok_or_else(|| {
                 format!("media record {i} is an image, and this model has no vision tower; send text only")
             }),
-            SpanKind::Audio { frames } | SpanKind::Run { frames, .. } if frames > crate::audio::MAX_CLIP_FRAMES => {
+            SpanKind::Audio { frames } | SpanKind::ClipPart { frames, .. }
+                if frames > crate::audio::MAX_CLIP_FRAMES =>
+            {
                 Err(format!(
                     "media record {i} is a clip of {frames} frames, and the audio encoder takes at most {} frames \
                  (about 41 s); send a shorter clip",
@@ -322,7 +324,7 @@ impl MediaRules {
                     "media record {i} is a latent span, and this engine takes no latent rows"
                 )),
             },
-            SpanKind::Audio { .. } | SpanKind::Run { .. } => match self.audio_token {
+            SpanKind::Audio { .. } | SpanKind::ClipPart { .. } => match self.audio_token {
                 Some(token) if self.audio_encoder => Ok(token),
                 Some(_) => Err(format!(
                     "media record {i} is a clip, and this engine has no audio encoder yet (milestone 24 step 7); \
@@ -709,7 +711,7 @@ mod tests {
 
     fn run(first: u64, frames: usize, start: usize, count: usize) -> Span {
         Span {
-            kind: SpanKind::Run { frames, start },
+            kind: SpanKind::ClipPart { frames, start },
             first,
             count,
         }
@@ -721,7 +723,7 @@ mod tests {
     fn a_run_of_a_clip_goes_through_its_bytes_and_takes_the_rows_of_its_positions() {
         let r = run(40, 249, 15, 15);
         let meta = encode(&[r]);
-        assert_eq!(&meta[..4], &KIND_RUN.to_le_bytes());
+        assert_eq!(&meta[..4], &KIND_CLIP_PART.to_le_bytes());
         assert_eq!(&meta[16..24], &[249, 0, 0, 0, 15, 0, 0, 0]);
         assert_eq!(decode(&meta).unwrap(), [r]);
         assert_eq!(r.bytes(), 249 * 128 * 4, "the rows of the whole clip");
