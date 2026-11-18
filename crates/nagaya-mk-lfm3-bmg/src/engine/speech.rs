@@ -248,6 +248,7 @@ impl Lfm3Engine {
                 control: &[],
                 tap: false,
                 lens: false,
+                layer_loop: None,
             },
         );
         assert_eq!(

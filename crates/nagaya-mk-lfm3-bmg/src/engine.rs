@@ -308,7 +308,7 @@ impl Lfm3Engine {
         let slots: Vec<SlotMemory> = config
             .seqs()
             .iter()
-            .map(|seq| SlotMemory::new(&mut |bytes| device.zeros(card, bytes), &b, *seq))
+            .map(|seq| SlotMemory::new(&mut |bytes| device.zeros(card, bytes), &b, *seq, 0))
             .collect();
         let control = spec::control_limit(&b).map(|limit| {
             let bytes = limit.table_bytes() as usize;
@@ -464,6 +464,7 @@ impl Lfm3Engine {
                 control,
                 tap,
                 lens,
+                layer_loop: None,
             },
         );
         // Omni keeps the final norm of the last position for `frame` (engine-abi "The speech calls of LFM3").
@@ -487,7 +488,16 @@ impl Lfm3Engine {
     fn forward_batch(&mut self, blocks: &[Block], control: &[model::Control]) -> Result<(), String> {
         let mut tasks = {
             let rows: Vec<(&SlotMemory, usize)> = blocks.iter().map(|b| (&self.slots[b.slot], b.pos0)).collect();
-            model::batch(&self.b, &self.weights, &self.bufs, Batch { rows: &rows, control })
+            model::batch(
+                &self.b,
+                &self.weights,
+                &self.bufs,
+                Batch {
+                    rows: &rows,
+                    control,
+                    layer_loop: None,
+                },
+            )
         };
         // Omni keeps the final norm of each row for `frame`, as a pass of one row does.
         if let Some(speech) = &self.speech {
