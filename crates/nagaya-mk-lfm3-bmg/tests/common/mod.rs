@@ -217,6 +217,20 @@ pub fn open(which: Which, slots: usize, max_block: usize) -> nagaya_mk_lfm3_bmg:
         model_dir: model_dir(which),
         slots: vec![nagaya_mk_lfm3_bmg::spec::SLOT_TOKENS; slots],
         max_block,
+        extra_runs: 0,
+    };
+    nagaya_mk_lfm3_bmg::Lfm3Engine::open(config, &cards()[0]).unwrap_or_else(|e| panic!("open {which:?}: {e}"))
+}
+
+/// The engine of `which` on card 0 with `slots` slots of 4,096 positions, each with a reserve of `extra` runs for layer
+/// loops (engine-abi "Layer loops of LFM3").
+#[cfg(feature = "xe")]
+pub fn open_looped(which: Which, slots: usize, extra: usize) -> nagaya_mk_lfm3_bmg::Lfm3Engine {
+    let config = nagaya_mk_lfm3_bmg::Config {
+        model_dir: model_dir(which),
+        slots: vec![4096; slots],
+        max_block: 512,
+        extra_runs: extra,
     };
     nagaya_mk_lfm3_bmg::Lfm3Engine::open(config, &cards()[0]).unwrap_or_else(|e| panic!("open {which:?}: {e}"))
 }
@@ -228,6 +242,7 @@ pub fn open_sized(which: Which, slots: Vec<usize>, max_block: usize) -> nagaya_m
         model_dir: model_dir(which),
         slots,
         max_block,
+        extra_runs: 0,
     };
     nagaya_mk_lfm3_bmg::Lfm3Engine::open(config, &cards()[0]).unwrap_or_else(|e| panic!("open {which:?}: {e}"))
 }
@@ -243,6 +258,7 @@ pub fn segment(slot: u32, from: u64, tokens: &[u32], logits: &[u64]) -> nagaya_a
         outputs: nagaya_abi::OutputsWanted {
             logit_rows: logits.to_vec(),
         },
+        layer_loop: None,
     }
 }
 

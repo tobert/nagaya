@@ -120,7 +120,7 @@ fn a_value_that_the_kernels_cannot_run_is_refused_with_its_key() {
 
 #[test]
 fn the_parts_follow_the_layer_types() {
-    let p = parts(&backbone());
+    let p = parts(&backbone(), 0);
     assert_eq!(p.len(), 13 + 2 * 11);
     let find = |name: &str| {
         p.iter()
@@ -147,10 +147,10 @@ fn the_parts_follow_the_layer_types() {
 fn a_slot_counts_its_planes_and_its_conv_states() {
     let b = backbone();
     // A slot of 2,048 positions keeps every position in each attention layer.
-    assert_eq!(slot_bytes(&b, 2048), 11 * 2 * 2048 * 2048 + 13 * 49_152);
+    assert_eq!(slot_bytes(&b, 2048, 0), 11 * 2 * 2048 * 2048 + 13 * 49_152);
     // A longer slot keeps rings of 2,048 rows and a spill of 1,024 in the 5 sliding layers.
-    assert_eq!(slot_bytes(&b, 32_768), 805_306_368 + 62_914_560 + 638_976);
-    assert_eq!(slot_bytes(&b, 32_768), 868_859_904);
+    assert_eq!(slot_bytes(&b, 32_768, 0), 805_306_368 + 62_914_560 + 638_976);
+    assert_eq!(slot_bytes(&b, 32_768, 0), 868_859_904);
     assert_eq!((ring_of(2048), ring_of(2049)), (0, 2048));
     assert_eq!(plane_rows(4096, LayerKind::Full), 4096);
     assert_eq!(plane_rows(4096, LayerKind::Sliding), 3072);
@@ -165,6 +165,7 @@ fn sized(slots: Vec<usize>) -> Config {
         model_dir: PathBuf::from("/lfm3"),
         slots,
         max_block: 512,
+        extra_runs: 0,
     }
 }
 
@@ -237,7 +238,7 @@ fn mixed_slots_charge_each_slot_and_size_the_work_for_the_longest() {
     let c = sized(vec![32_768, 32_768, 262_144]);
     let l = limits(&b, &c, 3_456_000_000, None);
     l.check().unwrap();
-    let long = slot_bytes(&b, 262_144);
+    let long = slot_bytes(&b, 262_144, 0);
     // The full layers hold 24 KiB of each position, and the sliding layers hold rings of a fixed size.
     assert_eq!(long, 6 * 2 * 262_144 * 2048 + 62_914_560 + 638_976);
     assert_eq!(
@@ -275,6 +276,7 @@ fn segment(slot: u32, from: u64, tokens: &[u32], logits: &[u64]) -> Segment {
         outputs: OutputsWanted {
             logit_rows: logits.to_vec(),
         },
+        layer_loop: None,
     }
 }
 
@@ -283,7 +285,7 @@ const VOCAB: usize = 125_033;
 #[test]
 fn a_pass_runs_on_from_the_token_count_and_never_goes_back() {
     let b = backbone();
-    let mut held = Held::new(&b, &[1024, 4096]);
+    let mut held = Held::new(&b, &[1024, 4096], 0);
     let block = held.check_pass(&[segment(0, 0, &[1, 2, 3], &[2])], 512, VOCAB).unwrap();
     assert_eq!((block.slot, block.pos0, block.logit_rows.clone()), (0, 0, vec![2]));
     held.ran(&block);
@@ -315,7 +317,7 @@ fn a_pass_runs_on_from_the_token_count_and_never_goes_back() {
             assert!(error.contains(why), "{why}: {error}");
         }
     }
-    let mut full = Held::new(&b, &[8]);
+    let mut full = Held::new(&b, &[8], 0);
     full.n[0] = 6;
     assert!(
         full.check_pass(&[segment(0, 6, &[1, 2, 3], &[])], 512, VOCAB)
@@ -335,8 +337,8 @@ const RING: PartId = 5;
 #[test]
 fn a_ring_holds_its_last_rows_and_a_short_slot_holds_every_position() {
     let b = backbone();
-    assert_eq!(part_list(&b)[RING], Part::K(4));
-    let mut held = Held::new(&b, &[2048, 4096]);
+    assert_eq!(part_list(&b, 0)[RING], Part::K(4));
+    let mut held = Held::new(&b, &[2048, 4096], 0);
     held.n = vec![1000, 3000];
     assert_eq!(held.base(0, 4), 0);
     assert_eq!(held.base(1, 4), 3000 - 2048);
@@ -358,7 +360,7 @@ fn a_ring_holds_its_last_rows_and_a_short_slot_holds_every_position() {
 #[test]
 fn a_restore_writes_every_part_and_set_n_takes_the_count_only_then() {
     let b = backbone();
-    let mut held = Held::new(&b, &[4096]);
+    let mut held = Held::new(&b, &[4096], 0);
     held.n[0] = 50;
     let state = State::Slot(0);
     let row = 512 * 4;
@@ -386,7 +388,7 @@ fn a_restore_writes_every_part_and_set_n_takes_the_count_only_then() {
             .contains("row part")
     );
     assert!(held.check_part_write(state, CONV, 49_151).is_err());
-    let list = part_list(&b);
+    let list = part_list(&b, 0);
     for (id, part) in list.iter().enumerate() {
         if matches!(part, Part::Conv(_)) {
             held.check_part_write(state, id, 49_152).unwrap();
@@ -427,7 +429,7 @@ fn a_restore_writes_every_part_and_set_n_takes_the_count_only_then() {
 #[test]
 fn a_read_stays_inside_the_rows_that_a_part_holds() {
     let b = backbone();
-    let mut held = Held::new(&b, &[4096]);
+    let mut held = Held::new(&b, &[4096], 0);
     held.n[0] = 3000;
     let state = State::Slot(0);
     let row = 512 * 4;
@@ -444,7 +446,7 @@ fn a_read_stays_inside_the_rows_that_a_part_holds() {
 
 /// The held state of Omni, with the placeholders of its config.
 fn omni_held(seqs: &[usize]) -> Held {
-    let mut held = Held::new(&Backbone::parse(OMNI_CONFIG).unwrap(), seqs);
+    let mut held = Held::new(&Backbone::parse(OMNI_CONFIG).unwrap(), seqs, 0);
     held.media = crate::vision::media_rules(OMNI_CONFIG).unwrap();
     held
 }
@@ -522,7 +524,7 @@ fn the_text_model_refuses_an_image_and_omni_plans_its_tower() {
         first: 0,
         count: 1,
     };
-    let held = Held::new(&backbone(), &[4096]);
+    let held = Held::new(&backbone(), &[4096], 0);
     let e = held
         .check_pass(&[media_segment(0, &[125_030, 1], &[image])], 512, VOCAB)
         .unwrap_err();
@@ -554,7 +556,7 @@ fn the_text_model_refuses_an_image_and_omni_plans_its_tower() {
 fn the_text_model_takes_a_latent_row_at_the_next_position() {
     use crate::media::{LatentRule, Span, SpanKind};
     let b = backbone();
-    let mut held = Held::new(&b, &[4096]);
+    let mut held = Held::new(&b, &[4096], 0);
     let first = held.check_pass(&[segment(0, 0, &[1, 2, 3], &[2])], 512, VOCAB).unwrap();
     held.ran(&first);
     let span = Span {
@@ -643,4 +645,138 @@ fn the_segment_limit_is_at_most_the_block() {
             "a block of {block}"
         );
     }
+}
+
+fn looped_config(extra_runs: usize) -> Config {
+    Config {
+        extra_runs,
+        ..sized(vec![4096, 32_768])
+    }
+}
+
+#[test]
+fn a_reserve_declares_layer_loops_and_adds_its_parts_and_its_bytes() {
+    let b = backbone();
+    let plain = limits(&b, &looped_config(0), 1 << 30, None);
+    assert!(!plain.capabilities.contains(&Capability::LayerLoops));
+    assert_eq!(plain.layer_loops, None);
+    plain.check().unwrap();
+    let looped = limits(&b, &looped_config(8), 1 << 30, None);
+    looped.check().unwrap();
+    assert!(looped.capabilities.contains(&Capability::LayerLoops));
+    assert_eq!(
+        looped.layer_loops,
+        Some(nagaya_abi::LayerLoopLimit {
+            layers: 24,
+            bounds: vec![2, 6, 10, 14, 18, 22],
+            count: 4,
+            extra_runs: 8,
+        })
+    );
+    // The parts of the reserve follow the parts of the layers: two groups of full, conv, sliding and conv.
+    assert_eq!(&looped.parts[..plain.parts.len()], &plain.parts[..]);
+    let names: Vec<&str> = looped.parts[plain.parts.len()..]
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "k.x00", "v.x00", "conv.x01", "k.x02", "v.x02", "conv.x03", "k.x04", "v.x04", "conv.x05", "k.x06", "v.x06",
+            "conv.x07"
+        ]
+    );
+    let kind = |name: &str| looped.parts.iter().find(|p| p.name == name).unwrap().kind;
+    assert_eq!(
+        (kind("k.x00"), kind("v.x02"), kind("conv.x03")),
+        (PartKind::Cells, PartKind::Ring, PartKind::Fixed)
+    );
+    // Each entry costs what its layer costs in the slot: here 2 full, 2 sliding and 4 conv states.
+    for seq in [4096, 32_768] {
+        let one = |l: usize| {
+            slot_bytes(&b, seq, 0) - {
+                let mut c = b.clone();
+                c.layers.remove(l);
+                slot_bytes(&c, seq, 0)
+            }
+        };
+        assert_eq!(
+            slot_bytes(&b, seq, 8) - slot_bytes(&b, seq, 0),
+            2 * one(2) + 2 * one(4) + 4 * one(3),
+            "{seq}"
+        );
+    }
+    assert_eq!(
+        looped.slots.iter().map(|s| s.bytes).collect::<Vec<_>>(),
+        [slot_bytes(&b, 4096, 8), slot_bytes(&b, 32_768, 8)]
+    );
+}
+
+#[test]
+fn a_reserve_holds_whole_groups() {
+    let b = backbone();
+    for extra in [0, 4, 8, 64] {
+        crate::layer_loop::check_reserve(&b, extra).unwrap();
+    }
+    for extra in [2, 6, 68] {
+        let e = crate::layer_loop::check_reserve(&b, extra).unwrap_err();
+        assert!(e.contains("a multiple of 4"), "{extra}: {e}");
+    }
+}
+
+fn looped_segment(layer_loop: Option<nagaya_abi::LayerLoop>) -> Segment {
+    Segment {
+        layer_loop,
+        ..segment(0, 0, &[1, 2, 3], &[2])
+    }
+}
+
+#[test]
+fn a_pass_takes_a_loop_that_fits_the_reserve() {
+    let b = backbone();
+    let span = |start, end, count| Some(nagaya_abi::LayerLoop { start, end, count });
+    let held = Held::new(&b, &[1024], 8);
+    let block = held.check_pass(&[looped_segment(span(10, 14, 2))], 512, VOCAB).unwrap();
+    assert_eq!(
+        block.layer_loop,
+        Some(crate::layer_loop::Loop {
+            start: 10,
+            end: 14,
+            count: 2
+        })
+    );
+    assert_eq!(
+        held.check_pass(&[looped_segment(None)], 512, VOCAB).unwrap().layer_loop,
+        None
+    );
+    let e = held
+        .check_pass(&[looped_segment(span(10, 14, 4))], 512, VOCAB)
+        .unwrap_err();
+    assert!(e.contains("each slot holds 8"), "{e}");
+    let e = held
+        .check_pass(&[looped_segment(span(11, 14, 2))], 512, VOCAB)
+        .unwrap_err();
+    assert!(e.contains("starts and ends at one of"), "{e}");
+    let plain = Held::new(&b, &[1024], 0);
+    let e = plain
+        .check_pass(&[looped_segment(span(10, 14, 2))], 512, VOCAB)
+        .unwrap_err();
+    assert!(e.contains("no reserve of extra runs"), "{e}");
+    // The parts of the reserve are parts of the slot: a write of the conv state of entry 1 is a write of a conv part.
+    let id = held.list.iter().position(|p| *p == Part::Conv(25)).unwrap();
+    assert!(
+        held.check_part_write(State::Slot(0), id, held.conv_bytes() as usize)
+            .is_ok()
+    );
+    // Entry 2 is a sliding state, so a slot of 4,096 positions keeps the last 2,048 rows of a write, as layer 4 does.
+    let ringed = Held::new(&b, &[4096], 8);
+    let k = |s: usize| ringed.list.iter().position(|p| *p == Part::K(s)).unwrap();
+    let rows = |id: usize| ringed.check_cells_write(State::Slot(0), id, 0, 3000, 3000 * ringed.row_bytes() as usize);
+    assert_eq!(rows(k(26)).unwrap().2, 952..3000);
+    assert_eq!(rows(k(26)).unwrap().2, rows(k(4)).unwrap().2);
+    assert_eq!(
+        rows(k(24)).unwrap().2,
+        0..3000,
+        "entry 0 is a full state, which keeps every row"
+    );
 }

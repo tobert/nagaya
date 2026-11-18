@@ -491,6 +491,7 @@ pub fn limits(arena_bytes: u64) -> Limits {
         feed: None,
         residual_row_bytes: 0,
         control: Some(crate::control::LIMIT),
+        layer_loops: None,
     }
 }
 

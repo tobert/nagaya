@@ -151,6 +151,7 @@ fn gate_limits(mandatory_bytes: u64) -> Limits {
         feed: None,
         residual_row_bytes: 0,
         control: None,
+        layer_loops: None,
     }
 }
 

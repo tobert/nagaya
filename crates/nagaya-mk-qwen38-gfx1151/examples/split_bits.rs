@@ -67,6 +67,7 @@ fn run(label: &str, tokens: &[u32], sizes: &[usize]) -> Run {
                     Vec::new()
                 },
             },
+            layer_loop: None,
         };
         let out = engine
             .pass(std::slice::from_ref(&segment), &[])

@@ -450,9 +450,10 @@ POST /nagaya/v1/lab/ensemble
 - **Bits.** One context with `logprob_sum` and the weight 1 gives its row to the sampler unchanged. Thus it gives the
   bits of the same generation. The card gate checks this.
 - **Errors.** A model with no batched passes is a 400 that names `model`. 0 or more than 8 contexts is a 400 that names
-  `contexts`. A context with another control list is a 400 that names `contexts[i].control`. `contrast` with other than
-  2 contexts is a 400 that names `combine`. A weight that is not finite or not above 0 is a 400 that names
-  `weights[i]`. A `strength` that is not finite is a 400 that names `strength`.
+  `contexts`. `contrast` with other than 2 contexts is a 400 that names `combine`. A weight that is not finite or not
+  above 0 is a 400 that names `weights[i]`. A `strength` that is not finite is a 400 that names `strength`.
+- **One pass.** The contexts share each pass, so they share one control list and one layer loop (spec 11.16). A
+  context with another list is a 400 that names `contexts[i].control`, and another loop names `contexts[i].loop`.
 
 ## Context records in the lab routes
 
@@ -470,6 +471,76 @@ spec 11.13). Reason: a client of a swarm names the record of its shared head in 
   the combined row of all the contexts, so it is the reply of no single context. A client that wants a record builds
   the context with the reply after it.
 - `project` and `compose` read no context, so they do not change.
+
+## Layer loops
+
+A context's `loop` runs a span of layers more than once (spec 11.16, gogi "Layer loops"). It is a council member, not
+a lab route, but its first use is a trial of the lab. This section holds what other runtimes do, what the papers
+found, and the first trial on `lfm3`. The research is of 2026-11-18.
+
+### What other runtimes do
+
+SenseNova-Loop-9B was trained with a loop. It has 32 layers and runs layers 4 to 27 twice, so a pass runs 56 layers.
+
+- **The loop is a fixed plan of the checkpoint.** The config holds `loop_settings`: `start`, `end`, `eval_count` and
+  `use_gate`. No runtime lets a request change it.
+- **Each run has state of its own.** The reference maps each run to its own `DynamicCache` slot. The ports to vLLM
+  (PR 64832) and SGLang (PR 47281) keep a KV cache and a recurrent state for each run. vLLM makes one logical layer
+  for each run, and it ties the weights of the runs of a layer after the load.
+- **The count changes only at a start.** vLLM takes `--hf-overrides` with another `eval_count`. Both PRs were open on
+  2026-11-18.
+- **A span holds whole groups.** The model is a hybrid of 3 linear layers and 1 full attention layer. The span starts
+  and ends at the edges of these groups, so each run keeps the order of kinds.
+
+Thus the nagaya keeps the state of each run (spec 11.16). It differs from these runtimes in one way: a context
+chooses its loop, so one engine serves the plain model and each loop at once.
+
+### What a loop does to a model that was not trained with one
+
+- **RYS** (David Ng, "LLM Neuroanatomy" parts 1 and 2). A block of middle layers runs a second time, with no
+  training. On Qwen2-72B, a second run of layers 45 to 51 of 80 led the Open LLM leaderboard. On Qwen3.5-27B, a GDN
+  hybrid as Qwen3.8 is, the best blocks were at 40% to 55% of the depth. One more run of a block was the most
+  efficient. A run of one layer gave less, and more blocks gave less for each block.
+- **Training-Free Looped Transformers** (arXiv 2605.23872). On 7 families, a plain loop loses more with each run:
+  Qwen3-1.7B-Base lost 17.7 points at 6 runs. A window of 4 layers was best, and 6 or more lost. The best center was
+  at 45% to 60% of the depth, and earlier for models under 1B.
+- **Their damped step,** `x + (block(x) − x) / K`, kept 87% of their cells at or above the plain model. Losses came
+  most in distilled models under 3B. For a mixture of experts, each layer runs K times before the next. A loop of
+  the block moved the routes of the experts.
+- **Transformer Layers as Painters** (arXiv 2407.09298). Copies of one middle layer in place of a span fell to
+  chance. A skip of middle layers lost little.
+- **Retrofitted recurrence** (arXiv 2511.07384). A pretrained model with a looped core and training beat the same
+  model with plain training on math, at equal compute. This is the path when we train.
+
+Thus a loop of 4 layers near the middle, with `count` 2, is the first trial. A gain is small at best. A loss on
+`lfm3` is likely, because it is a small distilled model.
+
+### The first trial on `lfm3`
+
+`LFM3-1.7B` has 24 layers, and its groups start at 2, 6, 10, 14, 18 and 22. The plans of the trial:
+
+| Plan | Why |
+|---|---|
+| no `loop` | the plain model |
+| `{start: 10, end: 14, count: 2}` | one group at about 50% of the depth |
+| `{start: 6, end: 10, count: 2}` | one group earlier, for a small model |
+| `{start: 10, end: 14, count: 3}` | the decay with each run |
+| `{start: 6, end: 14, count: 2}` | two groups; the papers say this is too wide |
+
+Measure each plan with the score of a text over a fixed set of prompts ("The score of a text"), then read replies.
+A swarm can mix plans: each context of `contexts` has its own loop. `ensemble` with `contrast` of a looped context
+and a plain one shows what the extra runs add.
+
+These are open, and none is built:
+
+- **A damped loop.** A member for the damped step. It needs a mix of two residual rows, which no op of the LFM3
+  binary does yet.
+- **Each layer K times.** A member for the order of runs of a mixture of experts, for Qwen3.8.
+- **`ensemble` with other loops.** Today its contexts share one control list. Other loops need one pass for each
+  loop in each step.
+
+Sources: the model card of SenseNova-Loop-9B, vLLM PR 64832, SGLang PR 47281, dnhkng.github.io "RYS II", and the
+papers above.
 
 ## Where the routes live
 

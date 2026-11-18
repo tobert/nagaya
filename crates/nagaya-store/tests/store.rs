@@ -18,6 +18,7 @@ fn segment(slot: u32, tokens: &[u32]) -> Segment {
         positions: (0..tokens.len() as u64).collect(),
         meta: Vec::new(),
         outputs: OutputsWanted::default(),
+        layer_loop: None,
     }
 }
 
@@ -502,6 +503,7 @@ impl Engine for TestEngine {
             feed: None,
             residual_row_bytes: 0,
             control: None,
+            layer_loops: None,
         }
     }
 
@@ -623,6 +625,7 @@ fn feed_at(engine: &mut FakeAlways, slot: u32, from: u64, tokens: &[u32]) -> Vec
                 positions: (from..=last).collect(),
                 meta: Vec::new(),
                 outputs: OutputsWanted { logit_rows: vec![last] },
+                layer_loop: None,
             }],
             &[],
         )

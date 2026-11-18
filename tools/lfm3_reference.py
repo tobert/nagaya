@@ -21,6 +21,9 @@ The stages, each with its own gate:
            It reads the file of the control stage. It is not in the default stages; name it with --stages project.
   latent   LFM3-1.7B only: 16 latent steps after a prompt, then 8 greedy tokens (lab.md, "`latent` and `merge`").
            It is not in the default stages; name it with --stages latent.
+  loop     LFM3-1.7B only: the logits of a prompt and of 8 greedy tokens under two layer loops (spec 11.16). Each
+           forward runs the whole sequence with no cache, so each run of a layer attends only to its own run.
+           It is not in the default stages; name it with --stages loop.
 
 The tool stops with an AssertionError when a self check fails. The checks:
 
@@ -1036,6 +1039,79 @@ def run_latent(model, backbone, lm_head, tokenizer, out, facts):
     log(f"latent: scale {scale:.4f}, read {read!r}, then {tokenizer.decode(then)!r}")
 
 
+LOOP_PROMPT = "Plan the heist in three short steps."
+# Each plan is (start, end, count): layers start to end - 1 run count times (spec 11.16).
+LOOP_PLANS = [(10, 14, 2), (6, 10, 3)]
+LOOP_THEN = 8
+
+
+class Looped:
+    """Runs the backbone's layers in the order of a plan: the same modules, so each run reads its layer's weights. The
+    decoder picks the mask of a layer by its place in `config.layer_types`, so the types follow the plan too. With
+    no cache, a forward recomputes every position, so each run attends only to the keys of its own run."""
+
+    def __init__(self, backbone, plan):
+        start, end, count = plan
+        n = backbone.config.num_hidden_layers
+        self.order = list(range(start)) + list(range(start, end)) * count + list(range(end, n))
+        self.backbone = backbone
+
+    def __enter__(self):
+        b, c = self.backbone, self.backbone.config
+        self.saved = (b.layers, list(c.layer_types), c.num_hidden_layers)
+        b.layers = torch.nn.ModuleList([self.saved[0][i] for i in self.order])
+        c.layer_types = [self.saved[1][i] for i in self.order]
+        c.num_hidden_layers = len(self.order)
+        return self
+
+    def __exit__(self, *_):
+        b, c = self.backbone, self.backbone.config
+        b.layers, c.layer_types, c.num_hidden_layers = self.saved
+
+
+def run_loop(model, backbone, tokenizer, out, facts):
+    """The layer loop gate of LFM3-1.7B (spec 11.16): the full logits of the last prompt position and of 8 greedy
+    tokens under each plan of LOOP_PLANS, and with no loop. A plan of count 1 must give the logits of no loop."""
+    _, ids = chat_ids(tokenizer, LOOP_PROMPT)
+
+    def last(seq):
+        return model(input_ids=torch.tensor([seq]), use_cache=False).logits[0, -1].float()
+
+    def greedy(seq):
+        rows, tokens = [last(seq)], []
+        for _ in range(LOOP_THEN):
+            token = int(torch.argmax(rows[-1]))
+            tokens.append(token)
+            seq = seq + [token]
+            rows.append(last(seq))
+        return torch.stack(rows), tokens
+
+    tensors = {"ids": torch.tensor(ids, dtype=torch.int64)}
+    replies = {}
+    with torch.no_grad():
+        plain_rows, plain_tokens = greedy(ids)
+        with Looped(backbone, (10, 14, 1)):
+            once = last(ids)
+        check(bool(torch.equal(once, plain_rows[0])), "a plan of count 1 gives the logits of no loop")
+        tensors["plain.logits"] = plain_rows
+        tensors["plain.tokens"] = torch.tensor(plain_tokens, dtype=torch.int64)
+        replies["plain"] = tokenizer.decode(plain_tokens)
+        for start, end, count in LOOP_PLANS:
+            name = f"loop{start}_{end}_{count}"
+            with Looped(backbone, (start, end, count)) as looped:
+                check(len(looped.order) == 24 + (end - start) * (count - 1), f"{name} runs its layers")
+                rows, tokens = greedy(ids)
+            tensors[f"{name}.logits"] = rows
+            tensors[f"{name}.tokens"] = torch.tensor(tokens, dtype=torch.int64)
+            replies[name] = tokenizer.decode(tokens)
+            gap = float((rows[0] - plain_rows[0]).abs().max())
+            log(f"{name}: {replies[name]!r}; the first logits differ from plain by {gap:.3f} at most")
+    meta = {"model": "lfm3", "prompt": LOOP_PROMPT, "plans": LOOP_PLANS, "then": LOOP_THEN, "versions": versions()}
+    save(tensors, Path(out) / "lfm3.loop.safetensors", meta)
+    facts["lfm3_loop"] = {"plans": LOOP_PLANS, "replies": replies}
+    log(f"wrote {Path(out) / 'lfm3.loop.safetensors'}")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--omni", required=True, type=Path)
@@ -1055,7 +1131,7 @@ def main():
     facts = json.loads(facts_path.read_text()) if facts_path.exists() else {}
     facts["versions"] = versions()
 
-    if stages & {"text", "control", "project", "latent"}:
+    if stages & {"text", "control", "project", "latent", "loop"}:
         log("load LFM3-1.7B")
         model = AutoModelForCausalLM.from_pretrained(
             args.text, dtype=torch.float32, attn_implementation="eager", trust_remote_code=True
@@ -1071,6 +1147,8 @@ def main():
             run_project(model.model, model.lm_head, tokenizer, args.out, facts)
         if "latent" in stages:
             run_latent(model, model.model, model.lm_head, tokenizer, args.out, facts)
+        if "loop" in stages:
+            run_loop(model, model.model, tokenizer, args.out, facts)
         del model
 
     if stages & {"text", "vision", "audio", "speech", "control-omni", "video", "audio-out"}:

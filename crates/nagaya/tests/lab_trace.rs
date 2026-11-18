@@ -290,6 +290,7 @@ fn replay(prompt: &[u32], sampled: &[u32], items: &[(ControlOp, f32)]) -> Replay
                 logit_rows: if step { vec![position as u64] } else { Vec::new() },
             },
             control: control.clone(),
+            layer_loop: None,
         };
         let taps: Vec<Tap> = match step {
             true => ["residual", "lens"].map(|name| Tap { name: name.to_owned() }).to_vec(),

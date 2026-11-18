@@ -59,6 +59,7 @@ impl FakeEmbedder {
             residual_row_bytes: 0,
             control: None,
             feed: None,
+            layer_loops: None,
         };
         Self {
             limits,

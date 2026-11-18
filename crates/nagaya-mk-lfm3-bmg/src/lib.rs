@@ -19,6 +19,7 @@ pub mod device;
 pub mod engine;
 pub mod frames;
 pub mod lab;
+pub mod layer_loop;
 pub mod media;
 pub mod model;
 pub mod spec;

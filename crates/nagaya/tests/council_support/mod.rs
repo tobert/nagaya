@@ -251,6 +251,9 @@ pub struct TermFactory {
     pub control: Option<u32>,
     /// True for an engine with the tap `lens` (spec 13.1). It needs the control table.
     pub lens: bool,
+    /// The reserve of extra runs of an engine with layer loops, or `None` for an engine with none (engine-abi "Layer
+    /// loops").
+    pub layer_loops: Option<u32>,
     /// What the engines saw of control vectors.
     pub log: ControlLog,
     /// The most segments in a pass. The toy has 1, so its council jobs never join. With more, the engine declares
@@ -276,6 +279,7 @@ impl TermFactory {
             close: false,
             control: None,
             lens: false,
+            layer_loops: None,
             log: ControlLog::default(),
             seen: None,
             segments: 1,
@@ -295,6 +299,9 @@ impl TermFactory {
         }
         if self.lens {
             inner = inner.with_lens();
+        }
+        if let Some(runs) = self.layer_loops {
+            inner = inner.with_layer_loops(runs);
         }
         WithContextTerm {
             inner,
@@ -557,6 +564,7 @@ impl Direct {
                     outputs: OutputsWanted {
                         logit_rows: if row { vec![to - 1] } else { Vec::new() },
                     },
+                    layer_loop: None,
                 }],
                 &[],
             )

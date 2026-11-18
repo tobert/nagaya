@@ -1,6 +1,6 @@
 //! The pure parts of a build (spec 6.2, 11.3c): the recipe of each boundary, and the steps that feed the rest.
 
-use nagaya_abi::Kind;
+use nagaya_abi::{Kind, LayerLoop};
 use nagaya_store::{ContentId, RecipeId, RecipeMedia, recipe_boundary_media, recipe_decoded, recipe_root};
 
 use crate::control::{self, ControlEntry};
@@ -24,7 +24,33 @@ pub fn root_recipe(identity_digest: &[u8; 32], geometry_key: &[u8]) -> RecipeId 
 /// The root recipe of a context with a control list: the list is the lab state (spec 11.12). An empty list gives the
 /// root of a plain context. The job path of a context calls it when the context names a list (milestone 25 step 7).
 pub fn root_recipe_with_control(identity_digest: &[u8; 32], geometry_key: &[u8], list: &[ControlEntry]) -> RecipeId {
-    recipe_root(identity_digest, geometry_key, &[], &control::recipe_bytes(list))
+    root_recipe_with_lab(identity_digest, geometry_key, list, None)
+}
+
+/// The root recipe of a context with a control list and a layer loop: the lab state is the bytes of the list, then the
+/// bytes of the loop (spec 11.16). With no loop, it is the root of the list alone.
+pub fn root_recipe_with_lab(
+    identity_digest: &[u8; 32],
+    geometry_key: &[u8],
+    list: &[ControlEntry],
+    layer_loop: Option<LayerLoop>,
+) -> RecipeId {
+    let mut lab = control::recipe_bytes(list);
+    lab.extend(loop_recipe_bytes(layer_loop));
+    recipe_root(identity_digest, geometry_key, &[], &lab)
+}
+
+/// The bytes of a layer loop in the lab state (spec 11.16), little-endian: the `u64` marker `u64::MAX`, which no count
+/// of a control list is, then `start`, `end` and `count` as `u32`. No loop has no bytes.
+pub fn loop_recipe_bytes(layer_loop: Option<LayerLoop>) -> Vec<u8> {
+    let Some(LayerLoop { start, end, count }) = layer_loop else {
+        return Vec::new();
+    };
+    let mut bytes = u64::MAX.to_le_bytes().to_vec();
+    for value in [start, end, count] {
+        bytes.extend(value.to_le_bytes());
+    }
+    bytes
 }
 
 /// The recipe at each boundary of a rendering, in order.

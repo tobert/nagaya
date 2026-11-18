@@ -11,7 +11,7 @@ use super::{Lfm3Engine, refused};
 use crate::codes::{self, CODEBOOKS, CODES, END_CODE, SCHEDULE};
 use crate::device::{Device, OnCard};
 use crate::frames::{AUDIO_OUT_TOKEN, check_configs, term_bytes};
-use crate::model::{self, Run};
+use crate::model::{self, TaskRing};
 use crate::spec::WEIGHTS_FILE;
 use crate::weights::{f32_bytes, f32_values};
 use crate::{codec, depth};
@@ -223,6 +223,7 @@ impl Lfm3Engine {
             outputs: nagaya_abi::OutputsWanted {
                 logit_rows: if logits { vec![pos] } else { Vec::new() },
             },
+            layer_loop: None,
         };
         let block = self.check_block(&[segment])?;
         if block.pos0 == 0 {
@@ -236,7 +237,7 @@ impl Lfm3Engine {
             &self.b,
             &self.weights,
             &self.bufs,
-            Run {
+            TaskRing {
                 slot: &self.slots[index],
                 pos0: block.pos0,
                 n: 1,
@@ -248,6 +249,7 @@ impl Lfm3Engine {
                 control: &[],
                 tap: false,
                 lens: false,
+                layer_loop: None,
             },
         );
         assert_eq!(

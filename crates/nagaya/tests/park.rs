@@ -39,6 +39,7 @@ fn segment(state: State, tokens: &[u32]) -> Segment {
         positions: (0..tokens.len() as u64).collect(),
         meta: Vec::new(),
         outputs: OutputsWanted::default(),
+        layer_loop: None,
     }
 }
 

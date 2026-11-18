@@ -568,6 +568,13 @@ impl Council {
             // Each family library renders an open message and checks its seams, so each served model continues a
             // reply (gogi "Continuations"). Riding decisions are not built, so no model declares `ride`.
             embeddings: None,
+            // A served model runs the loops of its engine (spec 11.16).
+            layer_loops: service.layer_loops().map(|limit| gogi_proto::layer_loop::LayerLoops {
+                layers: limit.layers,
+                bounds: limit.bounds.clone(),
+                count: limit.count,
+                extra_runs: u64::from(limit.extra_runs),
+            }),
             capabilities: [
                 Capability::Reads,
                 Capability::Generate,
@@ -581,22 +588,28 @@ impl Council {
             .chain(service.family().thinks().then_some(Capability::Thinking))
             .chain(service.family().describes().then_some(Capability::Describe))
             .chain(service.controls().then_some(Capability::ControlVectors))
+            .chain(service.layer_loops().is_some().then_some(Capability::LayerLoops))
             .collect(),
         }
     }
 
     /// Refuse what a context asks of a served model that does not declare it (gogi "Contexts"): `thinking: true`
-    /// without `thinking`, and a control list without `control_vectors` (spec 11.12). The 400 names `thinking` or
-    /// `control`, or `contexts[i].thinking` or `contexts[i].control` in a request with several contexts.
+    /// without `thinking`, a control list without `control_vectors` (spec 11.12), and a loop that the served model's
+    /// `layer_loops` does not allow (gogi "Layer loops"). The 400 names the member, such as `thinking` or
+    /// `loop.count`, under `contexts[i].` in a request with several contexts.
     fn check_thinking(model: &ServedModel, contexts: &[&gogi_proto::Context], several: bool) -> Result<(), Failure> {
         for (i, context) in contexts.iter().enumerate() {
             for (member, check) in [
                 ("thinking", context.check_thinking(model)),
                 ("control", context.check_control(model)),
+                ("loop", context.check_loop(model)),
             ] {
                 check.map_err(|e| {
                     let invalid = match several {
-                        true => gogi_proto::Invalid::param(format!("contexts[{i}].{member}"), e.message),
+                        true => {
+                            let param = e.param.as_deref().unwrap_or(member);
+                            gogi_proto::Invalid::param(format!("contexts[{i}].{param}"), e.message)
+                        }
                         false => e,
                     };
                     Failure::from(crate::council::error::ServiceError::Invalid(invalid))

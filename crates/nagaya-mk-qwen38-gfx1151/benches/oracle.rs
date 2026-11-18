@@ -45,6 +45,7 @@ fn run(engine: &mut impl Engine, slot: u32, prompt: &oracle::Prompt) -> (Vec<f32
             outputs: OutputsWanted {
                 logit_rows: if last { vec![(end - 1) as u64] } else { Vec::new() },
             },
+            layer_loop: None,
         };
         let out = engine
             .pass(std::slice::from_ref(&segment), &[])

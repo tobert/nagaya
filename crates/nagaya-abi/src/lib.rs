@@ -362,6 +362,8 @@ pub enum Capability {
     SpeechFrames,
     /// Control vectors: `control_write` and `segment.control` (engine-abi "Control vectors").
     Control,
+    /// Layer loops: `segment.layer_loop` (engine-abi "Layer loops").
+    LayerLoops,
 }
 
 /// The limits that an engine declares.
@@ -408,6 +410,65 @@ pub struct Limits {
     pub feed: Option<FeedRule>,
     /// The table of control vectors, when the engine declares `control` (engine-abi "Control vectors").
     pub control: Option<ControlLimit>,
+    /// The spans that the engine runs more than once, when it declares `layer_loops` (engine-abi "Layer loops").
+    pub layer_loops: Option<LayerLoopLimit>,
+}
+
+/// A span of layers that runs more than once: layers `start` to `end - 1` run `count` times (engine-abi "Layer
+/// loops").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct LayerLoop {
+    pub start: u32,
+    pub end: u32,
+    pub count: u32,
+}
+
+impl LayerLoop {
+    /// The runs that the loop adds to each position: `(end - start) * (count - 1)`.
+    pub fn extra_runs(&self) -> u64 {
+        u64::from(self.end.saturating_sub(self.start)) * u64::from(self.count.saturating_sub(1))
+    }
+}
+
+/// The spans that an engine runs more than once (engine-abi "Layer loops").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LayerLoopLimit {
+    /// The layers of the model.
+    pub layers: u32,
+    /// The layers where a span may start or end, in rising order.
+    pub bounds: Vec<u32>,
+    /// The most runs of a span, 2 or more.
+    pub count: u32,
+    /// The most runs that a loop adds to each position: the entries of the reserve of each slot.
+    pub extra_runs: u32,
+}
+
+impl LayerLoopLimit {
+    /// Check a loop of a segment against the limit. The message says which rule the loop breaks.
+    pub fn check(&self, layer_loop: &LayerLoop) -> Result<(), String> {
+        let LayerLoop { start, end, count } = *layer_loop;
+        if !self.bounds.contains(&start) || !self.bounds.contains(&end) || end <= start {
+            return Err(format!(
+                "the loop runs layers {start} to {end}; a span starts and ends at one of {:?}, with its end above its \
+                 start",
+                self.bounds
+            ));
+        }
+        if count == 0 || count > self.count {
+            return Err(format!(
+                "the loop runs its span {count} times; the engine runs a span 1 to {} times",
+                self.count
+            ));
+        }
+        if layer_loop.extra_runs() > u64::from(self.extra_runs) {
+            return Err(format!(
+                "the loop adds {} runs of a layer to each position; each slot holds {}",
+                layer_loop.extra_runs(),
+                self.extra_runs
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// The table of control vectors on the device (engine-abi "Control vectors").
@@ -497,6 +558,7 @@ impl Limits {
     /// Check the rules of the stages and the feed rule (engine-abi D1, D11). The message says which rule breaks.
     pub fn check(&self) -> Result<(), String> {
         self.check_control()?;
+        self.check_layer_loops()?;
         if let Some(feed) = self.feed {
             if feed.block == 0 || feed.block > u64::from(self.max_pass_inputs) {
                 return Err(format!(
@@ -557,6 +619,64 @@ impl Limits {
 }
 
 impl Limits {
+    /// Check the rule of layer loops: the capability `layer_loops` and the limit come together, the bounds rise up to
+    /// the layer count, and a span runs 2 times or more (engine-abi "Layer loops").
+    fn check_layer_loops(&self) -> Result<(), String> {
+        let declared = self.capabilities.contains(&Capability::LayerLoops);
+        let Some(limit) = &self.layer_loops else {
+            if declared {
+                return Err("an engine that declares `layer_loops` gives limits().layer_loops".to_owned());
+            }
+            return Ok(());
+        };
+        if !declared {
+            return Err("an engine with limits().layer_loops declares the capability `layer_loops`".to_owned());
+        }
+        let rising = limit.bounds.windows(2).all(|w| w[0] < w[1]);
+        if limit.bounds.len() < 2 || !rising || limit.bounds.last().is_some_and(|last| *last > limit.layers) {
+            return Err(format!(
+                "the bounds of the layer loops are {:?}; they are 2 or more layers in rising order, up to {}",
+                limit.bounds, limit.layers
+            ));
+        }
+        if limit.count < 2 {
+            return Err(format!(
+                "the layer loops run a span at most {} times; the limit is 2 or more",
+                limit.count
+            ));
+        }
+        Ok(())
+    }
+
+    /// Check the loops of the segments of one pass: each loop fits the limit, and the segments name one loop, or
+    /// none (engine-abi "Layer loops"). The message names the segment.
+    pub fn check_segment_loops(&self, segments: &[Segment]) -> Result<(), String> {
+        for (i, segment) in segments.iter().enumerate() {
+            let Some(layer_loop) = &segment.layer_loop else {
+                continue;
+            };
+            let Some(limit) = &self.layer_loops else {
+                return Err(format!(
+                    "segment {i} names a layer loop; the engine does not declare `layer_loops`"
+                ));
+            };
+            limit
+                .check(layer_loop)
+                .map_err(|message| format!("segment {i}: {message}"))?;
+        }
+        if let Some(first) = segments.first()
+            && let Some(other) = segments
+                .iter()
+                .position(|segment| segment.layer_loop != first.layer_loop)
+        {
+            return Err(format!(
+                "segment {other} names the loop {:?}, and segment 0 names {:?}; the segments of one pass name one loop",
+                segments[other].layer_loop, first.layer_loop
+            ));
+        }
+        Ok(())
+    }
+
     /// Check the rule of the control table: the capability `control`, the limit and the term `control` come together.
     fn check_control(&self) -> Result<(), String> {
         let declared = self.capabilities.contains(&Capability::Control);
@@ -621,6 +741,9 @@ pub struct Segment {
     /// The control items, in order (engine-abi "Control vectors"). An engine without `control` refuses a segment
     /// with items.
     pub control: Vec<ControlItem>,
+    /// The span of layers that runs more than once (engine-abi "Layer loops"). An engine without `layer_loops`
+    /// refuses a segment with a loop.
+    pub layer_loop: Option<LayerLoop>,
 }
 
 /// The operation of a control item (engine-abi "Control vectors"). Let `v` be the vector of a layer, `u` its unit

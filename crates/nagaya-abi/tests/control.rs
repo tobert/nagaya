@@ -116,6 +116,7 @@ fn the_fake_has_no_control_and_refuses_a_segment_with_items() {
         meta: Vec::new(),
         outputs: OutputsWanted { logit_rows: vec![1] },
         control: vec![item(0, ControlOp::Add, 1.0)],
+        layer_loop: None,
     };
     let error = engine.pass(&[segment], &[]).unwrap_err();
     assert_eq!(error.kind, PassErrorKind::Refused);
@@ -146,6 +147,7 @@ fn run(engine: &mut FakeAlways, tokens: &[u32], items: &[ControlItem], taps: &[T
             logit_rows: vec![n - 1],
         },
         control: items.to_vec(),
+        layer_loop: None,
     };
     let out = engine.pass(&[segment], taps).unwrap();
     out.outputs.into_iter().map(|o| (o.name, o.bytes)).collect()
@@ -258,6 +260,7 @@ fn the_fake_residual_tap_gives_each_layer_of_each_logit_row() {
                 meta: Vec::new(),
                 outputs: OutputsWanted::default(),
                 control: Vec::new(),
+                layer_loop: None,
             }],
             &[Tap {
                 name: "routes".to_owned(),
@@ -319,6 +322,7 @@ fn the_fake_lens_gives_a_logit_row_for_each_layer_and_the_last_is_the_head() {
         meta: Vec::new(),
         outputs: OutputsWanted { logit_rows: vec![0, 1] },
         control: Vec::new(),
+        layer_loop: None,
     };
     let error = engine.pass(&[two], &[lens()]).unwrap_err();
     assert_eq!(error.kind, PassErrorKind::Refused);

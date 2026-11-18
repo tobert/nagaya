@@ -54,6 +54,7 @@ pub fn served_model(service: &EmbeddingService, status: ModelStatus) -> ServedMo
             dimensions: config.dimensions.clone(),
             inputs_per_request: config.inputs_per_request,
         }),
+        layer_loops: None,
         capabilities: vec![Capability::Embed, Capability::DryRun],
         // A model that only embeds writes no text, so it takes no build, decision, raw read or generation (gogi).
         media: Some(Media {

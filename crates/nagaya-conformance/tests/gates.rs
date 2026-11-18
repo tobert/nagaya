@@ -700,6 +700,7 @@ impl Engine for CellsOnlyConstantRead {
             feed: None,
             residual_row_bytes: 0,
             control: None,
+            layer_loops: None,
         }
     }
 
@@ -1359,6 +1360,7 @@ impl NanAfterAPass {
             feed: None,
             residual_row_bytes: 0,
             control: None,
+            layer_loops: None,
         };
         Self {
             limits,
@@ -1521,6 +1523,7 @@ fn limits_with(mandatory_bytes: u64) -> Limits {
         feed: None,
         residual_row_bytes: 0,
         control: None,
+        layer_loops: None,
     }
 }
 

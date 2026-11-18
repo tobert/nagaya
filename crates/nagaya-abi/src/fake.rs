@@ -16,9 +16,9 @@ use std::os::unix::fs::FileExt;
 use crate::{
     Arena, ArenaFd, ArenaPart, CONTROL_TERM, Capability, ChainLimits, CheckStrength, Control, ControlItem,
     ControlLimit, ControlOp, Coverage, CoverageSpan, Determinism, Dtype, ElasticTerm, Engine, Identity, Inputs, Kind,
-    Lifetime, Limits, MandatoryTerm, MemoryLimits, Output, PartError, PartKind, PartLimits, Parts, PassError,
-    PassErrorKind, PassOut, PassStatus, Seal, SealError, Segment, SegmentInputs, SlotId, SlotLimit, Slots, Stage,
-    State, Tap, TapLimit, Tier, WriteResult,
+    LayerLoop, LayerLoopLimit, Lifetime, Limits, MandatoryTerm, MemoryLimits, Output, PartError, PartKind, PartLimits,
+    Parts, PassError, PassErrorKind, PassOut, PassStatus, Seal, SealError, Segment, SegmentInputs, SlotId, SlotLimit,
+    Slots, Stage, State, Tap, TapLimit, Tier, WriteResult,
 };
 
 /// The layers of a vector in the control table of the fake (engine-abi "Control vectors").
@@ -212,6 +212,22 @@ impl FakeAlways {
             conditions: Vec::new(),
         });
         self.0.table = vec![vec![0.0; limit.entry_bytes() as usize / 4]; tables as usize];
+        self
+    }
+
+    /// Give the engine layer loops over [`FAKE_CONTROL_LAYERS`] layers, with a reserve of `extra_runs` runs in each
+    /// slot (engine-abi "Layer loops"). A span starts and ends at any layer and runs up to 4 times. A loop of `count`
+    /// 2 or more changes the state after each token by a function of the loop, as a control list does. A loop of
+    /// `count` 1 changes no bit.
+    pub fn with_layer_loops(mut self, extra_runs: u32) -> Self {
+        let limits = &mut self.0.limits;
+        limits.capabilities.push(Capability::LayerLoops);
+        limits.layer_loops = Some(LayerLoopLimit {
+            layers: FAKE_CONTROL_LAYERS,
+            bounds: (0..=FAKE_CONTROL_LAYERS).collect(),
+            count: 4,
+            extra_runs,
+        });
         self
     }
 
@@ -436,6 +452,7 @@ impl Fake {
             feed: None,
             residual_row_bytes: 0,
             control: None,
+            layer_loops: None,
         };
         let slots = (0..limits.slots.iter().map(|slot| slot.count).sum())
             .map(|_| SlotData::new(&parts))
@@ -511,6 +528,10 @@ impl Fake {
                 message: format!("nothing ran: {message}"),
             })?;
         }
+        self.limits.check_segment_loops(segments).map_err(|message| PassError {
+            kind: PassErrorKind::Refused,
+            message: format!("nothing ran: {message}"),
+        })?;
         let rows: usize = segments
             .iter()
             .map(|segment| match &segment.inputs {
@@ -605,7 +626,7 @@ impl Fake {
                 });
             }
             let mut state_bytes = self.state_bytes(segment.state);
-            let steer = self.steer(&segment.control);
+            let steer = self.steer(&segment.control, segment.layer_loop);
             let mut logit_outputs = Vec::new();
             let mut residual = Vec::new();
             let mut lens = Vec::new();
@@ -703,10 +724,11 @@ impl Fake {
         })
     }
 
-    /// The change of the state after each token for a control list: a mix of the vector, the operation and the
-    /// strength of each item that changes bits, in order. A list of adds and ablates of strength 0 gives `None`, so it
-    /// changes no bit (engine-abi "Control vectors").
-    fn steer(&self, items: &[ControlItem]) -> Option<[u8; 16]> {
+    /// The change of the state after each token for a control list and a layer loop: a mix of the vector, the
+    /// operation and the strength of each item that changes bits, in order, then of the loop. A list of adds and
+    /// ablates of strength 0 with no loop, or a loop of `count` 1, gives `None`, so it changes no bit (engine-abi
+    /// "Control vectors", "Layer loops").
+    fn steer(&self, items: &[ControlItem], layer_loop: Option<LayerLoop>) -> Option<[u8; 16]> {
         let mut changed = false;
         let mut hash = 0x7374_6565_7200_u64;
         let width = self.limits.control.map_or(1, |limit| limit.width as usize).max(1);
@@ -746,6 +768,14 @@ impl Fake {
                     hash = mix(hash ^ u64::from(value.to_bits()));
                 }
             }
+        }
+        if let Some(lp) = layer_loop.filter(|lp| lp.count > 1) {
+            changed = true;
+            hash = mix(hash
+                ^ 0x6c6f_6f70_0000_0000
+                ^ u64::from(lp.start) << 32
+                ^ u64::from(lp.end) << 16
+                ^ u64::from(lp.count));
         }
         if !changed {
             return None;

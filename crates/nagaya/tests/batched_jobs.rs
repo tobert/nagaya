@@ -8,8 +8,8 @@ use std::time::Duration;
 use nagaya::jobs::{GroupJobs, JobBody, JobSpec, Ran};
 use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{
-    Dtype, Engine, FeedRule, Identity, Kind, Limits, Output, OutputsWanted, PassError, PassOut, PassStatus, Segment,
-    SegmentInputs, State, Tap,
+    Dtype, Engine, FeedRule, Identity, Kind, LayerLoop, Limits, Output, OutputsWanted, PassError, PassOut, PassStatus,
+    Segment, SegmentInputs, State, Tap,
 };
 use nagaya_sched::{Class, Item};
 
@@ -54,6 +54,12 @@ impl Engine for Rows {
 
     fn pass(&mut self, segments: &[Segment], _taps: &[Tap]) -> Result<PassOut, PassError> {
         assert!(segments.len() <= self.limits.max_segments as usize);
+        // An engine runs one loop in a pass (engine-abi "Layer loops").
+        assert!(
+            segments.iter().all(|s| s.layer_loop == segments[0].layer_loop),
+            "a pass mixes layer loops: {:?}",
+            segments.iter().map(|s| s.layer_loop).collect::<Vec<_>>()
+        );
         self.passes.lock().unwrap().push(segments.len());
         let mut outputs = Vec::new();
         for segment in segments {
@@ -116,6 +122,8 @@ struct Decoder {
     seen: Seen,
     /// When it is set, the end of each pass must come after its preparation, with the same row.
     prepares: Option<Prepares>,
+    /// The layer loop of each segment of the job.
+    layer_loop: Option<LayerLoop>,
 }
 
 impl Decoder {
@@ -129,6 +137,7 @@ impl Decoder {
             outputs: OutputsWanted {
                 logit_rows: vec![self.position],
             },
+            layer_loop: self.layer_loop,
         }
     }
 
@@ -230,6 +239,7 @@ fn decoder(slot: u32, steps: usize, joins: bool, fail_at: Option<usize>) -> (Dec
         done: 0,
         seen: Arc::clone(&seen),
         prepares: None,
+        layer_loop: None,
     };
     (body, seen)
 }
@@ -277,6 +287,34 @@ fn the_decode_quanta_of_a_batching_engine_share_one_pass_and_each_job_gets_its_r
     assert_eq!(*passes.lock().unwrap(), [3, 3, 3, 3]);
     for (slot, s) in seen.iter().enumerate() {
         saw_its_own_rows(s, slot as u32, 4);
+    }
+}
+
+/// Decode rows join only with rows of the same layer loop, because an engine runs one loop in a pass (spec 11.16).
+/// Two jobs of one loop share a pass, and the two jobs with no loop share another.
+///
+/// Falsified by a driver that joins rows of any loop: the engine sees a pass that mixes loops.
+#[test]
+fn decode_rows_join_only_with_rows_of_the_same_layer_loop() {
+    let passes = Passes::default();
+    let mut engines: Vec<Box<dyn Engine>> = vec![Box::new(Rows::new(true, false, 8, &passes))];
+    let mut jobs = GroupJobs::new(0, ["lfm3"]);
+    let mut seen = Vec::new();
+    let looped = Some(LayerLoop {
+        start: 10,
+        end: 14,
+        count: 2,
+    });
+    for (slot, layer_loop) in [(0, looped), (1, None), (2, looped), (3, None)] {
+        let (mut body, s) = decoder(slot, 3, true, None);
+        body.layer_loop = layer_loop;
+        add(&mut jobs, body);
+        seen.push(s);
+    }
+    run_all(&mut jobs, &mut engines);
+    assert_eq!(*passes.lock().unwrap(), [2, 2, 2, 2, 2, 2]);
+    for (slot, s) in seen.iter().enumerate() {
+        saw_its_own_rows(s, slot as u32, 3);
     }
 }
 

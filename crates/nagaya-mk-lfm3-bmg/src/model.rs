@@ -15,6 +15,7 @@
 use nagaya_mk_bmg::protocol::{ControlOp, FLAG_ACCUMULATE, FLAG_TILED, MkTaskDescriptor};
 use nagaya_mk_bmg::tasks;
 
+use crate::layer_loop::{Loop, RunAt, runs, state_kind};
 use crate::spec::{Backbone, HEAD_DIM, LayerKind, MAX_BLOCK, MAX_LOGIT_ROWS, plane_rows, ring_of};
 use crate::weights::{Weights, rounded};
 
@@ -110,8 +111,10 @@ pub fn bufs_bytes(b: &Backbone, max_block: usize) -> usize {
     total
 }
 
-/// The device memory of one slot: the address of each layer's state. A conv layer's address is its conv state
-/// `[taps - 1][hidden]`. An attention layer's address is its key plane, and its value plane follows it.
+/// The device memory of one slot: the address of each state. State `l` below the layer count is the state of layer
+/// `l`, and state `layers + i` is entry `i` of the reserve of extra runs (engine-abi "Layer loops of LFM3"). A conv
+/// state's address is its conv state `[taps - 1][hidden]`. An attention state's address is its key plane, and its
+/// value plane follows it.
 #[derive(Clone, Debug)]
 pub struct SlotMemory {
     /// The positions of the slot.
@@ -120,49 +123,57 @@ pub struct SlotMemory {
 }
 
 impl SlotMemory {
-    /// The memory of a slot of `seq` positions, from `z`, which gives zeroed device memory of a byte count.
-    pub fn new(z: &mut dyn FnMut(usize) -> u64, b: &Backbone, seq: usize) -> Self {
-        let layers = b
-            .layers
-            .iter()
-            .map(|kind| match kind {
+    /// The memory of a slot of `seq` positions with `extra` entries of the reserve, from `z`, which gives zeroed device
+    /// memory of a byte count.
+    pub fn new(z: &mut dyn FnMut(usize) -> u64, b: &Backbone, seq: usize, extra: usize) -> Self {
+        let layers = (0..b.layers.len() + extra)
+            .map(|s| match state_kind(b, s) {
                 LayerKind::Conv => z(b.conv_state() * 4),
-                _ => z(2 * plane_rows(seq, *kind) * b.kv_row() * 4),
+                kind => z(2 * plane_rows(seq, kind) * b.kv_row() * 4),
             })
             .collect();
         Self { seq, layers }
     }
 
-    /// The ring rows of layer `l` in this slot, or 0 when its rows are positions.
-    pub fn ring(&self, b: &Backbone, l: usize) -> usize {
-        if b.layers[l] == LayerKind::Sliding {
+    /// The entries of the reserve of extra runs.
+    pub fn extra(&self, b: &Backbone) -> usize {
+        self.layers.len() - b.layers.len()
+    }
+
+    /// The ring rows of state `s` in this slot, or 0 when its rows are positions.
+    pub fn ring(&self, b: &Backbone, s: usize) -> usize {
+        if state_kind(b, s) == LayerKind::Sliding {
             ring_of(self.seq)
         } else {
             0
         }
     }
 
-    /// The address of the key row (`value` false) or the value row of position `pos` of attention layer `l`.
-    pub fn row(&self, b: &Backbone, l: usize, value: bool, pos: usize) -> u64 {
-        let plane = if value { plane_rows(self.seq, b.layers[l]) } else { 0 };
-        let ring = self.ring(b, l);
+    /// The address of the key row (`value` false) or the value row of position `pos` of attention state `s`.
+    pub fn row(&self, b: &Backbone, s: usize, value: bool, pos: usize) -> u64 {
+        let plane = if value {
+            plane_rows(self.seq, state_kind(b, s))
+        } else {
+            0
+        };
+        let ring = self.ring(b, s);
         let at = if ring > 0 { pos % ring } else { pos };
-        self.layers[l] + ((plane + at) * b.kv_row() * 4) as u64
+        self.layers[s] + ((plane + at) * b.kv_row() * 4) as u64
     }
 
-    /// The runs of device rows that hold positions `rows` of attention layer `l`: one run, or two where a ring wraps.
+    /// The runs of device rows that hold positions `rows` of attention state `s`: one run, or two where a ring wraps.
     /// Each run is the address of its first row and its count of rows.
-    pub fn runs(&self, b: &Backbone, l: usize, value: bool, rows: std::ops::Range<usize>) -> Vec<(u64, usize)> {
-        let ring = self.ring(b, l);
+    pub fn runs(&self, b: &Backbone, s: usize, value: bool, rows: std::ops::Range<usize>) -> Vec<(u64, usize)> {
+        let ring = self.ring(b, s);
         let n = rows.len();
         if ring > 0 && rows.start % ring + n > ring {
             let head = ring - rows.start % ring;
             vec![
-                (self.row(b, l, value, rows.start), head),
-                (self.row(b, l, value, rows.start + head), n - head),
+                (self.row(b, s, value, rows.start), head),
+                (self.row(b, s, value, rows.start + head), n - head),
             ]
         } else {
-            vec![(self.row(b, l, value, rows.start), n)]
+            vec![(self.row(b, s, value, rows.start), n)]
         }
     }
 }
@@ -190,11 +201,12 @@ impl Control {
 
 /// What one ring runs: a block of `n` tokens at `pos0` of one slot, and how far it goes.
 #[derive(Clone, Copy, Debug)]
-pub struct Run<'a> {
+pub struct TaskRing<'a> {
     pub slot: &'a SlotMemory,
     pub pos0: usize,
     pub n: usize,
-    /// The layers that the ring runs, from layer 0. A probe of the oracle stops early.
+    /// The runs of layers that the ring runs, from the first. A probe of the oracle stops early. Without a loop, it is
+    /// the count of layers.
     pub layers: usize,
     /// The block rows whose logits the ring gives, after the final norm. With `None`, the ring stops after the layers.
     pub logit_rows: Option<&'a [usize]>,
@@ -207,6 +219,8 @@ pub struct Run<'a> {
     /// True when the ring also gives the lens of each tapped row in `bufs.lens`: the final norm, then the head (spec
     /// 13.1). It needs the tap and one logit row.
     pub lens: bool,
+    /// The span of layers that runs more than once, on the reserve of the slot (engine-abi "Layer loops of LFM3").
+    pub layer_loop: Option<Loop>,
 }
 
 fn accumulate(mut task: MkTaskDescriptor) -> MkTaskDescriptor {
@@ -223,8 +237,8 @@ fn tiled(mut task: MkTaskDescriptor) -> MkTaskDescriptor {
 
 /// The tasks of one run. The ids are in `bufs.ids`. After the run, `bufs.x` holds the residual stream after the layers
 /// that ran, `bufs.h` holds the final norm, and `bufs.logits` row `i` holds the logits of logit row `i`.
-pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskDescriptor> {
-    let Run {
+pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, ring: TaskRing<'_>) -> Vec<MkTaskDescriptor> {
+    let TaskRing {
         slot,
         pos0,
         n,
@@ -234,9 +248,11 @@ pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskD
         control,
         tap,
         lens,
-    } = run;
+        layer_loop,
+    } = ring;
+    let plan = runs(b, layer_loop, slot.extra(b)).expect("the engine checks the loop first");
     assert!(
-        layers <= b.layers.len() && (layers == b.layers.len() || logit_rows.is_none()),
+        layers <= plan.len() && (layers == plan.len() || logit_rows.is_none()),
         "a run gives logits only after every layer"
     );
     assert!(
@@ -257,8 +273,8 @@ pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskD
     let (heads, kv, d) = (b.heads as u32, b.kv_heads as u32, b.head_dim as u32);
     let mut t = vec![tasks::embed(bufs.ids, w.embed, bufs.x, n32, h32, 0, false, false)];
     t.extend_from_slice(after_embed);
-    for (l, lw) in w.layers.iter().enumerate().take(layers) {
-        let kind = b.layers[l];
+    for &RunAt { layer: l, state: s } in plan.iter().take(layers) {
+        let (lw, kind) = (&w.layers[l], b.layers[l]);
         t.push(tasks::rmsnorm(bufs.x, lw.operator_norm, bufs.h, n32, h32, b.eps, false));
         match kind {
             LayerKind::Conv => {
@@ -274,7 +290,7 @@ pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskD
                 t.push(tasks::short_conv(
                     bufs.bcx,
                     lw.conv,
-                    slot.layers[l],
+                    slot.layers[s],
                     bufs.y,
                     n32,
                     h32,
@@ -289,7 +305,7 @@ pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskD
                     _ => (b.sliding_rope, b.window as u32),
                 };
                 let full = kind == LayerKind::Full;
-                let (kr, vr) = (slot.row(b, l, false, pos0), slot.row(b, l, true, pos0));
+                let (kr, vr) = (slot.row(b, s, false, pos0), slot.row(b, s, true, pos0));
                 t.push(tiled(tasks::matmul(bufs.h, lw.q, bufs.q, n32, heads * d, h32, false)));
                 t.push(tiled(tasks::matmul(bufs.h, lw.k, kr, n32, kv * d, h32, false)));
                 t.push(tiled(tasks::matmul(bufs.h, lw.v, vr, n32, kv * d, h32, false)));
@@ -317,17 +333,17 @@ pub fn pass(b: &Backbone, w: &Weights, bufs: &Bufs, run: Run<'_>) -> Vec<MkTaskD
                     tasks::qk_rope(kr, lw.k_norm, n32 * kv, kv, d, pos0 as u32, full, true, b.eps, 1.0),
                     rope.pairs as u32,
                 ));
-                let ring = slot.ring(b, l);
+                let ring = slot.ring(b, s);
                 if ring > 0 && pos0 % ring + n > ring {
                     // The rows past the end of the ring move to its start, bit for bit, before attention reads them.
                     let spill = ((pos0 % ring + n - ring) * b.kv_row()) as u32;
                     for value in [false, true] {
-                        let start = slot.row(b, l, value, 0);
+                        let start = slot.row(b, s, value, 0);
                         let past = start + (ring * b.kv_row() * 4) as u64;
                         t.push(tasks::copy(past, start, spill));
                     }
                 }
-                let base = slot.layers[l];
+                let base = slot.layers[s];
                 let mut attend: Vec<MkTaskDescriptor> = if n == 1 {
                     tasks::attend_one(bufs.q, base, bufs.y, heads, kv, d, pos0 as u32, slot.seq as u32, window).to_vec()
                 } else {
@@ -450,13 +466,19 @@ pub struct Batch<'a> {
     /// The slot of each row and the position of its token.
     pub rows: &'a [(&'a SlotMemory, usize)],
     pub control: &'a [Control],
+    /// The one loop of every row (engine-abi "Layer loops"). Each slot holds its reserve.
+    pub layer_loop: Option<Loop>,
 }
 
 /// The tasks of a batch. The weight ops run once over the rows, on the tiled path. Each row has its own convolution,
 /// K and V rows, rotation and attention on its own slot, as a pass of one row has. Thus a row gets the bits of a pass
 /// alone. `bufs.logits` row `i` holds the logits of row `i`.
 pub fn batch(b: &Backbone, w: &Weights, bufs: &Bufs, batch: Batch<'_>) -> Vec<MkTaskDescriptor> {
-    let Batch { rows, control } = batch;
+    let Batch {
+        rows,
+        control,
+        layer_loop,
+    } = batch;
     let n = rows.len();
     assert!(
         (1..=MAX_LOGIT_ROWS).contains(&n),
@@ -469,8 +491,10 @@ pub fn batch(b: &Backbone, w: &Weights, bufs: &Bufs, batch: Batch<'_>) -> Vec<Mk
     let (heads, kv, d) = (b.heads as u32, b.kv_heads as u32, b.head_dim as u32);
     let (hidden, q_row, kv_row) = (b.hidden * 4, b.heads * b.head_dim * 4, b.kv_row() * 4);
     let mut t = vec![tasks::embed(bufs.ids, w.embed, bufs.x, n32, h32, 0, false, false)];
-    for (l, lw) in w.layers.iter().enumerate() {
-        let kind = b.layers[l];
+    let extra = rows.iter().map(|(slot, _)| slot.extra(b)).min().unwrap_or(0);
+    let plan = runs(b, layer_loop, extra).expect("the engine checks the loop first");
+    for &RunAt { layer: l, state: s } in &plan {
+        let (lw, kind) = (&w.layers[l], b.layers[l]);
         t.push(tasks::rmsnorm(bufs.x, lw.operator_norm, bufs.h, n32, h32, b.eps, false));
         match kind {
             LayerKind::Conv => {
@@ -487,7 +511,7 @@ pub fn batch(b: &Backbone, w: &Weights, bufs: &Bufs, batch: Batch<'_>) -> Vec<Mk
                     t.push(tasks::short_conv(
                         bufs.bcx + (i * 3 * hidden) as u64,
                         lw.conv,
-                        slot.layers[l],
+                        slot.layers[s],
                         bufs.y + (i * hidden) as u64,
                         1,
                         h32,
@@ -511,9 +535,9 @@ pub fn batch(b: &Backbone, w: &Weights, bufs: &Bufs, batch: Batch<'_>) -> Vec<Mk
                 )));
                 // The queries carry the scale head_dim^-0.5, because the attention ops do not scale.
                 let scale = (b.head_dim as f32).powf(-0.5);
-                let ring = slot_ring(b, rows, l);
+                let ring = slot_ring(b, rows, s);
                 for (i, (slot, pos)) in rows.iter().enumerate() {
-                    let (kr, vr) = (slot.row(b, l, false, *pos), slot.row(b, l, true, *pos));
+                    let (kr, vr) = (slot.row(b, s, false, *pos), slot.row(b, s, true, *pos));
                     // A row of one token never wraps a ring, so its rows go straight to their places.
                     t.push(tasks::copy(bufs.k + (i * kv_row) as u64, kr, kv * d));
                     t.push(tasks::copy(bufs.v + (i * kv_row) as u64, vr, kv * d));
@@ -528,7 +552,7 @@ pub fn batch(b: &Backbone, w: &Weights, bufs: &Bufs, batch: Batch<'_>) -> Vec<Mk
                     ));
                     let mut attend = tasks::attend_one(
                         q,
-                        slot.layers[l],
+                        slot.layers[s],
                         bufs.y + (i * hidden) as u64,
                         heads,
                         kv,
@@ -603,9 +627,9 @@ pub fn batch(b: &Backbone, w: &Weights, bufs: &Bufs, batch: Batch<'_>) -> Vec<Mk
     t
 }
 
-/// The ring rows of layer `l` of the slot of each row.
-fn slot_ring(b: &Backbone, rows: &[(&SlotMemory, usize)], l: usize) -> Vec<usize> {
-    rows.iter().map(|(slot, _)| slot.ring(b, l)).collect()
+/// The ring rows of state `s` of the slot of each row.
+fn slot_ring(b: &Backbone, rows: &[(&SlotMemory, usize)], s: usize) -> Vec<usize> {
+    rows.iter().map(|(slot, _)| slot.ring(b, s)).collect()
 }
 
 #[cfg(test)]
@@ -639,6 +663,7 @@ mod tests {
             },
             b,
             seq,
+            0,
         )
     }
 
@@ -668,7 +693,7 @@ mod tests {
             &b,
             &w,
             &bufs,
-            Run {
+            TaskRing {
                 slot: &slot,
                 pos0: 0,
                 n: 8,
@@ -678,6 +703,7 @@ mod tests {
                 control: &[],
                 tap: false,
                 lens: false,
+                layer_loop: None,
             },
         );
         assert_eq!(t[0].opcode, OP_EMBED);
@@ -705,7 +731,7 @@ mod tests {
             &b,
             &w,
             &bufs,
-            Run {
+            TaskRing {
                 slot: &slot,
                 pos0: 5,
                 n: 1,
@@ -715,6 +741,7 @@ mod tests {
                 control: &[],
                 tap: false,
                 lens: false,
+                layer_loop: None,
             },
         );
         let weight_ops: Vec<&MkTaskDescriptor> = t
@@ -747,6 +774,7 @@ mod tests {
             Batch {
                 rows: &rows,
                 control: &[],
+                layer_loop: None,
             },
         );
         assert_eq!(t[0].opcode, OP_EMBED);
@@ -829,6 +857,7 @@ mod tests {
                 Batch {
                     rows: &rows,
                     control: &vec![item.clone(); items],
+                    layer_loop: None,
                 },
             )
             .len()
@@ -848,7 +877,7 @@ mod tests {
                 &b,
                 &w,
                 &bufs,
-                Run {
+                TaskRing {
                     slot: &slot,
                     pos0: 0,
                     n: 4,
@@ -858,6 +887,7 @@ mod tests {
                     control,
                     tap: false,
                     lens: false,
+                    layer_loop: None,
                 },
             );
             let hidden = (b.hidden * 4) as u64;
@@ -889,6 +919,259 @@ mod tests {
             lw.post_ffn_norm = 0x20_0000 + l as u64 * 0x100;
         }
         w
+    }
+
+    /// The memory of a slot with a reserve of `extra` entries from `1 << 40`.
+    fn memory_with(b: &Backbone, seq: usize, extra: usize) -> SlotMemory {
+        let mut next = 1u64 << 40;
+        SlotMemory::new(
+            &mut |bytes| {
+                let at = next;
+                next += rounded(bytes) as u64;
+                at
+            },
+            b,
+            seq,
+            extra,
+        )
+    }
+
+    fn looped(
+        b: &Backbone,
+        w: &Weights,
+        slot: &SlotMemory,
+        n: usize,
+        layer_loop: Option<Loop>,
+    ) -> Vec<MkTaskDescriptor> {
+        pass(
+            b,
+            w,
+            &bufs(b),
+            TaskRing {
+                slot,
+                pos0: 0,
+                n,
+                layers: crate::layer_loop::runs(b, layer_loop, slot.extra(b)).unwrap().len(),
+                logit_rows: Some(&[0]),
+                after_embed: &[],
+                control: &[],
+                tap: false,
+                lens: false,
+                layer_loop,
+            },
+        )
+    }
+
+    /// The layer of each run of a ring, in order: the layer whose post_ffn norm each accumulate reads.
+    fn layer_order(w: &Weights, t: &[MkTaskDescriptor]) -> Vec<usize> {
+        t.iter()
+            .filter(|task| task.flags & FLAG_ACCUMULATE != 0)
+            .filter_map(|task| w.layers.iter().position(|lw| lw.post_ffn_norm == task.b))
+            .collect()
+    }
+
+    #[test]
+    fn a_reserve_holds_entries_of_the_kinds_of_the_group_after_the_layers() {
+        let b = backbone();
+        let slot = memory_with(&b, 1024, 8);
+        assert_eq!((slot.layers.len(), slot.extra(&b)), (32, 8));
+        let plain = memory_with(&b, 1024, 0);
+        assert_eq!(
+            &slot.layers[..24],
+            &plain.layers[..],
+            "the reserve does not move a layer"
+        );
+        // Entry 0 is a full layer: its value plane follows a key plane of every position.
+        assert_eq!(state_kind(&b, 24), LayerKind::Full);
+        assert_eq!(slot.row(&b, 24, true, 0), slot.layers[24] + (1024 * 512 * 4) as u64);
+        assert_eq!(state_kind(&b, 26), LayerKind::Sliding);
+        assert_eq!(
+            slot.ring(&b, 26),
+            slot.ring(&b, 4),
+            "a sliding entry keeps the ring of a sliding layer"
+        );
+    }
+
+    #[test]
+    fn count_1_builds_the_ring_of_no_loop() {
+        let b = backbone();
+        let w = weights_with_norms(&b);
+        for n in [1, 37] {
+            let slot = memory_with(&b, 1024, 8);
+            let plain = looped(&b, &w, &slot, n, None);
+            let once = looped(
+                &b,
+                &w,
+                &slot,
+                n,
+                Some(Loop {
+                    start: 10,
+                    end: 14,
+                    count: 1,
+                }),
+            );
+            assert_eq!(format!("{plain:?}"), format!("{once:?}"), "{n} positions");
+        }
+    }
+
+    #[test]
+    fn a_loop_runs_its_span_again_with_the_weights_of_its_layers_on_the_reserve() {
+        let b = backbone();
+        let w = weights_with_norms(&b);
+        let slot = memory_with(&b, 1024, 8);
+        for n in [1, 37] {
+            let plain = looped(&b, &w, &slot, n, None);
+            let t = looped(
+                &b,
+                &w,
+                &slot,
+                n,
+                Some(Loop {
+                    start: 10,
+                    end: 14,
+                    count: 3,
+                }),
+            );
+            let mut want: Vec<usize> = (0..14).collect();
+            want.extend([10, 11, 12, 13, 10, 11, 12, 13]);
+            want.extend(14..24);
+            assert_eq!(layer_order(&w, &t), want, "{n} positions");
+            // Each run of a conv layer reads and writes its own state: the layer's, then entries 1, 3, 5 and 7.
+            let convs: Vec<u64> = t
+                .iter()
+                .filter(|task| task.opcode == OP_SHORT_CONV)
+                .map(|task| task.x)
+                .collect();
+            let mut want_convs: Vec<u64> = b
+                .layers_of(LayerKind::Conv)
+                .filter(|l| *l <= 13)
+                .map(|l| slot.layers[l])
+                .collect();
+            want_convs.extend([25, 27, 29, 31].map(|s| slot.layers[s]));
+            want_convs.extend(b.layers_of(LayerKind::Conv).filter(|l| *l > 13).map(|l| slot.layers[l]));
+            assert_eq!(convs, want_convs, "{n} positions");
+            // Each attention run attends on its own state: layer 10, 12, then entries 0, 2, 4 and 6.
+            let attends: Vec<u64> = t
+                .iter()
+                .filter(|task| matches!(task.opcode, OP_ATTN | OP_ATTN_STREAM))
+                .map(|task| task.b)
+                .collect();
+            let mut want_attends: Vec<u64> = b
+                .layers
+                .iter()
+                .enumerate()
+                .filter(|(l, k)| **k != LayerKind::Conv && *l <= 13)
+                .map(|(l, _)| slot.layers[l])
+                .collect();
+            want_attends.extend([24, 26, 28, 30].map(|s| slot.layers[s]));
+            want_attends.extend(
+                b.layers
+                    .iter()
+                    .enumerate()
+                    .filter(|(l, k)| **k != LayerKind::Conv && *l > 13)
+                    .map(|(l, _)| slot.layers[l]),
+            );
+            let distinct: std::collections::BTreeSet<u64> = attends.iter().copied().collect();
+            let want_distinct: std::collections::BTreeSet<u64> = want_attends.iter().copied().collect();
+            assert_eq!(distinct, want_distinct, "{n} positions");
+            // The key and value rows of an extra run go to its entry.
+            for s in [24, 26, 28, 30] {
+                for value in [false, true] {
+                    let row = slot.row(&b, s, value, 0);
+                    assert!(
+                        t.iter().any(|task| task.opcode == OP_MATMUL && task.c == row),
+                        "{n} positions: entry {} gets its {} rows",
+                        s - 24,
+                        if value { "value" } else { "key" }
+                    );
+                }
+            }
+            assert!(t.len() > plain.len(), "the extra runs add tasks");
+        }
+    }
+
+    #[test]
+    fn a_batch_under_a_loop_runs_each_row_on_the_reserve_of_its_slot() {
+        let b = backbone();
+        let w = weights_with_norms(&b);
+        let bufs = bufs(&b);
+        let slots = [memory_with(&b, 1024, 8), {
+            let mut next = 2u64 << 40;
+            SlotMemory::new(
+                &mut |bytes| {
+                    let at = next;
+                    next += rounded(bytes) as u64;
+                    at
+                },
+                &b,
+                1024,
+                8,
+            )
+        }];
+        let rows: Vec<(&SlotMemory, usize)> = slots.iter().zip([5usize, 300]).collect();
+        let lp = Some(Loop {
+            start: 6,
+            end: 14,
+            count: 2,
+        });
+        let t = batch(
+            &b,
+            &w,
+            &bufs,
+            Batch {
+                rows: &rows,
+                control: &[],
+                layer_loop: lp,
+            },
+        );
+        let mut want: Vec<usize> = (0..14).collect();
+        want.extend(6..14);
+        want.extend(14..24);
+        assert_eq!(layer_order(&w, &t), want);
+        for slot in &slots {
+            for s in 24..32 {
+                let used = t.iter().any(|task| {
+                    (task.opcode == OP_SHORT_CONV && task.x == slot.layers[s])
+                        || (task.opcode == OP_ATTN && task.b == slot.layers[s])
+                });
+                assert!(used, "entry {} of a slot holds an extra run", s - 24);
+                if state_kind(&b, s) != LayerKind::Conv {
+                    for (slot, pos) in &rows {
+                        let key = slot.row(&b, s, false, *pos);
+                        assert!(
+                            t.iter().any(|task| task.opcode == OP_COPY && task.c == key),
+                            "entry {} gets the key row of its row",
+                            s - 24
+                        );
+                    }
+                }
+            }
+        }
+        let plain = batch(
+            &b,
+            &w,
+            &bufs,
+            Batch {
+                rows: &rows,
+                control: &[],
+                layer_loop: None,
+            },
+        );
+        let once = batch(
+            &b,
+            &w,
+            &bufs,
+            Batch {
+                rows: &rows,
+                control: &[],
+                layer_loop: Some(Loop {
+                    start: 6,
+                    end: 14,
+                    count: 1,
+                }),
+            },
+        );
+        assert_eq!(format!("{plain:?}"), format!("{once:?}"), "count 1 is the plain batch");
     }
 
     #[test]
@@ -926,7 +1209,7 @@ mod tests {
                 &b,
                 &w,
                 &bufs,
-                Run {
+                TaskRing {
                     slot: &slot,
                     pos0: 0,
                     n: 8,
@@ -936,6 +1219,7 @@ mod tests {
                     control,
                     tap: false,
                     lens: false,
+                    layer_loop: None,
                 },
             )
         };
@@ -996,7 +1280,7 @@ mod tests {
             &b,
             &w,
             &bufs,
-            Run {
+            TaskRing {
                 slot: &slot,
                 pos0: 0,
                 n: 8,
@@ -1006,6 +1290,7 @@ mod tests {
                 control: &control,
                 tap: true,
                 lens: false,
+                layer_loop: None,
             },
         );
         let items: Vec<usize> = t
@@ -1030,7 +1315,7 @@ mod tests {
             &b,
             &w,
             &bufs,
-            Run {
+            TaskRing {
                 slot: &slot,
                 pos0: 0,
                 n: 8,
@@ -1040,6 +1325,7 @@ mod tests {
                 control: &control,
                 tap: false,
                 lens: false,
+                layer_loop: None,
             },
         );
         assert_eq!(count(&untapped, OP_COPY), 0);
@@ -1056,7 +1342,7 @@ mod tests {
                 &b,
                 &w,
                 &bufs,
-                Run {
+                TaskRing {
                     slot: &slot,
                     pos0: 0,
                     n: 8,
@@ -1066,6 +1352,7 @@ mod tests {
                     control: &[],
                     tap,
                     lens,
+                    layer_loop: None,
                 },
             )
         };
@@ -1108,7 +1395,7 @@ mod tests {
             &b,
             &w,
             &bufs,
-            Run {
+            TaskRing {
                 slot: &slot,
                 pos0: 0,
                 n: 8,
@@ -1118,6 +1405,7 @@ mod tests {
                 control: &[],
                 tap: true,
                 lens: true,
+                layer_loop: None,
             },
         );
     }
@@ -1154,7 +1442,7 @@ mod tests {
             &b,
             &w,
             &bufs,
-            Run {
+            TaskRing {
                 slot: &slot,
                 pos0: 0,
                 n: 90,
@@ -1164,6 +1452,7 @@ mod tests {
                 control: &[],
                 tap: false,
                 lens: false,
+                layer_loop: None,
             },
         );
         assert_eq!((t[0].opcode, t[1].opcode), (OP_EMBED, OP_COPY));
@@ -1184,7 +1473,7 @@ mod tests {
             &b,
             &w,
             &bufs,
-            Run {
+            TaskRing {
                 slot: &slot,
                 pos0: 100,
                 n: 1,
@@ -1194,6 +1483,7 @@ mod tests {
                 control: &[],
                 tap: false,
                 lens: false,
+                layer_loop: None,
             },
         );
         assert_eq!((count(&one, OP_ATTN), count(&one, OP_ATTN_STREAM)), (11, 0));
@@ -1203,7 +1493,7 @@ mod tests {
             &b,
             &w,
             &bufs,
-            Run {
+            TaskRing {
                 slot: &slot,
                 pos0: 2000,
                 n: 100,
@@ -1213,6 +1503,7 @@ mod tests {
                 control: &[],
                 tap: false,
                 lens: false,
+                layer_loop: None,
             },
         );
         let copies: Vec<&MkTaskDescriptor> = wrap.iter().filter(|task| task.opcode == OP_COPY).collect();

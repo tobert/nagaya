@@ -105,6 +105,7 @@ impl JobBody for BadPass {
             positions: vec![0],
             meta: Vec::new(),
             outputs: OutputsWanted { logit_rows: vec![5] },
+            layer_loop: None,
         };
         let error = engines[0].pass(&[segment], &[]).expect_err("the fake refuses the pass");
         assert!(error.message.contains("row"), "{error:?}");

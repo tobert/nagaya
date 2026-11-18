@@ -616,6 +616,16 @@ impl Service {
             media: rendering.media.clone(),
         };
         let steer = self.steer(context, "")?;
+        // A frame feeds its position as a plain pass, so it would leave the extra runs of a loop with no state there
+        // (engine-abi "Layer loops"). Refuse the loop until a frame carries it.
+        if steer.layer_loop.is_some() {
+            return Err(Invalid::param(
+                "loop",
+                "nothing ran: a reply with audio does not run under a layer loop yet; send the loop with a text reply, \
+                 or no loop with an output",
+            )
+            .into());
+        }
         let root = steer.root;
         let recipes = super::plan_recipes(root, &built)?;
         let cuts = self.cuts(root, context, &built)?;
@@ -697,7 +707,7 @@ impl Service {
             ContextBody::with(shared, tokens, recipes.clone(), room, then, tx)
                 .media(media)
                 .cuts(cuts)
-                .control(root, control)
+                .control(root, control, None)
         };
         let finished = self.run_context(job, schedule, None)?;
         let then = finished.then;

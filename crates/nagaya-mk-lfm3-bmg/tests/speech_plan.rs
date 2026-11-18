@@ -14,6 +14,7 @@ fn config(which: Which, slots: usize) -> Config {
         model_dir: common::model_dir(which),
         slots: vec![spec::SLOT_TOKENS; slots],
         max_block: 512,
+        extra_runs: 0,
     }
 }
 

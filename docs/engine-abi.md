@@ -184,6 +184,7 @@ telemetry    op_times(), dispatches(), ...; pass(…, trace_context) so engine s
 train        train_pass(segments) -> status, ms, loss     a forward, a backward and an optimizer step
 close        close()                     frees the engine in the process
 control      control_write(index, bytes) / segment.control   control vectors in a table on the device (below)
+layer_loops  segment.layer_loop                a span of layers that runs more than once (below)
 ```
 
 An engine without `close` stays open until the process exits. The nagaya changes such an engine only through a
@@ -1230,9 +1231,11 @@ weights, and the open checks that the config has no vision tower, audio encoder 
 
 The text path of the backbone (`crates/nagaya-mk-lfm3-bmg`) follows these rules.
 
-- **The config.** The kind is `mk-lfm3-bmg`. Its config has three keys. `model_dir` names the model folder, and it
+- **The config.** The kind is `mk-lfm3-bmg`. Its config has four keys. `model_dir` names the model folder, and it
   has no default, because one kind serves two models. `slots` is a count of slots of 32,768 positions, or a list of
   the positions of each slot. `max_block` is the feed block: 512 when the key is absent, and 1 to 512.
+- **The reserve.** `extra_runs` is the reserve of layer loops in each slot ("Layer loops of LFM3"). It is 0 when the
+  key is absent, else a multiple of 4 up to 64.
 - **Slot sizes.** A slot holds 1 to 262,144 positions, the
   `max_position_embeddings` of LFM3-1.7B. The list goes from short to long, and the engine refuses another order.
   The host gives a job the lowest free slot that holds it (`slots::take`), so the order makes it the shortest. A
@@ -1390,6 +1393,27 @@ The layout of a latent span has these rules. Reason: the engine must check the r
 - **The copy.** The host writes the rows into the buffer of the normed rows. A copy puts them over the embedding rows
   after the embedding. Thus the text model needs no vision tower for it.
 
+### Layer loops of LFM3
+
+Both LFM3 models have 24 layers. Layers 0 and 1 are convolutions, and a group of four follows from layer 2: full
+attention, convolution, sliding attention, convolution. Layers 22 and 23 start a sixth group. Each rule below is
+**Proposed** (Claude Opus 5.5, 2026-11-18).
+
+- **The limits.** `bounds` is `[2, 6, 10, 14, 18, 22]`, the edges of the groups. `count` is 4. `extra_runs` comes
+  from the profile, and it is a multiple of 4. With 0, the engine declares no `layer_loops`.
+- **The reserve.** Entry `i` has the kind of layer `2 + i mod 4`. Each span starts at a group edge and holds whole
+  groups, so extra run `i` is a layer of that kind. An entry of a full layer holds cells, and an entry of a sliding
+  layer holds a ring, as the layer does.
+- **The parts.** The parts of entry `i` follow the parts of the layers, with the names `k.x<ii>`, `v.x<ii>` and
+  `conv.x<ii>`.
+- **The ring.** The builder walks the runs in order. Each run takes the weights of its layer, and the address of the
+  state of the layer or of its entry. No kernel changes: each task of a run is a task of a plain pass at other
+  addresses.
+- **The cost.** An entry costs what its layer costs in each slot. A slot of 32,768 positions holds the planes of a
+  full layer as 2 × 32,768 rows. The ledger charges the reserve in the slot's size.
+- **Taps and speech.** The tap `residual` and the lens read the row after the last run of each layer. Omni keeps the
+  hidden row of the last run for `frame`.
+
 ## Control vectors
 
 This section holds the engine's part of the rules of control vectors.
@@ -1418,6 +1442,34 @@ taps: lens                                   the final norm and the head of each
 
 Reason: a table that `open` sizes keeps the rule that `pass` never allocates. A vector of 24 layers at 2,048 values
 is 196,608 bytes. Thus a table of 8 entries is 1.5 MiB on a card of 32 GiB.
+
+## Layer loops
+
+This section holds the engine's part of the rules of layer loops (spec 11.16, gogi "Layer loops"). Each rule is
+**Proposed** (Claude Opus 5.5, 2026-11-18).
+
+```
+limits().layer_loops: {layers, bounds, count, extra_runs}?   the spans that the engine runs more than once
+segment.layer_loop: {start, end, count}?                      layers start to end - 1 run count times
+```
+
+- **The order.** A pass runs layers 0 to `start - 1` once, then layers `start` to `end - 1` `count` times, then the
+  other layers once. Each run reads the residual that the run before it wrote.
+- **The state of a run.** The first run of a layer uses the state of the layer. Extra run `i` uses entry `i` of the
+  reserve of the slot, in the order of the runs. An entry holds the state of one layer: keys and values, or a
+  recurrent state. Every run reads the weights of its layer.
+- **The reserve.** `open` allocates `extra_runs` entries in each slot, so `pass` never allocates. The parts of a
+  state list the entries after the layers. A snapshot holds them, as it holds each part.
+- **The bounds.** A span starts and ends at a bound. An engine whose layers have several kinds names the edges of
+  its repeating group. Thus entry `i` has the same kind in each loop, and the parts of a state do not change.
+- **Checks.** A segment with a loop to an engine without `layer_loops` is refused. So is a loop that breaks a limit.
+  The segments of one pass name one loop, or none.
+- **Bits.** A loop of `count` 1 gives the bits of the same segment with no loop. A pass with no loop keeps its bits.
+- **Control.** An item acts after each run of each layer that its vector holds.
+- **Taps.** The tap `residual` gives the row of each layer after its last run.
+
+Reason: the reserve keeps the rule that `pass` never allocates, and fixed parts keep the store's rules of a snapshot.
+The worker joins only the segments of one loop, so the engine never mixes two loops in one pass.
 
 **The worker of the table.** The worker keeps the content id of each entry (above). It follows these rules.
 

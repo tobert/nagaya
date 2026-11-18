@@ -46,11 +46,11 @@ pub fn config(table: &toml::Table) -> Result<Config, PlanError> {
     let what = format!("the config of `{KIND}`");
     if let Some(key) = table
         .keys()
-        .find(|key| !matches!(key.as_str(), "model_dir" | "slots" | "max_block"))
+        .find(|key| !matches!(key.as_str(), "model_dir" | "slots" | "max_block" | "extra_runs"))
     {
         return Err(fail(format!(
-            "{what} has the key `{key}`, which the engine does not know; the keys are `model_dir`, `slots` and \
-             `max_block`"
+            "{what} has the key `{key}`, which the engine does not know; the keys are `model_dir`, `slots`, \
+             `max_block` and `extra_runs`"
         )));
     }
     let model_dir = model_dir(table, &what).map_err(fail)?;
@@ -84,10 +84,17 @@ pub fn config(table: &toml::Table) -> Result<Config, PlanError> {
         None => spec::DEFAULT_MAX_BLOCK,
         Some(value) => count("max_block", value)?,
     };
+    // The reserve of extra runs in each slot, for layer loops (engine-abi "Layer loops of LFM3"). With 0, the engine
+    // runs no loop.
+    let extra_runs = match table.get("extra_runs") {
+        None => 0,
+        Some(value) => count("extra_runs", value)?,
+    };
     let config = Config {
         model_dir,
         slots,
         max_block,
+        extra_runs,
     };
     config.check().map_err(|message| fail(format!("{what}: {message}")))?;
     Ok(config)

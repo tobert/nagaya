@@ -420,8 +420,9 @@ pub struct FakeToyFactory;
 
 #[cfg(feature = "fake")]
 impl FakeToyFactory {
-    /// The engine, with the model name of the config key `model` and a control table of the entries of the key
-    /// `control`, when the config has them (engine-abi "Control vectors").
+    /// The engine, with the model name of the config key `model`, a control table of the entries of the key `control`
+    /// and a reserve of `extra_runs` for layer loops, when the config has them (engine-abi "Control vectors", "Layer
+    /// loops").
     fn engine_of(config: &toml::Table) -> Result<FakeAlways, String> {
         let engine = match config.get("model") {
             None => Self::engine(),
@@ -432,11 +433,20 @@ impl FakeToyFactory {
                 ));
             }
         };
-        match config.get("control") {
+        let engine = match config.get("control") {
+            None => engine,
+            Some(toml::Value::Integer(tables)) if (1..=64).contains(tables) => engine.with_control(*tables as u32),
+            Some(other) => {
+                return Err(format!(
+                    "the key `control` of a fake-toy engine is {other}; give the entries of its table, 1 to 64"
+                ));
+            }
+        };
+        match config.get("extra_runs") {
             None => Ok(engine),
-            Some(toml::Value::Integer(tables)) if (1..=64).contains(tables) => Ok(engine.with_control(*tables as u32)),
+            Some(toml::Value::Integer(runs)) if (1..=64).contains(runs) => Ok(engine.with_layer_loops(*runs as u32)),
             Some(other) => Err(format!(
-                "the key `control` of a fake-toy engine is {other}; give the entries of its table, 1 to 64"
+                "the key `extra_runs` of a fake-toy engine is {other}; give the reserve of its slots, 1 to 64"
             )),
         }
     }

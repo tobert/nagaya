@@ -451,6 +451,7 @@ impl Direct {
                     outputs: OutputsWanted {
                         logit_rows: vec![to - 1],
                     },
+                    layer_loop: None,
                 }],
                 &[],
             )
