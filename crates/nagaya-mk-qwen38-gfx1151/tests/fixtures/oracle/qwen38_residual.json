@@ -151,8 +151,8 @@
   "where": "every position of the run, after the layer and before the record"
  },
  "transformers": "5.17.0",
- "reference_sha": "9c052c9826e42b3a",
- "seconds": 114,
+ "reference_sha": "7694c94b9dc34b54",
+ "seconds": 153,
  "vocab": 248320,
  "author": "written by Claude Sonnet 5.5 for this tool, 2026-10-20",
  "runs": [

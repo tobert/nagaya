@@ -249,8 +249,8 @@ class GGUFModel:
 
 
 def letter_probs(logits: torch.Tensor, pieces: list[str], letters: list[str], n_probs: int = 64) -> dict[str, float]:
-    """kaiseki's read (src/kaiseki/llama.py `read`): softmax over the vocab, the top n_probs
-    candidates, summing those whose piece, stripped, is a letter. Unnormalized, like the record."""
+    """The read of a letter answer: softmax over the vocab, the top n_probs candidates, summing those whose piece,
+    stripped, is a letter. Unnormalized, like the record."""
     p = torch.softmax(logits.double(), -1)
     top = torch.topk(p, n_probs)
     out = {k: 0.0 for k in letters}

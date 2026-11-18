@@ -1,6 +1,4 @@
 # SPDX-License-Identifier: MIT
-# Copied unchanged from kaiseki (MIT): src/kaiseki/template.py at kaiseki commit 7b262a0e9eee114835f89869e949ce57f1631dc1.
-# The reference renders with this copy, so it does not import kaiseki.
 """Render a conversation through a GGUF's own chat template, in-process.
 
 llama-server renders with minja; we render with jinja2, set up the way

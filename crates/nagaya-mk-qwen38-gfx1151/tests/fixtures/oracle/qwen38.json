@@ -3,8 +3,8 @@
  "layers": 48,
  "vocab": 248320,
  "transformers": "5.17.0",
- "reference_sha": "9c052c9826e42b3a",
- "seconds": 852,
+ "reference_sha": "7694c94b9dc34b54",
+ "seconds": 867,
  "prompts": [
   {
    "name": "plain",

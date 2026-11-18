@@ -156,7 +156,7 @@ class Sampler:
 
 
 def raw_stats(l: np.ndarray, token: int) -> tuple[float, float]:
-    """kaiseki chat.py raw_stats, in float64: the token's probability and the entropy (nats) of the untempered
+    """The raw stats of a token, in float64: the token's probability and the entropy (nats) of the untempered
     softmax over the whole vocabulary."""
     z = l - l.max()  # stats
     e = np.exp(z)
