@@ -4923,6 +4923,37 @@ The notes below fill the choices that gogi leaves to the server. Reason: each is
 The tests are in `crates/nagaya/tests/http_replies.rs` and `crates/nagaya/tests/http_conformance.rs`. The test of a
 speech model is in `crates/nagaya/tests/speech_context.rs`.
 
+**11.16 Layer loops.** gogi "Layer loops" has the rules. A context's `loop` runs a span of layers `count` times
+(ontology "Run"). Each run of a layer has state of its own: its keys and values, or its recurrent state. A loop is a
+member of each context, in the contract (decided 2026-11-18).
+
+The notes below fill the choices that gogi leaves to the server. Each note is **Proposed** (Claude Opus 5.5,
+2026-11-18). Reason: each is the simplest one.
+
+- **The capability.** A served model declares `layer_loops` when its engine declares `layer_loops` (engine-abi
+  "Layer loops"). Its `layer_loops` member copies `limits().layer_loops` of the engine. A `loop` for another served
+  model is a 400 that names `loop`. The route checks it before the job, as it checks `control` (11.12).
+- **The recipe.** The loop goes into the root recipe as the lab state, tag 4 (6.2), after the bytes of the control
+  list. Its bytes are these, little-endian: the `u64` value `0xFFFF_FFFF_FFFF_FFFF`, then `start`, `end` and `count`,
+  each a `u32`. The first value is never the count of a control list, so the bytes have one reading. A context with
+  no `loop` adds no bytes, so the recipe of each plain context does not change. A loop of `count` 1 has its own
+  recipe, as gogi asks.
+- **The slot.** Each slot of an engine with `layer_loops` holds the state of `extra_runs` extra runs. Thus a loop
+  never allocates, and the ledger charges a slot one size. The profile sets `extra_runs` for each engine. With 0, the
+  engine declares no `layer_loops`.
+- **Joins.** The worker joins the decode rows of contexts with an equal loop only (engine-abi D11). Contexts with
+  other loops run in passes of their own. Reason: the weight ops of a joined pass run once for all rows.
+- **Heads.** A looped context holds snapshots and a head as a plain context does. The parts of its state include the
+  extra runs, so a snapshot holds them too.
+- **Control.** A control item acts after each run of its layer. A control vector holds one row for each layer, not
+  for each run.
+- **Taps.** The tap `residual` gives one row for each layer, after its last run. Reason: the tap keeps its width and
+  its count of rows, so a lens and a control vector keep one format (13.1).
+- **Latent steps and soft inputs** run under the loop of their context (`docs/lab.md`).
+
+`docs/lab.md`, "Layer loops", holds what other runtimes do and what to expect of a loop on a model that was not
+trained with one.
+
 ## 12. Identity
 
 **12.1 Fields.** An engine identity has the fields of `identity()` in the ABI:

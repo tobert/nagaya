@@ -131,6 +131,12 @@ lease with an owner and an expiry (`docs/spec.md` 6.15). kaijutsu's CAS holds th
 operation and a strength, and the engine changes the residual after each such layer (`docs/spec.md` 11.12). Other
 texts call it a steering vector.
 
+**Layer loop.** A span of a model's layers that runs more than once for each position, as a context's `loop` names
+it (`docs/spec.md` 11.16). Other texts call it a looped or recurrent block, or layer duplication.
+
+**Run.** One execution of one layer for one position. A layer outside a loop has one run, and a layer inside it has
+`count` runs. Each run has its own state: keys and values, or a recurrent state.
+
 **Recipe.** What a snapshot was made from: a hash of the engine identity, the inputs and the boundaries. For an
 engine that declares a geometry key, the recipe holds that key too. The store maps a recipe to the content ids made
 from it, so the nagaya can ask "do we already have this?" before it builds.
