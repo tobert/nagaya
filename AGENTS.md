@@ -586,7 +586,7 @@ It started on 2026-11-12. The order is by Claude Fable 5.2. These rules were dec
 - **The canary.** The build hash is out of the identity digest (spec 12.1). A canary of the Qwen3.8 engine takes
   its place (spec 8.1). Its record is a table in the crate. A build with other bits does not open until a commit
   records its hash. A set with no record refuses the start. The canary runs at each load.
-- **Control vectors.** The op runs on the host first. Then a device op takes its place (step 7).
+- **Control vectors.** The op ran on the host first. A device op at the launch cuts took its place (step 7).
 - **The GPU fault of 2026-11-10** is closed unless it happens again. A small change of the device code faulted
   the GPU in 5 of 5 stress runs, and no cause was found. The machine works hard, and the cause can be many
   things. It does not stop a change of the device code. The stress run stays a gate of each new device op.
@@ -614,9 +614,12 @@ These steps are open. Do them in this order. Each step ends with the checks gree
 
 7. **A device op for the three control ops.** Decided 2026-11-12: it is the right form. The host op is its oracle, and
    the gate is equal bits. So the device op keeps the order of the sums: 8 lanes by index modulo 8, joined in pairs,
-   with no fused multiply-add. First show that the HIP compiler keeps that order. Two forms, the simpler first: a
-   small kernel of its own that runs at the launch cuts, then an op inside the megakernel. Measure a prefill of 256
-   tokens again.
+   with no fused multiply-add. Two forms, the simpler first: a small kernel of its own that runs at the launch cuts,
+   then an op inside the megakernel.
+   - The first form is done (2026-11-17, `hip/src/engine/control.hip`). Its ISA keeps the order, and the card gate
+     `control_card.rs` gives equal bits. A prefill of 256 tokens under `ablate` on 48 layers takes 468 ms, where a
+     plain one takes 472 ms. A decode step under that list takes 79 ms, where a plain one takes 64 ms.
+   - The second form is open. The cost of a steered decode step is now the 48 launch cuts. Not deployed yet.
 8. **The lab routes.** A route chooses a model by what its engine declares, not by its kind. `project` and `trace`
    read the GGUF head and the output fold. The tap `lens` needs 48 logit rows, and the scratch holds 16.
 9. **Latent steps.** Milestone 30 steps 10 and 11. A latent step reads `fold`. The placeholder of a latent position

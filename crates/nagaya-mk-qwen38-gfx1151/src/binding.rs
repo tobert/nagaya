@@ -67,6 +67,11 @@ pub(crate) type LaunchFused = unsafe extern "C" fn(*mut c_void, *const Stage, u3
 /// `void qwen38_launch_each(void *e, const Stage *ds, uint32_t n, LaunchResult *out)`.
 pub(crate) type LaunchEach = unsafe extern "C" fn(*mut c_void, *const Stage, u32, *mut Qwen38Launch);
 
+/// `void qwen38_control_apply(float *h, uint32_t rows, const float *v, float sum_squares, uint32_t op,
+/// float strength)`: the control op on the device (`hip/src/engine/control.hip`). The op codes are
+/// `control::op_code`. It waits for the device.
+pub(crate) type ControlApply = unsafe extern "C" fn(*mut f32, u32, *const f32, f32, u32, f32);
+
 /// `int qwen38_max_coop_grid()`.
 pub(crate) type MaxCoopGrid = unsafe extern "C" fn() -> i32;
 
@@ -141,6 +146,7 @@ pub(crate) struct Binding {
     pub round_gdn: RoundGdn,
     pub launch_fused: LaunchFused,
     pub launch_each: LaunchEach,
+    pub control_apply: ControlApply,
     pub max_coop_grid: MaxCoopGrid,
     pub status_name: StatusName,
     pub mem_get_info: MemGetInfo,
@@ -218,6 +224,14 @@ mod linked {
             out: *mut Qwen38Launch,
         );
         pub(super) fn qwen38_launch_each(e: *mut c_void, ds: *const Stage, n: u32, out: *mut Qwen38Launch);
+        pub(super) fn qwen38_control_apply(
+            h: *mut f32,
+            rows: u32,
+            v: *const f32,
+            sum_squares: f32,
+            op: u32,
+            strength: f32,
+        );
         pub(super) fn qwen38_max_coop_grid() -> i32;
         pub(super) fn qwen38_status_name(status: u32) -> *const c_char;
         pub(super) fn hip_rt_host_register(p: *mut c_void, n: u64);
@@ -279,6 +293,7 @@ pub(crate) fn linked() -> Result<(Binding, Build), String> {
             round_gdn: qwen38_ctx_round_gdn_bf16,
             launch_fused: qwen38_launch_fused,
             launch_each: qwen38_launch_each,
+            control_apply: qwen38_control_apply,
             max_coop_grid: qwen38_max_coop_grid,
             status_name: qwen38_status_name,
             mem_get_info: hipMemGetInfo,
@@ -306,9 +321,9 @@ pub(crate) mod stub {
     use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
     use super::{
-        Binding, CtxFree, CtxMax, CtxNew, EngineOpen, LaunchEach, LaunchFused, MaxCoopGrid, MemGetInfo, PartBytes,
-        Relayout, RoundGdn, RtHostFree, RtHostMalloc, RtHostRegister, RtHostUnregister, RtMalloc, RtMemcpy, RtMemset,
-        StateBytes, StateRead, StatusName,
+        Binding, ControlApply, CtxFree, CtxMax, CtxNew, EngineOpen, LaunchEach, LaunchFused, MaxCoopGrid, MemGetInfo,
+        PartBytes, Relayout, RoundGdn, RtHostFree, RtHostMalloc, RtHostRegister, RtHostUnregister, RtMalloc, RtMemcpy,
+        RtMemset, StateBytes, StateRead, StatusName,
     };
 
     /// What the stub calls know about one context. A test passes a pointer to this in place of a context of the engine.
@@ -407,6 +422,7 @@ pub(crate) mod stub {
                 state_bytes: std::mem::transmute::<unsafe extern "C" fn(), StateBytes>(never),
                 launch_fused: std::mem::transmute::<unsafe extern "C" fn(), LaunchFused>(never),
                 launch_each: std::mem::transmute::<unsafe extern "C" fn(), LaunchEach>(never),
+                control_apply: std::mem::transmute::<unsafe extern "C" fn(), ControlApply>(never),
                 max_coop_grid: std::mem::transmute::<unsafe extern "C" fn(), MaxCoopGrid>(never),
                 status_name: std::mem::transmute::<unsafe extern "C" fn(), StatusName>(never),
                 mem_get_info: std::mem::transmute::<unsafe extern "C" fn(), MemGetInfo>(never),

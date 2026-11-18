@@ -15,6 +15,7 @@ use crate::binding::{
     RtHostUnregister, StateBytes, StateRead,
 };
 use crate::context::Qwen38Context;
+use crate::control;
 use crate::cuts::Cuts;
 use crate::host::{self, Host, LaunchKnobs, PassIn};
 use crate::pass::{Knobs, Scratch, Tensor, Weights};
@@ -191,6 +192,19 @@ pub(crate) struct CopyRecord {
     pub kind: u32,
 }
 
+/// One call of the control op that the fake device saw.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ControlRecord {
+    /// The address of the first row.
+    pub h: usize,
+    pub rows: u32,
+    /// The address of the vector of the layer.
+    pub v: usize,
+    pub sum_squares: f32,
+    pub op: u32,
+    pub strength: f32,
+}
+
 /// What a hook says about a launch: the result that the launch returns.
 pub(crate) type LaunchHook = Box<dyn FnMut(usize, &Launch) -> Qwen38Launch>;
 
@@ -200,6 +214,7 @@ struct Device {
     launches: Vec<Launch>,
     copies: Vec<CopyRecord>,
     hook: Option<LaunchHook>,
+    controls: Vec<ControlRecord>,
     /// The bytes of each call of `hip_rt_malloc` and `hip_rt_host_malloc`, since the thread began.
     sizes: Vec<u64>,
 }
@@ -226,12 +241,18 @@ pub(crate) fn copies() -> Vec<CopyRecord> {
     DEVICE.with(|d| d.borrow().copies.clone())
 }
 
-/// Forget the launches and the copies. The buffers stay.
+/// The calls of the control op since the last `reset`, in order.
+pub(crate) fn controls() -> Vec<ControlRecord> {
+    DEVICE.with(|d| d.borrow().controls.clone())
+}
+
+/// Forget the launches, the copies and the control calls. The buffers stay.
 pub(crate) fn reset() {
     DEVICE.with(|d| {
         let mut d = d.borrow_mut();
         d.launches.clear();
         d.copies.clear();
+        d.controls.clear();
     });
 }
 
@@ -326,6 +347,36 @@ unsafe extern "C" fn launch_fused(
     unsafe { *out = result };
 }
 
+/// The control op of the fake device: the host op on the memory of the fake device, with the checks of `control.hip`.
+unsafe extern "C" fn control_apply(h: *mut f32, rows: u32, v: *const f32, sum_squares: f32, op: u32, strength: f32) {
+    DEVICE.with(|d| {
+        d.borrow_mut().controls.push(ControlRecord {
+            h: h as usize,
+            rows,
+            v: v as usize,
+            sum_squares,
+            op,
+            strength,
+        })
+    });
+    assert!((1..=256).contains(&rows), "control_apply: {rows} rows: want 1 to 256");
+    assert!(
+        sum_squares > 0.0,
+        "control_apply: the sum of squares {sum_squares} is not above 0"
+    );
+    let op = control::op_of_code(op).unwrap_or_else(|| panic!("control_apply: op {op}: want 0 to 2"));
+    // SAFETY: the caller names `rows` rows at `h` and one vector at `v` in the memory of the fake device.
+    let (h, v) = unsafe {
+        (
+            std::slice::from_raw_parts_mut(h, rows as usize * control::WIDTH),
+            std::slice::from_raw_parts(v, control::WIDTH),
+        )
+    };
+    for row in h.chunks_mut(control::WIDTH) {
+        assert!(control::apply_row(op, strength, row, v, sum_squares));
+    }
+}
+
 unsafe extern "C" fn max_coop_grid() -> i32 {
     80
 }
@@ -371,6 +422,7 @@ pub(crate) fn binding() -> Binding {
             round_gdn: to::<unsafe extern "C" fn(), RoundGdn>(never_call),
             launch_fused,
             launch_each: to::<unsafe extern "C" fn(), crate::binding::LaunchEach>(never_call),
+            control_apply,
             max_coop_grid,
             status_name,
             mem_get_info: to::<unsafe extern "C" fn(), crate::binding::MemGetInfo>(never_call),

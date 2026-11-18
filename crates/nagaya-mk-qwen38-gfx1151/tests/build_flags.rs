@@ -7,6 +7,9 @@
 //! The build compiles six of the nine. The Rust reader took the place of two GGUF units of the reference, and the Rust
 //! pass build took the place of `blocks.hip`. The thin extern layer `extern.hip` took the place of the C ABI
 //! `capi.hip` of the reference, with the same compile.
+//!
+//! The build also compiles units that the reference does not have. Each one has the compile of `round.hip`, flag for
+//! flag: it is a unit of the engine with one small kernel too.
 
 #[allow(dead_code)]
 #[path = "../build.rs"]
@@ -22,6 +25,12 @@ const REFERENCE_SRC: &str = "/reference/src";
 fn rename(word: &str) -> String {
     word.replace("/engine/capi.hip", "/engine/extern.hip")
 }
+
+/// The units of the build that the reference does not have, in the order of the build.
+const ADDED: &[&str] = &["control.hip"];
+
+/// The unit of the build whose compile each added unit copies.
+const ADDED_LIKE: &str = "round.hip";
 
 #[test]
 fn each_compile_is_the_compile_of_the_reference_cmake_build() {
@@ -47,7 +56,35 @@ fn each_compile_is_the_compile_of_the_reference_cmake_build() {
     assert_eq!(gone, want, "only the units that Rust took the place of are left out");
     let src = Path::new("/nagaya/hip/src");
     let out = Path::new("/out");
-    let units = build::units(src, out);
+    let (added, units): (Vec<_>, Vec<_>) = build::units(src, out).into_iter().partition(|unit| {
+        ADDED
+            .iter()
+            .any(|name| unit.source.file_name().is_some_and(|file| file == *name))
+    });
+    let added_names: Vec<String> = added
+        .iter()
+        .map(|unit| unit.source.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        added_names, ADDED,
+        "the build compiles each added unit once, in this order"
+    );
+    let like = units
+        .iter()
+        .find(|unit| unit.source.file_name().is_some_and(|file| file == ADDED_LIKE))
+        .expect("the build compiles round.hip");
+    for unit in &added {
+        let name = unit.source.file_name().unwrap().to_string_lossy().into_owned();
+        let expected: Vec<String> = like
+            .arguments
+            .iter()
+            .map(|word| word.replace(ADDED_LIKE, &name))
+            .collect();
+        assert_eq!(
+            unit.arguments, expected,
+            "the compile of {name} is the compile of {ADDED_LIKE}"
+        );
+    }
     assert_eq!(
         units.len(),
         entries.len(),

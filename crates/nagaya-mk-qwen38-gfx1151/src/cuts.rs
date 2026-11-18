@@ -1,14 +1,14 @@
 //! The host steps of a pass that is cut at layer ends (milestone 34, engine-abi "The residual of the Qwen3.8 engine").
 //!
 //! `host::run_pass` launches the ranges of a cut pass. After each launch that ends a layer, it calls `Cuts::at_cut`.
-//! The step applies the control items of the layer to the rows of `h`, and it reads the rows of the tap `residual`.
+//! The step applies the control items of the layer to the rows of `h` with the device op, and it reads the rows of
+//! the tap `residual`.
 //! After the last launch, `Cuts::finish` reads the rows of the tap `fold`. Every access to the device goes through
 //! `hip_rt_memcpy` of the binding: the host never addresses device memory.
 //!
 //! The control table holds the vectors on the device. The host keeps only the sum of squares of each layer of each
-//! entry, and the op reads the vector of a layer from the device with one copy (`ControlTable::read_layer`).
+//! entry. The control op runs on the device (`hip/src/engine/control.hip`), so the rows and the vectors stay there.
 
-use std::collections::HashMap;
 use std::ffi::c_void;
 
 use nagaya_abi::ControlItem;
@@ -16,7 +16,7 @@ use nagaya_abi::ControlItem;
 use crate::binding::Binding;
 use crate::context::Copy as CopyKind;
 use crate::control::{
-    self, Action, CutPlan, FOLD_WIDTH, LAYERS, LIMIT, LayerVector, SegmentShape, TABLES, TapOutput, TapSet, WIDTH,
+    self, Action, CutPlan, FOLD_WIDTH, LAYERS, LIMIT, SegmentShape, TABLES, TapOutput, TapSet, WIDTH,
 };
 
 /// The device buffers that a host step reads and writes.
@@ -41,22 +41,6 @@ impl CutDevice<'_> {
                 from.cast(),
                 std::mem::size_of_val(out) as u64,
                 CopyKind::DeviceToHost as u32,
-            )
-        };
-    }
-
-    /// Copy `values` to the device at `to`.
-    ///
-    /// # Safety
-    ///
-    /// `to` names that many writable values on the device.
-    unsafe fn write(&self, to: *mut f32, values: &[f32]) {
-        unsafe {
-            (self.binding.rt_memcpy)(
-                to.cast(),
-                values.as_ptr().cast(),
-                std::mem::size_of_val(values) as u64,
-                CopyKind::HostToDevice as u32,
             )
         };
     }
@@ -121,14 +105,10 @@ impl ControlTable {
         Ok(())
     }
 
-    /// The vector of one layer of one entry: copy its `WIDTH` values from the device into `out`.
-    ///
-    /// # Safety
-    ///
-    /// `device` has the binding of the table's engine.
-    unsafe fn read_layer(&self, device: &CutDevice, entry: u32, layer: usize, out: &mut [f32]) {
-        assert_eq!(out.len(), WIDTH, "a layer of a vector has {WIDTH} values");
-        unsafe { device.read(self.entry(entry).wrapping_add(layer * WIDTH), out) };
+    /// The device address of the vector of one layer of one entry: `WIDTH` values.
+    fn layer(&self, entry: u32, layer: usize) -> *const f32 {
+        assert!(layer < LAYERS, "the model has {LAYERS} layers, not layer {layer}");
+        self.entry(entry).wrapping_add(layer * WIDTH)
     }
 
     /// The first control item that names an entry that `write` never filled, or `None`. A pass over such an entry
@@ -295,8 +275,9 @@ impl Cuts {
     }
 }
 
-/// Apply the actions of one segment at one cut: read its rows of `h`, apply each action in list order, and write the
-/// rows back when one changed. No other row is read or written.
+/// Apply the actions of one segment at one cut, in list order, with the device op (`hip/src/engine/control.hip`). The
+/// rows stay on the device: the host reads and writes none of them. An action whose vector has the sum 0 changes
+/// nothing, so it makes no call.
 ///
 /// # Safety
 ///
@@ -307,34 +288,21 @@ unsafe fn apply_segment(device: &CutDevice, table: &ControlTable, layer: usize, 
         actions.iter().all(|action| action.rows == rows),
         "the actions of one segment share its rows"
     );
-    let mut values = vec![0f32; rows.len() * WIDTH];
-    unsafe { device.read(device.h.wrapping_add(rows.start * WIDTH), &mut values) };
-    // One vector of this layer for each entry that the actions name.
-    let mut vectors: HashMap<u32, (Vec<f32>, f32)> = HashMap::new();
     for action in actions {
-        vectors.entry(action.entry).or_insert_with(|| {
-            let mut vector = vec![0f32; WIDTH];
-            unsafe { table.read_layer(device, action.entry, layer, &mut vector) };
-            (vector, table.sum_squares(action.entry, layer))
-        });
-    }
-    // The rows of the slice start at 0, so the actions name rows from 0.
-    let relative: Vec<Action> = actions
-        .iter()
-        .map(|action| Action {
-            rows: 0..rows.len(),
-            ..action.clone()
-        })
-        .collect();
-    let changed = control::apply_actions(&mut values, &relative, |entry| {
-        let (values, sum_squares) = &vectors[&entry];
-        LayerVector {
-            values,
-            sum_squares: *sum_squares,
+        let sum_squares = table.sum_squares(action.entry, layer);
+        if sum_squares == 0.0 {
+            continue;
         }
-    });
-    if changed > 0 {
-        unsafe { device.write(device.h.wrapping_add(rows.start * WIDTH), &values) };
+        unsafe {
+            (device.binding.control_apply)(
+                device.h.wrapping_add(rows.start * WIDTH),
+                rows.len() as u32,
+                table.layer(action.entry, layer),
+                sum_squares,
+                control::op_code(action.op),
+                action.strength,
+            )
+        };
     }
 }
 
@@ -817,7 +785,7 @@ mod tests {
     }
 
     #[test]
-    fn a_list_on_layers_3_and_20_reads_and_writes_exactly_the_rows_of_its_segment_at_those_cuts() {
+    fn a_list_on_layers_3_and_20_changes_exactly_the_rows_of_its_segment_at_those_cuts_on_the_device() {
         // Segment 0 has 2 rows and no list. Segment 1 has 3 rows (rows 2, 3 and 4 of the pass) and a list.
         let mut rig = rig(&[2, 3]);
         table(&mut rig);
@@ -830,39 +798,27 @@ mod tests {
         rig.run(FAST, fake::no_knobs(), Some(&mut cuts))
             .expect("a steered pass runs");
         assert_eq!(fake::launches().len(), 3, "2 cuts make 3 launches");
-        // The copies that touch h: a read and a write of the rows 2 to 4, at each of the 2 cuts, and no other row.
-        let touching: Vec<_> = fake::copies()
-            .into_iter()
-            .filter(|c| (c.src >= h && c.src < h + 256 * row_bytes()) || (c.dst >= h && c.dst < h + 256 * row_bytes()))
-            .filter(|c| (c.bytes as usize).is_multiple_of(row_bytes()) && c.bytes as usize / row_bytes() == 3)
-            .collect();
-        assert_eq!(
-            touching.len(),
-            4,
-            "2 cuts x (1 read + 1 write) of the 3 rows of segment 1"
-        );
-        for (i, copy) in touching.iter().enumerate() {
-            let (device, kind) = if copy.kind == 2 {
-                (copy.src, "read")
-            } else {
-                (copy.dst, "write")
-            };
-            assert_eq!(device, h + 2 * row_bytes(), "copy {i} ({kind}) starts at row 2");
-            assert_eq!(
-                copy.kind,
-                if i % 2 == 0 { 2 } else { 1 },
-                "read, then write, at each cut"
-            );
-        }
-        // No copy reads or writes a row of segment 0 (rows 0 and 1), and none touches a row past row 4, except the reads
-        // of the table and the logits.
+        // The op runs on the device: no copy reads or writes a row of h.
         let region = |from: usize| (from >= h && from < h + 256 * row_bytes()).then(|| (from - h) / row_bytes());
         for copy in fake::copies() {
             for address in [copy.src, copy.dst] {
-                if let Some(row) = region(address) {
-                    assert!((2..5).contains(&row), "a copy touches row {row}: {copy:?}");
-                }
+                assert_eq!(region(address), None, "a copy touches a row of h: {copy:?}");
             }
+        }
+        // One call of the device op at each of the 2 cuts: the rows 2 to 4 of segment 1, and the vector of the layer.
+        let table = rig.host.control.as_ref().unwrap();
+        let calls = fake::controls();
+        assert_eq!(calls.len(), 2, "one call at each cut");
+        for (call, layer) in calls.iter().zip([3, 20]) {
+            assert_eq!(call.h, h + 2 * row_bytes(), "the call at layer {layer} starts at row 2");
+            assert_eq!(call.rows, 3, "the call at layer {layer} names the 3 rows of segment 1");
+            assert_eq!(
+                call.v,
+                table.layer(0, layer) as usize,
+                "the call at layer {layer} names its layer"
+            );
+            assert_eq!(call.sum_squares, table.sum_squares(0, layer));
+            assert_eq!((call.op, call.strength), (control::op_code(ControlOp::Add), 2.0));
         }
         // The bytes written are the op applied to the bytes read. At the start of launch k, `h` holds what the host step
         // left after launch k - 1, and the fake kernel filled `h` with `pattern(k - 1, ..)` in that launch.

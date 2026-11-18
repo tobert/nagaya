@@ -46,6 +46,10 @@ void relayout_q6_tiles(const uint8_t *src, uint8_t *dst, uint32_t rows, uint32_t
 // The same for an IQ4_NL matrix (the expert down matrices).
 void relayout_iq4_tiles(const uint8_t *src, uint8_t *dst, uint32_t rows, uint32_t k);
 const void *stage_kernel();
+// The control op of a cut pass (control.hip): add, ablate or clamp the vector v of one layer in each of `rows` rows of
+// h, with the sums in the order of src/control.rs. sum_squares is v . v from the host, above 0. op is 0 add, 1 ablate,
+// 2 clamp. It waits for the device.
+void control_apply(float *h, uint32_t rows, const float *v, float sum_squares, uint32_t op, float strength);
 
 // How a launch sequence ended: the control block's status (rt.h Status), the site and the workgroup that recorded it,
 // and 1 when the watchdog asked the kernel to stop (its deadline or the memory floor).

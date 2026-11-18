@@ -57,6 +57,10 @@ void qwen38_launch_fused(void *e, const Stage *ds, uint32_t n, int grid, uint32_
 void qwen38_launch_each(void *e, const Stage *ds, uint32_t n, LaunchResult *out) {
   *out = static_cast<Engine *>(e)->launch_each(ds, n);
 }
+// The control op between two launches of a cut pass (engine.h control_apply).
+void qwen38_control_apply(float *h, uint32_t rows, const float *v, float sum_squares, uint32_t op, float strength) {
+  control_apply(h, rows, v, sum_squares, op, strength);
+}
 // The most co-resident workgroups of the megakernel (rt.h max_coop_grid).
 int qwen38_max_coop_grid() { return max_coop_grid(mega_kernel(), kBlockThreads, 0); }
 // The name of a control block status (rt.h status_name).

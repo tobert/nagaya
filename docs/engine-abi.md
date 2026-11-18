@@ -577,19 +577,22 @@ width.
 - **The order of the outputs.** A pass gives one output for each tap and each logit row. The outputs follow the
   `logits` outputs. All the `residual` outputs come first, then all the `fold` outputs. Each group follows the order
   of the segments.
-- **The launch cuts.** A pass with a tap or a control
-  item runs as several fused launches of the same kernel, cut at layer ends. The host reads or changes the rows
-  between two launches. A pass with neither runs as one launch. The mutation knobs of the stage list refuse a pass
+- **The launch cuts.** A pass with a tap or a control item runs as several fused launches of the same kernel, cut at
+  layer ends. Between two launches, the host reads the rows of a tap, and the control op changes rows on the device.
+  A pass with neither runs as one launch. The mutation knobs of the stage list refuse a pass
   with cuts, because they name stage indices of one launch.
 - **The reason for the cuts.** No device code changes, and a plain pass keeps its stage list and its bits. A small
   change of the device code can fault the GPU, and the cause is not known. A card run measures the cost
-  of the launches. If a steered decode step is too slow, `add` moves into the launch with an op that exists, with
-  equal bits. A device op that runs at the launch cuts can take the place of the host op, with equal bits.
+  of the launches. The control op is a small kernel of its own that runs at the launch cuts (`control.hip`). An op
+  inside the megakernel can take its place later, with equal bits.
 - **The table.** `limits().control` is `{tables: 8, layers: 48, width: 10240}`. The term `control` is 15,728,640
   bytes on the device, with the lifetime `engine`. Eight entries are the count that LFM3 has.
-- **The op.** The op runs on the host, on the rows that a cut reads. It has no device code. The sums of `h . v` and of
-  `v . v` add in 8 lanes by index modulo 8, and the lanes join as `((s0 + s1) + (s2 + s3)) + ((s4 + s5) + (s6 + s7))`.
-  The code never fuses a product with a sum. An item with `v . v` of 0 acts on no row.
+- **The op.** The op runs on the device, at a cut, on the rows of the segment. No row goes to the host. The sum of
+  `h . v` adds in 8 lanes by index modulo 8, and the lanes join as `((s0 + s1) + (s2 + s3)) + ((s4 + s5) + (s6 + s7))`.
+  The host adds `v . v` in the same order when the vector is written. Each product and each sum is a rounded
+  operation of its own: the code never fuses a product with a sum. An item with `v . v` of 0 acts on no row.
+- **The oracle of the op.** The host op of `control.rs` is the oracle of the device op, and the gate is equal bits.
+  The card gate `control_card.rs` runs each op on 256 rows whose sums depend on their order.
 - **The coefficient.** Let `n` be the square root of `v . v`, and `p` be `h . v` divided by `n`. The coefficient `c` of
   `add` is `a`. For `ablate`, it is `-a * p / n`. For `clamp`, it is `(a - p) / n`. The op sets `h[j]` to
   `h[j] + c * v[j]`.
