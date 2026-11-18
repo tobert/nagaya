@@ -192,6 +192,7 @@ impl Lfm3Engine {
         config.check()?;
         let dir = config.model_dir.clone();
         let b = Backbone::read(&dir)?;
+        crate::layer_loop::check_reserve(&b, config.extra_runs)?;
         let family = Lfm3Family::from_dir(&dir)
             .map_err(|e| format!("cannot build the LFM3 family from `{}`: {e}", dir.display()))?;
         let want = match b.model {
@@ -308,7 +309,7 @@ impl Lfm3Engine {
         let slots: Vec<SlotMemory> = config
             .seqs()
             .iter()
-            .map(|seq| SlotMemory::new(&mut |bytes| device.zeros(card, bytes), &b, *seq, 0))
+            .map(|seq| SlotMemory::new(&mut |bytes| device.zeros(card, bytes), &b, *seq, config.extra_runs))
             .collect();
         let control = spec::control_limit(&b).map(|limit| {
             let bytes = limit.table_bytes() as usize;
@@ -385,7 +386,7 @@ impl Lfm3Engine {
             canary_hash: String::new(),
             build: std::collections::BTreeMap::new(),
         };
-        let mut held = Held::new(&b, &config.seqs());
+        let mut held = Held::new(&b, &config.seqs(), config.extra_runs);
         if let Some((_, _, rules)) = vision {
             held.media = rules;
         }
@@ -426,11 +427,13 @@ impl Lfm3Engine {
         unsafe { self.ring.run(&self.cluster.cards[0]) };
     }
 
-    /// Zero the conv state of each conv layer of `slot`: the state before position 0.
+    /// Zero each conv state of `slot`, of a layer or of an entry of its reserve: the state before position 0.
     fn zero_conv(&self, slot: usize) {
-        for l in self.b.layers_of(LayerKind::Conv) {
-            self.device
-                .zero(self.card(), self.slots[slot].layers[l], self.b.conv_state() * 4);
+        let memory = &self.slots[slot];
+        for (s, at) in memory.layers.iter().enumerate() {
+            if crate::layer_loop::state_kind(&self.b, s) == LayerKind::Conv {
+                self.device.zero(self.card(), *at, self.b.conv_state() * 4);
+            }
         }
     }
 
@@ -449,7 +452,9 @@ impl Lfm3Engine {
         control: &[model::Control],
         tap: bool,
         lens: bool,
+        layer_loop: Option<crate::layer_loop::Loop>,
     ) -> Result<(), String> {
+        let runs = crate::layer_loop::runs(&self.b, layer_loop, self.slots[slot].extra(&self.b))?.len();
         let mut tasks = model::pass(
             &self.b,
             &self.weights,
@@ -464,13 +469,13 @@ impl Lfm3Engine {
                 control,
                 tap,
                 lens,
-                layer_loop: None,
+                layer_loop,
             },
         );
         // Omni keeps the final norm of the last position for `frame` (engine-abi "The speech calls of LFM3").
         if let Some(speech) = &self.speech
             && logit_rows.is_some()
-            && layers == self.b.layers.len()
+            && layers == runs
         {
             tasks.push(speech.keep_hidden(slot, self.bufs.h, tokens.len() - 1));
         }
@@ -495,7 +500,7 @@ impl Lfm3Engine {
                 Batch {
                     rows: &rows,
                     control,
-                    layer_loop: None,
+                    layer_loop: blocks.first().and_then(|block| block.layer_loop),
                 },
             )
         };
@@ -558,6 +563,11 @@ impl Lfm3Engine {
             if segment.control != segments[0].control {
                 return Err(refuse(format!(
                     "segment {i} has another control list than segment 0; a batch has one list"
+                )));
+            }
+            if segment.layer_loop != segments[0].layer_loop {
+                return Err(refuse(format!(
+                    "segment {i} names another layer loop than segment 0; the segments of one pass name one loop"
                 )));
             }
             blocks.push(block);
@@ -822,8 +832,19 @@ impl Lfm3Engine {
         }
         self.held.clear(slot);
         self.held.check_pass(&[segment], self.config.max_block, self.vocab)?;
-        self.forward(slot, 0, ids, layers, norm.then_some(&[][..]), &[], &[], false, false)
-            .expect("a probe with no control item fits the ring");
+        self.forward(
+            slot,
+            0,
+            ids,
+            layers,
+            norm.then_some(&[][..]),
+            &[],
+            &[],
+            false,
+            false,
+            None,
+        )
+        .expect("a probe with no control item fits the ring");
         let at = if norm { self.bufs.h } else { self.bufs.x };
         let out = self.read_f32(at, ids.len() * self.b.hidden);
         self.held.clear(slot);
@@ -987,7 +1008,10 @@ impl Engine for Lfm3Engine {
             return Err(self.fail(error));
         }
         let start = Instant::now();
-        let layers = self.b.layers.len();
+        let layers = match crate::layer_loop::runs(&self.b, block.layer_loop, self.slots[block.slot].extra(&self.b)) {
+            Ok(runs) => runs.len(),
+            Err(why) => return Err(self.fail(refused(format!("nothing ran: {why}")))),
+        };
         let places = self.encode(&segments[0], &block);
         if let Err(why) = self.forward(
             block.slot,
@@ -999,6 +1023,7 @@ impl Engine for Lfm3Engine {
             &control,
             tap.residual || tap.lens,
             tap.lens,
+            block.layer_loop,
         ) {
             return Err(self.fail(refused(format!("nothing ran: {why}"))));
         }

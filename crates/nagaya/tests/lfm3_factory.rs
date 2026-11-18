@@ -47,6 +47,11 @@ fn the_config_gives_the_folder_the_slots_and_the_block() {
     assert_eq!(parsed.model_dir, dir.path());
     let block = config(&table(&format!("model_dir = \"{path}\"\nslots = 1\nmax_block = 256"))).unwrap();
     assert_eq!(block.max_block, 256);
+    assert_eq!(parsed.extra_runs, 0, "no reserve unless the profile names one");
+    let looped = config(&table(&format!("model_dir = \"{path}\"\nslots = 1\nextra_runs = 8"))).unwrap();
+    assert_eq!(looped.extra_runs, 8);
+    let bad = config(&table(&format!("model_dir = \"{path}\"\nslots = 1\nextra_runs = -4"))).unwrap_err();
+    assert!(bad.message.contains("`extra_runs`"), "{}", bad.message);
     let unknown = config(&table(&format!("model_dir = \"{path}\"\nslots = 1\nseq = 1"))).unwrap_err();
     assert!(unknown.message.contains("`seq`"), "{}", unknown.message);
     let missing = config(&table(&format!("model_dir = \"{path}\""))).unwrap_err();

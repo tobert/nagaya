@@ -1231,9 +1231,11 @@ weights, and the open checks that the config has no vision tower, audio encoder 
 
 The text path of the backbone (`crates/nagaya-mk-lfm3-bmg`) follows these rules.
 
-- **The config.** The kind is `mk-lfm3-bmg`. Its config has three keys. `model_dir` names the model folder, and it
+- **The config.** The kind is `mk-lfm3-bmg`. Its config has four keys. `model_dir` names the model folder, and it
   has no default, because one kind serves two models. `slots` is a count of slots of 32,768 positions, or a list of
   the positions of each slot. `max_block` is the feed block: 512 when the key is absent, and 1 to 512.
+- **The reserve.** `extra_runs` is the reserve of layer loops in each slot ("Layer loops of LFM3"). It is 0 when the
+  key is absent, else a multiple of 4 up to 64.
 - **Slot sizes.** A slot holds 1 to 262,144 positions, the
   `max_position_embeddings` of LFM3-1.7B. The list goes from short to long, and the engine refuses another order.
   The host gives a job the lowest free slot that holds it (`slots::take`), so the order makes it the shortest. A

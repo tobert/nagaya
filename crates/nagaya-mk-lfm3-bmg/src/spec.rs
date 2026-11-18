@@ -11,13 +11,14 @@ use std::path::{Path, PathBuf};
 
 use nagaya_abi::{
     CONTROL_TERM, Capability, ChainLimits, ControlLimit, CoverageSpan, Determinism, Dtype, FeedRule, Inputs, Kind,
-    Lifetime, Limits, MandatoryTerm, MemoryLimits, PartId, PartKind, PartLimits, Segment, SegmentInputs, SlotLimit,
-    State, TapLimit, Tier,
+    LayerLoopLimit, Lifetime, Limits, MandatoryTerm, MemoryLimits, PartId, PartKind, PartLimits, Segment,
+    SegmentInputs, SlotLimit, State, TapLimit, Tier,
 };
 use nagaya_mk_bmg::protocol::{MAX_TASKS_PER_CARD, NUM_SCOREBOARD_EVENTS};
 use nagaya_mk_bmg::safetensors::MappedSafeTensors;
 
 use crate::audio::{self, Encoder, MAX_CLIP_POSITIONS};
+use crate::layer_loop::{self, Loop, state_kind};
 use crate::media::{self, MediaRules, SpanUse};
 use crate::model::{bufs_bytes, scratch_floats};
 use crate::vision::{self, Vision};
@@ -391,33 +392,43 @@ impl Part {
 
 /// The parts in layer order: `conv.<ll>` for a conv layer, and `k.<ll>` then `v.<ll>` for an attention layer. The part
 /// id is the index in this list.
-pub fn part_list(b: &Backbone) -> Vec<Part> {
-    b.layers
-        .iter()
-        .enumerate()
-        .flat_map(|(l, kind)| match kind {
-            LayerKind::Conv => vec![Part::Conv(l)],
-            LayerKind::Full | LayerKind::Sliding => vec![Part::K(l), Part::V(l)],
+///
+/// The entries of a reserve of `extra` runs follow the layers, as `conv.x<ii>`, `k.x<ii>` and `v.x<ii>` (engine-abi
+/// "Layer loops of LFM3"). The index of a part is the index of its state in the slot.
+pub fn part_list(b: &Backbone, extra: usize) -> Vec<Part> {
+    (0..b.layers.len() + extra)
+        .flat_map(|s| match state_kind(b, s) {
+            LayerKind::Conv => vec![Part::Conv(s)],
+            LayerKind::Full | LayerKind::Sliding => vec![Part::K(s), Part::V(s)],
         })
         .collect()
 }
 
+/// The name of state `s` in the name of a part: `ll` for a layer, `xii` for entry `ii` of the reserve.
+fn state_name(b: &Backbone, s: usize) -> String {
+    match s.checked_sub(b.layers.len()) {
+        None => format!("{s:02}"),
+        Some(i) => format!("x{i:02}"),
+    }
+}
+
 /// The parts of a state, as the ABI declares them. A full layer holds cells; a sliding layer holds a ring; a conv layer
 /// holds a fixed part of `taps - 1` rows of `hidden` values, oldest first.
-pub fn parts(b: &Backbone) -> Vec<PartLimits> {
-    part_list(b)
+pub fn parts(b: &Backbone, extra: usize) -> Vec<PartLimits> {
+    part_list(b, extra)
         .into_iter()
         .map(|part| {
             let l = part.layer();
+            let name = state_name(b, l);
             let (name, kind, shape) = match part {
                 Part::Conv(_) => (
-                    format!("conv.{l:02}"),
+                    format!("conv.{name}"),
                     PartKind::Fixed,
                     vec![(b.taps - 1) as u64, b.hidden as u64],
                 ),
                 Part::K(_) | Part::V(_) => (
-                    format!("{}.{l:02}", if matches!(part, Part::K(_)) { "k" } else { "v" }),
-                    if b.layers[l] == LayerKind::Full {
+                    format!("{}.{name}", if matches!(part, Part::K(_)) { "k" } else { "v" }),
+                    if state_kind(b, l) == LayerKind::Full {
                         PartKind::Cells
                     } else {
                         PartKind::Ring
@@ -437,14 +448,13 @@ pub fn parts(b: &Backbone) -> Vec<PartLimits> {
         .collect()
 }
 
-/// The device bytes of one slot of `seq` positions: the key and value planes of each attention layer, and the conv
-/// state of each conv layer.
-pub fn slot_bytes(b: &Backbone, seq: usize) -> u64 {
-    b.layers
-        .iter()
-        .map(|kind| match kind {
+/// The device bytes of one slot of `seq` positions with a reserve of `extra` runs: the key and value planes of each
+/// attention state, and the conv state of each conv state.
+pub fn slot_bytes(b: &Backbone, seq: usize, extra: usize) -> u64 {
+    (0..b.layers.len() + extra)
+        .map(|s| match state_kind(b, s) {
             LayerKind::Conv => crate::weights::rounded(b.conv_state() * 4),
-            _ => crate::weights::rounded(2 * plane_rows(seq, *kind) * b.kv_row() * 4),
+            kind => crate::weights::rounded(2 * plane_rows(seq, kind) * b.kv_row() * 4),
         } as u64)
         .sum()
 }
@@ -458,6 +468,9 @@ pub struct Config {
     pub slots: Vec<usize>,
     /// The tokens of one block, and the feed block (engine-abi D11).
     pub max_block: usize,
+    /// The entries of the reserve of extra runs in each slot (engine-abi "Layer loops of LFM3"). With 0, the engine
+    /// runs no layer loop.
+    pub extra_runs: usize,
 }
 
 impl Config {
@@ -499,18 +512,18 @@ impl Config {
 
     /// The device bytes of all the slots.
     pub fn slots_bytes(&self, b: &Backbone) -> u64 {
-        self.slots.iter().map(|seq| slot_bytes(b, *seq)).sum()
+        self.slots.iter().map(|seq| slot_bytes(b, *seq, self.extra_runs)).sum()
     }
 }
 
 /// The slot classes of the config: each run of equal sizes is one class.
-pub fn slot_limits(b: &Backbone, slots: &[usize]) -> Vec<SlotLimit> {
+pub fn slot_limits(b: &Backbone, slots: &[usize], extra: usize) -> Vec<SlotLimit> {
     let mut classes: Vec<SlotLimit> = Vec::new();
     for &seq in slots {
         match classes.last_mut() {
             Some(class) if class.tokens == seq as u64 => class.count += 1,
             _ => classes.push(SlotLimit {
-                bytes: slot_bytes(b, seq),
+                bytes: slot_bytes(b, seq, extra),
                 count: 1,
                 tokens: seq as u64,
             }),
@@ -577,9 +590,13 @@ pub fn limits(b: &Backbone, config: &Config, weights: u64, vision: Option<Vision
         capabilities.push(Capability::Control);
         mandatory.push(term(CONTROL_TERM, Tier::Device(0), control.table_bytes()));
     }
+    let layer_loops = layer_loop_limit(b, config.extra_runs);
+    if layer_loops.is_some() {
+        capabilities.push(Capability::LayerLoops);
+    }
     Limits {
         capabilities,
-        parts: parts(b),
+        parts: parts(b, config.extra_runs),
         inputs: if vision.is_some() {
             Inputs::TokensAndRows
         } else {
@@ -591,7 +608,7 @@ pub fn limits(b: &Backbone, config: &Config, weights: u64, vision: Option<Vision
         max_segments: MAX_SEGMENTS.min(config.max_block as u32),
         max_pass_inputs: config.max_block as u32,
         max_logit_rows: MAX_LOGIT_ROWS as u32,
-        slots: slot_limits(b, &config.seqs()),
+        slots: slot_limits(b, &config.seqs(), config.extra_runs),
         max_quantum_ms: MAX_QUANTUM_MS,
         memory: MemoryLimits {
             mandatory,
@@ -621,8 +638,19 @@ pub fn limits(b: &Backbone, config: &Config, weights: u64, vision: Option<Vision
         feed: Some(FeedRule {
             block: config.max_block as u64,
         }),
-        layer_loops: None,
+        layer_loops,
     }
+}
+
+/// The layer loops of a backbone with a reserve of `extra` runs: `None` with no reserve (engine-abi "Layer loops of
+/// LFM3").
+pub fn layer_loop_limit(b: &Backbone, extra: usize) -> Option<LayerLoopLimit> {
+    (extra > 0).then(|| LayerLoopLimit {
+        layers: b.layers.len() as u32,
+        bounds: layer_loop::bounds(b).into_iter().map(|l| l as u32).collect(),
+        count: layer_loop::MOST_COUNT as u32,
+        extra_runs: extra as u32,
+    })
 }
 
 /// The control table of a backbone. Both models have one. Omni's vector acts on its text passes only: a frame of its
@@ -681,6 +709,7 @@ pub fn vision_bytes(v: &Vision, dir: &Path, max_block: usize) -> Result<VisionBy
 pub fn plan(config: &Config) -> Result<Limits, String> {
     config.check()?;
     let b = Backbone::read(&config.model_dir)?;
+    layer_loop::check_reserve(&b, config.extra_runs)?;
     let weights = weights_bytes(&b, &config.model_dir)?;
     let vision = match read_vision(&b, &config.model_dir)? {
         Some(v) => Some(vision_bytes(&v, &config.model_dir, config.max_block)?),
@@ -706,6 +735,8 @@ pub struct Block {
     pub logit_rows: Vec<usize>,
     /// The media spans that the block reads, in the order of their rows.
     pub spans: Vec<SpanUse>,
+    /// The span of layers that runs more than once (engine-abi "Layer loops of LFM3").
+    pub layer_loop: Option<Loop>,
 }
 
 /// The token count and the writes of each slot, and the rules of the part calls. The engine applies the device side.
@@ -732,13 +763,16 @@ pub struct Held {
     window: u64,
     /// The placeholders of the media of the model, and the encoders of the engine. `LFM3-1.7B` has none.
     pub media: MediaRules,
+    /// The layer loops that a pass may name, or `None` with no reserve.
+    loops: Option<LayerLoopLimit>,
 }
 
 impl Held {
-    pub fn new(b: &Backbone, seqs: &[usize]) -> Self {
+    /// The rules of slots of `seqs` positions, each with a reserve of `extra` runs.
+    pub fn new(b: &Backbone, seqs: &[usize], extra: usize) -> Self {
         Self {
-            kinds: b.layers.clone(),
-            list: part_list(b),
+            kinds: (0..b.layers.len() + extra).map(|s| state_kind(b, s)).collect(),
+            list: part_list(b, extra),
             seqs: seqs.to_vec(),
             n: vec![0; seqs.len()],
             writes: vec![BTreeMap::new(); seqs.len()],
@@ -747,6 +781,7 @@ impl Held {
             conv_bytes: (b.conv_state() * 4) as u64,
             window: b.window as u64,
             media: MediaRules::default(),
+            loops: layer_loop_limit(b, extra),
         }
     }
 
@@ -792,6 +827,7 @@ impl Held {
     ///   no `meta`. A segment of tokens and rows has the `meta` of its media spans (`media::check_spans`).
     /// - The positions run on from the token count of the slot. A slot does not go back.
     /// - `logit_rows` names at most `MAX_LOGIT_ROWS` positions of the block.
+    /// - A layer loop fits the limit of the reserve (engine-abi "Layer loops").
     pub fn check_pass(&self, segments: &[Segment], max_block: usize, vocab: usize) -> Result<Block, String> {
         let [segment] = segments else {
             return Err(format!(
@@ -873,12 +909,31 @@ impl Held {
         }
         let spans = media::decode(&segment.meta)?;
         let spans = media::check_spans(&self.media, &spans, tokens, pos0 as u64, rows.map_or(0, |r| r.len()))?;
+        let layer_loop = match (&segment.layer_loop, &self.loops) {
+            (None, _) => None,
+            (Some(_), None) => {
+                return Err(
+                    "the segment names a layer loop; the engine has no reserve of extra runs, so it does not \
+                            declare `layer_loops`"
+                        .to_owned(),
+                );
+            }
+            (Some(lp), Some(limit)) => {
+                limit.check(lp)?;
+                Some(Loop {
+                    start: lp.start as usize,
+                    end: lp.end as usize,
+                    count: lp.count as usize,
+                })
+            }
+        };
         Ok(Block {
             slot,
             pos0,
             tokens: tokens.clone(),
             logit_rows,
             spans,
+            layer_loop,
         })
     }
 

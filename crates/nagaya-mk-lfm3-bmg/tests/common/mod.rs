@@ -217,6 +217,7 @@ pub fn open(which: Which, slots: usize, max_block: usize) -> nagaya_mk_lfm3_bmg:
         model_dir: model_dir(which),
         slots: vec![nagaya_mk_lfm3_bmg::spec::SLOT_TOKENS; slots],
         max_block,
+        extra_runs: 0,
     };
     nagaya_mk_lfm3_bmg::Lfm3Engine::open(config, &cards()[0]).unwrap_or_else(|e| panic!("open {which:?}: {e}"))
 }
@@ -228,6 +229,7 @@ pub fn open_sized(which: Which, slots: Vec<usize>, max_block: usize) -> nagaya_m
         model_dir: model_dir(which),
         slots,
         max_block,
+        extra_runs: 0,
     };
     nagaya_mk_lfm3_bmg::Lfm3Engine::open(config, &cards()[0]).unwrap_or_else(|e| panic!("open {which:?}: {e}"))
 }

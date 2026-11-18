@@ -35,6 +35,7 @@ fn both_checkpoints_hold_every_tensor_of_the_backbone_and_plan_alike() {
             model_dir: dir,
             slots: vec![spec::SLOT_TOKENS; 2],
             max_block: 512,
+            extra_runs: 0,
         };
         let limits = spec::plan(&config).unwrap();
         limits.check().unwrap();
@@ -190,6 +191,7 @@ fn omni_plans_its_tower_and_the_text_model_has_none() {
             model_dir: dir.clone(),
             slots: vec![spec::SLOT_TOKENS],
             max_block: 512,
+            extra_runs: 0,
         };
         let limits = spec::plan(&config).unwrap();
         let vision = limits.memory.mandatory.iter().find(|t| t.name == "vision");

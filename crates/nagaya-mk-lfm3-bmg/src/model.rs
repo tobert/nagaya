@@ -15,7 +15,7 @@
 use nagaya_mk_bmg::protocol::{ControlOp, FLAG_ACCUMULATE, FLAG_TILED, MkTaskDescriptor};
 use nagaya_mk_bmg::tasks;
 
-use crate::layer_loop::{Loop, RunAt, reserve_kind, runs};
+use crate::layer_loop::{Loop, RunAt, runs, state_kind};
 use crate::spec::{Backbone, HEAD_DIM, LayerKind, MAX_BLOCK, MAX_LOGIT_ROWS, plane_rows, ring_of};
 use crate::weights::{Weights, rounded};
 
@@ -175,14 +175,6 @@ impl SlotMemory {
         } else {
             vec![(self.row(b, s, value, rows.start), n)]
         }
-    }
-}
-
-/// The kind of state `s` of a slot: the kind of layer `s`, or the kind of entry `s - layers` of the reserve.
-pub fn state_kind(b: &Backbone, s: usize) -> LayerKind {
-    match b.layers.get(s) {
-        Some(kind) => *kind,
-        None => reserve_kind(b, s - b.layers.len()),
     }
 }
 

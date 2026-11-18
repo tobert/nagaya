@@ -52,6 +52,36 @@ pub fn reserve_kind(b: &Backbone, i: usize) -> LayerKind {
     b.layers[first + i % period]
 }
 
+/// The kind of state `s` of a slot: the kind of layer `s`, or the kind of entry `s - layers` of the reserve.
+pub fn state_kind(b: &Backbone, s: usize) -> LayerKind {
+    match b.layers.get(s) {
+        Some(kind) => *kind,
+        None => reserve_kind(b, s - b.layers.len()),
+    }
+}
+
+/// Check a reserve of `extra` entries for the backbone: none, or whole groups of a backbone whose layers repeat a
+/// group. The message names the rule.
+pub fn check_reserve(b: &Backbone, extra: usize) -> Result<(), String> {
+    if extra == 0 {
+        return Ok(());
+    }
+    let Some((_, period)) = group(b) else {
+        return Err(format!(
+            "extra_runs is {extra}; the layers of this model do not repeat a group, so it runs no layer loop; give 0"
+        ));
+    };
+    if !extra.is_multiple_of(period) || extra > MOST_EXTRA_RUNS {
+        return Err(format!(
+            "extra_runs is {extra}; give a multiple of {period}, the layers of a group, up to {MOST_EXTRA_RUNS}"
+        ));
+    }
+    Ok(())
+}
+
+/// The most entries of the reserve of a slot: the extra runs of the whole repeating span at the most count.
+pub const MOST_EXTRA_RUNS: usize = 64;
+
 impl Loop {
     /// The runs that the loop adds to each position.
     pub fn extra_runs(&self) -> usize {
