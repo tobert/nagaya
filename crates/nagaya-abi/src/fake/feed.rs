@@ -180,6 +180,7 @@ impl FakeFeed {
             residual_row_bytes: if stage_count == 1 { 0 } else { WIDTH as u64 },
             control: None,
             feed: Some(FeedRule { block }),
+            layer_loops: None,
         };
         if let Err(message) = limits.check() {
             panic!("the fake with a feed rule breaks a rule of its limits: {message}");

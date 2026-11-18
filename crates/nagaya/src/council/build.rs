@@ -1349,6 +1349,7 @@ impl<T: Then> ContextBody<T> {
             outputs: OutputsWanted {
                 logit_rows: if pending.row { vec![to as u64 - 1] } else { Vec::new() },
             },
+            layer_loop: None,
         };
         self.in_flight.push_back(pending);
         Ok(segment)

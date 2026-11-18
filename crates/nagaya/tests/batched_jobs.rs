@@ -129,6 +129,7 @@ impl Decoder {
             outputs: OutputsWanted {
                 logit_rows: vec![self.position],
             },
+            layer_loop: None,
         }
     }
 

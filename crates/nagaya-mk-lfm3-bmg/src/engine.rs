@@ -813,6 +813,7 @@ impl Lfm3Engine {
             positions: (0..ids.len() as u64).collect(),
             meta: Vec::new(),
             outputs: Default::default(),
+            layer_loop: None,
         };
         if layers > self.b.layers.len() || norm && layers != self.b.layers.len() {
             return Err(format!(

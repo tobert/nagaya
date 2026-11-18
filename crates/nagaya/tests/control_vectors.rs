@@ -159,6 +159,7 @@ fn direct_row(context: &Value) -> Vec<f32> {
                 logit_rows: if last { vec![n - 1] } else { Vec::new() },
             },
             control: Vec::new(),
+            layer_loop: None,
         };
         out = Some(engine.pass(&[segment], &taps).unwrap());
     }

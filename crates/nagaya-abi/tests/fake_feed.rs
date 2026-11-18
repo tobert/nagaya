@@ -27,6 +27,7 @@ fn segment(slot: u32, from: u64, tokens: &[u32], logits: bool) -> Segment {
         outputs: OutputsWanted {
             logit_rows: if logits { vec![to - 1] } else { Vec::new() },
         },
+        layer_loop: None,
     }
 }
 

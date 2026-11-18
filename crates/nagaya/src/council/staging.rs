@@ -150,6 +150,7 @@ mod tests {
                         positions: (from..to).collect(),
                         meta: Vec::new(),
                         outputs: OutputsWanted::default(),
+                        layer_loop: None,
                     }],
                     &[],
                 )

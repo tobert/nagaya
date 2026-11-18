@@ -243,6 +243,7 @@ pub fn segment(slot: u32, from: u64, tokens: &[u32], logits: &[u64]) -> nagaya_a
         outputs: nagaya_abi::OutputsWanted {
             logit_rows: logits.to_vec(),
         },
+        layer_loop: None,
     }
 }
 

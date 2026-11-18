@@ -52,6 +52,7 @@ fn logits(engine: &mut dyn Engine) -> Vec<u8> {
         positions: vec![0, 1, 2],
         meta: Vec::new(),
         outputs: OutputsWanted { logit_rows: vec![2] },
+        layer_loop: None,
     };
     let out = engine.pass(std::slice::from_ref(&segment), &[]).expect("a pass");
     out.outputs[0].bytes.clone()

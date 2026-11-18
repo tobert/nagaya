@@ -71,6 +71,7 @@ fn block(slot: u32, from: u64, ids: &[u32], span: &Span, pixels: &[u8], last: bo
         positions: (from..end).collect(),
         meta: if reads { media::encode(&[*span]) } else { Vec::new() },
         outputs: OutputsWanted { logit_rows },
+        layer_loop: None,
     }
 }
 

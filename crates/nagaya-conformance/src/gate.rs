@@ -1109,6 +1109,7 @@ fn token_segment(state: State, start: u64, tokens: &[u32]) -> Segment {
         positions: (start..start + tokens.len() as u64).collect(),
         meta: Vec::new(),
         outputs: OutputsWanted::default(),
+        layer_loop: None,
     }
 }
 

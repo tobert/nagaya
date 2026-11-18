@@ -223,6 +223,7 @@ impl Lfm3Engine {
             outputs: nagaya_abi::OutputsWanted {
                 logit_rows: if logits { vec![pos] } else { Vec::new() },
             },
+            layer_loop: None,
         };
         let block = self.check_block(&[segment])?;
         if block.pos0 == 0 {

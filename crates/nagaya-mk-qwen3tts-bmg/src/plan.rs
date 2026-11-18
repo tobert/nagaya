@@ -133,6 +133,7 @@ pub fn limits(config: &Config, weights: u64) -> Limits {
         residual_row_bytes: 0,
         control: None,
         feed: None,
+        layer_loops: None,
     }
 }
 

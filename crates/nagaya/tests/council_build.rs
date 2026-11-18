@@ -447,6 +447,7 @@ fn direct_ids(value: &Value) -> Vec<String> {
                         positions: (from as u64..to as u64).collect(),
                         meta: Vec::new(),
                         outputs: OutputsWanted::default(),
+                        layer_loop: None,
                     }],
                     &[],
                 )

@@ -323,6 +323,7 @@ impl JobBody for Pass {
             positions: vec![0, 1, 2],
             meta: Vec::new(),
             outputs: OutputsWanted { logit_rows: vec![2] },
+            layer_loop: None,
         }])
     }
 

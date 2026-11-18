@@ -71,6 +71,7 @@ fn segment(engine: &Qwen38Engine, slot: u32, tokens: &[u32], logits: bool) -> Se
         positions: (start..start + tokens.len() as u64).collect(),
         meta: Vec::new(),
         outputs,
+        layer_loop: None,
     }
 }
 

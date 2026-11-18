@@ -70,6 +70,7 @@ pub fn segment(state: State, tokens: &[u32], start: u64, logits: bool, control: 
                 Vec::new()
             },
         },
+        layer_loop: None,
     }
 }
 

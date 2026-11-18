@@ -202,6 +202,7 @@ impl SpeechFrames for Speaking {
             outputs: OutputsWanted {
                 logit_rows: if logits { vec![n] } else { Vec::new() },
             },
+            layer_loop: None,
         };
         let mut out = self.inner.pass(std::slice::from_ref(&segment), &[])?;
         self.record_and_favor(&segment, &mut out);

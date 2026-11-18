@@ -720,6 +720,7 @@ mod tests {
             positions: (start..start + tokens.len() as u64).collect(),
             meta: Vec::new(),
             outputs: OutputsWanted::default(),
+            layer_loop: None,
         }
     }
 

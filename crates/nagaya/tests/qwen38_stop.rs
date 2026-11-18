@@ -55,6 +55,7 @@ fn feed(engine: &mut dyn Engine, slot: u32, count: usize) {
             positions: (done as u64..end as u64).collect(),
             meta: Vec::new(),
             outputs: OutputsWanted::default(),
+            layer_loop: None,
         };
         engine
             .pass(&[segment], &[])
