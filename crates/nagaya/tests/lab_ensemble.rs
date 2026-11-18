@@ -34,13 +34,14 @@ fn lab() -> Lab {
 }
 
 /// A council on the toy with `segments` segments in a pass. With more than one, the toy joins its decode rows, as the
-/// Qwen3.8 engine does: it declares `segments_exact` and no feed rule.
+/// Qwen3.8 engine does: it declares `segments_exact` and no feed rule. The toy runs layer loops with a reserve of 4.
 fn lab_of(segments: u32) -> Lab {
     let log = ControlLog::default();
     let factory = TermFactory {
         seal: false,
         log: log.clone(),
         segments,
+        layer_loops: Some(4),
         ..TermFactory::toy()
     };
     let fixture = Fixture::with_factory(factory, 1 << 20, None, ServiceConfig::new("toy", ENGINE));
@@ -309,6 +310,12 @@ fn each_fault_is_a_400_that_names_its_member() {
             let mut b = ensemble(vec![one()], "logprob_sum");
             b["model"] = json!("nope");
             b
+        }),
+        // The contexts of an ensemble share a pass, and a pass runs one loop (spec 11.16).
+        ("contexts[1].loop", {
+            let mut looped = one();
+            looped["loop"] = json!({"start": 0, "end": 2, "count": 2});
+            ensemble(vec![one(), looped], "logprob_sum")
         }),
     ];
     for (member, body) in cases {

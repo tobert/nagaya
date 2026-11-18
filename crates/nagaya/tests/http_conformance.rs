@@ -115,10 +115,24 @@ fn free_port() -> u16 {
         .port()
 }
 
+/// The checks of gogi's suite for a served model with `layer_loops` (gogi `checks/loops.rs`). Each must run and pass.
+const LOOP_CHECKS: [&str; 9] = [
+    "a loop with count 1 gives the numbers of no loop",
+    "a loop with count 1 still has model state of its own",
+    "a loop with count 2 never reuses the plain model state",
+    "loops of another count never share model state",
+    "an equal loop shares its model state",
+    "loop: null beside parent drops the parent's loop",
+    "a build with a count of 5 is a 400 naming loop.count",
+    "raw reads with a count of 0 are a 400 naming contexts[1].loop.count",
+    "a control vector request with a looped context is a 400 naming positive[0].loop",
+];
+
 /// A profile with two fake-toy engines, each its own text served model (spec 11.7, "Several text models in one
-/// process", Proposed). `toy-a` has a control table and `toy-b` has none, so the suite checks both paths.
+/// process", Proposed). `toy-a` has a control table and layer loops, and `toy-b` has neither, so the suite checks
+/// both paths.
 const TWO_MODELS: &str = "[[engines]]\nname = \"toy-a\"\nkind = \"fake-toy\"\ndevices = [0]\nshare = 1\n\
-     config = { model = \"toy-a\", control = 4 }\n\
+     config = { model = \"toy-a\", control = 4, extra_runs = 4 }\n\
      [[engines]]\nname = \"toy-b\"\nkind = \"fake-toy\"\ndevices = [0]\nshare = 1\n\
      config = { model = \"toy-b\" }\n\
      [[budgets]]\ntiers = [\"device(0)\"]\nbytes = 8320\n\
@@ -431,7 +445,6 @@ fn gogi_conformance_passes_on_each_of_two_text_models_of_one_process() {
             "a held spec survives a restart".to_owned(),
             "a pinned snapshot survives a restart".to_owned(),
             "generation holds its head".to_owned(),
-            "a build with a loop to a model without layer_loops is a 400 naming loop".to_owned(),
         ] {
             assert!(ok(&name), "{model}: {name}");
         }
@@ -445,6 +458,14 @@ fn gogi_conformance_passes_on_each_of_two_text_models_of_one_process() {
             ],
         };
         for name in control {
+            assert!(ok(name), "{model}: {name}");
+        }
+        // toy-a runs the checks of layer loops, and toy-b, with no reserve, the refusal (gogi "Layer loops").
+        let loops: &[&str] = match model {
+            "toy-a" => &LOOP_CHECKS,
+            _ => &["a build with a loop to a model without layer_loops is a 400 naming loop"],
+        };
+        for name in loops {
             assert!(ok(name), "{model}: {name}");
         }
         // Both served models share the records of the server.

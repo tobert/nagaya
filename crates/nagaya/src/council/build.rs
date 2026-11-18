@@ -8,8 +8,8 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
 use nagaya_abi::{
-    ControlItem, Engine, Kind, Limits, OutputsWanted, PassError, PassOut, PassStatus, Segment, SegmentInputs, State,
-    Tap, WriteResult,
+    ControlItem, Engine, Kind, LayerLoop, Limits, OutputsWanted, PassError, PassOut, PassStatus, Segment,
+    SegmentInputs, State, Tap, WriteResult,
 };
 use nagaya_council::build::{BoundaryRecipe, Step, plan_chunks, plan_steps, range_recipe};
 use nagaya_council::family::{Boundary, MediaInput, MediaSpan};
@@ -625,6 +625,8 @@ pub struct ContextBody<T: Then> {
     root: RecipeId,
     /// The control list of the job, when the context names one.
     control: Option<JobControl>,
+    /// The layer loop of each segment of the job, when the context names one (spec 11.16).
+    layer_loop: Option<LayerLoop>,
     /// The items of each segment of the job, after the worker bound the vectors of the list to entries of the table.
     items: Vec<ControlItem>,
     /// False when the job makes no interval copy, as the job of a control vector (spec 11.12).
@@ -720,6 +722,7 @@ impl<T: Then> ContextBody<T> {
             shared,
             root,
             control: None,
+            layer_loop: None,
             items: Vec::new(),
             copies: true,
             residual: None,
@@ -797,11 +800,12 @@ impl<T: Then> ContextBody<T> {
         self
     }
 
-    /// Run the job under the root recipe of its control list, with the items of the list on each pass (spec 11.12).
-    /// The recipes of the job must chain from `root`.
-    pub fn control(mut self, root: RecipeId, control: Option<JobControl>) -> Self {
+    /// Run the job under the root recipe of its control list and its loop, with the items of the list and the loop on
+    /// each pass (spec 11.12, 11.16). The recipes of the job must chain from `root`.
+    pub fn control(mut self, root: RecipeId, control: Option<JobControl>, layer_loop: Option<LayerLoop>) -> Self {
         self.root = root;
         self.control = control;
+        self.layer_loop = layer_loop;
         self
     }
 
@@ -1349,7 +1353,7 @@ impl<T: Then> ContextBody<T> {
             outputs: OutputsWanted {
                 logit_rows: if pending.row { vec![to as u64 - 1] } else { Vec::new() },
             },
-            layer_loop: None,
+            layer_loop: self.layer_loop,
         };
         self.in_flight.push_back(pending);
         Ok(segment)

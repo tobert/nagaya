@@ -568,7 +568,13 @@ impl Council {
             // Each family library renders an open message and checks its seams, so each served model continues a
             // reply (gogi "Continuations"). Riding decisions are not built, so no model declares `ride`.
             embeddings: None,
-            layer_loops: None,
+            // A served model runs the loops of its engine (spec 11.16).
+            layer_loops: service.layer_loops().map(|limit| gogi_proto::layer_loop::LayerLoops {
+                layers: limit.layers,
+                bounds: limit.bounds.clone(),
+                count: limit.count,
+                extra_runs: u64::from(limit.extra_runs),
+            }),
             capabilities: [
                 Capability::Reads,
                 Capability::Generate,
@@ -582,6 +588,7 @@ impl Council {
             .chain(service.family().thinks().then_some(Capability::Thinking))
             .chain(service.family().describes().then_some(Capability::Describe))
             .chain(service.controls().then_some(Capability::ControlVectors))
+            .chain(service.layer_loops().is_some().then_some(Capability::LayerLoops))
             .collect(),
         }
     }

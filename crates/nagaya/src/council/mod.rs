@@ -34,9 +34,9 @@ use gogi_proto::generation::GenerationDone;
 use gogi_proto::pins::{PinHeld, PinOwner, PinsPut, PinsPutResult, RecordHeld, SnapshotDetail, validate_owner};
 use gogi_proto::spec::{HeldSpec, SpecRules};
 use gogi_proto::{ContextId, SnapshotId};
-use nagaya_abi::{Capability, Engine, Limits};
+use nagaya_abi::{Capability, Engine, LayerLoop, Limits};
 use nagaya_council::build::{
-    BoundaryRecipe, Seal, boundary_recipes, range_recipe, recipes_with_cuts, root_recipe, root_recipe_with_control,
+    BoundaryRecipe, Seal, boundary_recipes, range_recipe, recipes_with_cuts, root_recipe, root_recipe_with_lab,
     seal_recipes,
 };
 use nagaya_council::family::{Boundary, Family, MediaInput, Rendering};
@@ -359,12 +359,14 @@ pub(crate) struct Starts {
     pub decoded: BTreeMap<RecipeId, usize>,
 }
 
-/// The root recipe of a context and its control list, after the checks (spec 11.12).
+/// The root recipe of a context, its control list and its layer loop, after the checks (spec 11.12, 11.16).
 pub(crate) struct Steer {
-    /// The root of the plain model, or the root with the list as the lab state.
+    /// The root of the plain model, or the root with the list and the loop as the lab state.
     pub root: RecipeId,
-    /// The list, with the claim of its vectors. `None` for a plain context.
+    /// The list, with the claim of its vectors. `None` for a context with no list.
     pub control: Option<JobControl>,
+    /// The span of layers that runs more than once. `None` for a context with no loop.
+    pub layer_loop: Option<LayerLoop>,
 }
 
 /// The codes of each audio output that a service wrote, by content id (spec 11.11, "Codes").
@@ -611,14 +613,21 @@ impl Service {
             && self.objects.get().is_some()
     }
 
+    /// The layer loops of the engine, when it declares `layer_loops` (spec 11.16).
+    pub fn layer_loops(&self) -> Option<&nagaya_abi::LayerLoopLimit> {
+        self.shared.limits.layer_loops.as_ref()
+    }
+
     /// Check the control list of a context, and give its root recipe and the job's list (spec 11.12, gogi "Control
     /// vectors"). `at` names the context in a request with several, such as `contexts[1].`, or is empty. A plain context
     /// gets the plain root.
     pub(crate) fn steer(&self, context: &Context, at: &str) -> Result<Steer, ServiceError> {
+        let layer_loop = self.layer_loop(context);
         if context.control.is_empty() {
             return Ok(Steer {
-                root: self.root,
+                root: root_recipe_with_lab(&self.shared.identity, b"", &[], layer_loop),
                 control: None,
+                layer_loop,
             });
         }
         let (Some(limit), Some(table), true) = (self.shared.limits.control, &self.shared.control, self.controls())
@@ -638,12 +647,23 @@ impl Service {
             limit,
         };
         let checked = control::check(&context.control, at, &fit, &mut lookup)?;
-        let root = root_recipe_with_control(&self.shared.identity, b"", &checked.entries);
+        let root = root_recipe_with_lab(&self.shared.identity, b"", &checked.entries, layer_loop);
         let vectors: Vec<ContentId> = checked.vectors.iter().map(|(id, _)| *id).collect();
         let claim = ControlTable::claim(table, &vectors);
         Ok(Steer {
             root,
             control: Some(JobControl { checked, claim }),
+            layer_loop,
+        })
+    }
+
+    /// The layer loop of a context for its engine (spec 11.16). The route checked the loop against the served model,
+    /// which copies the limit of the engine, and the engine checks it again before a pass.
+    fn layer_loop(&self, context: &Context) -> Option<LayerLoop> {
+        context.layer_loop.map(|lp| LayerLoop {
+            start: lp.start,
+            end: lp.end,
+            count: lp.count,
         })
     }
 
@@ -777,12 +797,12 @@ impl Service {
         } else {
             let media = self.media_rows(&rendering)?;
             let shared = Arc::clone(&self.shared);
-            let control = steer.control;
+            let (control, layer_loop) = (steer.control, steer.layer_loop);
             let job = |tx| {
                 BuildBody::new(shared, tokens, recipes.clone(), tx)
                     .media(media)
                     .cuts(cuts)
-                    .control(root, control)
+                    .control(root, control, layer_loop)
             };
             let _claim = self.claim(&recipes);
             self.run_context(job, schedule, None)?.outcome

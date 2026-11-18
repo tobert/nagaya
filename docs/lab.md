@@ -450,9 +450,10 @@ POST /nagaya/v1/lab/ensemble
 - **Bits.** One context with `logprob_sum` and the weight 1 gives its row to the sampler unchanged. Thus it gives the
   bits of the same generation. The card gate checks this.
 - **Errors.** A model with no batched passes is a 400 that names `model`. 0 or more than 8 contexts is a 400 that names
-  `contexts`. A context with another control list is a 400 that names `contexts[i].control`. `contrast` with other than
-  2 contexts is a 400 that names `combine`. A weight that is not finite or not above 0 is a 400 that names
-  `weights[i]`. A `strength` that is not finite is a 400 that names `strength`.
+  `contexts`. `contrast` with other than 2 contexts is a 400 that names `combine`. A weight that is not finite or not
+  above 0 is a 400 that names `weights[i]`. A `strength` that is not finite is a 400 that names `strength`.
+- **One pass.** The contexts share each pass, so they share one control list and one layer loop (spec 11.16). A
+  context with another list is a 400 that names `contexts[i].control`, and another loop names `contexts[i].loop`.
 
 ## Context records in the lab routes
 

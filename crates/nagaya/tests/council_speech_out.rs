@@ -839,3 +839,25 @@ fn a_control_list_for_a_model_with_no_table_is_a_400_for_a_reply_with_audio_too(
         other => panic!("a control list with no table: {:?}", other.err()),
     }
 }
+
+/// A reply with audio refuses a layer loop (spec 11.16). A frame feeds its position as a plain pass, so the extra
+/// runs of the loop would hold no state there.
+///
+/// Falsified by a service that takes the loop: the plan of the speech is made.
+#[test]
+fn a_reply_with_audio_refuses_a_layer_loop() {
+    let rig = rig();
+    let mut looped = request(None, 8, 1);
+    looped.context.layer_loop = Some(gogi_proto::layer_loop::Loop {
+        start: 0,
+        end: 2,
+        count: 2,
+    });
+    match rig.service.prepare_speech(&looped) {
+        Err(ServiceError::Invalid(invalid)) => {
+            assert_eq!(invalid.param.as_deref(), Some("loop"));
+            assert!(invalid.message.contains("audio"), "{}", invalid.message);
+        }
+        other => panic!("a loop with audio: {:?}", other.err()),
+    }
+}
