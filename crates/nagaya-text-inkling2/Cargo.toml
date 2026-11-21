@@ -1,0 +1,13 @@
+[package]
+name = "nagaya-text-inkling2"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gogi-proto.workspace = true
+nagaya-council = { version = "0.1.0", path = "../nagaya-council" }
+nagaya-jinja = { version = "0.1.0", path = "../nagaya-jinja" }
+serde_json = { version = "1.0.154", features = ["float_roundtrip", "preserve_order"] }
+sha2 = "0.10.9"
+# The same crate and features as nagaya-text-lfm3. The reference tokenizer is a `tokenizers` tokenizer.
+tokenizers = { version = "0.23.1", default-features = false, features = ["onig"] }
