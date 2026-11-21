@@ -4,6 +4,9 @@
 //! The variable `NAGAYA_REQUIRE_MODELS=1` makes an absent file fail the test. Only absence skips.
 #![allow(dead_code)]
 
+#[cfg(feature = "xe")]
+pub mod card;
+
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
