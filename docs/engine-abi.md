@@ -1532,7 +1532,7 @@ card. Thus the experts stay in the format of the checkpoint: NVFP4 in layers 0 t
 **The parts.** Each run has three parts, and `ll` is its layer in two digits:
 
 - `k.<ll>` and `v.<ll>`: `f32` rows of 8 heads of 128, after the clip of the key and the norm of the value. They are
-  cells on the full layers 5, 11, 17 and 23, and rings of 1,024 rows on the other layers.
+  cells on the full layers 5, 11, 17 and 23, and rings of 2,048 rows on the other layers.
 - `conv.<ll>`: a fixed `f32` part of 3 rows of 6,656 values, oldest first. A row holds the inputs of four
   convolutions, in this order:
   - the key, 1,024 values;
@@ -1543,8 +1543,11 @@ card. Thus the experts stay in the format of the checkpoint: NVFP4 in layers 0 t
   the order of the runs, as in "Layer loops".
 
 **The cost of a slot.** At 3 cycles, 8 runs of the full layers hold cells: 65,536 bytes of each position. The 40
-runs of the sliding layers hold rings of 1,024 rows and a spill of 1,024 rows, as for LFM3: 640 MiB. The conv parts
-take 3.8 MB. Thus a slot of 32,768 positions takes about 2.7 GiB. Each more cycle adds 2 runs of cells and 10 rings.
+runs of the sliding layers hold rings of 2,048 rows and a spill of 1,024 rows, as for LFM3: 960 MiB. The conv parts
+take 3.8 MB. Thus a slot of 32,768 positions takes about 3.0 GiB. Each more cycle adds 2 runs of cells and 10 rings.
+- A ring holds more rows than the window of 1,024. Reason: a block of 512 writes its keys before its attention
+  reads them. Its first query still needs the key 1,023 positions before it. The keys of one block can span
+  1,535 positions (review by ChatGPT through kaibo, 2026-11-21).
 
 **Positions.** The model has no rotary embedding.
 
@@ -1565,6 +1568,66 @@ run of a cycle has its own row, and the lab compares the cycles. A control item 
 that its vector holds. Milestone 35 step 8 adds taps of the block outputs, the messages, the gates and the routes.
 
 **Not covered yet.** Images (milestone 35 step 9), and the drafts of the MTP head, which wait (step 10).
+
+### The first Inkling 2 binding
+
+The text path of `crates/nagaya-mk-inkling2-bmg` follows these rules. It uses the interpreter of `nagaya-mk-bmg`
+with the ops of `kernels/inkling2_ops.cl`, in a binary of its own (`MK_INKLING2`). Each rule is **Proposed** (Claude
+Opus 5.5, 2026-11-21).
+
+- **The ring of one run.** A run of layer `l` reads `x`, the residual, and `B`, the block outputs of this cycle.
+  It writes `x` again. Each name below is one buffer of the block. A run is these tasks, in this order:
+  1. `a = mix(B, x)`, the attention residual of each position over its block outputs and `x`. A full layer has 3
+     queries, so `a_q`, `a_k` and `a_v` are three mixes. A sliding layer has one, and `a_q = a_k = a_v = a`.
+  2. In cycles 2 and later: `m = mix(P, y)`, the 4 messages of the layer. `P` is the block outputs of the cycle
+     before, and `y` is its last residual. Then `a_q`, `a_k` and `a_v` each go through their gate with their message.
+  3. `h_q`, `h_k`, `h_v`: the norms of `a_q`, `a_k` and `a_v`. A sliding layer has one norm. Its gates act before
+     the norm, so in cycles 2 and later its three rows differ.
+  4. From `h_q`: the query, the bias states, the sinks and the output gate. From `h_k`: the key and the taps of a
+     dynamic key convolution. From `h_v`: the value and the taps of a dynamic value convolution.
+  5. The clip of the query, and its log scale on a full layer. The convolutions of the key and the value, the clip
+     of the key and the norm of the value. The key and the value go into the rows of the run's state.
+  6. The attention, with the bias of the distance and the sink. Then the output gate, the output matmul, and the
+     convolution after the attention: `o`.
+  7. On the first layer of a block, `x` goes into `B` as a new block output, and `r = o`. On another layer,
+     `r = x + o`.
+  8. `e = mix(B, r)`, and in cycles 2 and later its gate with the fourth message. Then the norm, the router, the
+     plan, the experts, the sum of the 8 picks and the convolution after the experts: `f`. Then `x = r + f`.
+- **The new ops.** The binary adds these ops, which the other engines do not have:
+  - the attention residual, and the message gate;
+  - the clips and the log scale;
+  - the convolution with a residual, static and dynamic;
+  - the attention with a bias and a sink, and the gate of its output;
+  - the router of sigmoid scores, and the experts in NVFP4 and in MXFP8.
+
+  `OP_MOE_PLAN` and `OP_MOE_GATHER` serve as they are: 128 experts and 8 picks are their constants.
+- **The experts on the card.** A lane of an expert op expands 16 values of its row, one block of NVFP4, for each
+  step of 16 columns. It rounds them to `bf16` as the host op does, and the XMX sums take `x` in three `bf16` parts,
+  as `OP_MATMUL` does. The weight of a pick multiplies the output of the down matmul, as in the reference.
+  - The load repacks each expert across its output rows: a plane of codes `[expert][16 rows][16 columns][2
+    words][16 lanes]` and a plane of scales. Thus the 16 lanes of a subgroup read 64 bytes in one load. The gate
+    of the op reads the repacked planes, so the repack is part of what the gate checks.
+  - The decode of E4M3 is exact, and it keeps the sign of zero. The order is `(e2m1 * scale) * factor`, with no
+    fused multiply-add and no other order.
+  - The sum of the 8 picks has a fixed order, with no atomics. The reference sums in the order of the experts, and
+    the card test names the gap of the order that the op uses.
+- **The attention.** The op computes the bias of each score inline. It is the dot product of the 16 bias states of
+  the query and the column of the distance. A distance of 1,024 or more has no bias.
+  - The distance and the log scale read absolute positions, never a row of a ring.
+  - The sink enters once for each query and head. The merge of the partial sums starts from `(sink, 1, 0)`. Thus
+    the sink adds to the sum, and not to the output.
+- **The gate of each op.** Each device op has a host form in `src/host/`, and the card test of the op compares
+  them. The expansion gives equal bits. An op that sums gives the bits of its host form in the same order, or a
+  measured gap that its test names.
+- **Bits and splits.** A cut between launches changes no bit. The same block split gives the same bits. Another
+  split of the same tokens gives the logits within a tolerance that a card test measures. Reason: a small change
+  near the eighth pick of the router can change the set of experts.
+- **A pass in several launches.** A ring holds at most 2,047 tasks (`MAX_TASKS_PER_CARD`). A pass whose tasks do not
+  fit runs as several launches, cut between two runs. The state of the block stays in the buffers between them, so
+  the cuts change no bit.
+- **The buffers of a block.** All are `f32`: the residual, the block outputs, the block outputs of the cycle
+  before, and the input of the cycles. The block outputs hold at most 4 rows of each position. The engine copies the
+  residual and the block outputs after layer 5, and each cycle starts from the copy.
 
 ## Not covered yet
 
