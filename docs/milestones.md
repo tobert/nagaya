@@ -387,6 +387,11 @@ Do the steps in this order. Each step ends with the checks green.
 6. **Council and deploy.** The factory, the registries, an example profile, and the gogi suite on the card.
 7. **Cycles in a call.** The context member `cycles` chooses 1 to 5 cycles. Card gate: the research model against
    the reference at each count. Mini takes the same counts, out of the range of its training.
+   - The engine is done (`xe_cycles.rs`, 2026-11-21). With a reserve of 48 runs, it runs 1 to 5 cycles. A pass of 4
+     or 5 cycles runs as 2 launches.
+   - The card gate compares "plain" and "chat" at 1 to 5 cycles with the `f32` oracle. The top-64 logits are within
+     2.5e-5 on Mini and 2.4e-5 on the research model. The logsumexp is within 7.7e-6.
+   - The count 3 by name gives the bits of no count. The same split at 5 cycles gives the same bits twice.
 8. **The lab.** The taps: the row after each run, the block outputs, the messages, the gates and the routes. Control
    vectors, latent steps, and `ensemble` over counts of cycles.
 9. **Images.** The ViT, the placeholders of an image and its sizes. Card gate against the reference.

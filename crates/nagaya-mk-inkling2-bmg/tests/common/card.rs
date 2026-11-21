@@ -16,11 +16,16 @@ pub fn model_dir(which: Which) -> PathBuf {
 
 /// The engine of `which` on the first card of `NAGAYA_TEST_CARDS`, with slots of the positions `slots`.
 pub fn open(which: Which, slots: Vec<usize>, max_block: usize) -> Inkling2Engine {
+    open_with(which, slots, max_block, DEFAULT_EXTRA_RUNS)
+}
+
+/// Like [`open`], with a reserve of `extra_runs` runs in each slot.
+pub fn open_with(which: Which, slots: Vec<usize>, max_block: usize, extra_runs: usize) -> Inkling2Engine {
     let config = Config {
         model_dir: model_dir(which),
         slots,
         max_block,
-        extra_runs: DEFAULT_EXTRA_RUNS,
+        extra_runs,
     };
     let started = std::time::Instant::now();
     let engine = Inkling2Engine::open(config, &nagaya_mk_bmg::test_cards::card())

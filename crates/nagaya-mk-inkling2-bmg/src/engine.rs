@@ -36,8 +36,8 @@ pub struct Inkling2Engine {
     bufs: Bufs,
     slots: Vec<SlotMemory>,
     held: Held,
-    /// The runs of a pass at the default count of cycles.
-    runs: Vec<Run>,
+    /// The runs of a pass at each count of cycles, from 1. A probe of the oracle runs the default.
+    runs: Vec<Vec<Run>>,
     /// The most tasks of one launch. A test sets fewer to cut a pass at each run.
     launch_tasks: usize,
     /// The launches of the last ring.
@@ -295,6 +295,7 @@ impl Inkling2Engine {
         let ring = Ring::new(card, spec::scratch_floats(config.max_seq()));
 
         let identity = identity_of(model, checkpoint_digest, facts, &config, pci, driver)?;
+        let runs = (1..=usize::from(limits_cycles_max(&limits))).map(spec::runs).collect();
         let held = Held::new(&config.seqs(), config.extra_runs);
         Ok(Self {
             model,
@@ -309,7 +310,7 @@ impl Inkling2Engine {
             bufs,
             slots,
             held,
-            runs: spec::runs(spec::DEFAULT_CYCLES),
+            runs,
             launch_tasks: LAUNCH_TASKS,
             last_launches: 0,
         })
@@ -353,9 +354,21 @@ impl Inkling2Engine {
         }
     }
 
-    /// Run a block from position `pos0` of `slot` up to the end of `upto` runs, with the logit rows when given. The
-    /// caller checked the block.
-    fn forward(&mut self, slot: usize, pos0: usize, tokens: &[u32], upto: usize, logit_rows: Option<&[usize]>) {
+    /// The runs of a pass of `cycles` cycles.
+    fn runs_of(&self, cycles: usize) -> &[Run] {
+        &self.runs[cycles - 1]
+    }
+
+    /// Run a block of `cycles` cycles from position `pos0` of `slot` up to the end of `upto` runs, with the logit rows
+    /// when given. The caller checked the block.
+    fn forward(
+        &mut self,
+        slot: usize,
+        pos0: usize,
+        tokens: &[u32],
+        (cycles, upto): (usize, usize),
+        logit_rows: Option<&[usize]>,
+    ) {
         let pass = model::pass(
             &self.weights,
             &self.bufs,
@@ -363,7 +376,7 @@ impl Inkling2Engine {
                 slot: &self.slots[slot],
                 pos0,
                 n: tokens.len(),
-                runs: &self.runs,
+                runs: self.runs_of(cycles),
                 upto,
                 logit_rows,
             },
@@ -382,13 +395,14 @@ impl Inkling2Engine {
     /// The residual after `upto` runs of `ids` from position 0 of `slot`, `[n][2304]`, or the final norm after all
     /// runs with `norm`. The probe of the oracle (8.3) uses it. It empties the slot.
     pub fn residual(&mut self, slot: usize, ids: &[u32], upto: usize, norm: bool) -> Result<Vec<f32>, String> {
-        if upto > self.runs.len() || norm && upto != self.runs.len() {
+        let all = self.runs_of(spec::DEFAULT_CYCLES).len();
+        if upto > all || norm && upto != all {
             return Err(format!("a probe of {upto} runs with the norm {norm} does not exist"));
         }
         let segment = probe_segment(slot, ids);
         self.held.clear(slot);
         let block = self.held.check_pass(&[segment], self.config.max_block)?;
-        self.forward(slot, 0, &block.tokens, upto, norm.then_some(&[][..]));
+        self.forward(slot, 0, &block.tokens, (block.cycles, upto), norm.then_some(&[][..]));
         let at = if norm { self.bufs.e_norm } else { self.bufs.x };
         let out = self.read_f32(at, ids.len() * HIDDEN);
         self.held.clear(slot);
@@ -436,6 +450,11 @@ impl Inkling2Engine {
     }
 }
 
+/// The most cycles of the limits.
+fn limits_cycles_max(limits: &Limits) -> u8 {
+    limits.cycles.expect("the engine declares `cycles`").max
+}
+
 /// The `f32` values of little-endian bytes.
 fn weights_f32(bytes: &[u8]) -> Vec<f32> {
     bytes
@@ -478,8 +497,14 @@ impl Engine for Inkling2Engine {
         if block.zero_conv() {
             self.zero_conv(block.slot);
         }
-        let upto = self.runs.len();
-        self.forward(block.slot, block.pos0, &block.tokens, upto, Some(&block.logit_rows));
+        let upto = self.runs_of(block.cycles).len();
+        self.forward(
+            block.slot,
+            block.pos0,
+            &block.tokens,
+            (block.cycles, upto),
+            Some(&block.logit_rows),
+        );
         let outputs: Vec<Output> = (0..block.logit_rows.len())
             .map(|i| Output {
                 name: "logits".to_owned(),

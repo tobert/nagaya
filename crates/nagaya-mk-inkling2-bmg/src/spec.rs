@@ -10,8 +10,8 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use nagaya_abi::{
-    Capability, ChainLimits, CoverageSpan, Determinism, Dtype, FeedRule, Inputs, Kind, Lifetime, Limits, MandatoryTerm,
-    MemoryLimits, PartId, PartKind, PartLimits, Segment, SegmentInputs, SlotLimit, State, Tier,
+    Capability, ChainLimits, CoverageSpan, CyclesLimit, Determinism, Dtype, FeedRule, Inputs, Kind, Lifetime, Limits,
+    MandatoryTerm, MemoryLimits, PartId, PartKind, PartLimits, Segment, SegmentInputs, SlotLimit, State, Tier,
 };
 use nagaya_mk_bmg::protocol::{MAX_TASKS_PER_CARD, NUM_SCOREBOARD_EVENTS};
 use nagaya_mk_bmg::safetensors::{self, MappedSafeTensors, TensorMeta};
@@ -64,8 +64,7 @@ pub const RING_SPILL: usize = 1024;
 /// The layers of one cycle.
 pub const CYCLE_LAYERS: usize = CYCLE_END - CYCLE_START;
 
-/// The cycles of a pass. Mini is post-trained at 3 cycles. `limits().cycles` and `segment.cycles` come in milestone
-/// 35 step 7; until then each pass runs this count.
+/// The cycles of a segment with no count (`segment.cycles`). Mini is post-trained at 3 cycles.
 pub const DEFAULT_CYCLES: usize = 3;
 
 /// The reserve of each slot when the config names none: the runs of cycles 2 and 3.
@@ -460,6 +459,18 @@ impl Config {
     }
 }
 
+/// The counts of cycles that a config runs: 1 to `1 + extra_runs / 12`, and 3 by default (engine-abi "Inkling 2").
+/// The reserve holds the runs of the cycles after the first, so it sets the most.
+pub fn cycles_limit(extra_runs: usize) -> CyclesLimit {
+    CyclesLimit {
+        min: 1,
+        max: (1 + extra_runs / CYCLE_LAYERS) as u8,
+        default: DEFAULT_CYCLES as u8,
+        start: CYCLE_START as u32,
+        end: CYCLE_END as u32,
+    }
+}
+
 /// The slot classes of the config: each run of equal sizes is one class.
 pub fn slot_limits(slots: &[usize], extra: usize) -> Vec<SlotLimit> {
     let mut classes: Vec<SlotLimit> = Vec::new();
@@ -561,6 +572,7 @@ pub fn limits(config: &Config, weights: u64) -> Limits {
             Capability::Slots,
             Capability::Coverage,
             Capability::Close,
+            Capability::Cycles,
         ],
         parts: parts(config.extra_runs),
         inputs: Inputs::Tokens,
@@ -596,9 +608,9 @@ pub fn limits(config: &Config, weights: u64) -> Limits {
         feed: Some(FeedRule {
             block: config.max_block as u64,
         }),
-        // The engine runs cycles, not layer loops (engine-abi "Inkling 2"). The count of a call comes in step 7.
+        // The engine runs cycles, not layer loops (engine-abi "Inkling 2").
         layer_loops: None,
-        cycles: None,
+        cycles: Some(cycles_limit(config.extra_runs)),
     }
 }
 
@@ -739,6 +751,8 @@ pub struct Block {
     pub tokens: Vec<u32>,
     /// The rows of the block whose logits the pass gives, in request order.
     pub logit_rows: Vec<usize>,
+    /// The count of cycles of the pass: the count of the segment, or the default.
+    pub cycles: usize,
 }
 
 impl Block {
@@ -766,6 +780,11 @@ pub struct Held {
     /// The first position that the rings of each slot hold since its last restore: 0, or the start of the restored
     /// rows.
     ring_from: Vec<u64>,
+    /// The count of cycles that fed each slot, or `None` when no pass fed its positions: an empty slot, or a slot
+    /// after a restore. The next pass then sets it.
+    pub cycles: Vec<Option<usize>>,
+    /// The counts of cycles that a pass can run.
+    limit: CyclesLimit,
 }
 
 /// The bytes of one row of a row part.
@@ -783,6 +802,8 @@ impl Held {
             n: vec![0; seqs.len()],
             writes: vec![BTreeMap::new(); seqs.len()],
             ring_from: vec![0; seqs.len()],
+            cycles: vec![None; seqs.len()],
+            limit: cycles_limit(extra),
         }
     }
 
@@ -815,6 +836,7 @@ impl Held {
     ///
     /// - A pass has one segment of 1 to `max_block` tokens below `LOGITS`, with no rows and no `meta`.
     /// - The segment names no control item and no layer loop: the engine declares neither.
+    /// - The count of cycles fits the limit. A slot that holds positions runs the count that fed them.
     /// - The positions run on from the token count of the slot. A slot does not go back.
     /// - `logit_rows` names at most `MAX_LOGIT_ROWS` positions of the block.
     pub fn check_pass(&self, segments: &[Segment], max_block: usize) -> Result<Block, String> {
@@ -846,12 +868,8 @@ impl Held {
                     .to_owned(),
             );
         }
-        if let Some(count) = segment.cycles {
-            return Err(format!(
-                "the segment names a count of cycles, {count}; the engine runs its default of 3 cycles, and it does \
-                 not declare `cycles` yet"
-            ));
-        }
+        let cycles = usize::from(self.limit.resolve(segment.cycles));
+        self.limit.check(cycles as u8)?;
         let n = tokens.len();
         if n == 0 || n > max_block {
             return Err(format!("the segment has {n} tokens; a block holds 1 to {max_block}"));
@@ -872,6 +890,16 @@ impl Held {
             return Err(format!(
                 "slot {slot} holds {held} tokens, so the positions run from {held}; an Inkling 2 slot does not go \
                  back, because its conv state holds only the last inputs"
+            ));
+        }
+        if let Some(fed) = self.cycles[slot]
+            && held > 0
+            && fed != cycles
+        {
+            return Err(format!(
+                "slot {slot} holds {held} positions of {fed} cycles, and the pass runs {cycles}; each run of a cycle \
+                 reads the keys of its own run at the earlier positions. The council keys a state by its count, so \
+                 feed the slot at {fed} cycles, or clear it first"
             ));
         }
         let pos0 = held as usize;
@@ -904,6 +932,7 @@ impl Held {
             pos0,
             tokens: tokens.clone(),
             logit_rows,
+            cycles,
         })
     }
 
@@ -911,6 +940,7 @@ impl Held {
     pub fn ran(&mut self, block: &Block) {
         self.n[block.slot] = (block.pos0 + block.tokens.len()) as u64;
         self.writes[block.slot].clear();
+        self.cycles[block.slot] = Some(block.cycles);
     }
 
     fn row_part(&self, state: State, id: PartId) -> Result<(usize, Part), String> {
@@ -1002,6 +1032,7 @@ impl Held {
     /// Take a write that the device made: the slot holds no token until `set_n`.
     pub fn wrote(&mut self, slot: usize, id: PartId, rows: Option<Range<u64>>) {
         self.n[slot] = 0;
+        self.cycles[slot] = None;
         self.writes[slot].insert(id, rows);
     }
 
@@ -1063,6 +1094,9 @@ impl Held {
         } else if let Some(from) = from {
             self.ring_from[slot] = from;
         }
+        if n == 0 || !self.writes[slot].is_empty() {
+            self.cycles[slot] = None;
+        }
         self.n[slot] = n;
         self.writes[slot].clear();
     }
@@ -1072,6 +1106,7 @@ impl Held {
         self.n[slot] = 0;
         self.ring_from[slot] = 0;
         self.writes[slot].clear();
+        self.cycles[slot] = None;
     }
 
     /// The positions that `bytes` of a part hold in a state, from the base of the part. A conv part holds none.

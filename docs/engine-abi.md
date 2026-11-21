@@ -1514,7 +1514,13 @@ engine declares no `layer_loops`.
   holds keys and values that a later position reads.
 - The ABI has `Capability::Cycles`, `CyclesLimit {min, max, default, start, end}` and `Segment.cycles`, a count or
   none (`Limits::check_segment_cycles`). A segment names a loop or cycles, and not both.
-- gogi has the context member `cycles` (gogi "Cycles"). The council passes it to `segment.cycles` in step 7.
+- gogi has the context member `cycles` (gogi "Cycles"). The council passes it to `segment.cycles` (spec 11.17).
+- **A slot keeps its count.** A slot that holds positions refuses a pass at another count, and the error names
+  both counts. A clear or a write of parts drops the count, and the next pass sets it. The bytes of a part do not
+  name their count. Thus the engine trusts the council, which keys a state by its count (spec 11.17).
+  **Proposed** (Claude Opus 5.5, 2026-11-21).
+- The parts of the reserve that a count does not reach hold stale rows. A snapshot copies them, and a pass at that
+  count never reads them.
 
 **The weights on the card.** Expanded to `bf16`, the experts take about 49 GB, which is more than the 32 GiB of the
 card. Thus the experts stay in the format of the checkpoint: NVFP4 in layers 0 to 19, and MXFP8 in layers 20 to 23.
@@ -1651,7 +1657,7 @@ Opus 5.5, 2026-11-21).
 - **The model.** The open reads `config.json` and checks each field that the ops read, with its value. Another
   value is refused, and the message names the field and the value. `loop_config.is_varloop` is false for Mini and
   true for the research model. The two configs differ in no other field that the engine reads.
-- **The runs.** Until `cycles` comes in step 7, each pass runs 3 cycles, and the engine declares no `cycles` limit.
+- **The runs.** A pass runs the count of its segment, or 3 with none (`spec::cycles_limit`).
   State `l` of a slot holds the run of layer `l` outside the cycles, or in cycle 1. Cycle `c` of 2 or more uses
   entries `12 * (c - 2)` to `12 * (c - 2) + 11` of the reserve.
 - **Slot sizes.** Each sliding run holds a ring of 2,048 rows and a spill of 1,024, in a slot of any size. In a
@@ -1681,7 +1687,7 @@ Opus 5.5, 2026-11-21).
 - **The other terms.** `kv` is the sum of the slots, on `device(0)`. `pinned` is host memory: the tasks, the
   statistics and a staging buffer of 64 MiB, as for LFM3.
 - **The limits.** One segment in each pass, and 16 logit rows. `max_quantum_ms` is 2,000, a budget that a card
-  test measures later. The capabilities are `parts`, `slots`, `coverage` and `close`.
+  test measures later. The capabilities are `parts`, `slots`, `coverage`, `close` and `cycles`.
 - **Not declared yet.** `control`, `layer_loops` and the tap `residual`. The tap comes with the plan of its buffer
   in step 8. A pass with a control list, a layer loop, rows or `meta` is refused.
 
