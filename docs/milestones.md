@@ -16,6 +16,7 @@ Fable 5.2, 2026-11-11):
    the build, the license and the review.
 4. Milestone 31 step 8, the publication, when Amy says so.
 5. Milestone 35, Inkling 2, on b70host: planned on 2026-11-21. Amy decides how much of it to do.
+6. Milestone 36, the speed of Inkling 2: a list of findings, not started. An agent of kaijutsu may take an item.
 
 Milestone 32, context records, starts in gogi and runs beside these. It changes the contract, so it must be done
 before the publication.
@@ -398,16 +399,7 @@ Do the steps in this order. Each step ends with the checks green.
 11. **Long contexts.** The model reads up to 1,048,576 positions. Measure the ledger cost and the speed at 256K.
 12. **Trial and review.** A trial with Amy, and a kaibo review round with a cast of another model family.
 
-**Speed, after the milestone.** Amy, 2026-11-21: "mostly we'll want some batching for when we want to try swarm
-or parallel contexts I think; we can focus on other perf gains first". A prefill of 512 tokens takes 799 ms, and a
-decode step takes 65 to 70 ms. The expert bytes set a floor near 3 ms for each step.
-
-- First: a decode path for one row in each expert op, and ops of the residual and the gates that use more of the
-  card. Also fewer tasks in a run.
-- Then a batch of decode rows, for swarms and parallel contexts. `FLAG_TILED` in the binary gives a row the same
-  bits for 1 to 8 rows, and a ring of several slots follows LFM3's `model::batch`.
-- With 8 rows, about 51 of 128 experts run in each run. Thus a row reads about 80% of the expert bytes of a row
-  alone.
+**Speed.** Each finding about the speed of the engine goes into milestone 36, not into this milestone.
 
 **Ports, later.** Amy, 2026-11-21: "not sure we'll do either port yet, pretty excited to see how it does on intel
 here first". These notes are for a port to a machine of 128 GB of unified memory, gfx1151host or a DGX Spark:
@@ -447,3 +439,61 @@ These lanes fit a brief: the tokenizer, the reply parser, the host expansion of 
 ops of the layer parts. The card work, the task rings and the spec stay with the lead session.
 
 Each stop and start of `nagaya.service` goes into `signoff.md`.
+
+## Milestone 36: the speed of Inkling 2
+
+Amy, 2026-11-21: "as we notice things that can help future perf let's add them to a next milestone. not for today,
+might have a kaijutsu agent go after some". This milestone is a list of findings about the speed of the Inkling 2
+engine on one B70 card. Each item stands alone, and an agent may take any one. Add each new finding here.
+
+Amy set the order on 2026-11-21: "mostly we'll want some batching for when we want to try swarm or parallel
+contexts I think; we can focus on other perf gains first". Thus the items of the batch come last.
+
+**Where the engine is.** Milestone 35 step 5 measured it on 2026-11-21 (`effd4d2`):
+
+- A prefill of 512 tokens takes 799 ms, about 640 tokens each second.
+- A decode step takes 65 to 70 ms. A pass of 3 cycles is 1,635 tasks in one launch.
+- A decode step reads about 1.7 GB of packed experts: 8 experts in each of 48 runs. At 608 GB/s, that sets a floor
+  near 3 ms. Thus most of a step is not the reads of the experts.
+
+**The rules of each item.**
+
+- Measure before and after, on the same prompt and slot, and write both numbers in the commit.
+- Keep the gates of milestone 35 green: `xe_oracle`, `xe_feed` and the card gate of each op. A change of the order
+  of a sum changes bits, so it changes the engine identity. Say so in the commit, and measure the gap again.
+- A host form in `src/host/` stays the oracle of each op. A new op gets a card gate against it.
+- One owner of card 0 at a time (milestone 35, "Lanes").
+
+**The findings, first the gains of one row.**
+
+1. **A decode path in the expert ops.** `OP_EXPERT_UP` and `OP_EXPERT_DOWN` always take the XMX path. With one
+   token, 15 of the 16 rows of each dpas are idle. A path of SIMD dot products for one token can read the packed
+   planes as fast with less work. The review of the binding by ChatGPT asked to measure both.
+2. **Wider ops of the residual and the gates.** `OP_ATTN_RESIDUAL` and `OP_MESSAGE_GATE` take one work-group for
+   each position. A decode step has one position, so most of the card is idle in them. Split each one over more
+   work-groups, with a fixed order of the sums.
+3. **Fewer tasks in a run.** Each task boundary costs about 1 microsecond, so 1,635 tasks cost about 1.6 ms of
+   waits. Join a small op to the task before it when it reads only its output. Examples: the clips with their
+   matmul, or the gate with the output matmul.
+4. **Reuse of an expanded tile in a prefill.** A block of 512 tokens has about 32 picks for each expert. Expand a
+   tile of an expert once into local memory, and run many tiles of tokens against it. The review asked for it.
+5. **The chunk size of the attention.** It is 256 keys on a sliding layer and 2,048 on a full layer (Proposed in
+   the binding). Measure other sizes for a decode step and for a prefill. A new size changes bits.
+6. **The tower of an image** (milestone 35 step 9). An image of 4,096 by 4,096 px has 42,436 patches, and its
+   attention reads every pair. Measure it first; then decide between a flash form of that attention and a limit.
+7. **Long contexts.** A slot of one card holds about 200K positions at 3 cycles. The keys and values in `bf16` would
+   hold about twice as many, but they change bits: a new identity and a new gap. Two cards could hold the keys of
+   the full layers on the second card.
+
+**Then the batch of decode rows** (Amy's order: after the items above).
+
+8. **`FLAG_TILED` in the Inkling 2 binary.** `OP_MATMUL` takes another path for one row than for 2 to 8 rows. Thus a
+   decode step differs from its position in a block by up to 9.1e-6. The LFM3 binary has the flag. With it, a row
+   gets the same bits for 1 to 8 rows, and a decode step gets the bits of the block.
+9. **A ring of several slots.** A decode pass of rows from several contexts, each with its own slot and position,
+   as LFM3's `model::batch`. Raise `MAX_SEGMENTS` from 1. The rows of one pass have one count of cycles, and the
+   council joins only equal counts.
+10. **What a batch gains.** With 8 rows, about 51 of 128 experts run in each run. Thus a row reads about 80% of the
+    expert bytes of a row alone. Most of the gain comes from the fixed costs that the rows share. They are the
+    tasks, the weights of the attention and the idle rows of each dpas. Measure tokens each second at 1, 2, 4 and 8
+    rows.
