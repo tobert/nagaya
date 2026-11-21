@@ -1303,3 +1303,176 @@ pub fn expand_mxfp8(values: u64, scales: u64, y: u64, rows: u32, cols: u32) -> M
         ..task(OP_EXPAND_MXFP8)
     }
 }
+
+/// The keys of one round of `OP_INKLING2_ATTN` (`INKLING2_ATTN_KEYS`, `kernels/inkling2_attn_helpers.cl`).
+pub const INKLING2_ATTN_KEYS: u32 = 128;
+
+/// The floats of scratch of one team of `OP_INKLING2_ATTN`: the probabilities of one round for 16 positions, then a
+/// max and a sum of each position for each of the 4 subgroups (`INKLING2_ATTN_TEAM_FLOATS`).
+pub const INKLING2_ATTN_TEAM_FLOATS: usize = 16 * INKLING2_ATTN_KEYS as usize + 2 * 4 * 16;
+
+/// The window of a sliding layer of Inkling 2: a query at position `q` reads the keys `q - 1023` to `q`.
+pub const INKLING2_WINDOW: u32 = 1024;
+
+/// The bits of the f32 of `128^-0.5`, the scale of `q . k` in the kernel and in the host form.
+pub const INKLING2_ATTN_SCALE_BITS: u32 = 0x3DB5_04F3;
+
+/// The largest block of `OP_INKLING2_ATTN`.
+pub const INKLING2_ATTN_MAX_BLOCK: u32 = 512;
+
+/// The positions that `OP_INKLING2_ATTN` counts: 2^24, 16 times the 1,048,576 positions of the model. Below it, the
+/// sums of positions do not wrap in `u32`, and the distances fit an `int`.
+pub const INKLING2_ATTN_MAX_POSITIONS: u32 = 1 << 24;
+
+/// The keys of one chunk of a sliding layer. **Proposed** (Claude Opus 5.5, 2026-11-21): small chunks spread a decode
+/// step over 5 chunks of each head, and a block of 512 takes at most 7 chunks of scratch.
+pub const INKLING2_SLIDING_CHUNK_KEYS: u32 = 256;
+
+/// The keys of one chunk of a full layer. **Proposed** (Claude Opus 5.5, 2026-11-21): a block of 512 in a slot of
+/// 32,768 positions takes 16 chunks, about 102 MiB of scratch. A decode step walks at most 16 rounds in each chunk.
+pub const INKLING2_FULL_CHUNK_KEYS: u32 = 2048;
+
+/// The keys of one chunk for a layer with a ring of `ring` rows (a sliding layer), or with cells (`ring` 0). The
+/// chunks of a layer must not depend on the block, so that a position gets the same bits in each split.
+pub fn inkling2_chunk_keys(ring: u32) -> u32 {
+    if ring > 0 {
+        INKLING2_SLIDING_CHUNK_KEYS
+    } else {
+        INKLING2_FULL_CHUNK_KEYS
+    }
+}
+
+/// The attention of one run of Inkling 2 over a block of `n` query positions from `p0`: `OP_INKLING2_ATTN`, then
+/// `OP_INKLING2_ATTN_SUM`. A decode step is a block of one position, and it gets the bits that the position gets in
+/// a block with the same `chunk_keys` (`kernels/inkling2_attn_ops.cl`, "Bits and splits").
+///
+/// The heads are those of Inkling 2: 24 query heads and 8 KV heads of 128 values, with 16 relative states.
+#[derive(Clone, Copy, Debug)]
+pub struct Inkling2Attention {
+    /// The queries, `[n][24][128]` f32, after the clip and the log scale.
+    pub q: u64,
+    /// The key plane, rows of `[8][128]` f32, then the value plane: at `max_seq` rows for cells, or at `ring + 1024`
+    /// rows for a ring.
+    pub kv: u64,
+    /// The relative states, `[n][24][16]` f32, after the clip and the log scale.
+    pub rel: u64,
+    /// The 16 profiles of the distance, `[16][1024]` bf16, as the checkpoint holds `rel_logits_proj.proj`.
+    pub proj: u64,
+    /// The sink of each position and head, `[n][24]` f32.
+    pub sinks: u64,
+    /// The output, `[n][24][128]` f32, before the output gate.
+    pub out: u64,
+    pub n: u32,
+    pub p0: u32,
+    /// The rows of a cell plane: the positions of the slot. A ring does not read it.
+    pub max_seq: u32,
+    /// The rows of the ring of a sliding layer, or 0 for the cells of a full layer.
+    pub ring: u32,
+    /// The keys of one chunk, a multiple of 128 (`inkling2_chunk_keys`).
+    pub chunk_keys: u32,
+}
+
+impl Inkling2Attention {
+    /// The first chunk of the block and the count of its chunks, as `inkling2_attn_chunks` of the kernel counts them.
+    pub fn chunks(&self) -> (u32, u32) {
+        self.check();
+        let lowest = if self.ring > 0 {
+            (self.p0 + 1).saturating_sub(INKLING2_WINDOW)
+        } else {
+            0
+        };
+        let first = lowest / self.chunk_keys;
+        (first, (self.p0 + self.n - 1) / self.chunk_keys - first + 1)
+    }
+
+    /// The floats of scratch that the two tasks use: the partial sums of each chunk, position and head, then the
+    /// scratch of each team.
+    pub fn scratch_floats(&self) -> usize {
+        let partial = self.chunks().1 as usize * self.n as usize * 24 * 130;
+        partial.next_multiple_of(16) + crate::protocol::MEGAKERNEL_SUBGROUPS / 4 * INKLING2_ATTN_TEAM_FLOATS
+    }
+
+    /// Refuse a block that the kernel cannot take. The kernel sums positions in `u32` and takes distances as `int`,
+    /// so the positions stay below `INKLING2_ATTN_MAX_POSITIONS`.
+    fn check(&self) {
+        assert!(
+            (1..=INKLING2_ATTN_MAX_BLOCK).contains(&self.n),
+            "OP_INKLING2_ATTN takes 1 to {INKLING2_ATTN_MAX_BLOCK} positions, and it got {}",
+            self.n
+        );
+        assert!(
+            self.chunk_keys > 0
+                && self.chunk_keys.is_multiple_of(INKLING2_ATTN_KEYS)
+                && self.chunk_keys <= INKLING2_ATTN_MAX_POSITIONS,
+            "a chunk of OP_INKLING2_ATTN holds a whole count of rounds of 128 keys, and it got {}",
+            self.chunk_keys
+        );
+        assert!(
+            self.p0 as u64 + self.n as u64 <= INKLING2_ATTN_MAX_POSITIONS as u64,
+            "the block of OP_INKLING2_ATTN ends at position {}, past the {INKLING2_ATTN_MAX_POSITIONS} positions \
+             that the kernel counts",
+            self.p0 as u64 + self.n as u64 - 1
+        );
+        if self.ring > 0 {
+            assert!(
+                self.ring >= INKLING2_WINDOW - 1 + self.n,
+                "a ring of OP_INKLING2_ATTN holds the window and the block: {} rows for {} positions",
+                self.ring,
+                self.n
+            );
+            assert!(
+                self.ring.is_multiple_of(INKLING2_ATTN_KEYS),
+                "a ring of OP_INKLING2_ATTN has a whole count of rounds of 128 rows, and it has {}",
+                self.ring
+            );
+        } else {
+            assert!(
+                self.p0 + self.n <= self.max_seq,
+                "the block of OP_INKLING2_ATTN ends past the cells of the slot: positions {} to {} of {}",
+                self.p0,
+                self.p0 + self.n - 1,
+                self.max_seq
+            );
+        }
+    }
+
+    /// The two tasks. The keys and values of the block must be in the planes, and the spill rows of a ring in place.
+    /// Each row of the planes below the key count of the block holds finite values (see the op comment).
+    pub fn tasks(&self) -> [MkTaskDescriptor; 2] {
+        self.check();
+        let base = MkTaskDescriptor {
+            n: self.n,
+            k: self.chunk_keys,
+            p0: self.p0,
+            layer: self.ring,
+            ..Default::default()
+        };
+        [
+            MkTaskDescriptor {
+                opcode: OP_INKLING2_ATTN,
+                a: self.q,
+                b: self.kv,
+                c: self.rel,
+                x: self.proj,
+                m: self.max_seq,
+                ..base
+            },
+            MkTaskDescriptor {
+                opcode: OP_INKLING2_ATTN_SUM,
+                a: self.sinks,
+                c: self.out,
+                ..base
+            },
+        ]
+    }
+}
+
+/// The floats of scratch that the attention of Inkling 2 uses for a block of up to `max_block` positions in a slot of
+/// `max_seq` positions, with the chunks of `inkling2_chunk_keys`. A sliding block reads `n + 1023` keys at most, and
+/// a full block reads `max_seq` keys at most.
+pub fn inkling2_attn_scratch_floats(max_block: usize, max_seq: usize) -> usize {
+    let sliding = (max_block + INKLING2_WINDOW as usize - 1).div_ceil(INKLING2_SLIDING_CHUNK_KEYS as usize) + 1;
+    let full = max_seq.div_ceil(INKLING2_FULL_CHUNK_KEYS as usize);
+    let partial = sliding.max(full) * max_block * 24 * 130;
+    partial.next_multiple_of(16) + crate::protocol::MEGAKERNEL_SUBGROUPS / 4 * INKLING2_ATTN_TEAM_FLOATS
+}

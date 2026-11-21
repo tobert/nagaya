@@ -124,6 +124,8 @@
 #endif
 #ifdef MK_INKLING2
 // The ops of the Inkling 2 binary (kernels/inkling2_ops.cl): opcodes 140 to 169.
+#define OP_INKLING2_ATTN    160 // the attention of Inkling 2 (kernels/inkling2_attn_ops.cl)
+#define OP_INKLING2_ATTN_SUM 161
 #define OP_EXPAND_NVFP4     140
 #define OP_EXPAND_MXFP8     141
 #endif
@@ -582,6 +584,7 @@ inline uint chunk_expert(__local const uint* chunk, uint n_active, uint c) {
 
 #ifdef MK_INKLING2
 #include "inkling2_helpers.cl"
+#include "inkling2_attn_helpers.cl"
 #endif
 
 __attribute__((intel_reqd_sub_group_size(16)))

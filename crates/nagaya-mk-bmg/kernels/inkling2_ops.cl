@@ -30,3 +30,4 @@
                 for (uint i = 0; i < 8; i++) row[i] = (uint)v[i];
             }
         }
+#include "inkling2_attn_ops.cl"
