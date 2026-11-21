@@ -1642,7 +1642,7 @@ Opus 5.5, 2026-11-21).
     less than 24 cannot run the default of 3 cycles.
 - **The model.** The open reads `config.json` and checks each field that the ops read, with its value. Another
   value is refused, and the message names the field and the value. `loop_config.is_varloop` is false for Mini and
-  true for the research model. The two configs differ in no other field.
+  true for the research model. The two configs differ in no other field that the engine reads.
 - **The runs.** Until `cycles` comes in step 7, each pass runs 3 cycles, and the engine declares no `cycles` limit.
   State `l` of a slot holds the run of layer `l` outside the cycles, or in cycle 1. Cycle `c` of 2 or more uses
   entries `12 * (c - 2)` to `12 * (c - 2) + 11` of the reserve.
