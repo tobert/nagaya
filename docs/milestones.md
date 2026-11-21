@@ -385,6 +385,14 @@ Do the steps in this order. Each step ends with the checks green.
    - Past the end of a ring, at 2,200 positions, the logits are within 1.5e-5 of the host form. A prefill of 512
      tokens takes 799 ms, and a decode step about 70 ms.
 6. **Council and deploy.** The factory, the registries, an example profile, and the gogi suite on the card.
+   - Done on 2026-11-21 (`crates/nagaya/src/inkling2.rs`, spec 11.18). The B70 example has `inkling2-mini` on
+     demand on card 0.
+   - The gogi suite through a process on card 0 (`xe_inkling2.rs`, a reserve of 48 runs): Mini gave 446 ok, 0 FAIL
+     and 22 skip. The research model gave 443 ok, 0 FAIL and 23 skip. Each gave 27 of 28 checks of cycles. The
+     other check needs `layer_loops`.
+   - The first run found a defect of the family: a generation was a 500, because the template has no generation
+     prompt. The family now gives `<|message_model|>` (spec 11.18).
+   - With `thinking: false`, both models still write a thinking block, so the suite holds no head after such a reply.
 7. **Cycles in a call.** The context member `cycles` chooses 1 to 5 cycles. Card gate: the research model against
    the reference at each count. Mini takes the same counts, out of the range of its training.
    - The engine is done (`xe_cycles.rs`, 2026-11-21). With a reserve of 48 runs, it runs 1 to 5 cycles. A pass of 4
