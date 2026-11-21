@@ -1706,9 +1706,17 @@ Each rule is **Proposed** (Claude Opus 5.5, 2026-11-21).
   row after layer 5. Each cycle after the first starts with three copies: `B` row 2 into `P`, `x` into `y`, and
   the row after layer 5 into `x`.
 - **Launches.** The ring of a pass is a list of runs. A launch holds whole runs, at most 2,046 tasks, and the tasks
-  before the first run and after the last. A pass of 3 cycles takes 2 launches.
+  before the first run and after the last. A pass of 3 cycles fits one launch: 1,635 tasks, or 1,715 when its
+  block crosses the end of a ring.
 - **The bits of a decode step.** `OP_MATMUL` sums one token in another order than a block of 9 or more. Thus a
   decode step does not give the bits of its position in a block. The card test counts the values that differ.
+  - The card run of 2026-11-21: 181,182 of the 200,058 logits of a decode step differ, by 9.1e-6 at most. The splits
+    `[300, 337]` and `[100, 412, 125]` gave the bits of `[512, 125]`.
+- **A route near a tie.** The eighth and the ninth key of the router can be near. There, a small gap of the card from
+  the host form can choose another expert, and the rows after that position differ more.
+  - The prose of the prompt "longer", repeated to 2,200 positions, flips a route at position 1,295. There the two keys
+    of layer 11 differ by 4.4e-6 in the host form. The logits after it differ by up to 1.3.
+  - Thus the gate of a ring that wraps feeds ids from a seeded generator, which flip no route.
 - **The identity, until the family library.** The engine names `inkling2-mini` or `inkling2-varloop`. The tokenizer
   hash is the BLAKE3 of `tokenizer.json`, and the template is `chat_template.jinja`. Step 6 takes them from
   `nagaya-text-inkling2`.
