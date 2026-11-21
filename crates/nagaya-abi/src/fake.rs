@@ -703,11 +703,16 @@ impl Fake {
                     message: "the fake could not write the state".to_owned(),
                 });
             }
-            outputs.push(Output {
-                name: "state".to_owned(),
-                dtype: Dtype::U8,
-                bytes: state_bytes.to_vec(),
-            });
+            // The driver splits the outputs of a joined pass by one `logits` for each row (engine-abi, "Logit
+            // outputs"), so a fake with a vocabulary gives no `state` in a pass of several segments. A fake with
+            // no vocabulary gives `state` in each pass, and the gates of the segments count it.
+            if self.vocab.is_none() || segments.len() == 1 {
+                outputs.push(Output {
+                    name: "state".to_owned(),
+                    dtype: Dtype::U8,
+                    bytes: state_bytes.to_vec(),
+                });
+            }
             outputs.extend(logit_outputs);
             if tapped {
                 outputs.push(Output {
