@@ -215,3 +215,28 @@ fn council_render_decisions_and_raw_read_work() {
     assert_eq!(raw.letters.len(), 2);
     assert_eq!(raw.suffixes.len(), 1);
 }
+
+/// A context with thinking off renders the effort "none" (0), and one with thinking on renders the default of the
+/// template (0.9). Milestone 35 question 4, agreed by Amy on 2026-11-21.
+#[test]
+fn thinking_chooses_the_effort_of_the_template() {
+    if absent() {
+        return;
+    }
+    let fam = Inkling2Family::from_dir(&mini_dir()).unwrap();
+    let text = |thinking: bool| {
+        let context: Context = serde_json::from_value(json!({
+            "thinking": thinking,
+            "messages": [{"role": "user", "content": "Name three colors.", "snap": true},
+                         {"role": "assistant", "content": "Red, green, blue."},
+                         {"role": "user", "content": "Two more."}]
+        }))
+        .unwrap();
+        let rendering = fam.render(&context, true).unwrap();
+        fam.tokenizer().decode_lossy(&rendering.tokens).unwrap()
+    };
+    let off = text(false);
+    let on = text(true);
+    assert!(off.contains("Thinking effort level: 0<|end_message|>"), "{off}");
+    assert!(on.contains("Thinking effort level: 0.9<|end_message|>"), "{on}");
+}

@@ -18,6 +18,7 @@ use nagaya_jinja::Json;
 
 use crate::Error;
 use crate::chat::{Chat, Rendered};
+use crate::chat::{Effort, Options};
 use crate::tokenizer::{Tokenizer, check_text};
 
 pub const FAMILY: &str = "inkling2";
@@ -217,8 +218,13 @@ impl Inkling2Family {
         self.tokenizer().hash()
     }
 
-    pub(crate) fn run(&self, messages: &[Json], tools: &[Json]) -> Result<Rendered, FamilyError> {
-        self.chat.render(messages, tools).map_err(refusal)
+    /// Render the messages with the effort that `thinking` chooses: with thinking off the template writes the effort
+    /// "none", and with thinking on its default, 0.9 (milestone 35 question 4).
+    pub(crate) fn run(&self, messages: &[Json], tools: &[Json], thinking: bool) -> Result<Rendered, FamilyError> {
+        let effort = if thinking { None } else { Some(Effort::None) };
+        self.chat
+            .render_with(messages, tools, Options { effort })
+            .map_err(refusal)
     }
 
     pub(crate) fn run_open(
@@ -228,7 +234,7 @@ impl Inkling2Family {
         tools: &[Json],
         thinking: bool,
     ) -> Result<Rendered, FamilyError> {
-        let prompt = self.run(before, tools)?;
+        let prompt = self.run(before, tools, thinking)?;
         let mut escaped = prompt.escaped;
         escaped.push_str("<|message_model|>");
         if thinking {
@@ -294,7 +300,7 @@ impl Family for Inkling2Family {
                 self.check_seams(before, open, &tools, context.thinking)?;
                 self.run_open(before, open, &tools, context.thinking)?
             }
-            None => self.run(&msgs, &tools)?,
+            None => self.run(&msgs, &tools, context.thinking)?,
         };
         let end = base.tokens.len();
         let last = msgs.len() - 1;
@@ -303,7 +309,7 @@ impl Family for Inkling2Family {
             if !message.snap {
                 continue;
             }
-            let part = self.run(&msgs[..=i], &tools)?;
+            let part = self.run(&msgs[..=i], &tools, context.thinking)?;
             let after = boundaries.last().map_or(0, |b| b.tokens);
             if base.tokens.starts_with(&part.tokens) && part.tokens.len() > after && part.tokens.len() < end {
                 boundaries.push(Boundary {

@@ -290,7 +290,7 @@ fn plain_read(family: &Inkling2Family, input: &DecisionInput<'_>) -> Result<Box<
         Some((ctx, rendering)) => {
             let msgs = messages_json(&ctx.messages)?;
             let tools = tools_json(&ctx.tools);
-            let rendered = family.run(&msgs, &tools)?;
+            let rendered = family.run(&msgs, &tools, ctx.thinking)?;
             if !rendered.tokens.starts_with(&rendering.tokens[..rendering.end]) {
                 return Err(FamilyError::internal(
                     "the context rendering does not match the context tokens; render the context again",
@@ -474,7 +474,7 @@ fn queue_read(
         ("content".to_string(), nagaya_jinja::Json::Str(case.to_string())),
     ]));
     let tools = tools_json(&context.tools);
-    let rendered = family.run(&msgs, &tools)?;
+    let rendered = family.run(&msgs, &tools, context.thinking)?;
     let ctx_len = rendering.end;
     if !rendered.tokens.starts_with(&rendering.tokens[..ctx_len]) {
         return Err(FamilyError::internal(

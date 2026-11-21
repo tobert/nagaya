@@ -8,8 +8,8 @@
 //! **Notes on open choices:**
 //! - `vocab_size()` returns `unpadded_vocab_size` (200,058) rather than `vocab_size` (201,024) because `lm_head` and the
 //!   logit rows have width `unpadded_vocab_size` and the tokenizer holds 200,058 entries.
-//! - Milestone 35 question 4 (`reasoning_effort`) is open: `Family::render` renders with the template's default (0.9),
-//!   and `chat::Options` provides a typed `Effort` for the council to use once the request member is decided.
+//! - Milestone 35 question 4 (`reasoning_effort`): a context with `thinking: false` renders the effort "none", and one
+//!   with `thinking: true` the default of the template, 0.9. `chat::Options` keeps a typed `Effort` for a later number.
 
 pub mod chat;
 pub mod council;
