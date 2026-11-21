@@ -4980,8 +4980,12 @@ The notes below fill the choices that gogi leaves to the server. Each note is **
   (`Limits::check_segment_cycles`).
 - **A reply with audio** runs at the default count only. A frame feeds its position as a plain pass. Another count
   is a 400 that names `cycles`.
-- **`ensemble`** takes contexts with one `cycles` member, as it takes one `loop`. Another member is a 400 that names
-  `contexts[i].cycles`. An ensemble over counts of cycles is milestone 35 step 8.
+- **`ensemble`** takes contexts with other counts of cycles. The rows of each count run in a pass of their own, and
+  the job combines the rows of all counts (`docs/lab.md`, "`ensemble`: joined forks"). **Proposed** (Claude Opus 5.5,
+  2026-11-21). Reason: the segments of one pass run one count, and each row of a step reads only its own context.
+- **Rows of layers.** The tap `residual` of an engine with cycles gives the row after each run (engine-abi "Inkling
+  2"). A control vector and a trace read the row of each layer after its last run, as for a loop (11.16).
+  **Proposed** (Claude Opus 5.5, 2026-11-21). Reason: a vector and a trace keep one row for each layer.
 
 The tests are in `crates/nagaya/tests/council_cycles.rs` and `crates/nagaya/tests/http_conformance.rs`.
 
