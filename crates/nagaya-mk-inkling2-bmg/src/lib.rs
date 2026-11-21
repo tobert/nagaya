@@ -2,7 +2,8 @@
 //!
 //! The weight formats are in `formats`, the `f32` host form of the text model and the oracle of each device op in
 //! `host`, and the layout of the expert planes on the card in `repack`. `spec` holds the config, the limits and the
-//! rules of the slots. `weights` puts the weights into an upload sink, and `model` builds the ring of a pass. None of
+//! rules of the slots. `weights` puts the weights into an upload sink, and `model` builds the ring of a pass. `vision` holds the
+//! weights, the buffers and the tasks of the vision tower. None of
 //! these needs a card. The feature `xe` adds `device` and `engine`: the `Engine` trait on one card.
 //!
 //! The experts of Inkling 2 Mini come in two formats. Layers 0 to 19 hold NVFP4: two E2M1 codes in a byte, one E4M3 scale for each 16 values, and one factor for each
@@ -19,6 +20,7 @@ pub mod host;
 pub mod model;
 pub mod repack;
 pub mod spec;
+pub mod vision;
 pub mod weights;
 
 #[cfg(feature = "xe")]

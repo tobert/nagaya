@@ -1661,8 +1661,10 @@ of the family and of the device ops. The family library calls the same rules of 
 - **One image at a time.** The tower runs over each image of the pass alone, in the order of the spans, on one set
   of buffers. Thus a call with two images gives each image the bits of a call with that image alone.
 - **The buffers.** They hold the largest image of the sizes rule: 42,436 patches and the class row. The tower
-  uses its buffers again between its steps, so they take about 1.8 GB of `work`. Reason: the family refuses no image
-  of the range of the model card, so the engine must not refuse one either.
+  uses its six buffers again between its steps, so they take 1,564,397,568 bytes of `work`. The patch rows and the
+  projector rows of that image take 301,465,344 bytes more. Reason: the family refuses no image of the range of the
+  model card, so the engine must not refuse one either.
+- **The weights** of the tower and the rotary table take 636,825,472 bytes (`vision::WEIGHTS_BYTES`).
 - **The merge.** The class row and the patch rows are one buffer. The projector reads the rows after the class row
   as `T` rows of 4,096 values, so the merge needs no op.
 - **Open: the cost of a large image.** An image of 10,609 tokens meets 21 feed blocks of 512, and the pattern of
