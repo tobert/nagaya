@@ -392,8 +392,8 @@ Do the steps in this order. Each step ends with the checks green.
 9. **Images.** The ViT, the placeholders of an image and its sizes. Card gate against the reference.
    - The oracle stage and the host form are done (`617dfb6`): the logits of a prompt with two images within 2.2e-5
      of the oracle. Open: the rows in the family library, the device ops of the tower, and the card gate.
-   - The cap of 512 image tokens refuses a large photo: 4,032 by 3,024 px gives 7,676 tokens. Amy decides the cap
-     after a measure on the card.
+   - Each side of an image is 40 to 4,096 px, as the model card says, so an image has at most 10,609 tokens. Amy,
+     2026-11-21: "yep, match the model card. use the 4096 rule". The council never resizes an image.
 10. **Drafts.** The MTP head drafts tokens, and a pass checks them. This step waits (question 3).
 11. **Long contexts.** The model reads up to 1,048,576 positions. Measure the ledger cost and the speed at 256K.
 12. **Trial and review.** A trial with Amy, and a kaibo review round with a cast of another model family.
