@@ -411,7 +411,17 @@ Do the steps in this order. Each step ends with the checks green.
    vectors, latent steps, and `ensemble` over counts of cycles.
 9. **Images.** The ViT, the placeholders of an image and its sizes. Card gate against the reference.
    - The oracle stage and the host form are done (`617dfb6`): the logits of a prompt with two images within 2.2e-5
-     of the oracle. Open: the rows in the family library, the device ops of the tower, and the card gate.
+     of the oracle.
+   - The rows and the records of the family, and the device ops of the tower (`tests/xe_vision.rs`), are on main.
+   - The engine runs the tower in the pass (engine-abi "The choices of the pass"). It declares `tokens+rows` and
+     the term `vision`, and it holds the projector rows of the last image for the later blocks of its span. The
+     process gives the family its reader of objects. A council test with the fake engine checks the placeholders,
+     the records and the rows of a chat with an image part.
+   - The card gate `tests/xe_images.rs` passed on 2026-11-21. It feeds the oracle prompt with two images, 235
+     positions, in one block, in a cut inside image 1, and in blocks of 64. Each split gives the top-64 logits
+     within 2.1e-5 of the oracle and the logsumexp within 3.8e-6. The three splits give the same bits, and the same
+     split twice too. The tower runs once for each image, also for image 1 in 4 blocks. One block takes 523 ms.
+   - Open: the time of the tower for an image of 10,609 tokens, against `max_quantum_ms`.
    - Each side of an image is 40 to 4,096 px, as the model card says, so an image has at most 10,609 tokens. Amy,
      2026-11-21: "yep, match the model card. use the 4096 rule". The council never resizes an image.
 10. **Drafts.** The MTP head drafts tokens, and a pass checks them. This step waits (question 3).

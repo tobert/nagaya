@@ -22,6 +22,8 @@ use crate::host::ops::{
     LOG_ALPHA, LOG_FLOOR, LOGIT_SOFTCAP, QK_CLIP, REL_CLIP, REL_EXTENT, ROUTE_SCALE, TOP_K, UP_SOFTCAP,
 };
 use crate::host::weights::{BLOCK, CYCLE_END, CYCLE_START, LAYERS, LOGITS, NVFP4_LAYERS, VOCAB, is_full};
+use crate::media::{self, SpanUse};
+use crate::vision;
 
 /// The engine kind in a placement profile (`AGENTS.md` "Layout": kind, model, target).
 pub const KIND: &str = "mk-inkling2-bmg";
@@ -543,7 +545,7 @@ pub fn scratch_floats(max_seq: usize) -> usize {
 
 /// The device bytes of the ring of one card: the scoreboard, the scratch, the wake buffer and the device copy of the
 /// tasks.
-fn ring_device_bytes(max_seq: usize) -> u64 {
+pub(crate) fn ring_device_bytes(max_seq: usize) -> u64 {
     (NUM_SCOREBOARD_EVENTS * 4 + scratch_floats(max_seq) * 4 + 128 + MAX_TASKS_PER_CARD * 64) as u64
 }
 
@@ -562,9 +564,11 @@ fn term(name: &str, tier: Tier, bytes: u64) -> MandatoryTerm {
     }
 }
 
-/// The limits for a config, with the device bytes of the weights.
+/// The limits for a config, with the device bytes of the weights of the text model. The tower of images adds its
+/// weights as the term `vision`, and its buffers to `work` (engine-abi "The choices of the pass").
 pub fn limits(config: &Config, weights: u64) -> Limits {
-    let work = bufs_bytes(config.max_block) + ring_device_bytes(config.max_seq());
+    let work =
+        bufs_bytes(config.max_block) + vision::PassBufs::bytes(config.max_block) + ring_device_bytes(config.max_seq());
     Limits {
         // A drop frees the weights, the slots, the buffers and the context of the card.
         capabilities: vec![
@@ -575,7 +579,8 @@ pub fn limits(config: &Config, weights: u64) -> Limits {
             Capability::Cycles,
         ],
         parts: parts(config.extra_runs),
-        inputs: Inputs::Tokens,
+        // Both models hold the tower, so both take the rows of images.
+        inputs: Inputs::TokensAndRows,
         devices: vec![0],
         stages: Vec::new(),
         max_segments: MAX_SEGMENTS,
@@ -586,6 +591,7 @@ pub fn limits(config: &Config, weights: u64) -> Limits {
         memory: MemoryLimits {
             mandatory: vec![
                 term("weights", Tier::Device(0), weights),
+                term("vision", Tier::Device(0), vision::WEIGHTS_BYTES as u64),
                 term("kv", Tier::Device(0), config.slots_bytes()),
                 term("work", Tier::Device(0), work),
                 term("pinned", Tier::Host, pinned_bytes()),
@@ -647,7 +653,7 @@ fn tensor<'a>(
 /// The device bytes of the weights from the table of tensors of the checkpoint. Each expert matrix is one slab, the
 /// embedding keeps its first `LOGITS` rows, the head holds `HEAD_ROWS` rows, each sink projection `SINK_ROWS` rows, and
 /// each other tensor of `model.llm.` keeps its bytes. The
-/// tensors of `model.visual.` wait for images (milestone 35 step 9). Any other tensor is refused.
+/// tensors of `model.visual.` are the term `vision`, which `vision::load` checks. Any other tensor is refused.
 pub fn weights_bytes_of(tensors: &HashMap<String, TensorMeta>) -> Result<u64, String> {
     use safetensors::Dtype::{BF16, F8E4M3, F32, U8};
     let mut total = 0usize;
@@ -753,6 +759,8 @@ pub struct Block {
     pub logit_rows: Vec<usize>,
     /// The count of cycles of the pass: the count of the segment, or the default.
     pub cycles: usize,
+    /// The image spans that the block reads, in the order of their rows.
+    pub spans: Vec<SpanUse>,
 }
 
 impl Block {
@@ -834,7 +842,8 @@ impl Held {
 
     /// Check a pass before it changes anything, and give its block. The message says which rule breaks.
     ///
-    /// - A pass has one segment of 1 to `max_block` tokens below `LOGITS`, with no rows and no `meta`.
+    /// - A pass has one segment of 1 to `max_block` tokens below `LOGITS`. A segment of tokens and rows has the `meta`
+    ///   of its image spans (`media::check_spans`), and a segment of tokens alone has no `meta`.
     /// - The segment names no control item and no layer loop: the engine declares neither.
     /// - The count of cycles fits the limit. A slot that holds positions runs the count that fed them.
     /// - The positions run on from the token count of the slot. A slot does not go back.
@@ -849,11 +858,28 @@ impl Held {
         let slot = self
             .slot(segment.state)
             .ok_or_else(|| format!("the engine has {} slots, not {:?}", self.n.len(), segment.state))?;
-        let SegmentInputs::Tokens(tokens) = &segment.inputs else {
-            return Err("the segment has rows; the Inkling 2 engine takes tokens only, until images come".to_owned());
+        let (tokens, rows) = match &segment.inputs {
+            SegmentInputs::Tokens(tokens) => (tokens, None),
+            SegmentInputs::TokensAndRows { tokens, rows } => (tokens, Some(rows)),
+            SegmentInputs::Rows(_) => {
+                return Err(
+                    "the segment has rows and no tokens; the engine takes tokens, with the rows of their images (D2)"
+                        .to_owned(),
+                );
+            }
         };
-        if !segment.meta.is_empty() {
-            return Err("the segment has meta; the Inkling 2 engine takes tokens only, until images come".to_owned());
+        match (rows, segment.meta.is_empty()) {
+            (None, false) => {
+                return Err(
+                    "the segment has meta and no rows; the meta names image spans, and their rows come with the \
+                     tokens"
+                        .to_owned(),
+                );
+            }
+            (Some(_), true) => {
+                return Err("the segment has rows and no meta; the meta names the image span of the rows".to_owned());
+            }
+            _ => {}
         }
         if !segment.control.is_empty() {
             return Err(format!(
@@ -927,12 +953,15 @@ impl Held {
             }
             logit_rows.push(*row as usize - pos0);
         }
+        let spans = media::decode(&segment.meta)?;
+        let spans = media::check_spans(&spans, tokens, pos0 as u64, rows.map_or(0, |r| r.len()))?;
         Ok(Block {
             slot,
             pos0,
             tokens: tokens.clone(),
             logit_rows,
             cycles,
+            spans,
         })
     }
 

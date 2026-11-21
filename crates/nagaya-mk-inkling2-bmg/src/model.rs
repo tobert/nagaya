@@ -2,7 +2,8 @@
 //!
 //! The ring follows `host::forward` and engine-abi "The ring of one run" for one block of `n` tokens at the positions
 //! `pos0..pos0 + n` of one slot: the normed embedding, then each run of `spec::runs`, then the output residual, the
-//! final norm and the head with the softcap of 30 for each logit row. Each run of a cycle after the first reads the
+//! final norm and the head with the softcap of 30 for each logit row. The rows of the images of the block replace the
+//! normed embedding rows of their placeholders, with no norm after them. Each run of a cycle after the first reads the
 //! messages of the cycle before it.
 //!
 //! The ring is a list of runs, so that a pass whose tasks do not fit one launch runs as several, cut between two runs
@@ -230,6 +231,9 @@ pub struct TaskRing<'a> {
     pub upto: usize,
     /// The block rows whose logits the ring gives. With `None`, the ring stops after the runs.
     pub logit_rows: Option<&'a [usize]>,
+    /// The tasks after the norm of the embedding and before the first run: the copies of the image rows over the rows
+    /// of their placeholders (engine-abi "The choices of the pass").
+    pub after_embed: &'a [MkTaskDescriptor],
 }
 
 /// The tasks of a pass: the tasks before the first run, the tasks of each run, and the tasks after the last run.
@@ -284,6 +288,7 @@ pub fn pass(w: &Weights, bufs: &Bufs, ring: TaskRing<'_>) -> Pass {
         runs,
         upto,
         logit_rows,
+        after_embed,
     } = ring;
     assert!(
         upto <= runs.len() && (upto == runs.len() || logit_rows.is_none()),
@@ -298,10 +303,11 @@ pub fn pass(w: &Weights, bufs: &Bufs, ring: TaskRing<'_>) -> Pass {
     );
     let cycles = runs.iter().filter_map(|r| r.cycle).max().unwrap_or(1);
     let (n32, h32) = (n as u32, HIDDEN as u32);
-    let embed = vec![
+    let mut embed = vec![
         tasks::embed(bufs.ids, w.embed, bufs.o, n32, h32, 0, false, false),
         tasks::rmsnorm(bufs.o, w.embed_norm, bufs.x, n32, h32, EPS, false),
     ];
+    embed.extend_from_slice(after_embed);
     let mut pass = Pass {
         head: embed,
         ..Pass::default()

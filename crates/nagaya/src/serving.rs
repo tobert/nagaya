@@ -87,7 +87,7 @@ impl FamilyRegistry {
         #[cfg(feature = "xe")]
         registry.register_with_objects(nagaya_mk_lfm3_bmg::spec::FAMILY, crate::lfm3::open_family_with);
         #[cfg(feature = "xe")]
-        registry.register(nagaya_mk_inkling2_bmg::spec::FAMILY, crate::inkling2::open_family);
+        registry.register_with_objects(nagaya_mk_inkling2_bmg::spec::FAMILY, crate::inkling2::open_family_with);
         registry
     }
 

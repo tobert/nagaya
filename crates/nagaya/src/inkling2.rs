@@ -13,6 +13,7 @@ use nagaya_abi::{Identity, Limits};
 use nagaya_mk_inkling2_bmg::spec::{self, Config};
 
 use crate::admission::{GroupDevice, PlanError};
+use crate::lfm3::StoreObjects;
 use crate::serving::OpenedFamily;
 
 /// The engine kind in a placement profile.
@@ -155,12 +156,25 @@ pub fn served_names(engine: &str, _config: &toml::Table) -> Option<Vec<String>> 
 }
 
 /// The Inkling 2 family from a model folder (`family_dir`). The registry compares its tokenizer hash with the identity
-/// (spec 11.3). The served model is the engine name.
+/// (spec 11.3). The served model is the engine name. This family has no objects, so it refuses each image part.
 pub fn open_family(identity: &Identity, table: &toml::Table) -> Result<OpenedFamily, String> {
+    open_family_with(identity, table, None)
+}
+
+/// Like [`open_family`], with the objects of the process: the family reads the image parts from them (spec 11.18,
+/// "Images").
+pub fn open_family_with(
+    identity: &Identity,
+    table: &toml::Table,
+    objects: Option<&crate::serving::ObjectReader>,
+) -> Result<OpenedFamily, String> {
     let _ = identity;
     let dir = family_dir(table)?;
-    let family = nagaya_text_inkling2::Inkling2Family::from_dir(&dir)
+    let mut family = nagaya_text_inkling2::Inkling2Family::from_dir(&dir)
         .map_err(|error| format!("cannot build the Inkling 2 family from `{}`: {error}", dir.display()))?;
+    if let Some(objects) = objects {
+        family = family.with_objects(Arc::new(StoreObjects::new(Arc::clone(objects))));
+    }
     let hash = family.tokenizer_hash().to_owned();
     Ok(OpenedFamily {
         family: Arc::new(family),
@@ -168,6 +182,13 @@ pub fn open_family(identity: &Identity, table: &toml::Table) -> Result<OpenedFam
         speech: None,
         served: crate::serving::ServedName::Engine,
     })
+}
+
+/// The Inkling 2 family reads the objects of the process as the LFM3 family does: one reader serves both.
+impl nagaya_text_inkling2::Objects for StoreObjects {
+    fn bytes(&self, id: &str) -> Option<Vec<u8>> {
+        nagaya_text_lfm3::Objects::bytes(self, id)
+    }
 }
 
 #[cfg(feature = "xe")]

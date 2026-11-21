@@ -1,5 +1,5 @@
 //! The Inkling 2 engine on its card: the `Engine` trait, the parts, the slots and the coverage over the ring of
-//! `model`. Every check of a call is a rule of `spec::Held`, so a refused call changes nothing.
+//! `model`, and the vision tower of `vision` for the images of a pass. Every check of a call is a rule of `spec::Held`, so a refused call changes nothing.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -18,8 +18,10 @@ use nagaya_mk_bmg::{IGC_REVISION, INKLING2_KERNEL, KERNEL_ENTRY, OCLOC_VERSION};
 use crate::device::{Device, OnCard};
 use crate::host::ops::HIDDEN;
 use crate::host::weights::LOGITS;
+use crate::media::HeldRows;
 use crate::model::{self, Bufs, LAUNCH_TASKS, SlotMemory, TaskRing};
 use crate::spec::{self, Block, Config, FAMILY, HEAD_ROWS, Held, Model, Part, RING_ROWS, Run};
+use crate::vision::{self, PassBufs};
 use crate::weights::{self, Count, Weights};
 
 /// The Inkling 2 engine on one card.
@@ -34,6 +36,12 @@ pub struct Inkling2Engine {
     device: Device,
     weights: Weights,
     bufs: Bufs,
+    /// The weights of the vision tower: the term `vision`.
+    tower: vision::Weights,
+    /// The buffers of the images of a pass, in `work`.
+    images: PassBufs,
+    /// The image whose projector rows `images.out` holds.
+    held_rows: HeldRows,
     slots: Vec<SlotMemory>,
     held: Held,
     /// The runs of a pass at each count of cycles, from 1. A probe of the oracle runs the default.
@@ -228,7 +236,8 @@ fn read_file(dir: &std::path::Path, name: &str) -> Result<Vec<u8>, String> {
 }
 
 impl Inkling2Engine {
-    /// Open the card at the PCI address `pci`, and upload the text model of the model folder of `config`.
+    /// Open the card at the PCI address `pci`, and upload the text model and the vision tower of the model folder of
+    /// `config`.
     ///
     /// The open checks the config, `config.json` and every tensor before it opens the card. Its device bytes must
     /// equal the plan.
@@ -252,6 +261,16 @@ impl Inkling2Engine {
                 count.bytes
             ));
         }
+        // The tower checks its tensors before the card opens too.
+        let mut count = Count::default();
+        vision::load(&mut count, &view)?;
+        if count.bytes != vision::WEIGHTS_BYTES {
+            return Err(format!(
+                "the load counts {} device bytes of the vision tower, and the plan counts {}",
+                count.bytes,
+                vision::WEIGHTS_BYTES
+            ));
+        }
         let checkpoint_digest = checkpoint_digest(&config_text, &view)?;
 
         // Only the engine's card gets a context, so the open does not stall the work of another card.
@@ -272,7 +291,15 @@ impl Inkling2Engine {
                 device.bytes
             ));
         }
+        let tower = vision::load(
+            &mut OnCard {
+                device: &mut device,
+                card,
+            },
+            &view,
+        )?;
         let bufs = Bufs::new(&mut |bytes| device.zeros(card, bytes), config.max_block);
+        let images = PassBufs::new(&mut |bytes| device.zeros(card, bytes), config.max_block);
         let ids: Vec<u8> = Bufs::sink_ids_of(config.max_block)
             .iter()
             .flat_map(|v| v.to_le_bytes())
@@ -285,7 +312,11 @@ impl Inkling2Engine {
             .collect();
         let limits = spec::limits(&config, planned_weights);
         limits.check()?;
-        let planned = planned_weights + config.slots_bytes() + spec::bufs_bytes(config.max_block);
+        let planned = planned_weights
+            + vision::WEIGHTS_BYTES as u64
+            + config.slots_bytes()
+            + spec::bufs_bytes(config.max_block)
+            + PassBufs::bytes(config.max_block);
         if device.bytes as u64 != planned {
             return Err(format!(
                 "the engine took {} device bytes, and its limits declare {planned}",
@@ -308,6 +339,9 @@ impl Inkling2Engine {
             device,
             weights,
             bufs,
+            tower,
+            images,
+            held_rows: HeldRows::default(),
             slots,
             held,
             runs,
@@ -359,8 +393,53 @@ impl Inkling2Engine {
         &self.runs[cycles - 1]
     }
 
+    /// The count of the images that the tower ran for. A gate reads it: an image in several blocks is one run.
+    pub fn tower_runs(&self) -> u64 {
+        self.held_rows.runs()
+    }
+
+    /// Run the tower of each image span of `block` that the engine does not hold, from the rows of `segment`, and put
+    /// the projector rows of the block's positions into the media rows. The copies that this returns put them over
+    /// the normed embedding rows of the placeholders (engine-abi "The choices of the pass"). The caller checked the
+    /// block.
+    fn encode(&mut self, segment: &Segment, block: &Block) -> Vec<MkTaskDescriptor> {
+        if block.spans.is_empty() {
+            return Vec::new();
+        }
+        let nagaya_abi::SegmentInputs::TokensAndRows { rows, .. } = &segment.inputs else {
+            unreachable!("check_pass gives spans only for a segment of tokens and rows");
+        };
+        let mut places = Vec::with_capacity(block.spans.len());
+        for used in &block.spans {
+            let bytes = &rows[used.rows_at..used.rows_at + used.span.bytes()];
+            let g = used.span.grid;
+            let mut tasks = Vec::new();
+            if !self.held_rows.holds(g, bytes) {
+                let card = &self.cluster.cards[0];
+                self.device.write(card, self.images.rows, bytes);
+                self.device.write(card, self.images.axes, &vision::axes(g));
+                tasks = vision::tower(
+                    &self.tower,
+                    &self.images.tower,
+                    g,
+                    self.images.rows,
+                    self.images.axes,
+                    self.images.out,
+                )
+                .tasks;
+            }
+            tasks.push(self.images.take(used.take.clone(), used.block_row));
+            self.run(&[tasks]);
+            places.push(
+                self.images
+                    .place(self.bufs.x, used.block_row..used.block_row + used.take.len()),
+            );
+        }
+        places
+    }
+
     /// Run a block of `cycles` cycles from position `pos0` of `slot` up to the end of `upto` runs, with the logit rows
-    /// when given. The caller checked the block.
+    /// when given, and the tasks `after_embed` after the norm of the embedding. The caller checked the block.
     fn forward(
         &mut self,
         slot: usize,
@@ -368,6 +447,7 @@ impl Inkling2Engine {
         tokens: &[u32],
         (cycles, upto): (usize, usize),
         logit_rows: Option<&[usize]>,
+        after_embed: &[MkTaskDescriptor],
     ) {
         let pass = model::pass(
             &self.weights,
@@ -379,6 +459,7 @@ impl Inkling2Engine {
                 runs: self.runs_of(cycles),
                 upto,
                 logit_rows,
+                after_embed,
             },
         );
         let launches = pass.launches(self.launch_tasks);
@@ -402,7 +483,14 @@ impl Inkling2Engine {
         let segment = probe_segment(slot, ids);
         self.held.clear(slot);
         let block = self.held.check_pass(&[segment], self.config.max_block)?;
-        self.forward(slot, 0, &block.tokens, (block.cycles, upto), norm.then_some(&[][..]));
+        self.forward(
+            slot,
+            0,
+            &block.tokens,
+            (block.cycles, upto),
+            norm.then_some(&[][..]),
+            &[],
+        );
         let at = if norm { self.bufs.e_norm } else { self.bufs.x };
         let out = self.read_f32(at, ids.len() * HIDDEN);
         self.held.clear(slot);
@@ -494,6 +582,7 @@ impl Engine for Inkling2Engine {
             Err(error) => return Err(self.fail(error)),
         };
         let start = Instant::now();
+        let places = self.encode(&segments[0], &block);
         if block.zero_conv() {
             self.zero_conv(block.slot);
         }
@@ -504,6 +593,7 @@ impl Engine for Inkling2Engine {
             &block.tokens,
             (block.cycles, upto),
             Some(&block.logit_rows),
+            &places,
         );
         let outputs: Vec<Output> = (0..block.logit_rows.len())
             .map(|i| Output {

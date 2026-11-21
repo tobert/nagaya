@@ -91,6 +91,7 @@ impl Fixture {
                 runs: &self.runs,
                 upto: self.runs.len(),
                 logit_rows,
+                after_embed: &[],
             },
         )
     }
@@ -329,4 +330,36 @@ fn the_launches_hold_whole_runs_and_every_task_in_order() {
             p.launches(LAUNCH_TASKS).len()
         );
     }
+}
+
+/// The copies of the image rows follow the norm of the embedding, so they replace the normed rows of the
+/// placeholders, and the first run reads them (engine-abi "The choices of the pass", "The place").
+#[test]
+fn the_tasks_after_the_embedding_follow_its_norm_before_the_first_run() {
+    let f = fixture(32_768);
+    let places = [tasks::copy(0x10, f.bufs.x, 7), tasks::copy(0x20, f.bufs.x + 4, 9)];
+    let p = pass(
+        &f.w,
+        &f.bufs,
+        TaskRing {
+            slot: &f.slot,
+            pos0: 0,
+            n: 5,
+            runs: &f.runs,
+            upto: f.runs.len(),
+            logit_rows: Some(&[4]),
+            after_embed: &places,
+        },
+    );
+    let head: Vec<(u16, u64, u64)> = p.head.iter().map(|t| (t.opcode, t.a, t.c)).collect();
+    assert_eq!(
+        head,
+        [
+            (OP_EMBED, f.bufs.ids, f.bufs.o),
+            (1, f.bufs.o, f.bufs.x),
+            (OP_COPY, 0x10, f.bufs.x),
+            (OP_COPY, 0x20, f.bufs.x + 4)
+        ]
+    );
+    assert_eq!(p.len(), f.pass(0, 5, Some(&[4])).len() + 2);
 }
