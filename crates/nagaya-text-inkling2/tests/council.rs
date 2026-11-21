@@ -102,7 +102,10 @@ fn council_render_decisions_and_raw_read_work() {
         asked: &asked,
     };
     let mut plan = fam.decision_read(&input).unwrap();
-    assert!(plan.prefix().is_empty(), "plain read prefix must be empty");
+    // spec 11.18, "Reads": the prefix is the case turn, a user message with the label and the case.
+    let prefix = fam.detokenize(plan.prefix()).unwrap();
+    assert_eq!(prefix, "<|message_user|><|content_text|>item:\nthe item<|end_message|>");
+    assert!(plan.prefix_is_head());
     let Advance::Step(step) = plan.advance(None).unwrap() else {
         panic!("expected step");
     };
@@ -125,6 +128,15 @@ fn council_render_decisions_and_raw_read_work() {
         panic!("expected done");
     };
     assert_eq!(done_a.rendered_hash, done_b.rendered_hash);
+
+    // A read with no context renders with thinking off, so the template writes the effort 0 before the case turn.
+    let alone = DecisionInput { context: None, ..input };
+    let plan_alone = fam.decision_read(&alone).unwrap();
+    assert_eq!(
+        fam.detokenize(plan_alone.prefix()).unwrap(),
+        "<|message_system|><|content_text|>Thinking effort level: 0<|end_message|>\
+         <|message_user|><|content_text|>item:\nthe item<|end_message|>"
+    );
 
     // NaN logprob is refused.
     let mut plan_nan = fam.decision_read(&input).unwrap();

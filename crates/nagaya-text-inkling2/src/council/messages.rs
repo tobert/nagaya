@@ -176,6 +176,26 @@ pub(crate) fn image_parts(messages: &[Message]) -> Result<Vec<ImagePart>, Family
     Ok(out)
 }
 
+/// The case turn of a plain read as the template reads it: a user message with `images` image parts, then `text`.
+/// With no image, the content is the text (spec 11.18, "Reads").
+pub(crate) fn case_json(text: &str, images: usize) -> Json {
+    let content = match images {
+        0 => Json::Str(text.to_string()),
+        n => Json::Array(
+            std::iter::repeat_n(Json::Object(vec![pair("type", Json::Str("image".to_string()))]), n)
+                .chain(std::iter::once(Json::Object(vec![
+                    pair("type", Json::Str("text".to_string())),
+                    pair("text", Json::Str(text.to_string())),
+                ])))
+                .collect(),
+        ),
+    };
+    Json::Object(vec![
+        pair("role", Json::Str("user".to_string())),
+        pair("content", content),
+    ])
+}
+
 /// The messages as the template reads them.
 pub(crate) fn messages_json(messages: &[Message]) -> Result<Vec<Json>, FamilyError> {
     messages
