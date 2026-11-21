@@ -704,6 +704,24 @@ pub fn weights_bytes(dir: &Path) -> Result<u64, String> {
     weights_bytes_of(&map.view()?.tensors)
 }
 
+/// The facts of the identity that come from the family library: the tokenizer hash and the template (spec 11.3,
+/// 12.1). The registry compares the hash with the family's at the start, so both come from one function.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextFacts {
+    pub tokenizer_hash: String,
+    pub template: String,
+}
+
+/// The text facts of the model folder `dir`, from the family library of its files.
+pub fn text_facts(dir: &Path) -> Result<TextFacts, String> {
+    let family = nagaya_text_inkling2::Inkling2Family::from_dir(dir)
+        .map_err(|e| format!("cannot build the Inkling 2 family from {}: {e}", dir.display()))?;
+    Ok(TextFacts {
+        tokenizer_hash: family.tokenizer_hash().to_owned(),
+        template: family.template().to_owned(),
+    })
+}
+
 /// The limits of a config, from `config.json` and the tensor headers. It reads no weight bytes (spec 2.4).
 pub fn plan(config: &Config) -> Result<Limits, String> {
     config.check()?;

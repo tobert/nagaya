@@ -171,11 +171,12 @@ impl Inkling2Engine {
         let model = Model::read(&dir)?;
         let config_text = String::from_utf8(read_file(&dir, "config.json")?)
             .map_err(|e| format!("config.json of {} is not UTF-8: {e}", dir.display()))?;
-        // Until the family library comes (milestone 35 step 6), the identity takes the tokenizer and the template from
-        // the folder (engine-abi "The ring builder").
-        let tokenizer_hash = format!("blake3:{}", blake3::hash(&read_file(&dir, "tokenizer.json")?).to_hex());
-        let template = String::from_utf8(read_file(&dir, "chat_template.jinja")?)
-            .map_err(|e| format!("chat_template.jinja of {} is not UTF-8: {e}", dir.display()))?;
+        // The family library gives the tokenizer hash and the template, so the registry's check at the start compares
+        // like with like (spec 11.3).
+        let spec::TextFacts {
+            tokenizer_hash,
+            template,
+        } = spec::text_facts(&dir)?;
         let map = MappedSafeTensors::open(&dir.join(spec::WEIGHTS_FILE))?;
         let view = map.view()?;
         let planned_weights = spec::weights_bytes_of(&view.tensors)?;

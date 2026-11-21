@@ -218,6 +218,11 @@ impl Inkling2Family {
         self.tokenizer().hash()
     }
 
+    /// The chat template text of the folder. The identity's `template` is this text (spec 12.1).
+    pub fn template(&self) -> &str {
+        self.chat.source()
+    }
+
     /// Render the messages with the effort that `thinking` chooses: with thinking off the template writes the effort
     /// "none", and with thinking on its default, 0.9 (milestone 35 question 4).
     pub(crate) fn run(&self, messages: &[Json], tools: &[Json], thinking: bool) -> Result<Rendered, FamilyError> {

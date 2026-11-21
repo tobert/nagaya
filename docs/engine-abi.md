@@ -1717,9 +1717,9 @@ Each rule is **Proposed** (Claude Opus 5.5, 2026-11-21).
   - The prose of the prompt "longer", repeated to 2,200 positions, flips a route at position 1,295. There the two keys
     of layer 11 differ by 4.4e-6 in the host form. The logits after it differ by up to 1.3.
   - Thus the gate of a ring that wraps feeds ids from a seeded generator, which flip no route.
-- **The identity, until the family library.** The engine names `inkling2-mini` or `inkling2-varloop`. The tokenizer
-  hash is the BLAKE3 of `tokenizer.json`, and the template is `chat_template.jinja`. Step 6 takes them from
-  `nagaya-text-inkling2`.
+- **The identity.** The engine names `inkling2-mini` or `inkling2-varloop`. The tokenizer hash and the template
+  come from `nagaya-text-inkling2` (`spec::text_facts`). Thus the hash is `sha256:` of the whole `tokenizer.json`,
+  and the check of the registry at the start compares like with like (spec 11.3).
 
 ## Not covered yet
 
