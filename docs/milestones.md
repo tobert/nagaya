@@ -390,9 +390,24 @@ Do the steps in this order. Each step ends with the checks green.
 8. **The lab.** The taps: the row after each run, the block outputs, the messages, the gates and the routes. Control
    vectors, latent steps, and `ensemble` over counts of cycles.
 9. **Images.** The ViT, the placeholders of an image and its sizes. Card gate against the reference.
+   - The oracle stage and the host form are done (`617dfb6`): the logits of a prompt with two images within 2.2e-5
+     of the oracle. Open: the rows in the family library, the device ops of the tower, and the card gate.
+   - The cap of 512 image tokens refuses a large photo: 4,032 by 3,024 px gives 7,676 tokens. Amy decides the cap
+     after a measure on the card.
 10. **Drafts.** The MTP head drafts tokens, and a pass checks them. This step waits (question 3).
 11. **Long contexts.** The model reads up to 1,048,576 positions. Measure the ledger cost and the speed at 256K.
 12. **Trial and review.** A trial with Amy, and a kaibo review round with a cast of another model family.
+
+**Speed, after the milestone.** Amy, 2026-11-21: "mostly we'll want some batching for when we want to try swarm
+or parallel contexts I think; we can focus on other perf gains first". A prefill of 512 tokens takes 799 ms, and a
+decode step takes 65 to 70 ms. The expert bytes set a floor near 3 ms for each step.
+
+- First: a decode path for one row in each expert op, and ops of the residual and the gates that use more of the
+  card. Also fewer tasks in a run.
+- Then a batch of decode rows, for swarms and parallel contexts. `FLAG_TILED` in the binary gives a row the same
+  bits for 1 to 8 rows, and a ring of several slots follows LFM3's `model::batch`.
+- With 8 rows, about 51 of 128 experts run in each run. Thus a row reads about 80% of the expert bytes of a row
+  alone.
 
 **Ports, later.** Amy, 2026-11-21: "not sure we'll do either port yet, pretty excited to see how it does on intel
 here first". These notes are for a port to a machine of 128 GB of unified memory, gfx1151host or a DGX Spark:
