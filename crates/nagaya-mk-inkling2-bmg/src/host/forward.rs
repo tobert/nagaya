@@ -210,12 +210,27 @@ impl Model {
         ctx: &mut Context,
         ids: &[u32],
         logit_rows: &[usize],
+        trace: Option<&mut Trace>,
+    ) -> Vec<Vec<f32>> {
+        self.forward_rows(ctx, self.embed(ids), logit_rows, trace)
+    }
+
+    /// Run the input rows `x`, `T x HIDDEN`, as `forward` runs the embedding rows of a span. A span with an image
+    /// gives the projector rows in place of the rows of its placeholders (`vision::place_rows`).
+    pub fn forward_rows(
+        &self,
+        ctx: &mut Context,
+        mut x: Vec<f32>,
+        logit_rows: &[usize],
         mut trace: Option<&mut Trace>,
     ) -> Vec<Vec<f32>> {
-        assert!(!ids.is_empty(), "forward: a span has one position or more");
-        let t = ids.len();
+        assert!(
+            !x.is_empty() && x.len().is_multiple_of(HIDDEN),
+            "forward: a span has one row of {HIDDEN} values or more, not {} values",
+            x.len()
+        );
+        let t = x.len() / HIDDEN;
         let p0 = ctx.position;
-        let mut x = self.embed(ids);
         let mut blocks: Vec<Vec<f32>> = Vec::new();
         let mut run = 0;
         let mut step = |x: &mut Vec<f32>,
