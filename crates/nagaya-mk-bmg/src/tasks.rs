@@ -1347,6 +1347,289 @@ pub fn moe_gather(x: u64, y: u64, plan: u64, n: u32, k: u32) -> MkTaskDescriptor
     }
 }
 
+// The layer-part ops of the Inkling 2 binary (`kernels/inkling2_layer_ops.cl`). The host form of each op is in
+// `src/host/ops.rs` of the Inkling 2 crate.
+
+/// The bytes of `rows` rows of `width` floats, `stride` floats apart, from `at`.
+fn rows_span(at: u64, rows: u32, stride: u32, width: u32) -> std::ops::Range<u64> {
+    let floats = if rows == 0 {
+        0
+    } else {
+        (rows as u64 - 1) * stride as u64 + width as u64
+    };
+    at..at + 4 * floats
+}
+
+fn disjoint(a: &std::ops::Range<u64>, b: &std::ops::Range<u64>) -> bool {
+    a.end <= b.start || b.end <= a.start
+}
+
+/// The attention residual of `n` positions of `k` values (`OP_ATTN_RESIDUAL`, host `attention_residual`). The rows of
+/// a position are its `blocks` block outputs and its partial row, each with the RMS norm of no weight. Query `q`
+/// gives the sum of the normed rows, weighted by the softmax of `q . row / sqrt(k)`.
+///
+/// `block_rows` holds `blocks` planes of `plane_rows` rows of `k`, and `partial` holds `[n][k]`. `queries` holds the
+/// `f32` queries `[queries][k]`. `out` gets `queries` planes of `plane_rows` rows. The messages of a cycle are this op
+/// with the 4 message queries.
+#[allow(clippy::too_many_arguments)]
+pub fn attn_residual(
+    block_rows: u64,
+    blocks: u32,
+    partial: u64,
+    queries: u64,
+    query_count: u32,
+    out: u64,
+    n: u32,
+    k: u32,
+    plane_rows: u32,
+) -> MkTaskDescriptor {
+    assert!(n >= 1, "OP_ATTN_RESIDUAL takes at least one position");
+    assert!(
+        blocks <= 4,
+        "a position of Inkling 2 has at most 4 block outputs, and OP_ATTN_RESIDUAL got {blocks}"
+    );
+    assert!(
+        (1..=4).contains(&query_count),
+        "OP_ATTN_RESIDUAL takes 1 to 4 queries, and it got {query_count}"
+    );
+    assert!(
+        k >= 16 && k.is_multiple_of(16),
+        "OP_ATTN_RESIDUAL sums rows in steps of 16 values, and it got a width of {k}"
+    );
+    assert!(
+        plane_rows >= n,
+        "a plane of OP_ATTN_RESIDUAL holds the {n} positions, and it has {plane_rows} rows"
+    );
+    let plane = plane_rows * k;
+    let outputs = rows_span(out, query_count, plane, n * k);
+    assert!(
+        disjoint(&outputs, &rows_span(block_rows, blocks, plane, n * k))
+            && disjoint(&outputs, &rows_span(partial, n, k, k)),
+        "OP_ATTN_RESIDUAL: the outputs overlap the block outputs or the partial rows"
+    );
+    MkTaskDescriptor {
+        a: block_rows,
+        b: partial,
+        c: out,
+        x: queries,
+        m: blocks | query_count << 16,
+        n,
+        k,
+        p0: plane_rows,
+        layer: (k as f32).powf(-0.5).to_bits(),
+        ..task(OP_ATTN_RESIDUAL)
+    }
+}
+
+/// The message gate of `n` positions of `k` values (`OP_MESSAGE_GATE`, host `message_gate`): `y = (1 - tanh(F g)) *
+/// h + tanh(G g) * m`, with `g = D [norm(h), norm(m)]`. `weights` holds the `bf16` matrices of the gate one after
+/// the other: `D [64][2k]`, `F [k][64]` and `G [k][64]`. `y` may be `h`.
+pub fn message_gate(h: u64, m: u64, weights: u64, y: u64, n: u32, k: u32) -> MkTaskDescriptor {
+    assert!(n >= 1, "OP_MESSAGE_GATE takes at least one position");
+    assert!(
+        k >= 16 && k.is_multiple_of(16),
+        "OP_MESSAGE_GATE sums rows in steps of 16 values, and it got a width of {k}"
+    );
+    let out = rows_span(y, n, k, k);
+    let weight_bytes = 2 * (64 * 2 * k as u64 + 2 * k as u64 * 64);
+    assert!(
+        y == h || disjoint(&out, &rows_span(h, n, k, k)),
+        "OP_MESSAGE_GATE: the output overlaps the rows h, and it is not h"
+    );
+    assert!(
+        disjoint(&out, &rows_span(m, n, k, k)) && disjoint(&out, &(weights..weights + weight_bytes)),
+        "OP_MESSAGE_GATE: the output overlaps the messages or the weights"
+    );
+    MkTaskDescriptor {
+        a: h,
+        b: m,
+        c: y,
+        x: weights,
+        n,
+        k,
+        ..task(OP_MESSAGE_GATE)
+    }
+}
+
+/// What [`head_clip`] does to each head.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum HeadClip {
+    /// Multiply each value by its `bf16` scale (`scale` 0: no scale), then clip the head to the L2 norm `bound`
+    /// (host `scaled_l2_clip` and `l2_clip`).
+    L2 { scale: u64, bound: f32 },
+    /// The RMS norm of no weight (host `rms_norm_unweighted`), as for each value head.
+    Rms,
+}
+
+/// The clip or the norm of each head of `n` positions of `heads` heads of `d` values (`OP_HEAD_CLIP`). `log_p0` is
+/// the position of row 0 when the rows take the log scale of a full layer (host `log_scale`); with a token table,
+/// each row takes the position of its entry. `y` may be `x`.
+pub fn head_clip(x: u64, y: u64, n: u32, heads: u32, d: u32, clip: HeadClip, log_p0: Option<u32>) -> MkTaskDescriptor {
+    assert!(
+        n >= 1 && heads >= 1,
+        "OP_HEAD_CLIP takes at least one head of one position, and it got {heads} heads of {n} positions"
+    );
+    assert!(
+        d >= 16 && d.is_multiple_of(16),
+        "OP_HEAD_CLIP sums heads in steps of 16 values, and it got heads of {d}"
+    );
+    let rows = rows_span(x, n, heads * d, heads * d);
+    let out = rows_span(y, n, heads * d, heads * d);
+    assert!(
+        y == x || disjoint(&out, &rows),
+        "OP_HEAD_CLIP: the output overlaps the input, and it is not the input"
+    );
+    let (scale, bound, mode) = match clip {
+        HeadClip::L2 { scale, bound } => {
+            assert!(
+                bound.is_finite() && bound > 0.0,
+                "the L2 bound of OP_HEAD_CLIP is a positive number, and it got {bound}"
+            );
+            (scale, bound, 0)
+        }
+        HeadClip::Rms => {
+            // Inkling 2 gives the log scale to the queries and the relative states only.
+            assert!(
+                log_p0.is_none(),
+                "OP_HEAD_CLIP gives the log scale only to an L2 clip, as Inkling 2 does"
+            );
+            (0, 0.0, 1)
+        }
+    };
+    MkTaskDescriptor {
+        a: x,
+        b: scale,
+        c: y,
+        x: bound.to_bits() as u64,
+        n,
+        m: heads,
+        k: d,
+        p0: log_p0.unwrap_or(0),
+        layer: mode | if log_p0.is_some() { 256 } else { 0 },
+        ..task(OP_HEAD_CLIP)
+    }
+}
+
+/// The gate of the attention output (`OP_OUTPUT_GATE`): `y[i] = a[i] * sigmoid(gate[i])` for `n` rows of `k`. `y` may
+/// be `a`.
+pub fn output_gate(a: u64, gate: u64, y: u64, n: u32, k: u32) -> MkTaskDescriptor {
+    assert!(n >= 1 && k >= 1, "OP_OUTPUT_GATE takes at least one value");
+    let out = rows_span(y, n, k, k);
+    assert!(
+        y == a || disjoint(&out, &rows_span(a, n, k, k)),
+        "OP_OUTPUT_GATE: the output overlaps the input, and it is not the input"
+    );
+    assert!(
+        disjoint(&out, &rows_span(gate, n, k, k)),
+        "OP_OUTPUT_GATE: the output overlaps the gates"
+    );
+    MkTaskDescriptor {
+        a,
+        b: gate,
+        c: y,
+        n,
+        k,
+        ..task(OP_OUTPUT_GATE)
+    }
+}
+
+/// The taps of [`residual_conv`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConvTaps {
+    /// Fixed taps, `bf16 [k][4]`, with tap 3 on the current row (host `short_conv`).
+    Fixed(u64),
+    /// Fixed taps by lag, `bf16 [4][k]` with lag 0 on the current row, plus the 4 taps of each head of 128 channels.
+    /// The taps of a position follow its `k` channels in its input row (host `dynamic_conv`).
+    Dynamic(u64),
+}
+
+/// The short convolution of kernel 4 with its residual (`OP_RESIDUAL_CONV`), for `n` positions of `k` channels from
+/// position `p0`. The input row of each position is `input_stride` floats apart. `state` holds the 3 inputs before
+/// position `p0`, oldest first, in rows `state_stride` floats apart, and the op writes the last 3 inputs into it. At
+/// `p0` 0 the op reads the state as zeros. `y` gets `[n][k]`, or `accumulate` adds the result to `y`.
+#[allow(clippy::too_many_arguments)]
+pub fn residual_conv(
+    input: u64,
+    input_stride: u32,
+    taps: ConvTaps,
+    state: u64,
+    state_stride: u32,
+    y: u64,
+    n: u32,
+    k: u32,
+    p0: u32,
+    accumulate: bool,
+) -> MkTaskDescriptor {
+    assert!(n >= 1, "OP_RESIDUAL_CONV takes at least one position");
+    assert!(
+        k >= 16 && k.is_multiple_of(16),
+        "OP_RESIDUAL_CONV takes channels in 16s, and it got {k}"
+    );
+    let (weights, dynamic, width) = match taps {
+        ConvTaps::Fixed(w) => (w, false, k),
+        ConvTaps::Dynamic(w) => {
+            assert!(
+                k.is_multiple_of(128),
+                "the dynamic taps of OP_RESIDUAL_CONV are by head of 128 channels, and it got {k} channels"
+            );
+            (w, true, k + k / 128 * 4)
+        }
+    };
+    // The kernel reads each stride from 16 bits.
+    assert!(
+        input_stride >= width && input_stride <= 0xFFFF,
+        "an input row of OP_RESIDUAL_CONV holds {width} floats in a stride of at most 65535, and it got {input_stride}"
+    );
+    assert!(
+        state_stride >= k && state_stride <= 0xFFFF,
+        "a state row of OP_RESIDUAL_CONV holds {k} floats in a stride of at most 65535, and it got {state_stride}"
+    );
+    let rows = rows_span(input, n, input_stride, width);
+    let held = rows_span(state, 3, state_stride, k);
+    let out = rows_span(y, n, k, k);
+    for (a, b, what) in [
+        (&out, &rows, "the output overlaps the inputs"),
+        (&out, &held, "the output overlaps the state"),
+        (&held, &rows, "the state overlaps the inputs"),
+    ] {
+        assert!(disjoint(a, b), "OP_RESIDUAL_CONV: {what}");
+    }
+    MkTaskDescriptor {
+        flags: if accumulate { FLAG_ACCUMULATE } else { 0 },
+        a: input,
+        b: weights,
+        c: y,
+        x: state,
+        m: input_stride | state_stride << 16,
+        n,
+        k,
+        p0,
+        layer: dynamic as u32,
+        ..task(OP_RESIDUAL_CONV)
+    }
+}
+
+/// The router of `n` positions (`OP_SIGMOID_ROUTER`, host `route`): sigmoid scores of the 128 `f32` logits, the 8
+/// largest score + `bias`, and the weights score / (sum + 1e-20) * 8. `decisions` gets one `MoERouteDecision` for each
+/// position, with its picks in ascending expert order and `layer` as its layer.
+pub fn sigmoid_router(logits: u64, bias: u64, decisions: u64, n: u32, layer: u32) -> MkTaskDescriptor {
+    assert!(n >= 1, "OP_SIGMOID_ROUTER takes at least one position");
+    let out = decisions..decisions + n as u64 * std::mem::size_of::<MoERouteDecision>() as u64;
+    assert!(
+        disjoint(&out, &rows_span(logits, n, NUM_EXPERTS as u32, NUM_EXPERTS as u32))
+            && disjoint(&out, &rows_span(bias, 1, NUM_EXPERTS as u32, NUM_EXPERTS as u32)),
+        "OP_SIGMOID_ROUTER: the decisions overlap the logits or the bias"
+    );
+    MkTaskDescriptor {
+        a: logits,
+        b: bias,
+        c: decisions,
+        n,
+        layer,
+        ..task(OP_SIGMOID_ROUTER)
+    }
+}
+
 /// The `bf16` bits of the repacked NVFP4 planes `codes` and `scales` of `rows` rows and `cols` columns, into `y`, with
 /// the factor of the expert. The rows of `y` are in the order of the planes (`OP_EXPAND_NVFP4`).
 pub fn expand_nvfp4(codes: u64, scales: u64, y: u64, rows: u32, cols: u32, factor: f32) -> MkTaskDescriptor {

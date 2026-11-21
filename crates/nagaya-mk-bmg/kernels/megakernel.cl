@@ -123,6 +123,13 @@
 #define VISION_ATTN_TILE    4   // query rows of one head for each subgroup of OP_VISION_ATTN; at most 16
 #endif
 #ifdef MK_INKLING2
+// The layer-part ops of the Inkling 2 binary (kernels/inkling2_layer_ops.cl): opcodes 150 to 159.
+#define OP_ATTN_RESIDUAL    150
+#define OP_MESSAGE_GATE     151
+#define OP_HEAD_CLIP        152
+#define OP_OUTPUT_GATE      153
+#define OP_RESIDUAL_CONV    154
+#define OP_SIGMOID_ROUTER   155
 // The ops of the Inkling 2 binary (kernels/inkling2_ops.cl): opcodes 140 to 169.
 #define OP_EXPAND_NVFP4     140
 #define OP_EXPAND_MXFP8     141
@@ -586,6 +593,7 @@ inline uint chunk_expert(__local const uint* chunk, uint n_active, uint c) {
 
 #ifdef MK_INKLING2
 #include "inkling2_helpers.cl"
+#include "inkling2_layer_helpers.cl"
 #endif
 
 __attribute__((intel_reqd_sub_group_size(16)))
