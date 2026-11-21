@@ -11,8 +11,10 @@
 //! - Milestone 35 question 4 (`reasoning_effort`) is open: `Family::render` renders with the template's default (0.9),
 //!   and `chat::Options` provides a typed `Effort` for the council to use once the request member is decided.
 
+pub mod chat;
 mod error;
 pub mod tokenizer;
 
+pub use chat::{Chat, Effort, Options, Rendered};
 pub use error::Error;
 pub use tokenizer::Tokenizer;
