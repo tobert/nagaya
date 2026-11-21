@@ -386,6 +386,21 @@ Do the steps in this order. Each step ends with the checks green.
 11. **Long contexts.** The model reads up to 1,048,576 positions. Measure the ledger cost and the speed at 256K.
 12. **Trial and review.** A trial with Amy, and a kaibo review round with a cast of another model family.
 
+**Ports, later.** Amy, 2026-11-21: "not sure we'll do either port yet, pretty excited to see how it does on intel
+here first". These notes are for a port to a machine of 128 GB of unified memory, gfx1151host or a DGX Spark:
+
+- Keep the experts packed in memory, and expand them in registers or local memory before each matrix op. A
+  decode step reads each weight once, so it is bound by bandwidth. In `bf16` it reads about 6 GB of experts for
+  each token, where packed it reads about 1.7 GB.
+- The expansion changes no bit: it gives the `bf16` of the reference. Thus a copy in `bf16` is a choice of
+  bandwidth and capacity only. A prefill block uses each expert for many tokens, so a tile that is expanded once
+  into local memory can serve many token tiles.
+- The Qwen3.8 engine on gfx1151host expands its IQ4_XS weights in its matmuls (`qmmh.h`). A port to gfx1151host follows it,
+  with the expansion helpers of `kernels/inkling2_helpers.cl`.
+- A DGX Spark has NVFP4 units. The checkpoint asks for NVFP4 activations too (`hf_quant_config.json`, per-token,
+  `fouroversix_mae`), and the oracle of this milestone keeps them `bf16`. A port that uses the NVFP4 units needs
+  an oracle and an identity of its own.
+
 **Lanes.** Amy, 2026-11-21: "our plan should use subagents to drive a lot of the work efficiently in passes,
 identifying where things can go in parallell. we may also farm some out to other agents via text files". The work
 goes in waves. Each lane has its own worktree and target directory (`~/src/wt/nagaya-inkling2-<lane>`).
