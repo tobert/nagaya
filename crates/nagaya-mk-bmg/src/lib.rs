@@ -50,6 +50,11 @@ pub const EMBEDDINGGEMMA2_KERNEL: &[u8] =
 #[cfg(feature = "xe")]
 pub const LFM3_KERNEL: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_lfm3_bmg.bin"));
 
+/// The kernel binary of the Inkling 2 engine for `bmg-g31`: `kernels/megakernel.cl` with `MK_QWEN3TTS` and
+/// `MK_INKLING2`, which add the ops of `kernels/qwen3tts_ops.cl` and `kernels/inkling2_ops.cl`.
+#[cfg(feature = "xe")]
+pub const INKLING2_KERNEL: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_inkling2_bmg.bin"));
+
 /// The name of the entry point of each kernel binary.
 pub const KERNEL_ENTRY: &str = "mk_persistent_interpreter";
 
@@ -98,5 +103,20 @@ mod tests {
             GEMMA4_KERNEL.len()
         );
         assert_eq!(&GEMMA4_KERNEL[..4], b"\x7fELF");
+    }
+
+    /// The Inkling 2 binary is a native module too, and its bytes are not those of another binary.
+    #[test]
+    fn the_inkling2_binary_is_an_elf_module_of_its_own() {
+        assert!(
+            INKLING2_KERNEL.len() > 4096,
+            "the binary holds {} bytes",
+            INKLING2_KERNEL.len()
+        );
+        assert_eq!(&INKLING2_KERNEL[..4], b"\x7fELF");
+        assert_ne!(
+            INKLING2_KERNEL, QWEN3TTS_KERNEL,
+            "the binary holds the ops of MK_INKLING2"
+        );
     }
 }

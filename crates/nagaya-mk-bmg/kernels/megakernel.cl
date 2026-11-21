@@ -1474,6 +1474,9 @@ __kernel void mk_persistent_interpreter(
 #include "lfm3_speech_ops.cl"
 #include "lfm3_vision_ops.cl"
 #endif
+#ifdef MK_INKLING2
+#include "inkling2_ops.cl"
+#endif
         else if (op == OP_MEAN_POOL_L2) {
             // c[0..k) = L2-normalized mean of the first k columns of n rows with stride m.
             __global const float* A = (__global const float*)task.a;
