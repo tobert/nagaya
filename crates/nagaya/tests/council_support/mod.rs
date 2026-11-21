@@ -572,6 +572,7 @@ impl Direct {
                         logit_rows: if row { vec![to - 1] } else { Vec::new() },
                     },
                     layer_loop: None,
+                    cycles: None,
                 }],
                 &[],
             )

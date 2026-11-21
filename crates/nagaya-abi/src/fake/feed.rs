@@ -181,6 +181,7 @@ impl FakeFeed {
             control: None,
             feed: Some(FeedRule { block }),
             layer_loops: None,
+            cycles: None,
         };
         if let Err(message) = limits.check() {
             panic!("the fake with a feed rule breaks a rule of its limits: {message}");

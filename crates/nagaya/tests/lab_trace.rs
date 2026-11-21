@@ -291,6 +291,7 @@ fn replay(prompt: &[u32], sampled: &[u32], items: &[(ControlOp, f32)]) -> Replay
             },
             control: control.clone(),
             layer_loop: None,
+            cycles: None,
         };
         let taps: Vec<Tap> = match step {
             true => ["residual", "lens"].map(|name| Tap { name: name.to_owned() }).to_vec(),

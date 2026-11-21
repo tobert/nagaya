@@ -824,6 +824,7 @@ impl Lfm3Engine {
             meta: Vec::new(),
             outputs: Default::default(),
             layer_loop: None,
+            cycles: None,
         };
         if layers > self.b.layers.len() || norm && layers != self.b.layers.len() {
             return Err(format!(

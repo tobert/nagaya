@@ -423,6 +423,7 @@ fn segment(state: State, tokens: &[u32], start: u64) -> Segment {
         meta: Vec::new(),
         outputs: OutputsWanted::default(),
         layer_loop: None,
+        cycles: None,
     }
 }
 

@@ -19,6 +19,7 @@ fn segment(slot: u32, tokens: &[u32]) -> Segment {
         meta: Vec::new(),
         outputs: OutputsWanted::default(),
         layer_loop: None,
+        cycles: None,
     }
 }
 
@@ -504,6 +505,7 @@ impl Engine for TestEngine {
             residual_row_bytes: 0,
             control: None,
             layer_loops: None,
+            cycles: None,
         }
     }
 
@@ -626,6 +628,7 @@ fn feed_at(engine: &mut FakeAlways, slot: u32, from: u64, tokens: &[u32]) -> Vec
                 meta: Vec::new(),
                 outputs: OutputsWanted { logit_rows: vec![last] },
                 layer_loop: None,
+                cycles: None,
             }],
             &[],
         )

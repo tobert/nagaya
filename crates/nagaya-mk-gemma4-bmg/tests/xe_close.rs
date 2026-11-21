@@ -78,6 +78,7 @@ fn a_drop_frees_the_device_memory_of_each_load() {
             meta: Vec::new(),
             outputs: OutputsWanted { logit_rows: vec![15] },
             layer_loop: None,
+            cycles: None,
         };
         engine.pass(&[segment], &[]).expect("a pass");
         drop(engine);

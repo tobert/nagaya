@@ -72,6 +72,7 @@ fn segment(engine: &Qwen38Engine, slot: u32, tokens: &[u32], logits: bool) -> Se
         meta: Vec::new(),
         outputs,
         layer_loop: None,
+        cycles: None,
     }
 }
 

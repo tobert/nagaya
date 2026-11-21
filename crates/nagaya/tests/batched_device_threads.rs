@@ -226,6 +226,7 @@ impl Decoder {
                 logit_rows: vec![self.position],
             },
             layer_loop: None,
+            cycles: None,
         }
     }
 

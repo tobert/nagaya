@@ -639,6 +639,7 @@ pub fn limits(b: &Backbone, config: &Config, weights: u64, vision: Option<Vision
             block: config.max_block as u64,
         }),
         layer_loops,
+        cycles: None,
     }
 }
 

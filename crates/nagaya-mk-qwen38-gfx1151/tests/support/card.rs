@@ -71,6 +71,7 @@ pub fn segment(state: State, tokens: &[u32], start: u64, logits: bool, control: 
             },
         },
         layer_loop: None,
+        cycles: None,
     }
 }
 

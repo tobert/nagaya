@@ -104,6 +104,7 @@ pub fn limits(weights: u64, in_channels: usize) -> Limits {
         control: None,
         feed: None,
         layer_loops: None,
+        cycles: None,
     }
 }
 

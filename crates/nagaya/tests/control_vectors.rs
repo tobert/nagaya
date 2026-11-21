@@ -160,6 +160,7 @@ fn direct_row(context: &Value) -> Vec<f32> {
             },
             control: Vec::new(),
             layer_loop: None,
+            cycles: None,
         };
         out = Some(engine.pass(&[segment], &taps).unwrap());
     }

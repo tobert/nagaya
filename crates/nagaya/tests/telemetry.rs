@@ -77,6 +77,7 @@ fn fake_with_a_token() -> FakeAlways {
         meta: Vec::new(),
         outputs: OutputsWanted::default(),
         layer_loop: None,
+        cycles: None,
     };
     fake.pass(&[segment], &[]).expect("the fill pass runs");
     fake

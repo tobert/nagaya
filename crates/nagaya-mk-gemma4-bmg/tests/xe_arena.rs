@@ -51,6 +51,7 @@ fn plain(from: u64, tokens: &[u32]) -> Segment {
             logit_rows: vec![to - 1],
         },
         layer_loop: None,
+        cycles: None,
     }
 }
 

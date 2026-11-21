@@ -269,6 +269,7 @@ fn token_segment(tokens: &[u32]) -> Segment {
         meta: Vec::new(),
         outputs: OutputsWanted::default(),
         layer_loop: None,
+        cycles: None,
     }
 }
 
@@ -477,6 +478,7 @@ fn token_segment_at(state: u32, start: u64, tokens: &[u32]) -> Segment {
         meta: Vec::new(),
         outputs: OutputsWanted::default(),
         layer_loop: None,
+        cycles: None,
     }
 }
 

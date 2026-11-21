@@ -606,6 +606,7 @@ mod split_tests {
             meta: Vec::new(),
             outputs: OutputsWanted { logit_rows: vec![4] },
             layer_loop: None,
+            cycles: None,
         }
     }
 

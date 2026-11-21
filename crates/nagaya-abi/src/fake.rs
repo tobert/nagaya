@@ -453,6 +453,7 @@ impl Fake {
             residual_row_bytes: 0,
             control: None,
             layer_loops: None,
+            cycles: None,
         };
         let slots = (0..limits.slots.iter().map(|slot| slot.count).sum())
             .map(|_| SlotData::new(&parts))
@@ -532,6 +533,12 @@ impl Fake {
             kind: PassErrorKind::Refused,
             message: format!("nothing ran: {message}"),
         })?;
+        self.limits
+            .check_segment_cycles(segments)
+            .map_err(|message| PassError {
+                kind: PassErrorKind::Refused,
+                message: format!("nothing ran: {message}"),
+            })?;
         let rows: usize = segments
             .iter()
             .map(|segment| match &segment.inputs {

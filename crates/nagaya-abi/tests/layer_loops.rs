@@ -43,6 +43,7 @@ fn segment(slot: u32, layer_loop: Option<LayerLoop>) -> Segment {
         outputs: OutputsWanted { logit_rows: vec![2] },
         control: Vec::new(),
         layer_loop,
+        cycles: None,
     }
 }
 

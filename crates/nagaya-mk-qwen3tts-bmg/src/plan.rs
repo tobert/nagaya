@@ -134,6 +134,7 @@ pub fn limits(config: &Config, weights: u64) -> Limits {
         control: None,
         feed: None,
         layer_loops: None,
+        cycles: None,
     }
 }
 

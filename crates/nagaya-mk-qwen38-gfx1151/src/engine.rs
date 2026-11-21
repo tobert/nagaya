@@ -721,6 +721,7 @@ mod tests {
             meta: Vec::new(),
             outputs: OutputsWanted::default(),
             layer_loop: None,
+            cycles: None,
         }
     }
 

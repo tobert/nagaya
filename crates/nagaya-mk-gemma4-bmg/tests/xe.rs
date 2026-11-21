@@ -65,6 +65,7 @@ fn plain(slot: u32, from: u64, tokens: &[u32], logits: bool) -> Segment {
             logit_rows: if logits { vec![to - 1] } else { Vec::new() },
         },
         layer_loop: None,
+        cycles: None,
     }
 }
 
@@ -90,6 +91,7 @@ fn branch_segment(slot: u32, pos0: u64, shared: &[u32], branches: &[Vec<u32>]) -
         inputs: SegmentInputs::Tokens(tokens),
         outputs: OutputsWanted { logit_rows: rows },
         layer_loop: None,
+        cycles: None,
     }
 }
 

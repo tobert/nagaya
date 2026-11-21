@@ -138,6 +138,7 @@ impl Decoder {
                 logit_rows: vec![self.position],
             },
             layer_loop: self.layer_loop,
+            cycles: None,
         }
     }
 

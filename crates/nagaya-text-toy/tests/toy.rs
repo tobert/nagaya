@@ -813,6 +813,7 @@ fn the_fake_engine_gives_logit_rows_as_wide_as_the_vocabulary_of_the_family() {
         meta: Vec::new(),
         outputs: OutputsWanted { logit_rows: vec![last] },
         layer_loop: None,
+        cycles: None,
     };
     let out = engine.pass(&[segment], &[]).unwrap();
     let rows: Vec<_> = out.outputs.iter().filter(|o| o.name == "logits").collect();

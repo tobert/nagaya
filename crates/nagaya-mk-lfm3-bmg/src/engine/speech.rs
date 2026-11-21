@@ -224,6 +224,7 @@ impl Lfm3Engine {
                 logit_rows: if logits { vec![pos] } else { Vec::new() },
             },
             layer_loop: None,
+            cycles: None,
         };
         let block = self.check_block(&[segment])?;
         if block.pos0 == 0 {

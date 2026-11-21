@@ -364,6 +364,8 @@ pub enum Capability {
     Control,
     /// Layer loops: `segment.layer_loop` (engine-abi "Layer loops").
     LayerLoops,
+    /// Cycles: `segment.cycles`, the count of cycles of a model built to cycle (engine-abi "Inkling 2").
+    Cycles,
 }
 
 /// The limits that an engine declares.
@@ -412,6 +414,37 @@ pub struct Limits {
     pub control: Option<ControlLimit>,
     /// The spans that the engine runs more than once, when it declares `layer_loops` (engine-abi "Layer loops").
     pub layer_loops: Option<LayerLoopLimit>,
+    /// The counts of cycles that the engine runs, when it declares `cycles` (engine-abi "Inkling 2").
+    pub cycles: Option<CyclesLimit>,
+}
+
+/// The counts of cycles that an engine runs: layers `start` to `end - 1` run once in each cycle (engine-abi "Inkling
+/// 2"). A segment with no count runs `default`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CyclesLimit {
+    pub min: u8,
+    pub max: u8,
+    pub default: u8,
+    pub start: u32,
+    pub end: u32,
+}
+
+impl CyclesLimit {
+    /// The count that a segment runs: its own, or `default`.
+    pub fn resolve(&self, cycles: Option<u8>) -> u8 {
+        cycles.unwrap_or(self.default)
+    }
+
+    /// Check a count of a segment against the limit.
+    pub fn check(&self, count: u8) -> Result<(), String> {
+        if count < self.min || count > self.max {
+            return Err(format!(
+                "the segment runs {count} cycles; the engine runs {} to {}",
+                self.min, self.max
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// A span of layers that runs more than once: layers `start` to `end - 1` run `count` times (engine-abi "Layer
@@ -559,6 +592,7 @@ impl Limits {
     pub fn check(&self) -> Result<(), String> {
         self.check_control()?;
         self.check_layer_loops()?;
+        self.check_cycles()?;
         if let Some(feed) = self.feed {
             if feed.block == 0 || feed.block > u64::from(self.max_pass_inputs) {
                 return Err(format!(
@@ -677,6 +711,64 @@ impl Limits {
         Ok(())
     }
 
+    /// Check the rule of cycles: the capability `cycles` and the limit come together, and the limit is in order
+    /// (engine-abi "Inkling 2").
+    fn check_cycles(&self) -> Result<(), String> {
+        let declared = self.capabilities.contains(&Capability::Cycles);
+        let Some(l) = &self.cycles else {
+            if declared {
+                return Err("an engine that declares `cycles` gives limits().cycles".to_owned());
+            }
+            return Ok(());
+        };
+        if !declared {
+            return Err("an engine with limits().cycles declares the capability `cycles`".to_owned());
+        }
+        if !(1 <= l.min && l.min <= l.default && l.default <= l.max && l.start < l.end) {
+            return Err(format!(
+                "the cycles are {l:?}; the limit holds 1 <= min <= default <= max, and start < end"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Check the cycles of the segments of one pass: each count fits the limit, the segments run one count, and no
+    /// segment names a loop and cycles (engine-abi "Inkling 2"). A segment with no count runs the default. The
+    /// message names the segment.
+    pub fn check_segment_cycles(&self, segments: &[Segment]) -> Result<(), String> {
+        for (i, segment) in segments.iter().enumerate() {
+            if segment.cycles.is_some() && segment.layer_loop.is_some() {
+                return Err(format!(
+                    "segment {i} names a loop and cycles; the engine runs one of the two on a segment"
+                ));
+            }
+            let Some(count) = segment.cycles else {
+                continue;
+            };
+            let Some(limit) = &self.cycles else {
+                return Err(format!(
+                    "segment {i} runs {count} cycles; the engine does not declare `cycles`"
+                ));
+            };
+            limit
+                .check(count)
+                .map_err(|message| format!("segment {i}: {message}"))?;
+        }
+        if let Some(limit) = &self.cycles
+            && let Some(first) = segments.first()
+        {
+            let count = limit.resolve(first.cycles);
+            if let Some(other) = segments.iter().position(|s| limit.resolve(s.cycles) != count) {
+                return Err(format!(
+                    "segment {other} runs {} cycles, and segment 0 runs {count}; the segments of one pass run one \
+                     count",
+                    limit.resolve(segments[other].cycles)
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Check the rule of the control table: the capability `control`, the limit and the term `control` come together.
     fn check_control(&self) -> Result<(), String> {
         let declared = self.capabilities.contains(&Capability::Control);
@@ -744,6 +836,9 @@ pub struct Segment {
     /// The span of layers that runs more than once (engine-abi "Layer loops"). An engine without `layer_loops`
     /// refuses a segment with a loop.
     pub layer_loop: Option<LayerLoop>,
+    /// The count of cycles (engine-abi "Inkling 2"). With none, the engine runs its default. An engine without
+    /// `cycles` refuses a segment with a count.
+    pub cycles: Option<u8>,
 }
 
 /// The operation of a control item (engine-abi "Control vectors"). Let `v` be the vector of a layer, `u` its unit

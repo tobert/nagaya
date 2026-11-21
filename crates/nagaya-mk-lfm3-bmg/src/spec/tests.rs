@@ -277,6 +277,7 @@ fn segment(slot: u32, from: u64, tokens: &[u32], logits: &[u64]) -> Segment {
             logit_rows: logits.to_vec(),
         },
         layer_loop: None,
+        cycles: None,
     }
 }
 

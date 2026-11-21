@@ -1511,7 +1511,9 @@ engine declares no `layer_loops`.
 - A segment with a count outside `min` to `max` is refused. The segments of one pass name one count.
 - The count is part of the root recipe of a context. A context keeps one count: each run of an earlier position
   holds keys and values that a later position reads.
-- gogi writes the context member `cycles` first. Until then, each context runs `default`.
+- The ABI has `Capability::Cycles`, `CyclesLimit {min, max, default, start, end}` and `Segment.cycles`, a count or
+  none (`Limits::check_segment_cycles`). A segment names a loop or cycles, and not both.
+- gogi has the context member `cycles` (gogi "Cycles"). The council passes it to `segment.cycles` in step 7.
 
 **The weights on the card.** Expanded to `bf16`, the experts take about 49 GB, which is more than the 32 GiB of the
 card. Thus the experts stay in the format of the checkpoint: NVFP4 in layers 0 to 19, and MXFP8 in layers 20 to 23.

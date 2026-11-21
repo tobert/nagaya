@@ -434,6 +434,7 @@ impl JobBody for Fill {
             meta: Vec::new(),
             outputs: OutputsWanted { logit_rows: vec![3] },
             layer_loop: None,
+            cycles: None,
         };
         engines[CHAT].pass(&[segment], &[]).expect("a pass of the fake");
         let _ = self.0.send(());

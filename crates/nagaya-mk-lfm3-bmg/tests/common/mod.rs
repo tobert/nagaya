@@ -259,6 +259,7 @@ pub fn segment(slot: u32, from: u64, tokens: &[u32], logits: &[u64]) -> nagaya_a
             logit_rows: logits.to_vec(),
         },
         layer_loop: None,
+        cycles: None,
     }
 }
 

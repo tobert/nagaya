@@ -203,6 +203,7 @@ impl SpeechFrames for Speaking {
                 logit_rows: if logits { vec![n] } else { Vec::new() },
             },
             layer_loop: None,
+            cycles: None,
         };
         let mut out = self.inner.pass(std::slice::from_ref(&segment), &[])?;
         self.record_and_favor(&segment, &mut out);

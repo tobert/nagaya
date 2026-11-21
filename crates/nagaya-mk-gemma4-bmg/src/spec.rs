@@ -250,6 +250,7 @@ pub fn limits(config: &Config, weights: [u64; 2]) -> Limits {
         control: None,
         feed: Some(FeedRule { block: block as u64 }),
         layer_loops: None,
+        cycles: None,
     };
     let residual = limits.residual_bytes();
     limits.memory.mandatory.push(term(RESIDUAL_TERM, Tier::Host, residual));
@@ -552,6 +553,7 @@ mod tests {
                 logit_rows: logits.to_vec(),
             },
             layer_loop: None,
+            cycles: None,
         }
     }
 
