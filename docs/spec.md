@@ -4985,6 +4985,26 @@ The notes below fill the choices that gogi leaves to the server. Each note is **
 
 The tests are in `crates/nagaya/tests/council_cycles.rs` and `crates/nagaya/tests/http_conformance.rs`.
 
+**11.18 The served Inkling 2 models.** The kind `mk-inkling2-bmg` serves `Inkling-2-Mini` and the variable-loop
+research model (milestone 35, engine-abi "Inkling 2"). Each rule below is **Proposed** (Claude Opus 5.5,
+2026-11-21). Reason: each is the rule of the LFM3 kind (11.11), and the docs leave the choice open.
+
+- **The served name.** The served model of an engine of this kind is its engine name in the profile. One kind
+  serves two models, and a profile can hold two engines of one model, so the `model` of the identity is not unique.
+- The `model` of the identity stays `inkling2-mini` or `inkling2-varloop`, from `loop_config.is_varloop` of the folder.
+- The kind gives its served name before the open (`Factory::served_names`, 2.3, "The check of a name").
+- The example profile names the engine `inkling2-mini` (`deploy/b70-pair/profile.toml`).
+- **The family.** One library, `nagaya-text-inkling2`, serves both models, because the two folders share every file
+  of the family. Its opener reads the key `model_dir` of `[engines.family]`. With no key, it reads
+  `INKLING2_MODEL_DIR`. Thus an engine on demand, which has no family table (3.3a), still gets its family.
+- The registry compares the tokenizer hash of the family with the identity, as for each family (11.3). The engine
+  takes the hash from the same library, so the two agree.
+- **On demand.** The factory describes an engine with no load (11.1): the identity and the limits come from the
+  folder, sysfs and the Level Zero driver. The checkpoint digest reads every tensor, so the description of each start
+  reads about 20 GB. An open that reports another identity than its description is an error.
+- **Cycles.** The served model declares `cycles` with the limit of the engine (11.17). The research model is trained
+  at 1 to 5 cycles. Mini is post-trained at 3, so another count on Mini runs outside its training.
+
 ## 12. Identity
 
 **12.1 Fields.** An engine identity has the fields of `identity()` in the ABI:
