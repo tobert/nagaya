@@ -1596,11 +1596,10 @@ come from transformers `inkling2` at `046bdb8cc2`. Each rule is **Proposed** (Cl
 - **The meta of a span.** It is the record of "The LFM3 vision binding": the kind 1, the count of positions, the
   first position, then `grid_t = 1`, `grid_h = 2 * rows`, `grid_w = 2 * columns` and 0. The grid counts patches.
   Reason: one reader and one rule serve both engines, because the span has `grid_t * grid_h * grid_w / 4` positions.
-- **Sizes.** The family accepts a side of 1 to 4,096 px and 512 image tokens at most. Another image is a 400 that
-  names the part. Reason: the reference refuses no size, and the model card advises 40 to 4,096 px for each side.
-- **The reason of the cap.** It bounds the work of the tower. A span of 512 positions or fewer meets at most two
-  feed blocks, so the tower runs at most twice for it. A larger cap waits for a measure of the tower on the card
-  (Proposed, ChatGPT by kaibo `gpt-plan`, 2026-11-21).
+- **Sizes.** The family accepts each side of 40 to 4,096 px, the range of the model card. Another image is a 400
+  that names the part, and the council never resizes an image. Thus an image has at most 103 by 103 = 10,609 image
+  tokens. @tobert decided this on 2026-11-21: "yep, match the model card. use the 4096 rule". The model card says:
+  "each image dimension should be between 40px to 4096px".
 
 **What the engine runs.** The tower runs over each image of the pass alone: its class row and its `4 * T` patches,
 for `T` image tokens. These are the steps:
@@ -1627,6 +1626,47 @@ take the term `vision` on `device(0)`. The two models hold the same tensors.
 
 **The host form.** `src/host/vision.rs` holds the rules of the processor and of the tower in `f32`. It is the oracle
 of the family and of the device ops. The family library calls the same rules of the processor.
+
+**The choices of the family.** The rules above leave these choices open. Each one is **Proposed** (Claude Opus 5.5,
+2026-11-21).
+
+- **One copy of the rules.** `nagaya-text-inkling2` depends on `nagaya-mk-inkling2-bmg` with no feature, and it
+  calls `host::vision`. Reason: a build with no feature needs no card, and the oracle checks the one copy.
+- **The decode.** The family decodes a PNG or a JPEG as the LFM3 family does (spec 11.11, "The media of a
+  request"). A PNG with an alpha channel or a `tRNS` chunk keeps its alpha, and `rgba_to_rgb` puts it over the
+  checkerboard. Reason: the processor does this for each image that Pillow says has transparency
+  (`image_processing_inkling2.py:50`).
+- **The parts of a message.** A message with an image part gives the template its parts as a list, in order. Thus
+  each text part is a block of its own, as in the reference. A message of text parts only stays one block.
+- **Roles.** An image part of a `system` or an `assistant` message is a 400 that names the part. The template
+  refuses such a part too.
+- **Decisions.** A decision whose context holds an image part, or that names `case_media`, is a 400 that names the
+  member. A later step adds media to the reads.
+- **Objects.** The process gives the family a reader of the objects of this machine, as for LFM3. A family with no
+  reader refuses an image part with a 400 that names the part.
+
+**The choices of the tower.** Each one is **Proposed** (Claude Opus 5.5, 2026-11-21).
+
+- **The ops.** The binary adds `OP_INKLING2_VISION_EMBED` (180), `OP_INKLING2_VISION_ROPE` (181) and
+  `OP_INKLING2_VISION_ATTN` (182) in `kernels/inkling2_vision_ops.cl`. The tower also uses `OP_MATMUL`, `OP_BIAS`,
+  `OP_LAYERNORM`, `OP_GELU`, `OP_SCALE_ADD` and their `bf16` weights. The open uploads the norms and the layer
+  scales as `f32`, and each value is exact.
+- **The rotary table.** At its open, the engine computes the cosine and the sine of each angle on the host, with the
+  rules of the host form. The table holds 207 positions by 16 frequencies. Reason: the op then gives the bits of
+  the host form. 207 is the class row and the 206 patch lines of a side of 4,096 px.
+- **The position embedding.** The device op computes the bilinear taps of each patch from the grid. Its weights
+  differ from those of the host form by the rounding of a division on the card. Reason: the pass then needs no table
+  for each grid.
+- **The attention** is `OP_VISION_ATTN` of LFM3 under a new opcode, with 16 heads of 64 values and the scale 1/8.
+- **One image at a time.** The tower runs over each image of the pass alone, in the order of the spans, on one set
+  of buffers. Thus a call with two images gives each image the bits of a call with that image alone.
+- **The buffers.** They hold the largest image of the sizes rule: 42,436 patches and the class row. The tower
+  uses its buffers again between its steps, so they take about 1.8 GB of `work`. Reason: the family refuses no image
+  of the range of the model card, so the engine must not refuse one either.
+- **The merge.** The class row and the patch rows are one buffer. The projector reads the rows after the class row
+  as `T` rows of 4,096 values, so the merge needs no op.
+- **Open: the cost of a large image.** An image of 10,609 tokens meets 21 feed blocks of 512, and the pattern of
+  LFM3 runs the tower once for each block. A later step can keep the rows of the tower for the blocks of one span.
 
 ### The first Inkling 2 binding
 
