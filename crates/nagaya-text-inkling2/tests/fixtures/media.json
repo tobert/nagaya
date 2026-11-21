@@ -1,0 +1,101 @@
+{
+ "images": {
+  "gray.png": {
+   "alpha": false,
+   "grid": [
+    1,
+    2,
+    3
+   ],
+   "height": 45,
+   "pixel_values_sha256": "8a56f97cb30340cb81088927c62809de869cfbeb7adce2222d93169095e46fe5",
+   "rgb_sha256": "5dab429652c2d71bbb9e4afe0ab688da8b3e36245f9de343c923f8a6830a73e4",
+   "width": 83
+  },
+  "gray_alpha.png": {
+   "alpha": true,
+   "grid": [
+    1,
+    2,
+    3
+   ],
+   "height": 45,
+   "pixel_values_sha256": "c95eb5aeea973f3ad54bbf9d2a18a127680934dd97b847c9b3f22f0c669797c1",
+   "rgb_sha256": "36422292ecb01239ab4a3877faec3c3e4a21edfa7430d71b3c936f7f6b24c50d",
+   "width": 83
+  },
+  "palette.png": {
+   "alpha": false,
+   "grid": [
+    1,
+    2,
+    3
+   ],
+   "height": 45,
+   "pixel_values_sha256": "d46ae785ef9c82088c3a719ad8d408c13a4c6f83e04513b30dd837232f750bab",
+   "rgb_sha256": "0d65ccc3095e61076f61020a7d6c35f2f681c3a78a9b26a0d2965d2c805e1b19",
+   "width": 83
+  },
+  "palette_trns.png": {
+   "alpha": true,
+   "grid": [
+    1,
+    2,
+    3
+   ],
+   "height": 45,
+   "pixel_values_sha256": "830e9363a4f6e6babc251c78e58da5c45fba69dfdc432ac306b7e06eb2ba2aa6",
+   "rgb_sha256": "644cd824ac915b3412b2ea8c7f522103d8cccea5eb9de0dd9aa79601270fb71d",
+   "width": 83
+  },
+  "photo.jpg": {
+   "alpha": false,
+   "grid": [
+    1,
+    2,
+    3
+   ],
+   "height": 45,
+   "pixel_values_sha256": "10f62eea60ca612edc784df9990da14bc188707d1a011994ab0e1a34d288777c",
+   "rgb_sha256": "bca7c39fb5aabd9a269b0779583f2e220916d99e1a75ac0885377bc57bdfaecb",
+   "width": 83
+  },
+  "photo_pil.png": {
+   "alpha": false,
+   "grid": [
+    1,
+    2,
+    3
+   ],
+   "height": 45,
+   "pixel_values_sha256": "10f62eea60ca612edc784df9990da14bc188707d1a011994ab0e1a34d288777c",
+   "rgb_sha256": "bca7c39fb5aabd9a269b0779583f2e220916d99e1a75ac0885377bc57bdfaecb",
+   "width": 83
+  },
+  "rgb.png": {
+   "alpha": false,
+   "grid": [
+    1,
+    2,
+    3
+   ],
+   "height": 45,
+   "pixel_values_sha256": "9b2e758996da943efb6937fa2335de4487bb8534e02acc2043933e75f3cb7a9f",
+   "rgb_sha256": "f32dac44bce2978b6231b15bc4528fc6318f767b163166d478a21c811a6a2d18",
+   "width": 83
+  },
+  "rgba.png": {
+   "alpha": true,
+   "grid": [
+    1,
+    2,
+    3
+   ],
+   "height": 45,
+   "pixel_values_sha256": "44e7361b2ca304f53d8376cdfab7d5e2412491216ebaec90fdaf33bc22d16dcd",
+   "rgb_sha256": "1216d1442dee99162b1fe2d63c2be5c5c0f9d7d7d3bf938b74eeb08b483110df",
+   "width": 83
+  }
+ },
+ "source": "transformers Inkling2ImageProcessor 046bdb8cc2, tools/inkling2_media_fixture.py"
+}

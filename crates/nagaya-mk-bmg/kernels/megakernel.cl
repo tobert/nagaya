@@ -139,6 +139,10 @@
 #define OP_EXPERT_DOWN      143
 #define OP_EXPERT_SUM       144
 #define FLAG_MXFP8          32768u  // the expert ops: the slab holds MXFP8, not NVFP4
+// The ops of the vision tower of Inkling 2 (kernels/inkling2_vision_ops.cl): opcodes 180 to 189.
+#define OP_INKLING2_VISION_EMBED 180
+#define OP_INKLING2_VISION_ROPE  181
+#define OP_INKLING2_VISION_ATTN  182
 #endif
 #define NUM_EXPERTS         128
 #define TOP_K               8
@@ -597,6 +601,7 @@ inline uint chunk_expert(__local const uint* chunk, uint n_active, uint c) {
 #include "inkling2_helpers.cl"
 #include "inkling2_layer_helpers.cl"
 #include "inkling2_attn_helpers.cl"
+#include "inkling2_vision_helpers.cl"
 #endif
 
 __attribute__((intel_reqd_sub_group_size(16)))

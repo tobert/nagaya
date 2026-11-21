@@ -1471,9 +1471,12 @@ dependencies = [
  "gogi-proto",
  "nagaya-council",
  "nagaya-jinja",
+ "png",
+ "safetensors",
  "serde_json",
  "sha2",
  "tokenizers",
+ "zune-jpeg",
 ]
 
 [[package]]

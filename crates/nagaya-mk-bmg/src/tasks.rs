@@ -1837,3 +1837,111 @@ pub fn inkling2_attn_scratch_floats(max_block: usize, max_seq: usize) -> usize {
     let partial = sliding.max(full) * max_block * 24 * 130;
     partial.next_multiple_of(16) + crate::protocol::MEGAKERNEL_SUBGROUPS / 4 * INKLING2_ATTN_TEAM_FLOATS
 }
+
+// The ops of the vision tower of Inkling 2 (`kernels/inkling2_vision_ops.cl`). The host form is
+// `src/host/vision.rs` of the Inkling 2 crate.
+
+/// The positions of the rotary table of `OP_INKLING2_VISION_ROPE`: the class row and 206 patch lines
+/// (`INKLING2_VISION_POSITIONS`, kernels/inkling2_vision_helpers.cl).
+pub const INKLING2_VISION_POSITIONS: usize = 207;
+/// The frequencies of one axis of a head of 64 values (`INKLING2_VISION_FREQS`).
+pub const INKLING2_VISION_FREQS: usize = 16;
+
+/// Check the grid of an image of `rows x columns` image tokens: each side 1 or more, and at most 103 tokens, so its
+/// patch lines fit the rotary table.
+fn vision_grid(op: &str, rows: u32, columns: u32) {
+    let most = (INKLING2_VISION_POSITIONS as u32 - 1) / 2;
+    assert!(
+        (1..=most).contains(&rows) && (1..=most).contains(&columns),
+        "{op} takes an image of 1 to {most} image tokens on each side, and it got {rows} by {columns}"
+    );
+}
+
+/// The bytes of the taps of `OP_INKLING2_VISION_EMBED` for an image of `rows x columns` image tokens: 16 for each
+/// patch line, then 16 for each patch column.
+pub fn inkling2_vision_axes_bytes(rows: u32, columns: u32) -> usize {
+    16 * 2 * (rows + columns) as usize
+}
+
+/// The position embedding of one image of `rows x columns` image tokens: `y[1 + p] = patches[p] + the bilinear sum
+/// of 4 rows of the bf16 table`, for `4 * rows * columns` patches of `k` values, with the taps and weights `axes`
+/// of the host (`OP_INKLING2_VISION_EMBED`). Row 0 of `y` is the class row, which the op does not write.
+#[allow(clippy::too_many_arguments)]
+pub fn inkling2_vision_embed(
+    patches: u64,
+    table: u64,
+    axes: u64,
+    y: u64,
+    rows: u32,
+    columns: u32,
+    k: u32,
+) -> MkTaskDescriptor {
+    vision_grid("OP_INKLING2_VISION_EMBED", rows, columns);
+    assert!(k > 0, "OP_INKLING2_VISION_EMBED takes rows of 1 value or more");
+    let n = 4 * rows * columns;
+    let rows_in = patches..patches + 4 * n as u64 * k as u64;
+    let out = y..y + 4 * (n as u64 + 1) * k as u64;
+    assert!(
+        out.end <= rows_in.start || rows_in.end <= out.start,
+        "OP_INKLING2_VISION_EMBED: the output overlaps the patch rows"
+    );
+    MkTaskDescriptor {
+        a: patches,
+        b: table,
+        x: axes,
+        c: y,
+        n,
+        k,
+        p0: rows | columns << 16,
+        ..task(OP_INKLING2_VISION_EMBED)
+    }
+}
+
+/// The rotary embedding in two axes of the query rows `q` and the key rows `k` of one image, in place: `n` rows of
+/// `width` values, in heads of 64, the class row first. `columns` is the width of the image in image tokens, and
+/// `table` holds the cosines `[207][16]`, then the sines (`OP_INKLING2_VISION_ROPE`).
+pub fn inkling2_vision_rope(q: u64, k: u64, table: u64, n: u32, width: u32, columns: u32) -> MkTaskDescriptor {
+    assert!(
+        width >= 64 && width.is_multiple_of(64),
+        "OP_INKLING2_VISION_ROPE takes heads of 64 values, and it got rows of {width}"
+    );
+    assert!(
+        columns >= 1 && n >= 5 && (n - 1).is_multiple_of(4 * columns),
+        "OP_INKLING2_VISION_ROPE takes a class row and whole lines of {columns} image tokens, and it got {n} rows"
+    );
+    vision_grid("OP_INKLING2_VISION_ROPE", (n - 1) / (4 * columns), columns);
+    assert_ne!(
+        q, k,
+        "OP_INKLING2_VISION_ROPE turns the queries and the keys once each, so they are two buffers"
+    );
+    MkTaskDescriptor {
+        a: q,
+        b: k,
+        x: table,
+        n,
+        k: width,
+        p0: columns,
+        ..task(OP_INKLING2_VISION_ROPE)
+    }
+}
+
+/// The attention of the vision tower of Inkling 2 over the `n` rows of one image, in both directions: `q` holds
+/// `[n][heads * d]`, `k` and `v` hold `[n][kv_heads * d]`, and `y` gets `[n][heads * d]`. It is `vision_attn` of the
+/// LFM3 binary under the opcode of this binary (`OP_INKLING2_VISION_ATTN`).
+#[allow(clippy::too_many_arguments)]
+pub fn inkling2_vision_attn(
+    q: u64,
+    k: u64,
+    v: u64,
+    y: u64,
+    n: u32,
+    heads: u32,
+    kv_heads: u32,
+    d: u32,
+    scale: f32,
+) -> MkTaskDescriptor {
+    MkTaskDescriptor {
+        opcode: OP_INKLING2_VISION_ATTN,
+        ..vision_attn(q, k, v, y, n, heads, kv_heads, d, scale)
+    }
+}

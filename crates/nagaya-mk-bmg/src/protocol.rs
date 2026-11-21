@@ -131,6 +131,13 @@ pub const OP_EXPERT_DOWN: u16 = 143;
 pub const OP_EXPERT_SUM: u16 = 144;
 /// `OP_EXPERT_UP` and `OP_EXPERT_DOWN`: the slab holds MXFP8, not NVFP4.
 pub const FLAG_MXFP8: u16 = 1 << 15;
+// The ops of the vision tower of Inkling 2 (`kernels/inkling2_vision_ops.cl`): opcodes 180 to 189.
+/// The bilinear position embedding of one image, with the taps and the weights of the host.
+pub const OP_INKLING2_VISION_EMBED: u16 = 180;
+/// The rotary embedding in two axes of the queries and the keys of one image, from a table of the host.
+pub const OP_INKLING2_VISION_ROPE: u16 = 181;
+/// The attention in both directions over the rows of one image: `OP_VISION_ATTN` under the opcode of this binary.
+pub const OP_INKLING2_VISION_ATTN: u16 = 182;
 
 pub const FLAG_ACCUMULATE: u16 = 1 << 0;
 pub const FLAG_SOFTCAP_30: u16 = 1 << 2;

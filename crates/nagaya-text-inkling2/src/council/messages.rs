@@ -82,17 +82,98 @@ fn content_json(m: &Message, index: usize, failed: bool) -> Result<Option<Json>,
             Some(Json::Str(format!("{prefix}{joined}")))
         }
         Some(Content::Parts(parts)) => {
-            for (j, p) in parts.iter().enumerate() {
-                if let Part::Object { mime, .. } = p {
-                    return Err(FamilyError::client_param(
-                        format!("messages[{index}].content[{j}]"),
-                        format!("nothing ran: this served model reads text only, so it cannot read {mime}."),
-                    ));
-                }
+            // engine-abi "The images of Inkling 2", "The parts of a message": each part in order, so each text part
+            // is a block of its own, as in the reference.
+            let mut list = Vec::with_capacity(parts.len() + 1);
+            if failed {
+                list.push(Json::Object(vec![
+                    pair("type", text("text")),
+                    pair("text", text(ERROR_PREFIX)),
+                ]));
             }
-            unreachable!("the guard above handles all-text parts")
+            for (j, p) in parts.iter().enumerate() {
+                list.push(match p {
+                    Part::Text { text: t } => Json::Object(vec![pair("type", text("text")), pair("text", text(t))]),
+                    Part::Object { mime, .. } => {
+                        check_image(m.role, index, j, mime)?;
+                        Json::Object(vec![pair("type", text("image"))])
+                    }
+                });
+            }
+            Some(Json::Array(list))
         }
     })
+}
+
+/// The request member of a part, for an error.
+pub(crate) fn part_param(message: usize, part: usize) -> String {
+    format!("messages[{message}].content[{part}]")
+}
+
+/// Check that an object part is an image of a role that the template reads, or give the client error that names it.
+fn check_image(role: Role, message: usize, part: usize, mime: &str) -> Result<(), FamilyError> {
+    let param = part_param(message, part);
+    if !crate::media::MEDIA_INPUTS.contains(&mime) {
+        return Err(FamilyError::client_param(
+            param,
+            format!(
+                "nothing ran: Inkling 2 reads {}, not {mime}. Send one of those.",
+                crate::media::MEDIA_INPUTS.join(" and ")
+            ),
+        ));
+    }
+    if !matches!(role, Role::User | Role::Tool) {
+        return Err(FamilyError::client_param(
+            param,
+            format!(
+                "nothing ran: Inkling 2 reads an image in a user or a tool message, not in a {} message. Move the \
+                 image to a user message.",
+                role_str(role)
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// An image part of a context: its place, its object and its media type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImagePart {
+    /// The index of the message, and the index of the part in its content.
+    pub message: usize,
+    pub part: usize,
+    /// The content id of the object.
+    pub id: String,
+    pub mime: String,
+}
+
+impl ImagePart {
+    /// The request member of the part, for an error.
+    pub fn param(&self) -> String {
+        part_param(self.message, self.part)
+    }
+}
+
+/// The image parts of the messages, in the order of the rendering. A part that the family cannot read is a client
+/// error that names it.
+pub(crate) fn image_parts(messages: &[Message]) -> Result<Vec<ImagePart>, FamilyError> {
+    let mut out = Vec::new();
+    for (i, m) in messages.iter().enumerate() {
+        let Some(Content::Parts(parts)) = &m.content else {
+            continue;
+        };
+        for (j, p) in parts.iter().enumerate() {
+            if let Part::Object { id, mime } = p {
+                check_image(m.role, i, j, mime)?;
+                out.push(ImagePart {
+                    message: i,
+                    part: j,
+                    id: id.clone(),
+                    mime: mime.clone(),
+                });
+            }
+        }
+    }
+    Ok(out)
 }
 
 /// The messages as the template reads them.

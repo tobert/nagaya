@@ -23,6 +23,14 @@ use crate::tokenizer::{Tokenizer, check_text};
 
 pub const FAMILY: &str = "inkling2";
 
+pub use messages::ImagePart;
+
+/// The objects of this machine, as the family reads them for the image parts of a context (spec 6.15, 11.11).
+pub trait Objects: Send + Sync {
+    /// The bytes of the object with the content id `id`, or none when this machine does not hold it.
+    fn bytes(&self, id: &str) -> Option<Vec<u8>>;
+}
+
 pub const TOKENIZER_FILE: &str = "tokenizer.json";
 pub const TEMPLATE_FILE: &str = "chat_template.jinja";
 pub const GENERATION_FILE: &str = "generation_config.json";
@@ -75,6 +83,8 @@ pub struct Inkling2Family {
     stop: Vec<u32>,
     marks: Marks,
     template_id: String,
+    /// The reader of the objects of this machine. A family without one refuses each image part.
+    objects: Option<Arc<dyn Objects>>,
 }
 
 impl std::fmt::Debug for Inkling2Family {
@@ -190,6 +200,13 @@ impl Inkling2Family {
         };
         let letters = letters_with(&tokenizer, " ")?;
         let bare_letters = letters_with(&tokenizer, "")?;
+        let placeholder = mark(&tokenizer, "<|unused_200054|>")?;
+        if placeholder != crate::media::IMAGE_TOKEN {
+            return Err(Error::Model(format!(
+                "the image placeholder <|unused_200054|> has the id {placeholder}, and the engine reads {}",
+                crate::media::IMAGE_TOKEN
+            )));
+        }
         let chat = Chat::new(&files.template, Arc::clone(&tokenizer))?;
         let mut family = Inkling2Family {
             chat,
@@ -199,6 +216,7 @@ impl Inkling2Family {
             stop,
             marks,
             template_id: String::new(),
+            objects: None,
         };
         let c_hash = council_hash(&test_set::renders(&family));
         let t_hash = hash16(files.template.as_bytes());
@@ -208,6 +226,66 @@ impl Inkling2Family {
 
     pub fn tokenizer(&self) -> &Tokenizer {
         self.chat.tokenizer()
+    }
+
+    /// The family with a reader of the objects of this machine. The process gives it, so that a render can read the
+    /// image parts of a context.
+    pub fn with_objects(mut self, objects: Arc<dyn Objects>) -> Inkling2Family {
+        self.objects = Some(objects);
+        self
+    }
+
+    /// The image parts of a context, in the order of the rendering.
+    pub fn image_parts(&self, context: &Context) -> Result<Vec<ImagePart>, FamilyError> {
+        messages::image_parts(&context.messages)
+    }
+
+    /// The bytes of the object `id` that the request member `param` names. An absent reader and an absent object
+    /// are client errors that name the member.
+    fn object_bytes(&self, id: &str, param: &str) -> Result<Vec<u8>, FamilyError> {
+        let Some(objects) = &self.objects else {
+            return Err(FamilyError::client_param(
+                param,
+                "nothing ran: this server gives the Inkling 2 family no objects, so it cannot read an image part. \
+                 Send text only.",
+            ));
+        };
+        objects.bytes(id).ok_or_else(|| {
+            FamilyError::client_param(
+                param,
+                format!("nothing ran: the object {id} is not on this server. Upload it, then send the request again."),
+            )
+        })
+    }
+
+    /// The grid of an image part from the header of its object.
+    fn part_grid(&self, part: &ImagePart) -> Result<crate::media::Grid, FamilyError> {
+        let bytes = self.object_bytes(&part.id, &part.param())?;
+        crate::media::grid(&bytes, &part.mime).map_err(|e| media_error(&part.param(), e))
+    }
+
+    /// The record and the rows of one span of a rendering. The object can leave the store after the render, so an
+    /// absent object is a client error. A count that the object does not give is a defect of the caller.
+    fn media_input(
+        &self,
+        span: &nagaya_council::family::MediaSpan,
+    ) -> Result<nagaya_council::family::MediaInput, FamilyError> {
+        let param = format!("the object {}", span.id);
+        let bytes = self.object_bytes(&span.id, &param)?;
+        let rows = crate::media::prepare(&bytes, &span.mime).map_err(|e| media_error(&param, e))?;
+        if rows.positions() != span.count {
+            return Err(FamilyError::internal(format!(
+                "the span of {} has {} positions, and its rows give {}",
+                span.id,
+                span.count,
+                rows.positions()
+            )));
+        }
+        Ok(nagaya_council::family::MediaInput {
+            span: span.clone(),
+            meta: rows.record(span.first),
+            rows: rows.bytes().into(),
+        })
     }
 
     pub(crate) fn shared_tokenizer(&self) -> Arc<Tokenizer> {
@@ -346,17 +424,50 @@ impl Family for Inkling2Family {
         if generation_prompt && open.is_none() {
             tokens.push(self.marks.message_model);
         }
-        Ok(Rendering {
+        let rendering = Rendering {
             tokens,
             end,
             boundaries,
             control_text,
             media: Vec::new(),
-        })
+        };
+        // engine-abi "The images of Inkling 2", "The placeholder": the header of each part gives its count.
+        let parts = self.image_parts(context)?;
+        if parts.is_empty() {
+            return Ok(rendering);
+        }
+        let grids = parts
+            .iter()
+            .map(|p| self.part_grid(p))
+            .collect::<Result<Vec<_>, FamilyError>>()?;
+        expand(rendering, &parts, &grids)
     }
 
     fn decision_read(&self, input: &DecisionInput<'_>) -> Result<Box<dyn ReadPlan>, FamilyError> {
+        // engine-abi "The images of Inkling 2", "Decisions": a read holds no image yet.
+        if let Some((context, _)) = input.context
+            && let Some(part) = self.image_parts(context)?.first()
+        {
+            return Err(FamilyError::client_param(
+                part.param(),
+                "nothing ran: a decision of Inkling 2 reads no image yet. Send the decision with a context of text.",
+            ));
+        }
         read::decision_read(self, input)
+    }
+
+    fn decision_read_with_media(
+        &self,
+        input: &DecisionInput<'_>,
+        case_media: &[gogi_proto::objects::ObjectRef],
+    ) -> Result<Box<dyn ReadPlan>, FamilyError> {
+        if !case_media.is_empty() {
+            return Err(FamilyError::client_param(
+                "case_media[0]",
+                "nothing ran: a decision of Inkling 2 reads no image yet. Send the decision with no case_media.",
+            ));
+        }
+        self.decision_read(input)
     }
 
     fn raw_read(&self, letters: &[String], suffixes: &[String]) -> Result<RawRead, FamilyError> {
@@ -401,4 +512,75 @@ impl Family for Inkling2Family {
     fn thinks(&self) -> bool {
         true
     }
+
+    fn media_inputs(&self) -> Vec<String> {
+        crate::media::MEDIA_INPUTS.iter().map(|m| (*m).to_owned()).collect()
+    }
+
+    fn media_rows(&self, rendering: &Rendering) -> Result<Vec<nagaya_council::family::MediaInput>, FamilyError> {
+        rendering.media.iter().map(|span| self.media_input(span)).collect()
+    }
+}
+
+/// The error of an image part whose bytes the family refused. A media type that the family does not read is a
+/// defect: `image_parts` refuses it first.
+fn media_error(param: &str, e: crate::media::MediaError) -> FamilyError {
+    match e {
+        crate::media::MediaError::Mime(_) => FamilyError::internal(format!("{param} {e}")),
+        other => FamilyError::client_param(param, format!("nothing ran: {param} {other}.")),
+    }
+}
+
+/// Put one placeholder for each image token in place of the one that the template writes for each part
+/// (`processing_inkling2.py:37`), and move the end and the boundaries with it. The template writes the placeholder
+/// once for each part, and client text cannot spell it, so a count that differs is a defect of the template.
+fn expand(rendering: Rendering, parts: &[ImagePart], grids: &[crate::media::Grid]) -> Result<Rendering, FamilyError> {
+    let placeholder = crate::media::IMAGE_TOKEN;
+    let mut tokens = Vec::with_capacity(rendering.tokens.len());
+    // For each position of the template's tokens, the position in the expanded tokens.
+    let mut moved = Vec::with_capacity(rendering.tokens.len() + 1);
+    let mut media = Vec::with_capacity(parts.len());
+    for &token in &rendering.tokens {
+        moved.push(tokens.len());
+        if token != placeholder {
+            tokens.push(token);
+            continue;
+        }
+        let n = media.len();
+        let (Some(part), Some(grid)) = (parts.get(n), grids.get(n)) else {
+            return Err(FamilyError::internal(
+                "the rendering holds more image placeholders than the context has image parts. The chat template \
+                 changed shape.",
+            ));
+        };
+        media.push(nagaya_council::family::MediaSpan {
+            first: tokens.len(),
+            count: grid.tokens(),
+            mime: part.mime.clone(),
+            id: part.id.clone(),
+        });
+        tokens.extend(std::iter::repeat_n(placeholder, grid.tokens()));
+    }
+    moved.push(tokens.len());
+    if media.len() != parts.len() {
+        return Err(FamilyError::internal(format!(
+            "the context has {} image parts, and the template wrote {} placeholders",
+            parts.len(),
+            media.len()
+        )));
+    }
+    Ok(Rendering {
+        end: moved[rendering.end],
+        boundaries: rendering
+            .boundaries
+            .iter()
+            .map(|b| Boundary {
+                message: b.message,
+                tokens: moved[b.tokens],
+            })
+            .collect(),
+        control_text: rendering.control_text,
+        tokens,
+        media,
+    })
 }
