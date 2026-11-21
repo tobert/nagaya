@@ -269,6 +269,12 @@ pub fn lab_files(
     let (mut folders, mut lenses) = (BTreeMap::new(), BTreeMap::new());
     for placement in &profile.engines {
         let name = &placement.name;
+        // The lab reads the head of Inkling 2 too. The profile names no J-Lens of it (docs/lab.md, "Inkling 2").
+        if placement.kind == crate::inkling2::KIND && placement.lab.is_empty() {
+            let what = format!("the config of engine `{name}`");
+            folders.insert(name.clone(), crate::inkling2::model_dir(&placement.config, &what)?);
+            continue;
+        }
         if placement.kind != crate::lfm3::KIND {
             if !placement.lab.is_empty() {
                 return Err(format!(

@@ -2,7 +2,7 @@
 //!
 //! The weight formats are in `formats`, the `f32` host form of the text model and the oracle of each device op in
 //! `host`, and the layout of the expert planes on the card in `repack`. `spec` holds the config, the limits and the
-//! rules of the slots, and `media` the rules of the image spans of a pass. `weights` puts the weights into an upload sink, and `model` builds the ring of a pass. `vision` holds the
+//! rules of the slots, and `media` the rules of the image and latent spans of a pass. `lab` reads the head of a direction for the lab routes. `weights` puts the weights into an upload sink, and `model` builds the ring of a pass. `vision` holds the
 //! weights, the buffers and the tasks of the vision tower. None of
 //! these needs a card. The feature `xe` adds `device` and `engine`: the `Engine` trait on one card.
 //!
@@ -17,6 +17,7 @@ pub mod device;
 pub mod engine;
 pub mod formats;
 pub mod host;
+pub mod lab;
 pub mod media;
 pub mod model;
 pub mod repack;

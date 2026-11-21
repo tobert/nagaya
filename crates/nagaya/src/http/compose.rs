@@ -89,6 +89,16 @@ fn run(
             "nothing ran: parts is empty; send a part or more".to_owned(),
         ));
     }
+    if super::lab::is_inkling2(dir) {
+        return Err(invalid(
+            "model",
+            format!(
+                "nothing ran: compose reads the checkpoints of the kind {}; {} is Inkling 2",
+                crate::lfm3::KIND,
+                served.service.model()
+            ),
+        ));
+    }
     let lab = Unembedding::open(dir).map_err(|error| {
         ServiceError::internal(format!(
             "the lab cannot read the checkpoint of {}: {error}",

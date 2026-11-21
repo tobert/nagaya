@@ -247,7 +247,9 @@ fn the_limits_hold_the_terms_the_taps_and_the_control_table_and_declare_no_loop(
     );
     let names: Vec<&str> = l.taps.iter().map(|t| t.name.as_str()).collect();
     assert_eq!(names, ["residual", "fold", "blocks", "messages", "gates", "routes"]);
-    assert!(l.taps.iter().all(|t| t.conditions.is_empty()));
+    // The tap residual gives the row after each run, so the council reads the rows of each layer from it.
+    assert_eq!(l.taps[0].conditions, ["each run"]);
+    assert!(l.taps[1..].iter().all(|t| t.conditions.is_empty()));
     // Both models hold the tower, so both take the rows of images (engine-abi "The choices of the pass").
     assert_eq!(l.inputs, Inputs::TokensAndRows);
     assert_eq!((l.max_segments, l.max_pass_inputs, l.max_logit_rows), (1, 512, 16));

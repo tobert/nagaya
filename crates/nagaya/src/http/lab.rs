@@ -90,6 +90,85 @@ impl Readout for JLensReadout {
     }
 }
 
+/// True when the model folder `dir` holds Inkling 2: its `config.json` names the architecture of the kind
+/// `mk-inkling2-bmg`. Another folder is read as LFM3, whose reader names what it misses.
+pub(super) fn is_inkling2(dir: &Path) -> bool {
+    std::fs::read_to_string(dir.join("config.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .is_some_and(|config| config["architectures"][0] == "Inkling2LoopForConditionalGeneration")
+}
+
+/// The head of a served model of the lab: the table of LFM3, or the head of Inkling 2 (`docs/lab.md`, "The rules of
+/// `project`").
+pub(super) enum Head {
+    Lfm3(Unembedding),
+    Inkling2(nagaya_mk_inkling2_bmg::lab::Head),
+}
+
+impl Head {
+    /// The head of the folder `dir` of `served`. A folder that does not read is a 500 that names the model.
+    pub(super) fn open(served: &Served, dir: &Path) -> Result<Head, ServiceError> {
+        let head = if is_inkling2(dir) {
+            nagaya_mk_inkling2_bmg::lab::Head::open(dir).map(Head::Inkling2)
+        } else {
+            Unembedding::open(dir).map(Head::Lfm3)
+        };
+        head.map_err(|error| {
+            ServiceError::internal(format!(
+                "the lab cannot read the checkpoint of {}: {error}",
+                served.service.model()
+            ))
+        })
+    }
+
+    fn width(&self) -> usize {
+        match self {
+            Head::Lfm3(head) => head.width(),
+            Head::Inkling2(head) => head.width(),
+        }
+    }
+
+    fn layers(&self) -> u32 {
+        match self {
+            Head::Lfm3(head) => head.layers(),
+            Head::Inkling2(head) => head.facts().layers,
+        }
+    }
+
+    fn ends(&self) -> &[u32] {
+        match self {
+            Head::Lfm3(head) => head.ends(),
+            Head::Inkling2(head) => head.ends(),
+        }
+    }
+
+    fn scores(&self, vectors: &[&[f32]]) -> Vec<Vec<f32>> {
+        match self {
+            Head::Lfm3(head) => head.scores(vectors),
+            Head::Inkling2(head) => head.scores(vectors),
+        }
+    }
+}
+
+/// The facts of the model folder `dir` that a trace needs: the layers, the width and the end tokens.
+fn model_facts(dir: &Path) -> Result<ModelFacts, String> {
+    if is_inkling2(dir) {
+        let facts = nagaya_mk_inkling2_bmg::lab::Facts::open(dir)?;
+        return Ok(ModelFacts {
+            layers: facts.layers,
+            width: facts.width,
+            ends: facts.ends,
+        });
+    }
+    let facts = Facts::open(dir)?;
+    Ok(ModelFacts {
+        layers: facts.layers,
+        width: facts.width,
+        ends: facts.ends,
+    })
+}
+
 /// The largest trace object. The job keeps the numbers of a trace in host memory, outside the ledger, until the reply
 /// ends (`docs/lab.md`, "The budget").
 pub const MAX_TRACE_BYTES: u64 = 1 << 30;
@@ -165,7 +244,7 @@ async fn project(State(council): Shared, Extension(id): Id, body: Body) -> Respo
 type Direction = (Option<u32>, Vec<f32>);
 
 /// The directions of a request, each with the layer that the response names.
-fn directions(served: &Served, lab: &Unembedding, request: &ProjectRequest) -> Result<Vec<Direction>, ServiceError> {
+fn directions(served: &Served, lab: &Head, request: &ProjectRequest) -> Result<Vec<Direction>, ServiceError> {
     let width = lab.width();
     match &request.vector {
         Value::String(text) => {
@@ -299,12 +378,7 @@ fn run(
             format!("nothing ran: top_k is {top_k}; send a count from 1 to {MAX_TOP_K}"),
         ));
     }
-    let lab = Unembedding::open(dir).map_err(|error| {
-        ServiceError::internal(format!(
-            "the lab cannot read the checkpoint of {}: {error}",
-            served.service.model()
-        ))
-    })?;
+    let lab = Head::open(served, dir)?;
     let mut chosen = directions(served, &lab, &request)?;
     if request.through == JLENS {
         let lens = lens()?;
@@ -472,17 +546,12 @@ async fn trace(State(council): Shared, Extension(id): Id, body: Body) -> Respons
         let lab = Arc::clone(&council);
         let plan = council
             .call(move || {
-                let facts = Facts::open(&dir).map_err(|error| {
+                let facts = model_facts(&dir).map_err(|error| {
                     ServiceError::internal(format!(
                         "the lab cannot read the model folder of {}: {error}",
                         checks.service.model()
                     ))
                 })?;
-                let facts = ModelFacts {
-                    layers: facts.layers,
-                    width: facts.width,
-                    ends: facts.ends,
-                };
                 let jlens = match members.lens.as_deref() {
                     Some(JLENS) => {
                         let lens = lab.lab_lens(&checks, &dir, "trace.lens")?;
@@ -842,9 +911,16 @@ async fn ensemble(State(council): Shared, Extension(id): Id, body: Body) -> Resp
             }
             _ => None,
         };
-        // The soft inputs read the rows of the embedding table of the checkpoint.
+        // The soft inputs read the rows of the embedding table of the checkpoint. They feed latent rows, so the model
+        // must take them; the family of Inkling 2 gives no latent record yet (engine-abi "The lab of Inkling 2").
         let soft = match soft_plan {
             Some(soft_plan) => {
+                if lab_served.service.takes_latent(1).is_err() {
+                    return Err(refuse(
+                        "soft",
+                        &format!("{model} takes no latent rows, so it takes no soft inputs; send no soft"),
+                    ));
+                }
                 let (soft_served, soft_dir) = (Arc::clone(&lab_served), dir.clone());
                 let table = council
                     .call(move || {
@@ -925,8 +1001,9 @@ impl Council {
             Failure::from(invalid(
                 "model",
                 format!(
-                    "nothing ran: the lab reads no weights of {name}; it projects models of the engine kind {}",
-                    crate::lfm3::KIND
+                    "nothing ran: the lab reads no weights of {name}; it projects models of the engine kinds {} and {}",
+                    crate::lfm3::KIND,
+                    crate::inkling2::KIND
                 ),
             ))
         })?;

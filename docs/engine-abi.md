@@ -1872,6 +1872,8 @@ segment.control: as for LFM3; an item acts after each run of each layer that its
 runs of the pass, and `c` its count of cycles. The rows are `f32`, except the picks.
 
 - `residual`: `[R][2304]`, the row after each run, in the order of the runs, after the control items of the run.
+  The tap declares the condition `each run` (`TAP_EACH_RUN`), so the council reads the row of each layer after its
+  last run (spec 11.17).
 - `fold`: `[2304]`, the input row of the head: the output residual over the block outputs and the last row, then the
   final norm. A latent step reads it.
 - `blocks`: `[c + 3][2304]`, the block outputs in the order that the model writes them. The first two are the

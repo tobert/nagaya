@@ -55,3 +55,30 @@ fn a_lab_table_on_another_kind_or_with_another_key_stops_the_start_with_the_reas
         assert!(error.contains(needle) && error.contains("one"), "{lab}: {error}");
     }
 }
+
+/// An Inkling 2 engine gives its folder to the lab, for `project` and `trace`. The profile names no J-Lens of it, so
+/// a lab table on it stops the start (`docs/lab.md`, "Inkling 2").
+#[test]
+fn an_inkling2_engine_gives_its_folder_and_takes_no_lab_table() {
+    let (dir, profile) = profile(&[("inkling2-mini", nagaya::inkling2::KIND, "")]);
+    let (folders, lenses) = lab_files(&profile).unwrap();
+    assert_eq!(
+        folders,
+        BTreeMap::from([("inkling2-mini".to_owned(), dir.path().to_path_buf())])
+    );
+    assert!(lenses.is_empty());
+    let (_dir, profile) = profile_with_lens();
+    let error = lab_files(&profile).unwrap_err();
+    assert!(
+        error.contains("inkling2-mini") && error.contains("[engines.lab]"),
+        "{error}"
+    );
+}
+
+fn profile_with_lens() -> (tempfile::TempDir, PlacementProfile) {
+    profile(&[(
+        "inkling2-mini",
+        nagaya::inkling2::KIND,
+        "[engines.lab]\njlens = \"/lenses/a.safetensors\"",
+    )])
+}

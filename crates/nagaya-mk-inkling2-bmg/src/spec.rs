@@ -771,7 +771,12 @@ pub fn limits(config: &Config, weights: u64) -> Limits {
             .iter()
             .map(|name| TapLimit {
                 name: (*name).to_owned(),
-                conditions: Vec::new(),
+                // The tap residual gives the row after each run (engine-abi "The lab of Inkling 2").
+                conditions: if *name == RESIDUAL_TAP {
+                    vec![nagaya_abi::TAP_EACH_RUN.to_owned()]
+                } else {
+                    Vec::new()
+                },
             })
             .collect(),
         checkpoint_grain: None,

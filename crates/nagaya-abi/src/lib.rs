@@ -319,6 +319,10 @@ pub struct TapLimit {
     pub conditions: Vec<String>,
 }
 
+/// The condition of the tap `residual` of an engine that gives the row after each run, not after each layer
+/// (engine-abi "The lab of Inkling 2"). The council then reads the row of each layer after its last run.
+pub const TAP_EACH_RUN: &str = "each run";
+
 /// One optional capability.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Capability {
