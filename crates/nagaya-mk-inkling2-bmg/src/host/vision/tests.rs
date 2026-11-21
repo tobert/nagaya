@@ -3,44 +3,54 @@
 use super::*;
 
 #[test]
-fn the_grid_counts_tokens_of_40_px_and_refuses_sizes_outside_the_rules() {
+fn the_grid_counts_tokens_of_40_px_and_refuses_sides_outside_40_to_4096_px() {
     assert_eq!(grid(213, 118), Ok(Grid { rows: 3, columns: 6 }));
     assert_eq!(grid(637, 479), Ok(Grid { rows: 12, columns: 16 }));
     assert_eq!(grid(40, 40), Ok(Grid { rows: 1, columns: 1 }));
-    assert_eq!(grid(41, 1), Ok(Grid { rows: 1, columns: 2 }));
-    assert_eq!(grid(1, 1), Ok(Grid { rows: 1, columns: 1 }));
+    assert_eq!(grid(41, 40), Ok(Grid { rows: 1, columns: 2 }));
     assert_eq!(grid(920, 880).map(Grid::tokens), Ok(506));
     assert_eq!(grid(4096, 40).map(Grid::tokens), Ok(103));
-    for (w, h) in [(0, 10), (10, 0), (4097, 40), (40, 4097)] {
+    // The largest image of the rule: 103 by 103 tokens, with no cap of tokens (engine-abi "Sizes").
+    assert_eq!(grid(4096, 4096).map(Grid::tokens), Ok(MAX_TOKENS));
+    assert_eq!(MAX_TOKENS, 10_609);
+    assert_eq!(grid(4032, 3024).map(Grid::tokens), Ok(7_676));
+    for (w, h) in [(0, 40), (40, 0), (39, 40), (40, 39), (1, 1), (4097, 40), (40, 4097)] {
         let e = grid(w, h).unwrap_err();
-        assert!(e.contains("1 to 4096 px"), "{e}");
+        assert!(e.contains("40 to 4096 px"), "{e}");
     }
-    let e = grid(1000, 1000).unwrap_err();
-    assert!(e.contains("625 image tokens") && e.contains("512"), "{e}");
     let g = Grid { rows: 3, columns: 6 };
     assert_eq!((g.tokens(), g.patches(), g.meta_grid()), (18, 72, [1, 6, 12]));
 }
 
 #[test]
 fn the_pixel_values_normalize_each_byte_and_pad_on_the_right_and_at_the_bottom() {
-    // A 41 x 1 image: two tokens. Pixel 40 of line 0 is the first pixel of token 1.
-    let mut rgb = vec![0u8; 41 * 3];
+    // A 41 x 40 image: two tokens. Pixel 40 of line 0 is the first pixel of token 1.
+    let (w, h) = (41, 40);
+    let mut rgb = vec![0u8; w * h * 3];
     rgb[..3].copy_from_slice(&[255, 0, 127]);
-    rgb[40 * 3..].copy_from_slice(&[10, 20, 30]);
-    let (g, px) = pixel_values(&rgb, 41, 1).unwrap();
+    rgb[40 * 3..41 * 3].copy_from_slice(&[10, 20, 30]);
+    let (g, px) = pixel_values(&rgb, w, h).unwrap();
     assert_eq!(g, Grid { rows: 1, columns: 2 });
     let square = TOKEN_PX * TOKEN_PX * 3;
     assert_eq!(px.len(), 2 * square);
     assert_eq!(&px[..3], &[1.0, -1.0, (127.0 - 127.5) / 127.5]);
     assert_eq!(&px[3..6], &[-1.0, -1.0, -1.0]);
     let pad = (-1.0f32 - 127.5) / 127.5;
-    // Token 0, line 1 is pad, and token 1 holds pixel 40 and then pad.
-    assert_eq!(px[3 * TOKEN_PX], pad);
+    // Token 0 holds pixels only, and token 1 holds column 40 and then pad.
+    assert!(px[..square].iter().all(|v| *v != pad));
+    let token1 = &px[square..];
     assert_eq!(
-        &px[square..square + 3],
+        &token1[..3],
         &[(10.0 - 127.5) / 127.5, (20.0 - 127.5) / 127.5, (30.0 - 127.5) / 127.5]
     );
-    assert!(px[square + 3..].iter().all(|v| *v == pad));
+    for line in 0..TOKEN_PX {
+        let row = &token1[3 * TOKEN_PX * line..3 * TOKEN_PX * (line + 1)];
+        assert!(row[..3].iter().all(|v| *v != pad), "line {line}: column 40 is a pixel");
+        assert!(
+            row[3..].iter().all(|v| *v == pad),
+            "line {line}: columns 41 to 79 are pad"
+        );
+    }
     assert!(pixel_values(&rgb, 0, 1).is_err());
 }
 

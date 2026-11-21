@@ -55,9 +55,15 @@ pub const LN_EPS: f64 = 1e-5;
 pub const ROPE_BASE: f32 = 10_000.0;
 /// The placeholder of an image token, `<|unused_200054|>` (`image_token_id` of the config).
 pub const IMAGE_TOKEN: u32 = 200_054;
-/// The largest side of an image in px, and the most image tokens of one image (engine-abi "The images of Inkling 2").
+/// The sides of an image in px that the family accepts: the range of the model card (engine-abi "Sizes"). The
+/// largest image has `MAX_TOKENS` image tokens, 103 by 103.
+pub const MIN_SIDE: usize = 40;
 pub const MAX_SIDE: usize = 4096;
-pub const MAX_TOKENS: usize = 512;
+pub const MAX_TOKENS: usize = MAX_SIDE.div_ceil(TOKEN_PX) * MAX_SIDE.div_ceil(TOKEN_PX);
+/// The most patch lines or columns of one image, and the positions of the rotary table: the class row at 0, then
+/// the lines `1..=MAX_PATCH_SIDE` of the patches.
+pub const MAX_PATCH_SIDE: usize = MERGE * MAX_SIDE.div_ceil(TOKEN_PX);
+pub const ROPE_POSITIONS: usize = MAX_PATCH_SIDE + 1;
 /// The value of a pad pixel on the scale of 0 to 255 (`fill_value`, `image_processing_inkling2.py:90`).
 pub const PAD_VALUE: f32 = -1.0;
 
@@ -85,26 +91,19 @@ impl Grid {
     }
 }
 
-/// The grid of an image of `width x height` px (`image_processing_inkling2.py:87`). A side outside 1 to 4,096 px,
-/// or more than 512 image tokens, is refused.
+/// The grid of an image of `width x height` px (`image_processing_inkling2.py:87`). A side outside 40 to 4,096 px
+/// is refused, as the model card advises. The council never resizes an image.
 pub fn grid(width: usize, height: usize) -> Result<Grid, String> {
-    if !(1..=MAX_SIDE).contains(&width) || !(1..=MAX_SIDE).contains(&height) {
+    if !(MIN_SIDE..=MAX_SIDE).contains(&width) || !(MIN_SIDE..=MAX_SIDE).contains(&height) {
         return Err(format!(
-            "the image is {width} x {height} px. Each side must be 1 to {MAX_SIDE} px. Send a smaller image."
+            "the image is {width} x {height} px. Each side must be {MIN_SIDE} to {MAX_SIDE} px. Send an image of \
+             that size."
         ));
     }
-    let g = Grid {
+    Ok(Grid {
         rows: height.div_ceil(TOKEN_PX),
         columns: width.div_ceil(TOKEN_PX),
-    };
-    if g.tokens() > MAX_TOKENS {
-        return Err(format!(
-            "the image is {width} x {height} px, which gives {} image tokens of {TOKEN_PX} px. The limit is \
-             {MAX_TOKENS} tokens. Send a smaller image.",
-            g.tokens()
-        ));
-    }
-    Ok(g)
+    })
 }
 
 /// The RGB bytes of an RGBA image over the checkerboard of the processor: squares of 8 px of 204 and 153
