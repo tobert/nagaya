@@ -411,7 +411,14 @@ Do the steps in this order. Each step ends with the checks green.
    vectors, latent steps, and `ensemble` over counts of cycles.
 9. **Images.** The ViT, the placeholders of an image and its sizes. Card gate against the reference.
    - The oracle stage and the host form are done (`617dfb6`): the logits of a prompt with two images within 2.2e-5
-     of the oracle. Open: the rows in the family library, the device ops of the tower, and the card gate.
+     of the oracle.
+   - The rows and the records of the family, and the device ops of the tower (`tests/xe_vision.rs`), are on main.
+   - The engine runs the tower in the pass (engine-abi "The choices of the pass"). It declares `tokens+rows` and
+     the term `vision`, and it holds the projector rows of the last image for the later blocks of its span. The
+     process gives the family its reader of objects. A council test with the fake engine checks the placeholders,
+     the records and the rows of a chat with an image part.
+   - Open: the card gate `tests/xe_images.rs` has not run yet. It checks the oracle prompt with two images in one
+     block, in a cut inside an image and in blocks of 64.
    - Each side of an image is 40 to 4,096 px, as the model card says, so an image has at most 10,609 tokens. Amy,
      2026-11-21: "yep, match the model card. use the 4096 rule". The council never resizes an image.
 10. **Drafts.** The MTP head drafts tokens, and a pass checks them. This step waits (question 3).

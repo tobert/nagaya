@@ -211,3 +211,46 @@ fn the_axes_hold_the_taps_and_the_weights_of_the_host_form_for_each_line_and_col
     };
     assert_eq!(axes(largest).len(), AXES_BYTES);
 }
+
+/// The images of a pass hold the tower of the largest image, its patch rows, taps and projector rows, and the media
+/// rows of a block (engine-abi "The choices of the pass", "The memory terms").
+#[test]
+fn the_buffers_of_a_pass_hold_the_largest_image_and_the_media_rows_of_a_block() {
+    assert_eq!(PassBufs::bytes(512), 1_870_588_096);
+    assert_eq!(PassBufs::bytes(512) - PassBufs::bytes(1), (511 * HIDDEN * 4) as u64);
+    for block in [1, 7, 512] {
+        let mut count = Count::default();
+        let b = PassBufs::new(&mut |bytes| count.alloc(bytes), block);
+        assert_eq!(count.bytes as u64, PassBufs::bytes(block), "a block of {block}");
+        assert_eq!(b.tower.max_tokens, MAX_TOKENS);
+    }
+    let mut next = 0x1000u64;
+    let b = PassBufs::new(
+        &mut |bytes| {
+            let at = next;
+            next += bytes.next_multiple_of(64) as u64;
+            at
+        },
+        512,
+    );
+    let row = (HIDDEN * 4) as u64;
+    // Rows 5 to 9 of the held image go to rows 2 to 6 of the media rows, then over rows 2 to 6 of the embedding.
+    let words = 4 * HIDDEN as u32;
+    let take = b.take(5..9, 2);
+    assert_eq!(
+        (take.opcode, take.a, take.c, take.n),
+        (OP_COPY, b.out + 5 * row, b.media + 2 * row, words)
+    );
+    let place = b.place(0x9000_0000, 2..6);
+    assert_eq!(
+        (place.opcode, place.a, place.c, place.n),
+        (OP_COPY, b.media + 2 * row, 0x9000_0000 + 2 * row, words)
+    );
+}
+
+#[test]
+#[should_panic(expected = "do not fit the media rows of a block of 4 from row 2")]
+fn a_take_past_the_media_rows_is_a_defect_of_the_caller() {
+    let b = PassBufs::new(&mut |_| 0, 4);
+    b.take(0..3, 2);
+}

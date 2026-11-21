@@ -238,7 +238,8 @@ fn the_limits_hold_the_terms_and_declare_no_loop_no_control_and_no_tap() {
         })
     );
     assert!(l.taps.is_empty());
-    assert_eq!(l.inputs, Inputs::Tokens);
+    // Both models hold the tower, so both take the rows of images (engine-abi "The choices of the pass").
+    assert_eq!(l.inputs, Inputs::TokensAndRows);
     assert_eq!((l.max_segments, l.max_pass_inputs, l.max_logit_rows), (1, 512, 16));
     assert_eq!(l.feed, Some(FeedRule { block: 512 }));
     assert!(!l.segments_exact && l.checkpoint_grain.is_none());
@@ -260,12 +261,13 @@ fn the_limits_hold_the_terms_and_declare_no_loop_no_control_and_no_tap() {
         ]
     );
     let term = |l: &Limits, name: &str| l.memory.mandatory.iter().find(|t| t.name == name).unwrap().clone();
-    assert_eq!(l.memory.mandatory.len(), 4);
+    assert_eq!(l.memory.mandatory.len(), 5);
     assert_eq!(term(&l, "weights").bytes, 18_880_455_680);
+    assert_eq!(term(&l, "vision").bytes, 636_825_472);
     assert_eq!(term(&l, "kv").bytes, 2 * 3_157_950_464 + 18_190_336_000);
     assert_eq!(term(&l, "pinned").bytes, pinned_bytes());
     assert_eq!(term(&l, "pinned").tier, Tier::Host);
-    for name in ["weights", "kv", "work"] {
+    for name in ["weights", "vision", "kv", "work"] {
         assert_eq!(term(&l, name).tier, Tier::Device(0), "{name}");
     }
     // The work is the buffers of a block, with 16 logit rows of the 200,064 rows of the head, and the ring. Only the
@@ -292,9 +294,14 @@ fn the_limits_hold_the_terms_and_declare_no_loop_no_control_and_no_tap() {
         },
         1,
     );
+    // The images of a pass add the tower of the largest image and the media rows of a block.
     assert_eq!(
         term(&short, "work").bytes - term(&small, "work").bytes,
-        bufs_bytes(512) - bufs_bytes(1)
+        bufs_bytes(512) - bufs_bytes(1) + crate::vision::PassBufs::bytes(512) - crate::vision::PassBufs::bytes(1)
+    );
+    assert_eq!(
+        term(&short, "work").bytes,
+        bufs_bytes(512) + crate::vision::PassBufs::bytes(512) + ring_device_bytes(32_768)
     );
     // A reserve of 48 adds its parts and its bytes.
     let five = limits(
@@ -629,4 +636,94 @@ fn a_slot_runs_the_count_of_cycles_that_fed_it() {
     assert_eq!(held.cycles[0], None);
     held.set_n(0, 0);
     assert_eq!(held.cycles[0], None);
+}
+
+/// An image segment of `tokens` from `from` with the record and the rows of `spans` (engine-abi "The choices of the
+/// pass").
+fn image_segment(from: u64, tokens: &[u32], spans: &[crate::media::Span]) -> Segment {
+    let mut meta = Vec::new();
+    let mut rows = 0;
+    for span in spans {
+        meta.extend(
+            nagaya_text_inkling2::media::ImageRows {
+                grid: span.grid,
+                values: Vec::new(),
+            }
+            .record(span.first as usize),
+        );
+        rows += span.bytes();
+    }
+    Segment {
+        inputs: SegmentInputs::TokensAndRows {
+            tokens: tokens.to_vec(),
+            rows: vec![0; rows],
+        },
+        meta,
+        ..segment(0, from, tokens, &[])
+    }
+}
+
+#[test]
+fn a_pass_takes_the_rows_and_the_records_of_its_images() {
+    use crate::media::{IMAGE_TOKEN as P, Span};
+    use nagaya_text_inkling2::media::Grid;
+    let mut held = Held::new(&[4096], DEFAULT_EXTRA_RUNS);
+    // An image of 2 by 3 tokens at positions 2 to 8, in blocks of 4 and 6.
+    let image = Span {
+        grid: Grid { rows: 2, columns: 3 },
+        first: 2,
+    };
+    let block = held
+        .check_pass(&[image_segment(0, &[7, 7, P, P], &[image])], 512)
+        .unwrap();
+    assert_eq!(block.spans.len(), 1);
+    assert_eq!((block.spans[0].take.clone(), block.spans[0].block_row), (0..2, 2));
+    held.ran(&block);
+    let block = held
+        .check_pass(&[image_segment(4, &[P, P, P, P, 7, 7], &[image])], 512)
+        .unwrap();
+    assert_eq!((block.spans[0].take.clone(), block.spans[0].block_row), (2..6, 0));
+    held.ran(&block);
+    // A text block has no spans.
+    let text = held.check_pass(&[segment(0, 10, &[7], &[])], 512).unwrap();
+    assert!(text.spans.is_empty());
+    for (segments, why) in [
+        (
+            vec![segment(0, 10, &[7, P], &[])],
+            "position 11 holds the image placeholder",
+        ),
+        (vec![image_segment(10, &[7, P], &[])], "has rows and no meta"),
+        (
+            vec![Segment {
+                inputs: SegmentInputs::Rows(vec![0; 4]),
+                ..segment(0, 10, &[7], &[])
+            }],
+            "rows and no tokens",
+        ),
+        (
+            vec![image_segment(
+                10,
+                &[7, P],
+                &[Span {
+                    grid: Grid { rows: 1, columns: 1 },
+                    first: 10,
+                }],
+            )],
+            "position 10 is in media record 0",
+        ),
+    ] {
+        let error = held.check_pass(&segments, 512).unwrap_err();
+        assert!(error.contains(why), "{why}: {error}");
+    }
+    let mut bad = image_segment(
+        10,
+        &[7, P],
+        &[Span {
+            grid: Grid { rows: 1, columns: 1 },
+            first: 11,
+        }],
+    );
+    bad.meta[0] = 2;
+    let error = held.check_pass(&[bad], 512).unwrap_err();
+    assert!(error.contains("the kind 2"), "{error}");
 }

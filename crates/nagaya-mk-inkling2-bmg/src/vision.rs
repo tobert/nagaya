@@ -5,6 +5,8 @@
 //! puts the patch rows of an image at `rows`, runs the tasks, and reads `T` projector rows of 2,304 values at `out`.
 //! The tower of each image runs alone, so an image has the same bits in a call of one image or of many.
 
+use std::ops::Range;
+
 use nagaya_mk_bmg::protocol::MkTaskDescriptor;
 use nagaya_mk_bmg::safetensors::SafeTensorsView;
 use nagaya_mk_bmg::tasks;
@@ -14,6 +16,7 @@ use crate::host::vision::{
     GRID, Grid, HEAD_DIM, HEADS, LAYERS, LN_EPS, MAX_PATCH_SIDE, MAX_TOKENS, MERGE, MLP, PATCH_VALUES, PROJ_HIDDEN,
     ROPE_POSITIONS, WIDTH, axis_taps, rope_angle,
 };
+use crate::spec::rounded;
 use crate::weights::Upload;
 
 /// The frequencies of one axis of a head: the columns of the rotary table.
@@ -264,6 +267,86 @@ impl Bufs {
             m,
             max_tokens,
         }
+    }
+}
+
+/// The device memory of the images of a pass (engine-abi "The choices of the pass"): the buffers of the tower, the
+/// patch rows, the taps and the projector rows of one image of the largest size, and the media rows of a block.
+#[derive(Clone, Copy, Debug)]
+pub struct PassBufs {
+    pub tower: Bufs,
+    /// The patch rows of one image, `f32`.
+    pub rows: u64,
+    /// The taps of the position embedding of one image ([`axes`]).
+    pub axes: u64,
+    /// The projector rows of one image, `f32 [T][2304]`: the rows that `media::HeldRows` names.
+    pub out: u64,
+    /// The media rows of a block, `f32 [max_block][2304]`: the projector rows of the placeholders of the block.
+    pub media: u64,
+    pub max_block: usize,
+}
+
+impl PassBufs {
+    /// The bytes of each buffer for a block of `max_block` tokens, after the buffers of the tower: the patch rows, the
+    /// taps, the projector rows and the media rows.
+    fn sizes(max_block: usize) -> [usize; 4] {
+        [
+            rows_bytes(MAX_TOKENS),
+            AXES_BYTES,
+            out_bytes(MAX_TOKENS),
+            max_block * HIDDEN * 4,
+        ]
+    }
+
+    /// The device bytes of all the buffers for a block of `max_block` tokens: a part of the term `work`.
+    pub fn bytes(max_block: usize) -> u64 {
+        let tower: usize = Bufs::sizes(MAX_TOKENS).iter().map(|b| rounded(*b)).sum();
+        let rest: usize = Self::sizes(max_block).iter().map(|b| rounded(*b)).sum();
+        (tower + rest) as u64
+    }
+
+    /// The buffers from `z`, which gives device memory of zeros.
+    pub fn new(z: &mut dyn FnMut(usize) -> u64, max_block: usize) -> Self {
+        let tower = Bufs::new(z, MAX_TOKENS);
+        let [rows, axes, out, media] = Self::sizes(max_block).map(&mut *z);
+        Self {
+            tower,
+            rows,
+            axes,
+            out,
+            media,
+            max_block,
+        }
+    }
+
+    /// The copy of the projector rows `take` of the held image into the media rows from `block_row`.
+    pub fn take(&self, take: Range<usize>, block_row: usize) -> MkTaskDescriptor {
+        assert!(
+            !take.is_empty() && block_row + take.len() <= self.max_block,
+            "the rows {take:?} do not fit the media rows of a block of {} from row {block_row}",
+            self.max_block
+        );
+        let row = (HIDDEN * 4) as u64;
+        tasks::copy(
+            self.out + take.start as u64 * row,
+            self.media + block_row as u64 * row,
+            (take.len() * HIDDEN) as u32,
+        )
+    }
+
+    /// The copy of the media rows `rows` of the block over the rows of the block in `x`, the normed embedding.
+    pub fn place(&self, x: u64, rows: Range<usize>) -> MkTaskDescriptor {
+        assert!(
+            !rows.is_empty() && rows.end <= self.max_block,
+            "the rows {rows:?} are not rows of a block of {}",
+            self.max_block
+        );
+        let row = (HIDDEN * 4) as u64;
+        tasks::copy(
+            self.media + rows.start as u64 * row,
+            x + rows.start as u64 * row,
+            (rows.len() * HIDDEN) as u32,
+        )
     }
 }
 
