@@ -13,6 +13,7 @@ members = [
     "crates/nagaya-mk-sdxl-bmg",
     "crates/nagaya-mk-embeddinggemma2-bmg",
     "crates/nagaya-mk-lfm3-bmg",
+    "crates/nagaya-mk-inkling2-bmg",
     "crates/nagaya-jinja",
     "crates/nagaya-text-qwen38",
     "crates/nagaya-text-gemma4",

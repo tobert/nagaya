@@ -1,0 +1,12 @@
+[package]
+name = "nagaya-mk-inkling2-bmg"
+version = "0.1.0"
+edition = "2024"
+
+# The feature `xe` will load the engine on a B70 card. It holds nothing yet: the weight formats need no card.
+[features]
+xe = []
+
+[dev-dependencies]
+# The tests read the fixture and the header of the checkpoint.
+serde_json = { version = "1.0.154", features = ["float_roundtrip", "preserve_order"] }
