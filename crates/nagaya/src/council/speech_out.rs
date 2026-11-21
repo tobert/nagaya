@@ -626,6 +626,21 @@ impl Service {
             )
             .into());
         }
+        // A frame runs the default count of cycles, so another count would leave its position with the state of
+        // another model (spec 11.17).
+        if let (Some(count), Some(limit)) = (steer.cycles, self.cycles())
+            && count != limit.default
+        {
+            return Err(Invalid::param(
+                "cycles",
+                format!(
+                    "nothing ran: a reply with audio runs {} cycles only, the default; send cycles with a text reply, \
+                     or no cycles with an output",
+                    limit.default
+                ),
+            )
+            .into());
+        }
         let root = steer.root;
         let recipes = super::plan_recipes(root, &built)?;
         let cuts = self.cuts(root, context, &built)?;
@@ -703,11 +718,12 @@ impl Service {
         let prompt = then.prompt.len();
         let seed = then.settings.seed;
         let shared = Arc::clone(&self.shared);
+        // `prepare_speech` refused each count but the default, so the reply runs the default count of cycles.
         let job = |tx| {
             ContextBody::with(shared, tokens, recipes.clone(), room, then, tx)
                 .media(media)
                 .cuts(cuts)
-                .control(root, control, None)
+                .control(root, control, None, self.cycles().map(|limit| limit.default))
         };
         let finished = self.run_context(job, schedule, None)?;
         let then = finished.then;

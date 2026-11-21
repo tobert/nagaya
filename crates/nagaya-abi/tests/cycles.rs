@@ -3,7 +3,8 @@
 
 use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{
-    Capability, CyclesLimit, Engine, LayerLoop, LayerLoopLimit, Limits, OutputsWanted, Segment, SegmentInputs, State,
+    Capability, CyclesLimit, Engine, LayerLoop, LayerLoopLimit, Limits, OutputsWanted, PassErrorKind, Segment,
+    SegmentInputs, State,
 };
 
 fn limit() -> CyclesLimit {
@@ -123,4 +124,45 @@ fn a_segment_names_a_loop_or_cycles_and_not_both() {
     });
     let message = limits.check_segment_cycles(&[both]).unwrap_err();
     assert!(message.contains("a loop and cycles"), "{message}");
+}
+
+/// The cycles of the fake: 1 to 5 over layer 1 of its 2, 3 by default.
+fn fake_limit() -> CyclesLimit {
+    CyclesLimit {
+        min: 1,
+        max: 5,
+        default: 3,
+        start: 1,
+        end: 2,
+    }
+}
+
+/// The logit row of position 2 of the three tokens of `segment`, at a count of cycles.
+fn logits(mut fake: FakeAlways, cycles: Option<u8>) -> Vec<u8> {
+    let out = fake.pass(&[segment(0, cycles)], &[]).unwrap();
+    out.outputs.into_iter().find(|o| o.name == "logits").unwrap().bytes
+}
+
+#[test]
+fn the_fake_declares_cycles_and_its_default_count_is_the_plain_pass() {
+    let fake = || FakeAlways::new().with_vocab(64).with_cycles(fake_limit());
+    let limits = fake().limits();
+    assert_eq!(limits.check(), Ok(()));
+    assert!(limits.capabilities.contains(&Capability::Cycles));
+    assert_eq!(limits.cycles, Some(fake_limit()));
+    let plain = logits(FakeAlways::new().with_vocab(64), None);
+    assert_eq!(logits(fake(), None), plain, "no count runs the default, the plain pass");
+    assert_eq!(logits(fake(), Some(3)), plain, "the default count is the plain pass");
+    let others: Vec<Vec<u8>> = [1, 2, 4, 5].into_iter().map(|n| logits(fake(), Some(n))).collect();
+    for (i, row) in others.iter().enumerate() {
+        assert_ne!(*row, plain, "count {i} of the others is a model of its own");
+        assert!(
+            others[i + 1..].iter().all(|other| other != row),
+            "each count is its own"
+        );
+    }
+    assert_eq!(logits(fake(), Some(5)), others[3], "the same count gives the same bits");
+    let error = fake().pass(&[segment(0, Some(6))], &[]).unwrap_err();
+    assert_eq!(error.kind, PassErrorKind::Refused, "{}", error.message);
+    assert!(error.message.contains("1 to 5"), "{}", error.message);
 }

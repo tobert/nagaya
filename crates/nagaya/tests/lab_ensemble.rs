@@ -34,7 +34,8 @@ fn lab() -> Lab {
 }
 
 /// A council on the toy with `segments` segments in a pass. With more than one, the toy joins its decode rows, as the
-/// Qwen3.8 engine does: it declares `segments_exact` and no feed rule. The toy runs layer loops with a reserve of 4.
+/// Qwen3.8 engine does: it declares `segments_exact` and no feed rule. The toy runs layer loops with a reserve of 4,
+/// and 1 to 5 cycles.
 fn lab_of(segments: u32) -> Lab {
     let log = ControlLog::default();
     let factory = TermFactory {
@@ -42,6 +43,13 @@ fn lab_of(segments: u32) -> Lab {
         log: log.clone(),
         segments,
         layer_loops: Some(4),
+        cycles: Some(nagaya_abi::CyclesLimit {
+            min: 1,
+            max: 5,
+            default: 3,
+            start: 1,
+            end: 2,
+        }),
         ..TermFactory::toy()
     };
     let fixture = Fixture::with_factory(factory, 1 << 20, None, ServiceConfig::new("toy", ENGINE));
@@ -316,6 +324,12 @@ fn each_fault_is_a_400_that_names_its_member() {
             let mut looped = one();
             looped["loop"] = json!({"start": 0, "end": 2, "count": 2});
             ensemble(vec![one(), looped], "logprob_sum")
+        }),
+        // A pass runs one count of cycles (spec 11.17).
+        ("contexts[1].cycles", {
+            let mut counted = one();
+            counted["cycles"] = json!(5);
+            ensemble(vec![one(), counted], "logprob_sum")
         }),
     ];
     for (member, body) in cases {

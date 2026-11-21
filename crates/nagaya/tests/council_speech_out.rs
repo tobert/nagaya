@@ -245,7 +245,17 @@ struct SpeakingFactory(Shared);
 impl SpeakingFactory {
     fn engine(&self) -> Speaking {
         Speaking {
-            inner: FakeAlways::with_slots(council_support::roomy_slots(2)).with_vocab(gogi_toy::VOCAB),
+            // The engine runs 1 to 5 cycles, 3 by default, so a reply with audio meets a count (spec 11.17). The
+            // default count changes no bit of the fake.
+            inner: FakeAlways::with_slots(council_support::roomy_slots(2))
+                .with_vocab(gogi_toy::VOCAB)
+                .with_cycles(nagaya_abi::CyclesLimit {
+                    min: 1,
+                    max: 5,
+                    default: 3,
+                    start: 1,
+                    end: 2,
+                }),
             plan: Arc::clone(&self.0),
             tokens: HashMap::new(),
             codec_frames: HashMap::new(),
@@ -861,4 +871,24 @@ fn a_reply_with_audio_refuses_a_layer_loop() {
         }
         other => panic!("a loop with audio: {:?}", other.err()),
     }
+}
+
+/// A reply with audio runs the default count of cycles only (spec 11.17). A frame feeds its position at the default,
+/// so another count would leave the position with the state of another model.
+///
+/// Falsified by a service that takes another count: the plan of the speech is made.
+#[test]
+fn a_reply_with_audio_refuses_a_count_of_cycles_but_the_default() {
+    let rig = rig();
+    let mut counted = request(None, 8, 1);
+    counted.context.cycles = Some(5);
+    match rig.service.prepare_speech(&counted) {
+        Err(ServiceError::Invalid(invalid)) => {
+            assert_eq!(invalid.param.as_deref(), Some("cycles"));
+            assert!(invalid.message.contains("audio"), "{}", invalid.message);
+        }
+        other => panic!("cycles 5 with audio: {:?}", other.err()),
+    }
+    counted.context.cycles = Some(3);
+    assert!(rig.service.prepare_speech(&counted).is_ok(), "the default count");
 }

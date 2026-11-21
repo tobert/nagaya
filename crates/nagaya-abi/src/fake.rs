@@ -15,10 +15,10 @@ use std::os::unix::fs::FileExt;
 
 use crate::{
     Arena, ArenaFd, ArenaPart, CONTROL_TERM, Capability, ChainLimits, CheckStrength, Control, ControlItem,
-    ControlLimit, ControlOp, Coverage, CoverageSpan, Determinism, Dtype, ElasticTerm, Engine, Identity, Inputs, Kind,
-    LayerLoop, LayerLoopLimit, Lifetime, Limits, MandatoryTerm, MemoryLimits, Output, PartError, PartKind, PartLimits,
-    Parts, PassError, PassErrorKind, PassOut, PassStatus, Seal, SealError, Segment, SegmentInputs, SlotId, SlotLimit,
-    Slots, Stage, State, Tap, TapLimit, Tier, WriteResult,
+    ControlLimit, ControlOp, Coverage, CoverageSpan, CyclesLimit, Determinism, Dtype, ElasticTerm, Engine, Identity,
+    Inputs, Kind, LayerLoop, LayerLoopLimit, Lifetime, Limits, MandatoryTerm, MemoryLimits, Output, PartError,
+    PartKind, PartLimits, Parts, PassError, PassErrorKind, PassOut, PassStatus, Seal, SealError, Segment,
+    SegmentInputs, SlotId, SlotLimit, Slots, Stage, State, Tap, TapLimit, Tier, WriteResult,
 };
 
 /// The layers of a vector in the control table of the fake (engine-abi "Control vectors").
@@ -228,6 +228,16 @@ impl FakeAlways {
             count: 4,
             extra_runs,
         });
+        self
+    }
+
+    /// Give the engine the cycles of `limit` (engine-abi "Inkling 2"). A count other than `default` changes the state
+    /// after each token by a function of the count and the span, as a layer loop does. The default count, and a segment
+    /// with no count, change no bit, so they give the bits of a fake without cycles.
+    pub fn with_cycles(mut self, limit: CyclesLimit) -> Self {
+        let limits = &mut self.0.limits;
+        limits.capabilities.push(Capability::Cycles);
+        limits.cycles = Some(limit);
         self
     }
 
@@ -633,7 +643,7 @@ impl Fake {
                 });
             }
             let mut state_bytes = self.state_bytes(segment.state);
-            let steer = self.steer(&segment.control, segment.layer_loop);
+            let steer = self.steer(&segment.control, segment.layer_loop, segment.cycles);
             let mut logit_outputs = Vec::new();
             let mut residual = Vec::new();
             let mut lens = Vec::new();
@@ -736,11 +746,11 @@ impl Fake {
         })
     }
 
-    /// The change of the state after each token for a control list and a layer loop: a mix of the vector, the
-    /// operation and the strength of each item that changes bits, in order, then of the loop. A list of adds and
-    /// ablates of strength 0 with no loop, or a loop of `count` 1, gives `None`, so it changes no bit (engine-abi
-    /// "Control vectors", "Layer loops").
-    fn steer(&self, items: &[ControlItem], layer_loop: Option<LayerLoop>) -> Option<[u8; 16]> {
+    /// The change of the state after each token for a control list, a layer loop and a count of cycles: a mix of the
+    /// vector, the operation and the strength of each item that changes bits, in order, then of the loop, then of the
+    /// count. A list of adds and ablates of strength 0 with no loop, a loop of `count` 1, and the default count of
+    /// cycles give `None`, so they change no bit (engine-abi "Control vectors", "Layer loops", "Inkling 2").
+    fn steer(&self, items: &[ControlItem], layer_loop: Option<LayerLoop>, cycles: Option<u8>) -> Option<[u8; 16]> {
         let mut changed = false;
         let mut hash = 0x7374_6565_7200_u64;
         let width = self.limits.control.map_or(1, |limit| limit.width as usize).max(1);
@@ -788,6 +798,17 @@ impl Fake {
                 ^ u64::from(lp.start) << 32
                 ^ u64::from(lp.end) << 16
                 ^ u64::from(lp.count));
+        }
+        // The pass checked the count against the limit, so a count here has a limit.
+        if let Some(limit) = self.limits.cycles
+            && limit.resolve(cycles) != limit.default
+        {
+            changed = true;
+            hash = mix(hash
+                ^ 0x6379_636c_0000_0000
+                ^ u64::from(limit.start) << 32
+                ^ u64::from(limit.end) << 16
+                ^ u64::from(limit.resolve(cycles)));
         }
         if !changed {
             return None;
