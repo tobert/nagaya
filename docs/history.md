@@ -1,7 +1,7 @@
 # History
 
 This doc keeps the finished milestones of the nagaya, as `AGENTS.md` wrote them, with what each one built and its
-merges. `AGENTS.md` keeps their open steps and the full text of the milestone that runs now. The nagaya is
+merges. `docs/milestones.md` keeps their open steps and the full text of the milestones that run now. The nagaya is
 the exokernel of `docs/spec.md`; these milestones built its reference implementation, in this order.
 
 The design came on 2026-10-17 from a conversation with Amy. The code began with mk's engine on 2026-10-18

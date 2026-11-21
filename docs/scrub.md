@@ -1,8 +1,8 @@
 # The scrub for a public repository
 
-This file is the work list of milestone 31 (`AGENTS.md`). It holds the inventory of step 1, the table of names, and
-the decisions that steer steps 2 to 8. It names the old identifiers, because step 2 removes them. Remove this file
-before the new root commit of step 8.
+This file is the work list of milestone 31 (`docs/milestones.md`). It holds the inventory of step 1, the table of
+names, and the decisions that steer steps 2 to 8. It names the old identifiers, because step 2 removes them. Remove
+this file before the new root commit of step 8.
 
 The counts are from `git grep` on `main` at `22f5804`, on 2026-11-17, without `docs/history.md`. A line can hold
 more than one class. The script is `git grep -c -P <pattern>`, summed over files.
@@ -120,7 +120,7 @@ of the new root commit. No public file cites them.
   rule came from them.
 - `docs/scrub.md`: this file.
 
-`AGENTS.md` is the instruction file of the agents. It holds the milestones, the lab and the history of decisions.
+`AGENTS.md` is the instruction file of the agents. It holds the rules, the lab and the history of decisions.
 Step 7 writes a public version of it, or step 8 leaves it out.
 
 ## Open
