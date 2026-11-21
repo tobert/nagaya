@@ -260,3 +260,28 @@ fn thinking_chooses_the_effort_of_the_template() {
     assert!(off.contains("Thinking effort level: 0<|end_message|>"), "{off}");
     assert!(on.contains("Thinking effort level: 0.9<|end_message|>"), "{on}");
 }
+
+/// A latent position of Inkling 2 holds `<|endoftext|>`, the `pad_token_id` of `generation_config.json`, and its
+/// record is the kind 5 with the width of a row (engine-abi "The lab of Inkling 2", "Latent rows").
+#[test]
+fn a_latent_span_holds_the_pad_token_and_a_record_of_kind_5() {
+    if absent() {
+        return;
+    }
+    let fam = Inkling2Family::from_dir(&mini_dir()).unwrap();
+    let (token, record) = fam.latent_record(7, 3, 2304).expect("the family takes latent rows");
+    assert_eq!(token, 199_999);
+    let word = |at: usize| u32::from_le_bytes(record[at..at + 4].try_into().unwrap());
+    assert_eq!(record.len(), 32);
+    assert_eq!((word(0), word(4)), (5, 3), "the kind and the count");
+    assert_eq!(
+        u64::from_le_bytes(record[8..16].try_into().unwrap()),
+        7,
+        "the first position"
+    );
+    assert_eq!(
+        (word(16), word(20), word(24), word(28)),
+        (2304, 0, 0, 0),
+        "the width and three 0"
+    );
+}

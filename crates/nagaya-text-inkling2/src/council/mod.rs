@@ -515,6 +515,21 @@ impl Family for Inkling2Family {
         crate::media::MEDIA_INPUTS.iter().map(|m| (*m).to_owned()).collect()
     }
 
+    /// A latent position holds `<|endoftext|>`, the `pad_token_id` of `generation_config.json` (engine-abi "The lab of
+    /// Inkling 2"). The record is the kind 5, the count, the first position, then the width of a row and three 0.
+    fn latent_record(&self, first: usize, count: usize, width: usize) -> Option<(u32, Vec<u8>)> {
+        let pad = self.tokenizer().token_id(LATENT_PLACEHOLDER)?;
+        let word = |value: usize| u32::try_from(value).expect("a latent span fits in 32 bits");
+        let mut record = Vec::with_capacity(32);
+        record.extend(5u32.to_le_bytes());
+        record.extend(word(count).to_le_bytes());
+        record.extend((first as u64).to_le_bytes());
+        for value in [width, 0, 0, 0] {
+            record.extend(word(value).to_le_bytes());
+        }
+        Some((pad, record))
+    }
+
     fn media_rows(&self, rendering: &Rendering) -> Result<Vec<nagaya_council::family::MediaInput>, FamilyError> {
         rendering.media.iter().map(|span| self.media_input(span)).collect()
     }
@@ -582,3 +597,6 @@ fn expand(rendering: Rendering, parts: &[ImagePart], grids: &[crate::media::Grid
         media,
     })
 }
+
+/// The placeholder of a latent position: `<|endoftext|>`, the `pad_token_id` of `generation_config.json`.
+pub const LATENT_PLACEHOLDER: &str = "<|endoftext|>";
