@@ -122,6 +122,11 @@
 #define OP_VISION_ATTN      102
 #define VISION_ATTN_TILE    4   // query rows of one head for each subgroup of OP_VISION_ATTN; at most 16
 #endif
+#ifdef MK_INKLING2
+// The ops of the Inkling 2 binary (kernels/inkling2_ops.cl): opcodes 140 to 169.
+#define OP_EXPAND_NVFP4     140
+#define OP_EXPAND_MXFP8     141
+#endif
 #define NUM_EXPERTS         128
 #define TOP_K               8
 #define XMX_TOKENS          32  // tokens per XMX work item: four dpas tiles of 8 rows
@@ -574,6 +579,10 @@ inline uint chunk_expert(__local const uint* chunk, uint n_active, uint c) {
     }
     return lo;
 }
+
+#ifdef MK_INKLING2
+#include "inkling2_helpers.cl"
+#endif
 
 __attribute__((intel_reqd_sub_group_size(16)))
 __kernel void mk_persistent_interpreter(

@@ -3,9 +3,12 @@ name = "nagaya-mk-inkling2-bmg"
 version = "0.1.0"
 edition = "2024"
 
-# The feature `xe` will load the engine on a B70 card. It holds nothing yet: the weight formats need no card.
+# The feature `xe` builds the kernels of the card and links Level Zero. With no feature, the crate needs no card.
 [features]
-xe = []
+xe = ["nagaya-mk-bmg/xe"]
+
+[dependencies]
+nagaya-mk-bmg = { version = "0.1.0", path = "../nagaya-mk-bmg" }
 
 [dev-dependencies]
 # The tests read the fixture and the header of the checkpoint.

@@ -7,3 +7,4 @@
 //! in `formats` give the same bits. A kernel of the card checks itself against them.
 
 pub mod formats;
+pub mod repack;

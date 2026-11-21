@@ -16,6 +16,7 @@ fn main() {
     println!("cargo:rerun-if-changed=kernels/lfm3_speech_ops.cl");
     println!("cargo:rerun-if-changed=kernels/lfm3_vision_ops.cl");
     println!("cargo:rerun-if-changed=kernels/inkling2_ops.cl");
+    println!("cargo:rerun-if-changed=kernels/inkling2_helpers.cl");
     if std::env::var_os("CARGO_FEATURE_XE").is_none() {
         return;
     }

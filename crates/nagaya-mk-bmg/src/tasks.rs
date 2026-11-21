@@ -1268,3 +1268,38 @@ pub fn vision_conv(bcx: u64, w: u64, y: u64, n: u32, d: u32, grid_h: u32, grid_w
         ..task(OP_VISION_CONV)
     }
 }
+
+/// The `bf16` bits of the repacked NVFP4 planes `codes` and `scales` of `rows` rows and `cols` columns, into `y`, with
+/// the factor of the expert. The rows of `y` are in the order of the planes (`OP_EXPAND_NVFP4`).
+pub fn expand_nvfp4(codes: u64, scales: u64, y: u64, rows: u32, cols: u32, factor: f32) -> MkTaskDescriptor {
+    assert!(
+        rows.is_multiple_of(16) && cols.is_multiple_of(16),
+        "OP_EXPAND_NVFP4 reads whole tiles of 16 rows and steps of 16 columns, and it got {rows} by {cols}"
+    );
+    MkTaskDescriptor {
+        a: codes,
+        b: scales,
+        c: y,
+        m: rows,
+        k: cols,
+        p0: factor.to_bits(),
+        ..task(OP_EXPAND_NVFP4)
+    }
+}
+
+/// The `bf16` bits of the repacked MXFP8 planes `values` and `scales` of `rows` rows and `cols` columns, into `y`
+/// (`OP_EXPAND_MXFP8`).
+pub fn expand_mxfp8(values: u64, scales: u64, y: u64, rows: u32, cols: u32) -> MkTaskDescriptor {
+    assert!(
+        rows.is_multiple_of(16) && cols.is_multiple_of(32),
+        "OP_EXPAND_MXFP8 reads whole tiles of 16 rows and scales of 32 columns, and it got {rows} by {cols}"
+    );
+    MkTaskDescriptor {
+        a: values,
+        b: scales,
+        c: y,
+        m: rows,
+        k: cols,
+        ..task(OP_EXPAND_MXFP8)
+    }
+}
