@@ -368,6 +368,14 @@ Do the steps in this order. Each step ends with the checks green.
 5. **The text engine, 3 cycles.** The ops: the relative bias, the sinks, the clips, the log scale, the convolutions,
    the attention residuals, the gates, the routing and the experts. Prefill, decode and snapshots. Card gates
    against the oracle, and two plans with equal bits.
+   - The host forward is done (`00940c5`): within 3.3e-5 of the `f32` oracle on both models, 1 to 5 cycles.
+   - The device ops are done, and each card gate compares an op with its host form. The gaps: the experts
+     (`ee07cbc`) 7.6e-7, the layer parts (`348c403`) 5e-7 at most, the attention (`556f81b`) 1.3e-5 at
+     most. Each op gives the
+     same bits in any block, and a decode step gives the bits of its position in a block.
+   - The host spec is done (`b0655d5`): a slot of 32,768 positions takes 2.94 GiB, and the weights 18.9 GB.
+   - The ABI has `segment.cycles` (`ce9f45a`). The engine refuses a count until step 7.
+   - Open: the ring of a pass, the upload, `impl Engine` and the gates of the whole engine.
 6. **Council and deploy.** The factory, the registries, an example profile, and the gogi suite on the card.
 7. **Cycles in a call.** The context member `cycles` chooses 1 to 5 cycles. Card gate: the research model against
    the reference at each count. Mini takes the same counts, out of the range of its training.
@@ -389,8 +397,8 @@ goes in waves. Each lane has its own worktree and target directory (`~/src/wt/na
   the card, because card tests run one at a time on a released card.
 - **Wave 3, after step 6.** Cycles in a call (step 7), the lab (step 8) and images (step 9) share only the
   engine's `spec.rs`. Merge them in that order.
-- **One owner of the card.** A subagent does not open a card. The lead session releases card 0, runs the card
-  gates, and reclaims it (spec "The release of a device").
+- **One owner of the card.** One session at a time opens card 0. It releases the card, runs its card gates, and
+  reclaims it (spec "The release of a device"). The lead session gives the card to one lane at a time.
 - **Briefs for another agent.** A lane that needs no card and no model run can go to an agent of another family.
   Write its brief as `BRIEF.md` in the worktree, and do not commit it. The brief names the files, the fixture, the
   test that must pass, and the rules of `AGENTS.md` that apply.
