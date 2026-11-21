@@ -96,12 +96,23 @@ fn output<'a>(outputs: &'a [Output], name: &str) -> &'a Output {
     one
 }
 
-/// The logit rows of the outputs, in order.
+/// The logit rows of the outputs, in order. Each value is finite.
 fn logits(outputs: &[Output]) -> Vec<Vec<f32>> {
-    outputs
+    let rows: Vec<Vec<f32>> = outputs
         .iter()
         .filter(|o| o.name == "logits")
         .map(|o| f32s(&o.bytes))
+        .collect();
+    assert!(rows.iter().flatten().all(|v| v.is_finite()), "a logit is not finite");
+    rows
+}
+
+/// The bytes of the logit rows of the outputs: a comparison of bits, which tells `-0.0` from `0.0`.
+fn logit_bytes(outputs: &[Output]) -> Vec<Vec<u8>> {
+    outputs
+        .iter()
+        .filter(|o| o.name == "logits")
+        .map(|o| o.bytes.clone())
         .collect()
 }
 
@@ -127,11 +138,21 @@ fn each_tap_gives_the_rows_of_the_probe_and_of_the_oracle_and_changes_no_logit()
     let rows = [last as u64, 1];
     let plain = run(&mut engine, &ids, &rows, &[], &[]);
     let tapped = run(&mut engine, &ids, &rows, &[], &TAPS);
+    assert_eq!(logits(&plain).len(), 2);
     assert_eq!(
-        logits(&plain),
-        logits(&tapped),
+        logit_bytes(&plain),
+        logit_bytes(&tapped),
         "a pass with every tap changes no logit bit"
     );
+    for o in &tapped {
+        if o.dtype == nagaya_abi::Dtype::F32 {
+            assert!(
+                f32s(&o.bytes).iter().all(|v| v.is_finite()),
+                "the output `{}` holds a value that is not finite",
+                o.name
+            );
+        }
+    }
     let order: Vec<&str> = tapped
         .iter()
         .map(|o| o.name.as_str())
@@ -220,17 +241,20 @@ fn each_tap_gives_the_rows_of_the_probe_and_of_the_oracle_and_changes_no_logit()
         (2 * 24 * 4 * HIDDEN, 2 * 24 * 4 * HIDDEN)
     );
     let (mut worst_m, mut worst_g) = (0f64, 0f64);
-    for g in 0..24 {
-        let got = &messages[g * 4 * HIDDEN..(g + 1) * 4 * HIDDEN];
-        let want = oracle_row(&oracle[&format!("message{g:02}")], last, 4 * HIDDEN);
-        worst_m = worst_m.max(common::worst_row(got, &want, HIDDEN));
-        for k in 0..4 {
-            let name = oracle
-                .keys()
-                .find(|n| n.starts_with(&format!("gate{:02}.", 4 * g + k)))
-                .unwrap();
-            let got = &gates[(g * 4 + k) * HIDDEN..(g * 4 + k + 1) * HIDDEN];
-            worst_g = worst_g.max(common::worst_row(got, &oracle_row(&oracle[name], last, HIDDEN), HIDDEN));
+    for (i, p) in [(0usize, last), (1, 1)] {
+        for g in 0..24 {
+            let at = (i * 24 + g) * 4 * HIDDEN;
+            let got = &messages[at..at + 4 * HIDDEN];
+            let want = oracle_row(&oracle[&format!("message{g:02}")], p, 4 * HIDDEN);
+            worst_m = worst_m.max(common::worst_row(got, &want, HIDDEN));
+            for k in 0..4 {
+                let name = oracle
+                    .keys()
+                    .find(|n| n.starts_with(&format!("gate{:02}.", 4 * g + k)))
+                    .unwrap();
+                let got = &gates[at + k * HIDDEN..at + (k + 1) * HIDDEN];
+                worst_g = worst_g.max(common::worst_row(got, &oracle_row(&oracle[name], p, HIDDEN), HIDDEN));
+            }
         }
     }
     eprintln!("messages: the oracle within {worst_m:.3e}; gates: {worst_g:.3e}");
@@ -285,10 +309,12 @@ fn each_tap_gives_the_rows_of_the_probe_and_of_the_oracle_and_changes_no_logit()
     assert!(e.message.contains("no tap `lens`"), "{}", e.message);
 }
 
-/// The vector of the gate: at layers 8 and 20, the row after run 8 and after run 44 of "plain" at its last position.
+/// The vector of the gate: at layers 3, 8 and 20, the row after runs 3, 8 and 44 of "plain" at its last position.
+/// Layer 3 is before the row after layer 5, from which each cycle starts, so the gate sees a cycle that starts from
+/// an unsteered row.
 fn vector(oracle: &HashMap<String, Tensor>, last: usize) -> Vec<f32> {
     let mut v = vec![0f32; LAYERS * HIDDEN];
-    for (layer, run) in [(8usize, 8usize), (20, 44)] {
+    for (layer, run) in [(3usize, 3usize), (8, 8), (20, 44)] {
         v[layer * HIDDEN..(layer + 1) * HIDDEN].copy_from_slice(&oracle_row(
             &oracle[&format!("run{run:02}")],
             last,
@@ -322,7 +348,11 @@ fn control_items_of_strength_0_keep_the_bits_and_each_op_follows_the_host_form()
     let plain = run(&mut engine, &ids, &rows, &[], &["residual"]);
     for op in [ControlOp::Add, ControlOp::Ablate] {
         let zero = run(&mut engine, &ids, &rows, &[item(op, 0.0)], &["residual"]);
-        assert_eq!(logits(&zero), logits(&plain), "{op:?} 0: the logit bits of no item");
+        assert_eq!(
+            logit_bytes(&zero),
+            logit_bytes(&plain),
+            "{op:?} 0: the logit bits of no item"
+        );
         assert_eq!(
             output(&zero, "residual").bytes,
             output(&plain, "residual").bytes,
@@ -482,6 +512,16 @@ fn block(engine: &mut Inkling2Engine, from: u64, tokens: &[u32], latent: Option<
     )
 }
 
+/// Twice each value of `row`.
+fn doubled_of(row: &[f32]) -> Vec<f32> {
+    row.iter().map(|v| 2.0 * v).collect()
+}
+
+/// Like [`block`], for a block inside a latent span that starts at `first` and holds `rows`, whole.
+fn block_span(engine: &mut Inkling2Engine, from: u64, tokens: &[u32], first: u64, rows: &[f32]) -> (Vec<f32>, Vec<u8>) {
+    block(engine, from, tokens, Some((first, rows)))
+}
+
 #[test]
 fn a_latent_row_of_the_placeholder_embedding_gives_the_bits_of_the_placeholder() {
     let Some(oracle) = golden() else {
@@ -515,6 +555,24 @@ fn a_latent_row_of_the_placeholder_embedding_gives_the_bits_of_the_placeholder()
         "the logits of the step"
     );
     assert_eq!(step_plain.1, step_latent.1, "the rows of the step");
+    // A span of 2 rows in two passes: the second pass takes the second row of the span. Its row is the placeholder's,
+    // so it gives the bits of the token at that position after the same first pass.
+    let mut two = doubled_of(&row);
+    two.extend_from_slice(&row);
+    card::clear(&mut engine, 0);
+    block(&mut engine, 0, &ids, None);
+    block(&mut engine, n, &[LATENT_TOKEN], Some((n, &two)));
+    let split_latent = block_span(&mut engine, n + 1, &[LATENT_TOKEN], n, &two);
+    card::clear(&mut engine, 0);
+    block(&mut engine, 0, &ids, None);
+    block(&mut engine, n, &[LATENT_TOKEN], Some((n, &two)));
+    let split_plain = block(&mut engine, n + 1, &[LATENT_TOKEN], None);
+    assert_eq!(
+        card::other_bits(&split_plain.0, &split_latent.0).0,
+        0,
+        "the second row of a span in a later pass"
+    );
+    assert_eq!(split_plain.1, split_latent.1);
     // Another row changes the logits.
     card::clear(&mut engine, 0);
     block(&mut engine, 0, &ids, None);
