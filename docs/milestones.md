@@ -400,6 +400,7 @@ Do the steps in this order. Each step ends with the checks green.
      the family of LFM3 needs its table. Thus `lfm3` stays resident, and `inkling2-mini` is on demand on card 0. A
      load names `lfm3` in `unload` and takes about 15 s, and the engine stays until another load. Its family reads
      `INKLING2_MODEL_DIR` from the unit. Live: a chat and the counts 1 and 5 gave replies.
+   - The gogi suite through the live process on `inkling2-mini`, build `b803170`: 500 ok, 0 FAIL, 19 skip.
 7. **Cycles in a call.** The context member `cycles` chooses 1 to 5 cycles. Card gate: the research model against
    the reference at each count. Mini takes the same counts, out of the range of its training.
    - The engine is done (`xe_cycles.rs`, 2026-11-21). With a reserve of 48 runs, it runs 1 to 5 cycles. A pass of 4
