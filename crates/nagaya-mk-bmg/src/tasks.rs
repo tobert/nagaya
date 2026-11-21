@@ -1269,6 +1269,84 @@ pub fn vision_conv(bcx: u64, w: u64, y: u64, n: u32, d: u32, grid_h: u32, grid_w
     }
 }
 
+/// The gate and up rows of the experts of `plan` for the gathered rows `x` (one row of `k` for each entry, in plan
+/// order) into `y` (one row of `m` for each entry): the softcapped SwiGLU of Inkling 2 (`OP_EXPERT_UP`). `slab` holds
+/// the repacked experts of one layer, with `2m` rows of `k` each; `mxfp8` names its format.
+pub fn expert_up(x: u64, slab: u64, y: u64, plan: u64, m: u32, k: u32, mxfp8: bool) -> MkTaskDescriptor {
+    assert!(
+        m.is_multiple_of(16) && k.is_multiple_of(32),
+        "OP_EXPERT_UP reads whole tiles of 16 rows and scales of 32 columns, and it got {m} by {k}"
+    );
+    MkTaskDescriptor {
+        flags: if mxfp8 { FLAG_MXFP8 } else { 0 },
+        a: x,
+        b: slab,
+        c: y,
+        x: plan,
+        m,
+        k,
+        ..task(OP_EXPERT_UP)
+    }
+}
+
+/// The down rows of the experts of `plan` for the rows `x` of `OP_EXPERT_UP` into the slot rows of `y` (8 rows of `m`
+/// for each token), each times the weight of its pick (`OP_EXPERT_DOWN`). `slab` holds `m` rows of `k` for each expert.
+pub fn expert_down(x: u64, slab: u64, y: u64, plan: u64, m: u32, k: u32, mxfp8: bool) -> MkTaskDescriptor {
+    assert!(
+        m.is_multiple_of(16) && k.is_multiple_of(32),
+        "OP_EXPERT_DOWN reads whole tiles of 16 rows and scales of 32 columns, and it got {m} by {k}"
+    );
+    MkTaskDescriptor {
+        flags: if mxfp8 { FLAG_MXFP8 } else { 0 },
+        a: x,
+        b: slab,
+        c: y,
+        x: plan,
+        m,
+        k,
+        ..task(OP_EXPERT_DOWN)
+    }
+}
+
+/// `y[t] = sum of slots[8 t + pick]` over the 8 picks in order, for `n` tokens of `m` (`OP_EXPERT_SUM`).
+pub fn expert_sum(slots: u64, y: u64, n: u32, m: u32) -> MkTaskDescriptor {
+    MkTaskDescriptor {
+        a: slots,
+        c: y,
+        n,
+        m,
+        ..task(OP_EXPERT_SUM)
+    }
+}
+
+/// The picks of `routes` (one `MoERouteDecision` for each of `n` tokens) grouped by expert into `plan`, a `MoEPlan`
+/// of `MOE_PLAN_BYTES` (`OP_MOE_PLAN`).
+pub fn moe_plan(routes: u64, plan: u64, n: u32) -> MkTaskDescriptor {
+    assert!(
+        (1..=MAX_PLAN_TOKENS as u32).contains(&n),
+        "OP_MOE_PLAN takes 1 to {MAX_PLAN_TOKENS} tokens, and it got {n}"
+    );
+    MkTaskDescriptor {
+        a: routes,
+        c: plan,
+        n,
+        ..task(OP_MOE_PLAN)
+    }
+}
+
+/// `y[q] = x[t]` for each entry `q` of `plan`, `t` its token: the rows of `k` floats that the expert ops read, in plan
+/// order, for `n` tokens (`OP_MOE_GATHER`).
+pub fn moe_gather(x: u64, y: u64, plan: u64, n: u32, k: u32) -> MkTaskDescriptor {
+    MkTaskDescriptor {
+        a: x,
+        c: y,
+        x: plan,
+        n,
+        k,
+        ..task(OP_MOE_GATHER)
+    }
+}
+
 /// The `bf16` bits of the repacked NVFP4 planes `codes` and `scales` of `rows` rows and `cols` columns, into `y`, with
 /// the factor of the expert. The rows of `y` are in the order of the planes (`OP_EXPAND_NVFP4`).
 pub fn expand_nvfp4(codes: u64, scales: u64, y: u64, rows: u32, cols: u32, factor: f32) -> MkTaskDescriptor {

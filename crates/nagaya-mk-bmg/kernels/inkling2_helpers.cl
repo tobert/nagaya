@@ -73,3 +73,77 @@ inline int8 inkling2_mxfp8_step(__global const uint* codes, __global const uchar
     return (int8)((int)out[0], (int)out[1], (int)out[2], (int)out[3], (int)out[4], (int)out[5], (int)out[6],
                   (int)out[7]);
 }
+
+// The bytes of one expert in a slab of 128 experts: the codes, then the scales. The slab holds the codes of the 128
+// experts, then their scales, then their factors as f32. `rows` and `cols` are the rows and the columns of one
+// expert matrix. NVFP4 holds 8 code bytes and 1 scale for each step; MXFP8 holds 16 code bytes and 1 scale for each
+// 2 steps.
+inline ulong inkling2_code_words(uint rows, uint cols, bool mx) {
+    return (ulong)rows * (mx ? cols : cols / 2u) / 4u;
+}
+
+inline ulong inkling2_scale_bytes(uint rows, uint cols, bool mx) {
+    return (ulong)rows * (mx ? cols / 32u : cols / 16u);
+}
+
+// B for step `step` of this lane's row of tile `tile` of expert `e` in slab `slab`.
+inline int8 inkling2_expert_step(__global const uchar* slab, uint e, uint rows, uint cols, uint tile, uint step,
+                                 uint lane, bool mx) {
+    ulong words = inkling2_code_words(rows, cols, mx), scales = inkling2_scale_bytes(rows, cols, mx);
+    __global const uint* codes = (__global const uint*)slab + (ulong)e * words;
+    __global const uchar* sc = slab + NUM_EXPERTS * words * 4u + (ulong)e * scales;
+    if (mx) return inkling2_mxfp8_step(codes, sc, tile, cols / 16u, step, lane);
+    __global const float* factors = (__global const float*)(slab + NUM_EXPERTS * (words * 4u + scales));
+    return inkling2_nvfp4_step(codes, sc, tile, cols / 16u, step, lane, factors[e]);
+}
+
+// The XMX sums of NB tiles of one expert (lane rows of tiles tile0 and tile1) against MTS tiles of 8 rows of X from
+// row t0 (n rows of k floats), over every step in order. Each x splits into three bf16 parts, as in XMX_ROWS_TILES of
+// megakernel.cl, so the sums keep f32 precision. Rows past n read as zero.
+#define INKLING2_XMX(NB, MTS) \
+    for (uint step = 0; step < K / 16u; step++) { \
+        int8 b0 = inkling2_expert_step(slab, e, rows, K, tile0, step, lane, mx); \
+        int8 b1 = NB == 2 ? inkling2_expert_step(slab, e, rows, K, tile1, step, lane, mx) : b0; \
+        _Pragma("unroll") for (uint mt = 0; mt < MTS; mt++) { \
+            uint xv[8]; \
+            intel_sub_group_2d_block_read_32b_8r16x1c((__global void*)X, K * 4, n, K * 4, (int2)(step * 16u, t0 + 8 * mt), xv); \
+            short8 hi, mid, lo; \
+            _Pragma("unroll") for (uint r = 0; r < 8; r++) { \
+                ulong p = bf16_split3(as_float(xv[r])); \
+                hi[r] = (short)p; \
+                mid[r] = (short)(p >> 16); \
+                lo[r] = (short)(p >> 32); \
+            } \
+            acc0[mt] = intel_sub_group_bf16_bf16_matrix_mad_k16(lo, b0, acc0[mt]); \
+            acc0[mt] = intel_sub_group_bf16_bf16_matrix_mad_k16(mid, b0, acc0[mt]); \
+            acc0[mt] = intel_sub_group_bf16_bf16_matrix_mad_k16(hi, b0, acc0[mt]); \
+            if (NB == 2) { \
+                acc1[mt] = intel_sub_group_bf16_bf16_matrix_mad_k16(lo, b1, acc1[mt]); \
+                acc1[mt] = intel_sub_group_bf16_bf16_matrix_mad_k16(mid, b1, acc1[mt]); \
+                acc1[mt] = intel_sub_group_bf16_bf16_matrix_mad_k16(hi, b1, acc1[mt]); \
+            } \
+        } \
+    }
+
+// Gate and up rows of one lane: tiles tile0 (gate) and tile1 (up), 2 tiles of 8 tokens.
+inline void inkling2_xmx_gate_up(__global const uchar* slab, uint e, uint rows, uint K, uint tile0, uint tile1,
+                                 __global const float* X, uint t0, uint n, uint lane, bool mx, float8* acc0,
+                                 float8* acc1) {
+    for (uint mt = 0; mt < 2; mt++) { acc0[mt] = 0.0f; acc1[mt] = 0.0f; }
+    INKLING2_XMX(2, 2)
+}
+
+// The down rows of one lane: tile tile0, 4 tiles of 8 tokens.
+inline void inkling2_xmx_down(__global const uchar* slab, uint e, uint rows, uint K, uint tile0,
+                              __global const float* X, uint t0, uint n, uint lane, bool mx, float8* acc0) {
+    uint tile1 = tile0;
+    float8* acc1 = acc0;
+    for (uint mt = 0; mt < 4; mt++) acc0[mt] = 0.0f;
+    INKLING2_XMX(1, 4)
+}
+
+// The softcapped SwiGLU of Inkling 2: 4 tanh(g / 4) * sigmoid(g) * 25 tanh(u / 25), in that order
+// (Inkling2LoopSoftcappedSwiGLU). The sigmoid sees the raw gate.
+inline float inkling2_swiglu(float g, float u) {
+    return ((4.0f * tanh(g / 4.0f)) * (1.0f / (1.0f + exp(-g)))) * (25.0f * tanh(u / 25.0f));
+}

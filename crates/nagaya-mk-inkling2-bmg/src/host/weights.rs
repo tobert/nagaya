@@ -47,6 +47,11 @@ pub struct Matrix {
 }
 
 impl Checkpoint {
+    /// The bytes of the whole file. The byte ranges of `Experts` and `Matrix` index it.
+    pub fn file_bytes(&self) -> &[u8] {
+        self.map.as_bytes()
+    }
+
     /// Map the file. It reads only the header.
     pub fn open(path: &Path) -> Result<Self, String> {
         let map = MappedSafeTensors::open(path)?;

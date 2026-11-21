@@ -105,6 +105,14 @@ pub const OP_SUBSAMPLE: u16 = 110;
 pub const OP_EXPAND_NVFP4: u16 = 140;
 /// The `bf16` bits of the repacked MXFP8 planes of an expert.
 pub const OP_EXPAND_MXFP8: u16 = 141;
+/// The gate and up rows of the experts of a plan, with the softcapped SwiGLU of Inkling 2.
+pub const OP_EXPERT_UP: u16 = 142;
+/// The down rows of the experts of a plan, times the weight of each pick, into the slot of each pick.
+pub const OP_EXPERT_DOWN: u16 = 143;
+/// The sum of the 8 slots of each token, in the order of the picks.
+pub const OP_EXPERT_SUM: u16 = 144;
+/// `OP_EXPERT_UP` and `OP_EXPERT_DOWN`: the slab holds MXFP8, not NVFP4.
+pub const FLAG_MXFP8: u16 = 1 << 15;
 
 pub const FLAG_ACCUMULATE: u16 = 1 << 0;
 pub const FLAG_SOFTCAP_30: u16 = 1 << 2;

@@ -104,3 +104,65 @@ pub fn gate_up_tile_order(rows: usize) -> Vec<usize> {
     }
     order
 }
+
+/// The slab of the experts of one layer on the card: the repacked codes of each expert, then the repacked scales of
+/// each expert, then the factor of each expert as `f32` for NVFP4 (`inkling2_expert_step` in the kernels).
+///
+/// `values` and `scales` hold the experts of the checkpoint in order, each of `rows` rows of `cols` columns. With
+/// `gate_up`, the rows of each expert go in the order of `gate_up_tile_order`. `mx` chooses MXFP8, which has no factors.
+#[allow(clippy::too_many_arguments)]
+pub fn expert_slab(
+    values: &[u8],
+    scales: &[u8],
+    factors: Option<&[f32]>,
+    experts: usize,
+    rows: usize,
+    cols: usize,
+    mx: bool,
+    gate_up: bool,
+) -> Result<Vec<u8>, ShapeError> {
+    let (row_bytes, row_scales, step) = if mx {
+        (cols, cols / 32, 16)
+    } else {
+        (cols / 2, cols / 16, 8)
+    };
+    if values.len() != experts * rows * row_bytes || scales.len() != experts * rows * row_scales {
+        refuse(format!(
+            "{experts} experts of {rows} rows of {cols} columns need {} code bytes and {} scales, and the slab got {} \
+             and {}",
+            experts * rows * row_bytes,
+            experts * rows * row_scales,
+            values.len(),
+            scales.len()
+        ))?;
+    }
+    if mx != factors.is_none() || factors.is_some_and(|f| f.len() != experts) {
+        refuse(format!(
+            "an NVFP4 slab needs one factor for each of {experts} experts, and MXFP8 needs none"
+        ))?;
+    }
+    let order: Vec<usize> = if gate_up {
+        gate_up_tile_order(rows)
+    } else {
+        (0..rows).collect()
+    };
+    let reorder = |src: &[u8], e: usize, width: usize| -> Vec<u8> {
+        let of_e = &src[e * rows * width..(e + 1) * rows * width];
+        order
+            .iter()
+            .flat_map(|&r| of_e[r * width..(r + 1) * width].iter().copied())
+            .collect()
+    };
+    let mut slab = Vec::with_capacity(values.len() + scales.len() + 4 * experts);
+    for e in 0..experts {
+        let words = repack_codes(&reorder(values, e, row_bytes), rows, row_bytes, step)?;
+        slab.extend(words.iter().flat_map(|w| w.to_le_bytes()));
+    }
+    for e in 0..experts {
+        slab.extend(repack_scales(&reorder(scales, e, row_scales), rows, row_scales)?);
+    }
+    for f in factors.unwrap_or(&[]) {
+        slab.extend(f.to_le_bytes());
+    }
+    Ok(slab)
+}

@@ -67,3 +67,55 @@ fn a_shape_that_is_not_whole_tiles_is_an_error() {
     assert!(repack_codes(&[0; 16 * 8 - 1], 16, 8, 8).is_err(), "the source is short");
     assert!(repack_scales(&[0; 16 * 3 - 1], 16, 3).is_err(), "the scales are short");
 }
+
+/// The slab of a layer holds the codes of each expert, then the scales of each expert, then the factors.
+#[test]
+fn a_slab_holds_the_planes_of_each_expert_then_the_factors() {
+    let (experts, rows, cols) = (3, 32, 64);
+    let (row_bytes, row_scales) = (cols / 2, cols / 16);
+    let values = source(experts * rows, row_bytes);
+    let scales = source(experts * rows, row_scales);
+    let factors = [0.5f32, 0.25, 2.0];
+    let slab = expert_slab(&values, &scales, Some(&factors), experts, rows, cols, false, true).unwrap();
+    let words = rows * row_bytes / 4;
+    let scale_bytes = rows * row_scales;
+    assert_eq!(slab.len(), experts * (words * 4 + scale_bytes) + experts * 4);
+    for e in 0..experts {
+        let order = gate_up_tile_order(rows);
+        let one = |src: &[u8], width: usize| -> Vec<u8> {
+            let rows_of_e = &src[e * rows * width..(e + 1) * rows * width];
+            order
+                .iter()
+                .flat_map(|&r| rows_of_e[r * width..(r + 1) * width].to_vec())
+                .collect()
+        };
+        let codes: Vec<u8> = repack_codes(&one(&values, row_bytes), rows, row_bytes, 8)
+            .unwrap()
+            .iter()
+            .flat_map(|w| w.to_le_bytes())
+            .collect();
+        assert_eq!(
+            &slab[e * words * 4..(e + 1) * words * 4],
+            &codes[..],
+            "codes of expert {e}"
+        );
+        let sc = repack_scales(&one(&scales, row_scales), rows, row_scales).unwrap();
+        let at = experts * words * 4 + e * scale_bytes;
+        assert_eq!(&slab[at..at + scale_bytes], &sc[..], "scales of expert {e}");
+        let f = experts * (words * 4 + scale_bytes) + 4 * e;
+        assert_eq!(
+            f32::from_le_bytes(slab[f..f + 4].try_into().unwrap()),
+            factors[e],
+            "factor of expert {e}"
+        );
+    }
+}
+
+#[test]
+fn an_mxfp8_slab_has_no_factors_and_one_scale_for_32_columns() {
+    let (experts, rows, cols) = (2, 16, 64);
+    let values = source(experts * rows, cols);
+    let scales = source(experts * rows, cols / 32);
+    let slab = expert_slab(&values, &scales, None, experts, rows, cols, true, false).unwrap();
+    assert_eq!(slab.len(), experts * (rows * cols + rows * cols / 32));
+}

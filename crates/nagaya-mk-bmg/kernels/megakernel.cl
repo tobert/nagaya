@@ -126,6 +126,10 @@
 // The ops of the Inkling 2 binary (kernels/inkling2_ops.cl): opcodes 140 to 169.
 #define OP_EXPAND_NVFP4     140
 #define OP_EXPAND_MXFP8     141
+#define OP_EXPERT_UP        142
+#define OP_EXPERT_DOWN      143
+#define OP_EXPERT_SUM       144
+#define FLAG_MXFP8          32768u  // the expert ops: the slab holds MXFP8, not NVFP4
 #endif
 #define NUM_EXPERTS         128
 #define TOP_K               8
