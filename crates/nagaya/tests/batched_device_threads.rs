@@ -6,8 +6,9 @@
 
 mod feed_support;
 
+use std::collections::BTreeSet;
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use nagaya::admission::{Factory, GroupDevice, OpenError, PlanError, Registry};
@@ -25,13 +26,48 @@ use nagaya_sched::{Class, Item};
 /// The segment count of each pass of `batcher`, with the name of the thread that ran it.
 type Passes = Arc<Mutex<Vec<(usize, String)>>>;
 
+/// Holds each pass of `batcher` until the group thread has added every job of the test. The group thread adds the jobs
+/// one by one, and the device thread starts the first quantum at once. Without the gate, the first rows run alone when
+/// the group thread is slow, and no pass holds all the rows. The group thread handles the end of the first pass only
+/// after it adds the last job, so the next quantum finds every job ready.
+#[derive(Default)]
+struct Gate {
+    added: Mutex<BTreeSet<u32>>,
+    changed: Condvar,
+}
+
+impl Gate {
+    /// The group thread added the job of this slot to its scheduler.
+    fn add(&self, slot: u32) {
+        self.added.lock().unwrap().insert(slot);
+        self.changed.notify_all();
+    }
+
+    /// Wait on the device thread until `jobs` jobs are added. A job that never comes is a defect of the test.
+    fn wait(&self, jobs: usize) {
+        let held = self.added.lock().unwrap();
+        let (held, result) = self
+            .changed
+            .wait_timeout_while(held, Duration::from_secs(5), |held| held.len() < jobs)
+            .unwrap();
+        assert!(
+            !result.timed_out(),
+            "only the jobs {held:?} reached the scheduler in 5 s"
+        );
+    }
+}
+
 /// An engine with 8 segments, and a feed rule or `segments_exact`. For each logit row it gives one output `logits`:
 /// the slot and the position.
 struct Batcher {
     fake: FakeAlways,
     passes: Passes,
     exact: bool,
+    gate: Arc<Gate>,
 }
+
+/// The jobs of the test.
+const JOBS: u32 = 4;
 
 /// The limits of `batcher`: `segments_exact` and no feed rule when `exact` is true, else a feed rule.
 fn batcher_limits(exact: bool) -> Limits {
@@ -54,6 +90,7 @@ impl Engine for Batcher {
     }
 
     fn pass(&mut self, segments: &[Segment], _taps: &[Tap]) -> Result<PassOut, PassError> {
+        self.gate.wait(JOBS as usize);
         let thread = std::thread::current().name().unwrap_or("unnamed").to_owned();
         self.passes.lock().unwrap().push((segments.len(), thread));
         let mut outputs = Vec::new();
@@ -126,7 +163,7 @@ impl Engine for Closing {
 }
 
 /// The factory of both engines, with the passes of `batcher` and whether it declares `segments_exact`.
-struct Fakes(Passes, bool);
+struct Fakes(Passes, bool, Arc<Gate>);
 
 impl Factory for Fakes {
     fn plan(&self, config: &toml::Table, _devices: &[GroupDevice]) -> Result<Limits, PlanError> {
@@ -143,6 +180,7 @@ impl Factory for Fakes {
                 fake: FakeAlways::new(),
                 passes: Arc::clone(&self.0),
                 exact: self.1,
+                gate: Arc::clone(&self.2),
             }),
         })
     }
@@ -173,6 +211,7 @@ struct Decoder {
     steps: usize,
     seen: Arc<Mutex<Vec<(f32, f32)>>>,
     done: Sender<u32>,
+    gate: Arc<Gate>,
 }
 
 impl Decoder {
@@ -221,6 +260,12 @@ impl JobBody for Decoder {
         self.took(out)
     }
 
+    /// The group thread asks for this once, in the call that adds the job, before it sends the first quantum.
+    fn request(&self) -> &'static str {
+        self.gate.add(self.slot);
+        "decode"
+    }
+
     fn item(&self, kind: Kind) -> Item {
         Item::Block(kind)
     }
@@ -253,7 +298,8 @@ fn decode_jobs_share_passes(exact: bool) {
     let directory = tempfile::tempdir().unwrap();
     let passes = Passes::default();
     let mut registry = Registry::new();
-    registry.register("fakes", Box::new(Fakes(Arc::clone(&passes), exact)));
+    let gate = Arc::new(Gate::default());
+    registry.register("fakes", Box::new(Fakes(Arc::clone(&passes), exact, Arc::clone(&gate))));
     let budget = |tier: Tier, bytes| BudgetSpec {
         tiers: vec![TierSpec::from(tier)],
         bytes,
@@ -297,7 +343,6 @@ fn decode_jobs_share_passes(exact: bool) {
     process.wait_opens(Duration::from_secs(5)).unwrap();
     let (done, finished) = mpsc::channel();
     let mut seen = Vec::new();
-    const JOBS: u32 = 4;
     const STEPS: usize = 6;
     for slot in 0..JOBS {
         let rows = Arc::new(Mutex::new(Vec::new()));
@@ -308,6 +353,7 @@ fn decode_jobs_share_passes(exact: bool) {
             steps: STEPS,
             seen: rows,
             done: done.clone(),
+            gate: Arc::clone(&gate),
         };
         let spec = JobSpec {
             class: Class::Interactive,
