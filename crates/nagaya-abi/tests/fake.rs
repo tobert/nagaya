@@ -575,6 +575,19 @@ fn a_fake_with_a_vocabulary_gives_one_f32_row_for_each_logit_row() {
     assert_ne!(rows[0].bytes, rows[1].bytes, "two positions give two rows");
 }
 
+/// A pass of several segments gives one `logits` output for each logit row, in segment order (engine-abi, "Logit
+/// outputs"). The driver splits the outputs of a joined pass by that rule, so an extra `state` output breaks it.
+#[test]
+fn a_joined_pass_of_a_fake_with_a_vocabulary_gives_only_logits() {
+    let mut engine = FakeAlways::new().with_vocab(64);
+    let first = logit_segment(0, &[1, 2], &[1]);
+    let mut second = logit_segment(0, &[3, 4, 5], &[0, 2]);
+    second.state = State::Slot(1);
+    let out = engine.pass(&[first, second], &[]).unwrap();
+    let names: Vec<&str> = out.outputs.iter().map(|output| output.name.as_str()).collect();
+    assert_eq!(names, ["logits", "logits", "logits"]);
+}
+
 #[test]
 fn a_fake_without_a_vocabulary_gives_no_logits() {
     let mut engine = FakeAlways::new();
