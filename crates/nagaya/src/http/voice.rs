@@ -486,6 +486,7 @@ pub fn served_model(service: &SpeechService, status: gogi_proto::identity::Model
         },
         embeddings: None,
         layer_loops: None,
+        cycles: None,
         capabilities: vec![gogi_proto::identity::Capability::Generate],
         media: Some(gogi_proto::identity::Media {
             inputs: Vec::new(),

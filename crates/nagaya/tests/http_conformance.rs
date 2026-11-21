@@ -301,6 +301,9 @@ fn gogi_conformance_passes_against_the_process_with_the_fake_engine() {
         "the server answers again after the restart",
         // No engine of the fake declares layer loops yet, so the suite checks the refusal (gogi "Layer loops").
         "a build with a loop to a model without layer_loops is a 400 naming loop",
+        // Its engine declares no cycles, so the suite checks the refusal (gogi "Cycles", spec 11.17).
+        "a build with cycles to a model without cycles is a 400 naming cycles",
+        "a count of 0 to a model without cycles is refused for the capability first",
         "a held spec survives a restart",
         "a pinned snapshot survives a restart",
         "a context whose head is pinned feeds 0 tokens after a restart",
