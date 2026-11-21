@@ -43,3 +43,7 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# The host form of Inkling 2 runs the whole model on the CPU in its tests. With no optimization a prompt takes hours.
+[profile.dev.package.nagaya-mk-inkling2-bmg]
+opt-level = 3
