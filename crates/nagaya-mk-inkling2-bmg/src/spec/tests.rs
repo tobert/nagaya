@@ -703,7 +703,7 @@ fn image_segment(from: u64, tokens: &[u32], spans: &[crate::media::Span]) -> Seg
     for span in spans {
         meta.extend(
             nagaya_text_inkling2::media::ImageRows {
-                grid: span.grid,
+                grid: span.grid().unwrap(),
                 values: Vec::new(),
             }
             .record(span.first as usize),
@@ -726,10 +726,7 @@ fn a_pass_takes_the_rows_and_the_records_of_its_images() {
     use nagaya_text_inkling2::media::Grid;
     let mut held = Held::new(&[4096], DEFAULT_EXTRA_RUNS);
     // An image of 2 by 3 tokens at positions 2 to 8, in blocks of 4 and 6.
-    let image = Span {
-        grid: Grid { rows: 2, columns: 3 },
-        first: 2,
-    };
+    let image = Span::image(Grid { rows: 2, columns: 3 }, 2);
     let block = held
         .check_pass(&[image_segment(0, &[7, 7, P, P], &[image])], 512)
         .unwrap();
@@ -761,10 +758,7 @@ fn a_pass_takes_the_rows_and_the_records_of_its_images() {
             vec![image_segment(
                 10,
                 &[7, P],
-                &[Span {
-                    grid: Grid { rows: 1, columns: 1 },
-                    first: 10,
-                }],
+                &[Span::image(Grid { rows: 1, columns: 1 }, 10)],
             )],
             "position 10 is in media record 0",
         ),
@@ -772,14 +766,7 @@ fn a_pass_takes_the_rows_and_the_records_of_its_images() {
         let error = held.check_pass(&segments, 512).unwrap_err();
         assert!(error.contains(why), "{why}: {error}");
     }
-    let mut bad = image_segment(
-        10,
-        &[7, P],
-        &[Span {
-            grid: Grid { rows: 1, columns: 1 },
-            first: 11,
-        }],
-    );
+    let mut bad = image_segment(10, &[7, P], &[Span::image(Grid { rows: 1, columns: 1 }, 11)]);
     bad.meta[0] = 2;
     let error = held.check_pass(&[bad], 512).unwrap_err();
     assert!(error.contains("the kind 2"), "{error}");
@@ -799,4 +786,14 @@ fn the_table_takes_a_vector_of_its_size_into_an_entry_that_it_has() {
     nan[40..44].copy_from_slice(&f32::NAN.to_le_bytes());
     let e = check_control_write(&limit, 0, &nan).unwrap_err();
     assert!(e.contains("value 10 of the vector is not finite"), "{e}");
+}
+
+/// The placeholder of a latent position is `pad_token_id` of `generation_config.json` of both models.
+#[test]
+fn the_latent_placeholder_is_the_pad_token_of_the_generation_config() {
+    let text = r#"{"do_sample": true, "temperature": 1.0, "eos_token_id": 200006, "pad_token_id": 199999}"#;
+    assert_eq!(check_generation(text), Ok(()));
+    let e = check_generation(&text.replace("199999", "200000")).unwrap_err();
+    assert!(e.contains("pad_token_id 200000") && e.contains("puts 199999"), "{e}");
+    assert!(check_generation("{}").unwrap_err().contains("pad_token_id null"));
 }

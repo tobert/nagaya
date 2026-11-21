@@ -13,10 +13,7 @@ fn record(grid: Grid, first: usize) -> Vec<u8> {
 }
 
 fn span(rows: usize, columns: usize, first: u64) -> Span {
-    Span {
-        grid: Grid { rows, columns },
-        first,
-    }
+    Span::image(Grid { rows, columns }, first)
 }
 
 /// The family's record of an image is the span of the engine: one reader serves both (engine-abi "The meta of a
@@ -71,7 +68,10 @@ fn a_record_that_breaks_the_rule_of_an_image_is_refused_by_name() {
     let mut side = good.clone();
     side[20..24].copy_from_slice(&206u32.to_le_bytes());
     side[4..8].copy_from_slice(&309u32.to_le_bytes());
-    assert_eq!(decode(&side).unwrap()[0].grid, Grid { rows: 103, columns: 3 });
+    assert_eq!(
+        decode(&side).unwrap()[0].grid().unwrap(),
+        Grid { rows: 103, columns: 3 }
+    );
 }
 
 /// A span that crosses a block boundary: each block takes its own positions, and each gets the rows of the whole span.
@@ -152,4 +152,73 @@ fn the_held_rows_run_the_tower_once_for_the_blocks_of_one_image() {
     held.forget();
     assert!(!held.holds(g, &a), "after a forget the tower runs again");
     assert_eq!(held.runs(), 5);
+}
+
+/// The record of `count` latent rows of `width` values from `first` (engine-abi "The lab of Inkling 2", "Latent
+/// rows").
+fn latent_record(first: u64, count: u32, width: u32) -> Vec<u8> {
+    let mut r = Vec::with_capacity(RECORD_BYTES);
+    r.extend(LATENT_KIND.to_le_bytes());
+    r.extend(count.to_le_bytes());
+    r.extend(first.to_le_bytes());
+    for word in [width, 0, 0, 0] {
+        r.extend(word.to_le_bytes());
+    }
+    r
+}
+
+/// A latent record names the width of its rows and its positions, and a span takes one row of 2,304 `f32` values for
+/// each position. Another width, no position, or another word is refused with the record.
+#[test]
+fn a_latent_record_is_a_span_of_rows_of_the_width_of_the_residual() {
+    let mut meta = latent_record(30, 2, 2304);
+    meta.extend(record(Grid { rows: 1, columns: 2 }, 40));
+    let spans = decode(&meta).unwrap();
+    assert_eq!(spans, [Span::latent(2, 30), span(1, 2, 40)]);
+    assert_eq!(
+        (spans[0].count(), spans[0].bytes(), spans[0].grid()),
+        (2, 2 * 2304 * 4, None)
+    );
+    assert_eq!(spans[0].placeholder(), 199_999);
+    for (bad, want) in [
+        (latent_record(0, 1, 2048), "latent span with the words [2048, 0, 0, 0]"),
+        (latent_record(0, 0, 2304), "latent span of 0 positions"),
+        (latent_record(u64::MAX, 1, 2304), "before the last position"),
+        (
+            {
+                let mut m = latent_record(0, 1, 2304);
+                m[24] = 1;
+                m
+            },
+            "words [2304, 0, 1, 0]",
+        ),
+    ] {
+        let e = decode(&bad).unwrap_err();
+        assert!(e.contains(want), "{want}: {e}");
+    }
+}
+
+/// Each position of a latent span holds `<|endoftext|>`, and the rows of the spans follow the order of the records.
+/// The placeholder is a token of the vocabulary, so it can be outside a span.
+#[test]
+fn a_latent_span_takes_its_rows_at_positions_of_its_placeholder() {
+    const L: u32 = LATENT_TOKEN;
+    let image = span(1, 1, 1);
+    let latent = Span::latent(2, 3);
+    let rows = image.bytes() + latent.bytes();
+    let uses = check_spans(&[image, latent], &[7, P, L, L, L], 0, rows).unwrap();
+    assert_eq!(
+        (uses[1].rows_at, uses[1].take.clone(), uses[1].block_row),
+        (image.bytes(), 0..2, 3)
+    );
+    // A later block takes the second row of the span, and the rows are the whole span.
+    let uses = check_spans(&[latent], &[L, 7], 4, latent.bytes()).unwrap();
+    assert_eq!((uses[0].take.clone(), uses[0].block_row), (1..2, 0));
+    let e = check_spans(&[latent], &[7, 7, 7, P, L], 0, latent.bytes()).unwrap_err();
+    assert!(
+        e.contains("position 3 is in media record 0, and it holds the token 200054, not the placeholder 199999"),
+        "{e}"
+    );
+    let e = check_spans(&[latent], &[7, 7, 7, L, L], 0, latent.bytes() - 4).unwrap_err();
+    assert!(e.contains("need 18432"), "{e}");
 }

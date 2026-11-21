@@ -6,6 +6,7 @@
 //! - `residual`, `fold` and `blocks` give the bits of the probe of the engine, and the rows of the oracle.
 //! - `messages` and `gates` give the rows of the oracle, and `routes` the picks of the host form.
 //! - An add or an ablate of strength 0 gives the bits of no item. Each op follows the host form within a measured gap.
+//! - A latent row of the normed embedding of `<|endoftext|>` gives the bits of that token.
 //! - The times of a decode step with a tap and with a control list, against a plain step.
 //!
 //! Each gap prints. A test skips when the model or the oracle file is absent. Release the card first, and run alone:
@@ -20,11 +21,12 @@ use std::time::Instant;
 
 use common::card;
 use common::{Tensor, Which};
-use nagaya_abi::{ControlItem, ControlOp, Engine, Output, PassErrorKind, Segment, Tap};
+use nagaya_abi::{ControlItem, ControlOp, Engine, Output, PassErrorKind, Segment, SegmentInputs, Tap};
 use nagaya_mk_inkling2_bmg::Inkling2Engine;
 use nagaya_mk_inkling2_bmg::host::forward::{self, Context, Model, Trace};
 use nagaya_mk_inkling2_bmg::host::ops::HIDDEN;
 use nagaya_mk_inkling2_bmg::host::weights::LAYERS;
+use nagaya_mk_inkling2_bmg::media::{LATENT_KIND, LATENT_TOKEN};
 use nagaya_mk_inkling2_bmg::spec::{DEFAULT_MAX_BLOCK, ROUTE_WEIGHTS, TAPS, runs};
 
 /// The tolerance of a tapped row against the oracle: a relative L2 error, as `ROW_TOL` of `xe_oracle.rs`.
@@ -440,4 +442,86 @@ fn a_decode_step_with_a_tap_or_a_control_list_costs_its_copies_and_its_ops() {
          with an ablate on 24 layers {steered:.1} ms ({launches} launches)"
     );
     assert_eq!(runs(3).len(), 48);
+}
+
+/// The record of `count` latent rows from `first`.
+fn latent_record(first: u64, count: u32) -> Vec<u8> {
+    let mut r = Vec::new();
+    r.extend(LATENT_KIND.to_le_bytes());
+    r.extend(count.to_le_bytes());
+    r.extend(first.to_le_bytes());
+    for word in [HIDDEN as u32, 0, 0, 0] {
+        r.extend(word.to_le_bytes());
+    }
+    r
+}
+
+/// The logits and the tap `residual` of a block of `tokens` from `from` of slot 0, with the latent rows `rows` at the
+/// positions `latent` when given.
+fn block(engine: &mut Inkling2Engine, from: u64, tokens: &[u32], latent: Option<(u64, &[f32])>) -> (Vec<f32>, Vec<u8>) {
+    let last = from + tokens.len() as u64 - 1;
+    let mut segment = card::segment(0, from, tokens, &[last]);
+    if let Some((first, rows)) = latent {
+        segment.meta = latent_record(first, (rows.len() / HIDDEN) as u32);
+        segment.inputs = SegmentInputs::TokensAndRows {
+            tokens: tokens.to_vec(),
+            rows: rows.iter().flat_map(|v| v.to_le_bytes()).collect(),
+        };
+    }
+    let out = engine
+        .pass(
+            &[segment],
+            &[Tap {
+                name: "residual".to_owned(),
+            }],
+        )
+        .unwrap_or_else(|e| panic!("a block at {from}: {}", e.message));
+    (
+        logits(&out.outputs).remove(0),
+        output(&out.outputs, "residual").bytes.clone(),
+    )
+}
+
+#[test]
+fn a_latent_row_of_the_placeholder_embedding_gives_the_bits_of_the_placeholder() {
+    let Some(oracle) = golden() else {
+        return;
+    };
+    let ids = oracle["ids"].ids();
+    let n = ids.len() as u64;
+    let mut engine = card::open(Which::Mini, vec![4096], DEFAULT_MAX_BLOCK);
+    // The normed embedding row of the placeholder: the probe of 0 runs.
+    let row = engine.residual(0, &[LATENT_TOKEN], 0, false).unwrap();
+    assert_eq!(row.len(), HIDDEN);
+    let mut tokens = ids.clone();
+    tokens.push(LATENT_TOKEN);
+    // In the block of the prompt.
+    card::clear(&mut engine, 0);
+    let plain = block(&mut engine, 0, &tokens, None);
+    card::clear(&mut engine, 0);
+    let latent = block(&mut engine, 0, &tokens, Some((n, &row)));
+    assert_eq!(card::other_bits(&plain.0, &latent.0).0, 0, "the logits of the block");
+    assert_eq!(plain.1, latent.1, "the rows of the block");
+    // As a step after the prompt.
+    card::clear(&mut engine, 0);
+    block(&mut engine, 0, &ids, None);
+    let step_plain = block(&mut engine, n, &[LATENT_TOKEN], None);
+    card::clear(&mut engine, 0);
+    block(&mut engine, 0, &ids, None);
+    let step_latent = block(&mut engine, n, &[LATENT_TOKEN], Some((n, &row)));
+    assert_eq!(
+        card::other_bits(&step_plain.0, &step_latent.0).0,
+        0,
+        "the logits of the step"
+    );
+    assert_eq!(step_plain.1, step_latent.1, "the rows of the step");
+    // Another row changes the logits.
+    card::clear(&mut engine, 0);
+    block(&mut engine, 0, &ids, None);
+    let doubled: Vec<f32> = row.iter().map(|v| 2.0 * v).collect();
+    let moved = block(&mut engine, n, &[LATENT_TOKEN], Some((n, &doubled)));
+    card::clear(&mut engine, 0);
+    let gap = common::max_abs(&moved.0, &step_plain.0);
+    eprintln!("latent: a row of the placeholder gives its bits; twice the row moves a logit by {gap:.3}");
+    assert!(gap > 1e-3);
 }

@@ -223,6 +223,7 @@ pub fn describe(config: &Config, pci: &str) -> Result<(Identity, Limits), String
     config.check()?;
     let dir = &config.model_dir;
     let model = Model::read(dir)?;
+    spec::read_generation(dir)?;
     let config_text = String::from_utf8(read_file(dir, "config.json")?)
         .map_err(|e| format!("config.json of {} is not UTF-8: {e}", dir.display()))?;
     let facts = spec::text_facts(dir)?;
@@ -250,6 +251,7 @@ impl Inkling2Engine {
         config.check()?;
         let dir = config.model_dir.clone();
         let model = Model::read(&dir)?;
+        spec::read_generation(&dir)?;
         let config_text = String::from_utf8(read_file(&dir, "config.json")?)
             .map_err(|e| format!("config.json of {} is not UTF-8: {e}", dir.display()))?;
         // The family library gives the tokenizer hash and the template, so the registry's check at the start compares
@@ -411,7 +413,8 @@ impl Inkling2Engine {
     }
 
     /// Run the tower of each image span of `block` that the engine does not hold, from the rows of `segment`, and put
-    /// the projector rows of the block's positions into the media rows. The copies that this returns put them over
+    /// the projector rows of the block's positions into the media rows. A latent span puts its rows there with no
+    /// tower. The copies that this returns put them over
     /// the normed embedding rows of the placeholders (engine-abi "The choices of the pass"). The caller checked the
     /// block.
     fn encode(&mut self, segment: &Segment, block: &Block) -> Vec<MkTaskDescriptor> {
@@ -424,7 +427,17 @@ impl Inkling2Engine {
         let mut places = Vec::with_capacity(block.spans.len());
         for used in &block.spans {
             let bytes = &rows[used.rows_at..used.rows_at + used.span.bytes()];
-            let g = used.span.grid;
+            let places_rows = used.block_row..used.block_row + used.take.len();
+            let Some(g) = used.span.grid() else {
+                // Latent rows go into the media rows of their positions, with no tower and no norm (engine-abi "The
+                // lab of Inkling 2", "Latent rows").
+                let row = HIDDEN * 4;
+                let at = self.images.media + (used.block_row * row) as u64;
+                self.device
+                    .write(self.card(), at, &bytes[used.take.start * row..used.take.end * row]);
+                places.push(self.images.place(self.bufs.x, places_rows));
+                continue;
+            };
             let mut tasks = Vec::new();
             if !self.held_rows.holds(g, bytes) {
                 let card = &self.cluster.cards[0];
@@ -442,10 +455,7 @@ impl Inkling2Engine {
             }
             tasks.push(self.images.take(used.take.clone(), used.block_row));
             self.run(&[tasks]);
-            places.push(
-                self.images
-                    .place(self.bufs.x, used.block_row..used.block_row + used.take.len()),
-            );
+            places.push(self.images.place(self.bufs.x, places_rows));
         }
         places
     }

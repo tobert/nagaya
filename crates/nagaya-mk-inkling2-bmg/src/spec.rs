@@ -234,6 +234,29 @@ pub fn check_control_write(limit: &ControlLimit, index: u32, bytes: &[u8]) -> Re
     }
 }
 
+/// Check the text of `generation_config.json`: its `pad_token_id` is the placeholder of a latent position,
+/// `media::LATENT_TOKEN` (engine-abi "The lab of Inkling 2", "Latent rows"). Another value is an error that names it.
+pub fn check_generation(text: &str) -> Result<(), String> {
+    let root: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| format!("generation_config.json is not JSON: {e}"))?;
+    let pad = &root["pad_token_id"];
+    if pad.as_u64() != Some(u64::from(media::LATENT_TOKEN)) {
+        return Err(format!(
+            "generation_config.json has pad_token_id {pad}, and the Inkling 2 engine puts {} at a latent position. \
+             The folder holds another model",
+            media::LATENT_TOKEN
+        ));
+    }
+    Ok(())
+}
+
+/// Read and check `generation_config.json` of the folder `dir` (`check_generation`).
+pub fn read_generation(dir: &Path) -> Result<(), String> {
+    let path = dir.join("generation_config.json");
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    check_generation(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
 /// The two models of the kind. They share every file but `config.json` (milestone 35 step 1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Model {

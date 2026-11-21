@@ -162,13 +162,7 @@ fn a_chat_with_an_image_part_becomes_the_placeholders_the_record_and_the_rows_of
                 assert_eq!(segment.meta, want.record(span.first), "the record of the family");
                 assert_eq!(rows, &want.bytes(), "the rows of the image whole");
                 let spans = decode(&segment.meta).unwrap();
-                assert_eq!(
-                    spans,
-                    [Span {
-                        grid: want.grid,
-                        first: span.first as u64
-                    }]
-                );
+                assert_eq!(spans, [Span::image(want.grid, span.first as u64)]);
                 let uses = check_spans(&spans, tokens, from as u64, rows.len()).unwrap();
                 covered += uses[0].take.len();
             }

@@ -1,29 +1,75 @@
-//! The image spans of a pass: the records of `meta`, and the rules that tie a span to the tokens and the rows of a
-//! segment (engine-abi "The images of Inkling 2", "The choices of the pass"). None of this needs a card.
+//! The image spans and the latent spans of a pass: the records of `meta`, and the rules that tie a span to the tokens
+//! and the rows of a segment (engine-abi "The images of Inkling 2", "The choices of the pass", "The lab of Inkling 2").
+//! None of this needs a card.
 //!
 //! The family writes each record (`nagaya_text_inkling2::media::ImageRows::record`), and this module reads it. A
 //! record is little-endian: the kind (`u32`), the count of positions (`u32`), the first position (`u64`), then
-//! `grid_t`, `grid_h`, `grid_w` and 0, in patches. The rows of a segment are the patch rows of each span whole, in
-//! `f32`, in the order of the records.
+//! `grid_t`, `grid_h`, `grid_w` and 0, in patches. A latent record has the kind 5, then the width of a row and three
+//! 0. The rows of a segment are the rows of each span whole, in `f32`, in the order of the records: the patch rows of
+//! an image, and one row of 2,304 values for each latent position.
 
 use std::ops::Range;
 
 pub use nagaya_text_inkling2::media::{Grid, IMAGE_KIND, IMAGE_TOKEN, PATCH_VALUES, RECORD_BYTES};
 use nagaya_text_inkling2::processor::{MAX_PATCH_SIDE, MERGE};
 
-/// One image span of `meta`.
+use crate::host::ops::HIDDEN;
+
+/// The kind of a latent span in a record: rows of the width of the residual that take the place of the normed
+/// embedding rows of their positions (engine-abi "The lab of Inkling 2", "Latent rows").
+pub const LATENT_KIND: u32 = 5;
+
+/// The placeholder of a latent position: `<|endoftext|>`, `pad_token_id` of `generation_config.json`.
+pub const LATENT_TOKEN: u32 = 199_999;
+
+/// What a span holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shape {
+    /// An image of a grid of image tokens.
+    Image(Grid),
+    /// Latent rows, one for each of a count of positions.
+    Latent(usize),
+}
+
+/// One span of `meta`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Span {
-    /// The grid of the image in image tokens.
-    pub grid: Grid,
+    pub shape: Shape,
     /// The first position of the span.
     pub first: u64,
 }
 
 impl Span {
-    /// The count of positions: one for each image token.
+    /// The span of an image of `grid` from position `first`.
+    pub fn image(grid: Grid, first: u64) -> Span {
+        Span {
+            shape: Shape::Image(grid),
+            first,
+        }
+    }
+
+    /// The span of `count` latent rows from position `first`.
+    pub fn latent(count: usize, first: u64) -> Span {
+        Span {
+            shape: Shape::Latent(count),
+            first,
+        }
+    }
+
+    /// The grid of an image span, or `None` for latent rows.
+    pub fn grid(&self) -> Option<Grid> {
+        match self.shape {
+            Shape::Image(grid) => Some(grid),
+            Shape::Latent(_) => None,
+        }
+    }
+
+    /// The count of positions: one for each image token, or for each latent row.
     pub fn count(&self) -> usize {
-        self.grid.tokens()
+        match self.shape {
+            Shape::Image(grid) => grid.tokens(),
+            Shape::Latent(count) => count,
+        }
     }
 
     /// The positions of the span.
@@ -31,9 +77,20 @@ impl Span {
         self.first..self.first + self.count() as u64
     }
 
-    /// The bytes of its patch rows in the rows of the segment.
+    /// The bytes of its rows in the rows of the segment.
     pub fn bytes(&self) -> usize {
-        self.grid.patches() * PATCH_VALUES * 4
+        match self.shape {
+            Shape::Image(grid) => grid.patches() * PATCH_VALUES * 4,
+            Shape::Latent(count) => count * HIDDEN * 4,
+        }
+    }
+
+    /// The token that each position of the span holds.
+    pub fn placeholder(&self) -> u32 {
+        match self.shape {
+            Shape::Image(_) => IMAGE_TOKEN,
+            Shape::Latent(_) => LATENT_TOKEN,
+        }
     }
 }
 
@@ -52,9 +109,27 @@ pub fn decode(meta: &[u8]) -> Result<Vec<Span>, String> {
         let first = u64::from_le_bytes(record[8..16].try_into().expect("8 bytes"));
         let (kind, count) = (word(0) as u32, word(4));
         let [grid_t, grid_h, grid_w, last] = [word(16), word(20), word(24), word(28)];
+        if kind == LATENT_KIND {
+            if [grid_t, grid_h, grid_w, last] != [HIDDEN, 0, 0, 0] {
+                return Err(format!(
+                    "media record {i} is a latent span with the words {:?}; it names the width of its rows, {HIDDEN}, \
+                     then 0, 0 and 0",
+                    [grid_t, grid_h, grid_w, last]
+                ));
+            }
+            if count == 0 || first.checked_add(count as u64).is_none() {
+                return Err(format!(
+                    "media record {i} is a latent span of {count} positions from {first}; it holds 1 or more \
+                     positions before the last position"
+                ));
+            }
+            spans.push(Span::latent(count, first));
+            continue;
+        }
         if kind != IMAGE_KIND {
             return Err(format!(
-                "media record {i} has the kind {kind}; the Inkling 2 engine reads images only, the kind {IMAGE_KIND}"
+                "media record {i} has the kind {kind}; the Inkling 2 engine reads images, the kind {IMAGE_KIND}, and \
+                 latent rows, the kind {LATENT_KIND}"
             ));
         }
         if grid_t != 1 || last != 0 {
@@ -85,7 +160,7 @@ pub fn decode(meta: &[u8]) -> Result<Vec<Span>, String> {
                 "media record {i} starts at position {first}, past the last position"
             ));
         }
-        spans.push(Span { grid, first });
+        spans.push(Span::image(grid, first));
     }
     Ok(spans)
 }
@@ -107,8 +182,9 @@ pub struct SpanUse {
 /// block reads.
 ///
 /// - Each span reads at least one position of the block, and the spans do not overlap.
-/// - Each position of a span in the block holds the placeholder. Each placeholder of the block is in a span, so no
-///   placeholder enters the model as its embedding row.
+/// - Each position of a span in the block holds the placeholder of its kind. Each image placeholder of the block is
+///   in a span, so no image placeholder enters the model as its embedding row. The latent placeholder is a token of
+///   the vocabulary, so it can be outside a span.
 /// - The rows are the rows of every span whole, and nothing more.
 pub fn check_spans(spans: &[Span], tokens: &[u32], pos0: u64, rows: usize) -> Result<Vec<SpanUse>, String> {
     let end = pos0 + tokens.len() as u64;
@@ -135,11 +211,11 @@ pub fn check_spans(spans: &[Span], tokens: &[u32], pos0: u64, rows: usize) -> Re
         let (lo, hi) = (p.start.max(pos0), p.end.min(end));
         for at in lo..hi {
             let t = (at - pos0) as usize;
-            if tokens[t] != IMAGE_TOKEN {
+            if tokens[t] != span.placeholder() {
                 return Err(format!(
-                    "position {at} is in media record {i}, and it holds the token {}, not the image placeholder \
-                     {IMAGE_TOKEN}",
-                    tokens[t]
+                    "position {at} is in media record {i}, and it holds the token {}, not the placeholder {}",
+                    tokens[t],
+                    span.placeholder()
                 ));
             }
             covered[t] = true;
