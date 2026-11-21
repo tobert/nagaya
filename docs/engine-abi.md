@@ -1618,6 +1618,11 @@ Opus 5.5, 2026-11-21).
   - The distance and the log scale read absolute positions, never a row of a ring.
   - The sink enters once for each query and head. The merge of the partial sums starts from `(sink, 1, 0)`. Thus
     the sink adds to the sum, and not to the output.
+  - The chunks of keys sit on a grid of absolute key positions. Each kind of layer has one chunk size: 256 keys on
+    a sliding layer, and 2,048 on a full layer. Thus the terms of a position come in the same order in each block.
+  - A decode step is a block of one position. It has no op of its own, because another op would sum in another
+    order. The card test counts the values of a decode step that differ from the block.
+  - Each rule of the two items above is **Proposed** (Claude Opus 5.5, 2026-11-21).
 - **The gate of each op.** Each device op has a host form in `src/host/`, and the card test of the op compares
   them. The expansion gives equal bits. An op that sums gives the bits of its host form in the same order, or a
   measured gap that its test names.

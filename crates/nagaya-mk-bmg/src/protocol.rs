@@ -114,6 +114,11 @@ pub const OP_OUTPUT_GATE: u16 = 153;
 pub const OP_RESIDUAL_CONV: u16 = 154;
 /// The router of sigmoid scores with a bias: 8 picks in ascending expert order.
 pub const OP_SIGMOID_ROUTER: u16 = 155;
+/// The partial sums of the attention of Inkling 2 for each chunk of keys, with the relative bias
+/// (`kernels/inkling2_attn_ops.cl`).
+pub const OP_INKLING2_ATTN: u16 = 160;
+/// The merge of the chunks of `OP_INKLING2_ATTN`, with the sink of each head.
+pub const OP_INKLING2_ATTN_SUM: u16 = 161;
 /// The `bf16` bits of the repacked NVFP4 planes of an expert: the check of the expansion that the expert ops use.
 pub const OP_EXPAND_NVFP4: u16 = 140;
 /// The `bf16` bits of the repacked MXFP8 planes of an expert.

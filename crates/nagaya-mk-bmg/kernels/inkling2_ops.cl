@@ -106,3 +106,4 @@
                 C[i] = s;
             }
         }
+#include "inkling2_attn_ops.cl"
