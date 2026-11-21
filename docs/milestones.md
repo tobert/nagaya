@@ -316,8 +316,8 @@ below come from its `config.json` and `modeling_inkling2_loop.py`.
   gate and 25 on the up row. The logits have a softcap of 30.
 - **Weights.** One file of about 20 GB. The experts of layers 0 to 19 are NVFP4, and those of layers 20 to 23 are
   MXFP8. The rest is `bf16` and `f32`. The B70 has no FP4 unit, so the kernels expand the values.
-- **Other parts.** A ViT of 23 layers for images of 40 to 4,096 px. An MTP head of 3 layers that drafts blocks of
-  8 tokens. A tiktoken vocabulary of 201,024 entries. A template with `reasoning_effort` from 0.0 to 0.99.
+- **Other parts.** A ViT of 23 layers for images of up to 4,096 px on each side. An MTP head of 3 layers that drafts
+  blocks of 8 tokens. A tiktoken vocabulary of 201,024 entries. A template with `reasoning_effort` from 0.0 to 0.99.
 
 The cost on a card: the weights stay in the formats of the checkpoint, about 19.5 GB. Expanded to `bf16`, the
 experts alone take 49 GB. The keys and values are `f32`, so a slot of 32,768 positions takes about 2.9 GiB
@@ -422,8 +422,9 @@ Do the steps in this order. Each step ends with the checks green.
      within 2.1e-5 of the oracle and the logsumexp within 3.8e-6. The three splits give the same bits, and the same
      split twice too. The tower runs once for each image, also for image 1 in 4 blocks. One block takes 523 ms.
    - Open: the time of the tower for an image of 10,609 tokens, against `max_quantum_ms`.
-   - Each side of an image is 40 to 4,096 px, as the model card says, so an image has at most 10,609 tokens. Amy,
-     2026-11-21: "yep, match the model card. use the 4096 rule". The council never resizes an image.
+   - Each side of an image is 1 to 4,096 px, so an image has at most 10,609 tokens. Amy, 2026-11-21: "yep, match
+     the model card. use the 4096 rule". A side below 40 px pads, as the reference does. Amy chose it the same day,
+     when the gogi suite sent an image of 8 by 8 px. The council never resizes an image.
 10. **Drafts.** The MTP head drafts tokens, and a pass checks them. This step waits (question 3).
 11. **Long contexts.** The model reads up to 1,048,576 positions. Measure the ledger cost and the speed at 256K.
 12. **Trial and review.** A trial with Amy, and a kaibo review round with a cast of another model family.

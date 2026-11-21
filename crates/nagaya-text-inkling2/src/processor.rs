@@ -13,9 +13,9 @@ pub const MERGE: usize = 2;
 pub const PATCH_VALUES: usize = PATCH_PX * PATCH_PX * 3;
 /// The placeholder of an image token, `<|unused_200054|>` (`image_token_id` of the config).
 pub const IMAGE_TOKEN: u32 = 200_054;
-/// The sides of an image in px that the family accepts: the range of the model card (engine-abi "Sizes"). The
-/// largest image has `MAX_TOKENS` image tokens, 103 by 103.
-pub const MIN_SIDE: usize = 40;
+/// The sides of an image in px that the family accepts (engine-abi "Sizes"): up to the 4,096 px of the model card. A
+/// side below 40 px pads to 40 px, as the reference pads it. The largest image has `MAX_TOKENS` tokens, 103 by 103.
+pub const MIN_SIDE: usize = 1;
 pub const MAX_SIDE: usize = 4096;
 pub const MAX_TOKENS: usize = MAX_SIDE.div_ceil(TOKEN_PX) * MAX_SIDE.div_ceil(TOKEN_PX);
 /// The most patch lines or columns of one image.
@@ -47,13 +47,13 @@ impl Grid {
     }
 }
 
-/// The grid of an image of `width x height` px (`image_processing_inkling2.py:87`). A side outside 40 to 4,096 px
-/// is refused, as the model card advises. The council never resizes an image.
+/// The grid of an image of `width x height` px (`image_processing_inkling2.py:87`). A side past 4,096 px is refused,
+/// at the bound of the model card. The council never resizes an image.
 pub fn grid(width: usize, height: usize) -> Result<Grid, String> {
     if !(MIN_SIDE..=MAX_SIDE).contains(&width) || !(MIN_SIDE..=MAX_SIDE).contains(&height) {
         return Err(format!(
-            "the image is {width} x {height} px. Each side must be {MIN_SIDE} to {MAX_SIDE} px. Send an image of \
-             that size."
+            "the image is {width} x {height} px. Each side must be {MIN_SIDE} to {MAX_SIDE} px. Send an image with \
+             each side {MAX_SIDE} px or less."
         ));
     }
     Ok(Grid {

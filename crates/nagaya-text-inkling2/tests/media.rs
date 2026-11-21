@@ -139,16 +139,25 @@ fn a_jpeg_decodes_within_2_of_pillow_and_its_grid_is_the_grid_of_the_processor()
 }
 
 #[test]
-fn a_side_outside_40_to_4096_px_is_refused_from_the_header() {
-    for (w, h) in [(39, 40), (40, 39), (4097, 40), (40, 4097)] {
+fn a_side_past_4096_px_is_refused_from_the_header_and_a_small_one_pads() {
+    for (w, h) in [(4097, 40), (40, 4097)] {
         let e = media::grid(&png_of(w, h), "image/png").unwrap_err();
         let MediaError::Size(why) = &e else {
             panic!("{w} x {h}: {e:?}");
         };
-        assert!(why.contains("40 to 4096 px"), "{why}");
+        assert!(why.contains("1 to 4096 px"), "{why}");
+        assert!(why.ends_with("4096 px or less."), "{why}");
         assert!(media::prepare(&png_of(w, h), "image/png").is_err());
     }
-    for (w, h, tokens) in [(40, 40, 1), (4096, 40, 103), (41, 81, 6)] {
+    // A small image pads to 40 px, as the reference pads it: one token (Amy, 2026-11-21).
+    for (w, h, tokens) in [
+        (1, 1, 1),
+        (8, 8, 1),
+        (39, 40, 1),
+        (40, 40, 1),
+        (4096, 40, 103),
+        (41, 81, 6),
+    ] {
         assert_eq!(media::grid(&png_of(w, h), "image/png").unwrap().tokens(), tokens);
     }
     assert!(matches!(
@@ -360,7 +369,7 @@ fn an_image_that_the_family_cannot_read_is_a_400_that_names_its_part() {
         (
             "a side of 4,097 px",
             user(json!([{"type": "text", "text": "hi"}, image(WIDE, "image/png")])),
-            "40 to 4096 px",
+            "1 to 4096 px",
         ),
         (
             "bytes that are no PNG",

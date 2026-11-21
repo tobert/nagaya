@@ -1602,10 +1602,12 @@ come from transformers `inkling2` at `046bdb8cc2`. Each rule is **Proposed** (Cl
 - **The meta of a span.** It is the record of "The LFM3 vision binding": the kind 1, the count of positions, the
   first position, then `grid_t = 1`, `grid_h = 2 * rows`, `grid_w = 2 * columns` and 0. The grid counts patches.
   Reason: one reader and one rule serve both engines, because the span has `grid_t * grid_h * grid_w / 4` positions.
-- **Sizes.** The family accepts each side of 40 to 4,096 px, the range of the model card. Another image is a 400
-  that names the part, and the council never resizes an image. Thus an image has at most 103 by 103 = 10,609 image
-  tokens. @tobert decided this on 2026-11-21: "yep, match the model card. use the 4096 rule". The model card says:
-  "each image dimension should be between 40px to 4096px".
+- **Sizes.** The family accepts each side of 1 to 4,096 px. A side past 4,096 px is a 400 that names the part, and
+  the council never resizes an image. Thus an image has at most 103 by 103 = 10,609 image tokens. @tobert decided
+  the bound on 2026-11-21: "yep, match the model card. use the 4096 rule". The model card says: "For optimal
+  performance, each image dimension should be between 40px to 4096px".
+- A side below 40 px pads to 40 px, as the reference pads it. Thus a small image has one token. @tobert chose this
+  on 2026-11-21. Reason: the 40 px of the model card is advice for quality, and the reference accepts a small image.
 
 **What the engine runs.** The tower runs over each image of the pass alone: its class row and its `4 * T` patches,
 for `T` image tokens. These are the steps:

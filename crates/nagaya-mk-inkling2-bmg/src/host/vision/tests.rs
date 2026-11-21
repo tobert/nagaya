@@ -3,7 +3,7 @@
 use super::*;
 
 #[test]
-fn the_grid_counts_tokens_of_40_px_and_refuses_sides_outside_40_to_4096_px() {
+fn the_grid_counts_tokens_of_40_px_and_refuses_sides_outside_1_to_4096_px() {
     assert_eq!(grid(213, 118), Ok(Grid { rows: 3, columns: 6 }));
     assert_eq!(grid(637, 479), Ok(Grid { rows: 12, columns: 16 }));
     assert_eq!(grid(40, 40), Ok(Grid { rows: 1, columns: 1 }));
@@ -14,9 +14,13 @@ fn the_grid_counts_tokens_of_40_px_and_refuses_sides_outside_40_to_4096_px() {
     assert_eq!(grid(4096, 4096).map(Grid::tokens), Ok(MAX_TOKENS));
     assert_eq!(MAX_TOKENS, 10_609);
     assert_eq!(grid(4032, 3024).map(Grid::tokens), Ok(7_676));
-    for (w, h) in [(0, 40), (40, 0), (39, 40), (40, 39), (1, 1), (4097, 40), (40, 4097)] {
+    // A small image pads to 40 px, as the reference pads it (engine-abi "Sizes").
+    assert_eq!(grid(1, 1), Ok(Grid { rows: 1, columns: 1 }));
+    assert_eq!(grid(8, 8), Ok(Grid { rows: 1, columns: 1 }));
+    assert_eq!(grid(39, 40), Ok(Grid { rows: 1, columns: 1 }));
+    for (w, h) in [(0, 40), (40, 0), (4097, 40), (40, 4097)] {
         let e = grid(w, h).unwrap_err();
-        assert!(e.contains("40 to 4096 px"), "{e}");
+        assert!(e.contains("1 to 4096 px"), "{e}");
     }
     let g = Grid { rows: 3, columns: 6 };
     assert_eq!((g.tokens(), g.patches(), g.meta_grid()), (18, 72, [1, 6, 12]));
