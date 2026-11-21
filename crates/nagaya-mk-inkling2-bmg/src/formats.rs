@@ -103,6 +103,14 @@ pub fn expert_factor(amax: f32, denominator: f32) -> f32 {
     amax / denominator
 }
 
+/// The factor of one expert as the reference loader makes it: `amax` and `denominator` are each rounded to `bf16`,
+/// and then divided in `f32`. The engine uses this factor, so its weights are the weights of the oracle (engine-abi
+/// "Inkling 2").
+pub fn reference_expert_factor(amax: f32, denominator: f32) -> f32 {
+    let widen = |value: f32| f32::from_bits(u32::from(f32_to_bf16(value)) << 16);
+    expert_factor(widen(amax), widen(denominator))
+}
+
 /// Expand one row of an NVFP4 expert to `bf16` bits.
 ///
 /// `codes` holds two E2M1 codes in each byte, and the even element is the low nibble. `scales` holds one E4M3 byte for

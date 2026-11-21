@@ -1517,6 +1517,11 @@ engine declares no `layer_loops`.
 card. Thus the experts stay in the format of the checkpoint: NVFP4 in layers 0 to 19, and MXFP8 in layers 20 to 23.
 
 - A kernel expands each value as the reference does: the product in `f32`, then a round to `bf16`.
+- The factor of an NVFP4 expert is `amax / denominator`. The loader of the reference rounds each of the two to
+  `bf16` first, and the engine does the same (`reference_expert_factor`). Reason: then the weights of the engine are
+  the weights of the oracle. In 3 of 4 slices, the `f32` factor moves 148 to 1,294 values (Proposed, ChatGPT by
+  kaibo `gpt-plan`, 2026-11-21).
+- A loader of a later transformers that moves these bits is a new engine identity, and the gap is measured again.
 - In the checkpoint, row `2i` of `w13` is the gate row `i`, and row `2i + 1` is the up row `i`. The engine keeps
   that order.
 - The other weights keep the dtype of the checkpoint: `bf16`, and `f32` for the queries of the residuals, the

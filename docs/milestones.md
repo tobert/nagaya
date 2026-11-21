@@ -343,7 +343,7 @@ The questions of the plan, and their answers:
    drafts miss more often.
 4. **The effort.** The template writes `Thinking effort level: <n>` from a number of 0.0 to 0.99, and a gogi context
    has only `thinking: true | false`. Proposed: `false` gives 0 and `true` gives the default of the template, 0.9.
-   A number for the levels between them is a later change of gogi. Open for Amy.
+   A number for the levels between them is a later change of gogi. Amy agreed on 2026-11-21.
 
 Do the steps in this order. Each step ends with the checks green.
 
@@ -363,6 +363,8 @@ Do the steps in this order. Each step ends with the checks green.
    thinking block and the tool calls, the escapes and the council rendering. Fixtures of the reference.
 4. **Weights.** The safetensors reader for NVFP4, MXFP8 and `f32`. A host op expands each format, and it is the
    oracle of the device op. The card gate is equal bits.
+   - The host ops are done (`24ab9dc`): the bits of the reference on 8 real slices and on edge cases. A scan of the
+     checkpoint found no NaN code. The factor of an expert follows the loader of the reference.
 5. **The text engine, 3 cycles.** The ops: the relative bias, the sinks, the clips, the log scale, the convolutions,
    the attention residuals, the gates, the routing and the experts. Prefill, decode and snapshots. Card gates
    against the oracle, and two plans with equal bits.

@@ -119,6 +119,33 @@ fn the_expansion_equals_the_reference_bits_when_the_loader_casts_the_factor() {
     assert_eq!(real, 4);
 }
 
+/// The engine takes the factor of the reference loader from the `f32` tensors of the checkpoint (engine-abi
+/// "Inkling 2"). A model loaded through transformers gave these bits on 2026-11-21.
+#[test]
+fn the_factor_of_the_reference_comes_from_the_f32_tensors_of_the_checkpoint() {
+    let doc = fixture();
+    let mut real = 0;
+    for case in doc["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|c| c["format"] == "nvfp4" && c["kind"] != "synthetic")
+    {
+        real += 1;
+        let factor = reference_expert_factor(
+            hex_f32(case["amax_bits"].as_str().unwrap()),
+            hex_f32(case["denominator_bits"].as_str().unwrap()),
+        );
+        assert_eq!(
+            expand_case(case, factor),
+            hex_u16(&case["expected_loader_cast"]),
+            "{}",
+            case["source"]
+        );
+    }
+    assert_eq!(real, 4);
+}
+
 #[test]
 fn the_rows_of_w13_deinterleave_as_in_the_reference() {
     let doc = fixture();
