@@ -1,0 +1,1678 @@
+{
+ "header": {
+  "tool": "tools/inkling2_family_fixture.py",
+  "models": {
+   "mini": {
+    "revision": "ed40e7da625f594fc9c4990f5f66be24873c22d7",
+    "files": {
+     "tokenizer.json": "7f332727f9a3f093dd452a39cc978e6757627e5dad1b0673aa4e75174f236dd6",
+     "tokenizer_config.json": "bf09342d285139fd37ce10c70878af1d52cb390e9901e10248654293a80ee636",
+     "special_tokens_map.json": "c16f44b3594563d82743ddb0417a2be1bfe3e2000dfad2da4b8f32554593e1a0",
+     "chat_template.jinja": "53a9035f3255945704b5857657cfb00c1165090c0641c4f782a0cbf268cc16dc",
+     "generation_config.json": "a08737c07a65a8fdf69f7cf086576210e5aad4b241437090b26d7b0c4f7905f7",
+     "config.json": "a7a349601f0984c4abf999c480ef775d8567d21f5f84b4e8a3e035b44f288dc2"
+    }
+   },
+   "varloop": {
+    "revision": "657b53ba5da7baefe9ff15dca5cd25f5bd3dbaa2",
+    "files": {
+     "tokenizer.json": "7f332727f9a3f093dd452a39cc978e6757627e5dad1b0673aa4e75174f236dd6",
+     "tokenizer_config.json": "bf09342d285139fd37ce10c70878af1d52cb390e9901e10248654293a80ee636",
+     "special_tokens_map.json": "c16f44b3594563d82743ddb0417a2be1bfe3e2000dfad2da4b8f32554593e1a0",
+     "chat_template.jinja": "53a9035f3255945704b5857657cfb00c1165090c0641c4f782a0cbf268cc16dc",
+     "generation_config.json": "a08737c07a65a8fdf69f7cf086576210e5aad4b241437090b26d7b0c4f7905f7",
+     "config.json": "89650f69a824ff354a3d70476c6eb6e09162ed0f5515d9f6e5f5953a44e87ed7"
+    }
+   }
+  },
+  "jinja2": "3.1.6",
+  "tokenizers": "0.23.3",
+  "transformers": "5.24.0.dev0",
+  "transformers_commit": "046bdb8cc2"
+ },
+ "cases": [
+  {
+   "name": "user only",
+   "messages": [
+    {
+     "role": "user",
+     "content": "hi"
+    }
+   ],
+   "tools": null,
+   "variables": {},
+   "text": "<|message_system|><|content_text|>Thinking effort level: 0.9<|end_message|><|message_user|><|content_text|>hi<|end_message|>",
+   "ids": [
+    200002,
+    200004,
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    13,
+    24,
+    200010,
+    200000,
+    200004,
+    1910,
+    200010
+   ]
+  },
+  {
+   "name": "system and user",
+   "messages": [
+    {
+     "role": "system",
+     "content": "  Be brief.  "
+    },
+    {
+     "role": "user",
+     "content": " hi \n"
+    }
+   ],
+   "tools": null,
+   "variables": {},
+   "text": "<|message_system|><|content_text|>  Be brief.  <|end_message|><|message_system|><|content_text|>Thinking effort level: 0.9<|end_message|><|message_user|><|content_text|> hi \n<|end_message|>",
+   "ids": [
+    200002,
+    200004,
+    220,
+    150218,
+    156834,
+    13,
+    149859,
+    200010,
+    200002,
+    200004,
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    13,
+    24,
+    200010,
+    200000,
+    200004,
+    151003,
+    197045,
+    200010
+   ]
+  },
+  {
+   "name": "multi-turn with reasoning",
+   "messages": [
+    {
+     "role": "system",
+     "content": "You are a careful coding agent."
+    },
+    {
+     "role": "user",
+     "content": "List the files, then say done."
+    },
+    {
+     "role": "assistant",
+     "content": "",
+     "reasoning_content": "I should list them.",
+     "tool_calls": [
+      {
+       "type": "function",
+       "function": {
+        "name": "shell",
+        "arguments": {
+         "command": "ls -la",
+         "timeout": 5
+        }
+       },
+       "id": "c0"
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "c0",
+     "content": "a.txt\nb.txt"
+    },
+    {
+     "role": "assistant",
+     "content": "Two files: a.txt and b.txt.",
+     "reasoning_content": "Both are listed."
+    },
+    {
+     "role": "user",
+     "content": "Thanks."
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "shell",
+      "description": "Run a shell command.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string",
+         "description": "the command"
+        },
+        "timeout": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     }
+    }
+   ],
+   "variables": {},
+   "text": "<|message_system|>tool_declare<|content_xml|>[{\"description\":\"Run a shell command.\",\"name\":\"shell\",\"parameters\":{\"properties\":{\"command\":{\"description\":\"the command\",\"type\":\"string\"},\"timeout\":{\"type\":\"integer\"}},\"required\":[\"command\"],\"type\":\"object\"},\"type\":\"function\"}]<|end_message|><|message_system|><|content_text|>You are a careful coding agent.<|end_message|><|message_system|><|content_text|>Thinking effort level: 0.9<|end_message|><|message_user|><|content_text|>List the files, then say done.<|end_message|><|message_model|><|content_thinking|>I should list them.<|end_message|><|message_model|>shell<|content_invoke_tool_json|>{\"name\":\"shell\",\"args\":{\"command\":\"ls -la\",\"timeout\":5}}<|end_message|><|content_model_end_sampling|><|message_tool|>shell<|content_text|>a.txt\nb.txt<|end_message|><|message_model|><|content_thinking|>Both are listed.<|end_message|><|message_model|><|content_text|>Two files: a.txt and b.txt.<|end_message|><|content_model_end_sampling|><|message_user|><|content_text|>Thanks.<|end_message|>",
+   "ids": [
+    200002,
+    2251,
+    62,
+    76529,
+    200024,
+    58,
+    90,
+    1,
+    70469,
+    1,
+    25,
+    1,
+    3906,
+    149878,
+    157364,
+    151441,
+    13,
+    1,
+    11,
+    1,
+    930,
+    1,
+    25,
+    1,
+    4198,
+    1,
+    11,
+    1,
+    71968,
+    1,
+    25,
+    90,
+    1,
+    71961,
+    1,
+    25,
+    90,
+    1,
+    31704,
+    1,
+    25,
+    90,
+    1,
+    70469,
+    1,
+    25,
+    1,
+    268,
+    151441,
+    1,
+    11,
+    1,
+    1008,
+    1,
+    25,
+    1,
+    1485,
+    1,
+    92,
+    11,
+    1,
+    78734,
+    1,
+    25,
+    90,
+    1,
+    1008,
+    1,
+    25,
+    1,
+    4252,
+    1,
+    92,
+    92,
+    11,
+    1,
+    69812,
+    1,
+    25,
+    58,
+    1,
+    31704,
+    1,
+    60,
+    11,
+    1,
+    1008,
+    1,
+    25,
+    1,
+    3156,
+    1,
+    92,
+    11,
+    1,
+    1008,
+    1,
+    25,
+    1,
+    36404,
+    1,
+    92,
+    60,
+    200010,
+    200002,
+    200004,
+    1735,
+    149914,
+    149878,
+    162944,
+    163872,
+    154204,
+    13,
+    200010,
+    200002,
+    200004,
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    13,
+    24,
+    200010,
+    200000,
+    200004,
+    1738,
+    149876,
+    151614,
+    11,
+    150126,
+    150657,
+    151368,
+    13,
+    200010,
+    200001,
+    200008,
+    40,
+    150201,
+    150299,
+    150190,
+    13,
+    200010,
+    200001,
+    4198,
+    200049,
+    90,
+    1,
+    930,
+    1,
+    25,
+    1,
+    4198,
+    1,
+    11,
+    1,
+    70747,
+    1,
+    25,
+    90,
+    1,
+    31704,
+    1,
+    25,
+    1,
+    31354,
+    196973,
+    891,
+    1,
+    11,
+    1,
+    78734,
+    1,
+    25,
+    20,
+    92,
+    92,
+    200010,
+    200006,
+    200003,
+    4198,
+    200004,
+    64,
+    13,
+    4352,
+    198,
+    65,
+    13,
+    4352,
+    200010,
+    200001,
+    200008,
+    4854,
+    149914,
+    158074,
+    13,
+    200010,
+    200001,
+    200004,
+    4348,
+    151614,
+    25,
+    149878,
+    13,
+    4352,
+    149880,
+    149963,
+    13,
+    4352,
+    13,
+    200010,
+    200006,
+    200000,
+    200004,
+    78028,
+    13,
+    200010
+   ]
+  },
+  {
+   "name": "tools and no system",
+   "messages": [
+    {
+     "role": "user",
+     "content": "go"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "shell",
+      "description": "Run a shell command.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string",
+         "description": "the command"
+        },
+        "timeout": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "typed",
+      "description": "Take one value of each type.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "s": {
+         "type": "string"
+        },
+        "i": {
+         "type": "integer"
+        },
+        "x": {
+         "type": "number"
+        },
+        "b": {
+         "type": "boolean"
+        },
+        "n": {
+         "type": "null"
+        },
+        "o": {
+         "type": "object"
+        },
+        "a": {
+         "type": "array"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "variables": {},
+   "text": "<|message_system|>tool_declare<|content_xml|>[{\"description\":\"Run a shell command.\",\"name\":\"shell\",\"parameters\":{\"properties\":{\"command\":{\"description\":\"the command\",\"type\":\"string\"},\"timeout\":{\"type\":\"integer\"}},\"required\":[\"command\"],\"type\":\"object\"},\"type\":\"function\"},{\"description\":\"Take one value of each type.\",\"name\":\"typed\",\"parameters\":{\"properties\":{\"a\":{\"type\":\"array\"},\"b\":{\"type\":\"boolean\"},\"i\":{\"type\":\"integer\"},\"n\":{\"type\":\"null\"},\"o\":{\"type\":\"object\"},\"s\":{\"type\":\"string\"},\"x\":{\"type\":\"number\"}},\"type\":\"object\"},\"type\":\"function\"}]<|end_message|><|message_system|><|content_text|>Thinking effort level: 0.9<|end_message|><|message_user|><|content_text|>go<|end_message|>",
+   "ids": [
+    200002,
+    2251,
+    62,
+    76529,
+    200024,
+    58,
+    90,
+    1,
+    70469,
+    1,
+    25,
+    1,
+    3906,
+    149878,
+    157364,
+    151441,
+    13,
+    1,
+    11,
+    1,
+    930,
+    1,
+    25,
+    1,
+    4198,
+    1,
+    11,
+    1,
+    71968,
+    1,
+    25,
+    90,
+    1,
+    71961,
+    1,
+    25,
+    90,
+    1,
+    31704,
+    1,
+    25,
+    90,
+    1,
+    70469,
+    1,
+    25,
+    1,
+    268,
+    151441,
+    1,
+    11,
+    1,
+    1008,
+    1,
+    25,
+    1,
+    1485,
+    1,
+    92,
+    11,
+    1,
+    78734,
+    1,
+    25,
+    90,
+    1,
+    1008,
+    1,
+    25,
+    1,
+    4252,
+    1,
+    92,
+    92,
+    11,
+    1,
+    69812,
+    1,
+    25,
+    58,
+    1,
+    31704,
+    1,
+    60,
+    11,
+    1,
+    1008,
+    1,
+    25,
+    1,
+    3156,
+    1,
+    92,
+    11,
+    1,
+    1008,
+    1,
+    25,
+    1,
+    36404,
+    1,
+    92,
+    11,
+    90,
+    1,
+    70469,
+    1,
+    25,
+    1,
+    31862,
+    150011,
+    150149,
+    149879,
+    150154,
+    150227,
+    13,
+    1,
+    11,
+    1,
+    930,
+    1,
+    25,
+    1,
+    114152,
+    1,
+    11,
+    1,
+    71968,
+    1,
+    25,
+    90,
+    1,
+    71961,
+    1,
+    25,
+    90,
+    1,
+    64,
+    1,
+    25,
+    90,
+    1,
+    1008,
+    1,
+    25,
+    1,
+    1525,
+    1,
+    92,
+    11,
+    1,
+    65,
+    1,
+    25,
+    90,
+    1,
+    1008,
+    1,
+    25,
+    1,
+    61007,
+    1,
+    92,
+    11,
+    1,
+    72,
+    1,
+    25,
+    90,
+    1,
+    1008,
+    1,
+    25,
+    1,
+    4252,
+    1,
+    92,
+    11,
+    1,
+    77,
+    1,
+    25,
+    90,
+    1,
+    1008,
+    1,
+    25,
+    1,
+    2451,
+    1,
+    92,
+    11,
+    1,
+    78,
+    1,
+    25,
+    90,
+    1,
+    1008,
+    1,
+    25,
+    1,
+    3156,
+    1,
+    92,
+    11,
+    1,
+    82,
+    1,
+    25,
+    90,
+    1,
+    1008,
+    1,
+    25,
+    1,
+    1485,
+    1,
+    92,
+    11,
+    1,
+    87,
+    1,
+    25,
+    90,
+    1,
+    1008,
+    1,
+    25,
+    1,
+    1158,
+    1,
+    92,
+    92,
+    11,
+    1,
+    1008,
+    1,
+    25,
+    1,
+    3156,
+    1,
+    92,
+    11,
+    1,
+    1008,
+    1,
+    25,
+    1,
+    36404,
+    1,
+    92,
+    60,
+    200010,
+    200002,
+    200004,
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    13,
+    24,
+    200010,
+    200000,
+    200004,
+    850,
+    200010
+   ]
+  },
+  {
+   "name": "call arguments of each type",
+   "messages": [
+    {
+     "role": "user",
+     "content": "go"
+    },
+    {
+     "role": "assistant",
+     "tool_calls": [
+      {
+       "type": "function",
+       "function": {
+        "name": "typed",
+        "arguments": {
+         "z": 1,
+         "A": 2,
+         "s": "a b",
+         "i": -2,
+         "x": 0.5,
+         "b": true,
+         "n": null,
+         "o": {
+          "k": [
+           1,
+           "v"
+          ]
+         },
+         "a": [
+          1,
+          2.5,
+          "x"
+         ],
+         "u": "naïve “q”"
+        }
+       },
+       "id": "c1"
+      }
+     ]
+    },
+    {
+     "role": "tool",
+     "tool_call_id": "c1",
+     "content": "ok"
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "typed",
+      "description": "Take one value of each type.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "s": {
+         "type": "string"
+        },
+        "i": {
+         "type": "integer"
+        },
+        "x": {
+         "type": "number"
+        },
+        "b": {
+         "type": "boolean"
+        },
+        "n": {
+         "type": "null"
+        },
+        "o": {
+         "type": "object"
+        },
+        "a": {
+         "type": "array"
+        }
+       }
+      }
+     }
+    }
+   ],
+   "variables": {},
+   "text": "<|message_system|>tool_declare<|content_xml|>[{\"description\":\"Take one value of each type.\",\"name\":\"typed\",\"parameters\":{\"properties\":{\"a\":{\"type\":\"array\"},\"b\":{\"type\":\"boolean\"},\"i\":{\"type\":\"integer\"},\"n\":{\"type\":\"null\"},\"o\":{\"type\":\"object\"},\"s\":{\"type\":\"string\"},\"x\":{\"type\":\"number\"}},\"type\":\"object\"},\"type\":\"function\"}]<|end_message|><|message_system|><|content_text|>Thinking effort level: 0.9<|end_message|><|message_user|><|content_text|>go<|end_message|><|message_model|>typed<|content_invoke_tool_json|>{\"name\":\"typed\",\"args\":{\"A\":2,\"a\":[1,2.5,\"x\"],\"b\":true,\"i\":-2,\"n\":null,\"o\":{\"k\":[1,\"v\"]},\"s\":\"a b\",\"u\":\"naïve “q”\",\"x\":0.5,\"z\":1}}<|end_message|><|content_model_end_sampling|><|message_tool|>typed<|content_text|>ok<|end_message|>",
+   "ids": [
+    200002,
+    2251,
+    62,
+    76529,
+    200024,
+    58,
+    90,
+    1,
+    70469,
+    1,
+    25,
+    1,
+    31862,
+    150011,
+    150149,
+    149879,
+    150154,
+    150227,
+    13,
+    1,
+    11,
+    1,
+    930,
+    1,
+    25,
+    1,
+    114152,
+    1,
+    11,
+    1,
+    71968,
+    1,
+    25,
+    90,
+    1,
+    71961,
+    1,
+    25,
+    90,
+    1,
+    64,
+    1,
+    25,
+    90,
+    1,
+    1008,
+    1,
+    25,
+    1,
+    1525,
+    1,
+    92,
+    11,
+    1,
+    65,
+    1,
+    25,
+    90,
+    1,
+    1008,
+    1,
+    25,
+    1,
+    61007,
+    1,
+    92,
+    11,
+    1,
+    72,
+    1,
+    25,
+    90,
+    1,
+    1008,
+    1,
+    25,
+    1,
+    4252,
+    1,
+    92,
+    11,
+    1,
+    77,
+    1,
+    25,
+    90,
+    1,
+    1008,
+    1,
+    25,
+    1,
+    2451,
+    1,
+    92,
+    11,
+    1,
+    78,
+    1,
+    25,
+    90,
+    1,
+    1008,
+    1,
+    25,
+    1,
+    3156,
+    1,
+    92,
+    11,
+    1,
+    82,
+    1,
+    25,
+    90,
+    1,
+    1008,
+    1,
+    25,
+    1,
+    1485,
+    1,
+    92,
+    11,
+    1,
+    87,
+    1,
+    25,
+    90,
+    1,
+    1008,
+    1,
+    25,
+    1,
+    1158,
+    1,
+    92,
+    92,
+    11,
+    1,
+    1008,
+    1,
+    25,
+    1,
+    3156,
+    1,
+    92,
+    11,
+    1,
+    1008,
+    1,
+    25,
+    1,
+    36404,
+    1,
+    92,
+    60,
+    200010,
+    200002,
+    200004,
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    13,
+    24,
+    200010,
+    200000,
+    200004,
+    850,
+    200010,
+    200001,
+    114152,
+    200049,
+    90,
+    1,
+    930,
+    1,
+    25,
+    1,
+    114152,
+    1,
+    11,
+    1,
+    70747,
+    1,
+    25,
+    90,
+    1,
+    32,
+    1,
+    25,
+    17,
+    11,
+    1,
+    64,
+    1,
+    25,
+    58,
+    16,
+    11,
+    17,
+    13,
+    20,
+    11,
+    1,
+    87,
+    1,
+    60,
+    11,
+    1,
+    65,
+    1,
+    25,
+    1750,
+    11,
+    1,
+    72,
+    1,
+    25,
+    12,
+    17,
+    11,
+    1,
+    77,
+    1,
+    25,
+    2451,
+    11,
+    1,
+    78,
+    1,
+    25,
+    90,
+    1,
+    74,
+    1,
+    25,
+    58,
+    16,
+    11,
+    1,
+    85,
+    1,
+    60,
+    92,
+    11,
+    1,
+    82,
+    1,
+    25,
+    1,
+    64,
+    149963,
+    1,
+    11,
+    1,
+    84,
+    1,
+    25,
+    1,
+    1364,
+    5169,
+    290,
+    150060,
+    80,
+    23068,
+    1,
+    11,
+    1,
+    87,
+    1,
+    25,
+    15,
+    13,
+    20,
+    11,
+    1,
+    89,
+    1,
+    25,
+    16,
+    92,
+    92,
+    200010,
+    200006,
+    200003,
+    114152,
+    200004,
+    873,
+    200010
+   ]
+  },
+  {
+   "name": "image part",
+   "messages": [
+    {
+     "role": "system",
+     "content": "Describe."
+    },
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "image"
+      },
+      {
+       "type": "text",
+       "text": "what is this?"
+      }
+     ]
+    }
+   ],
+   "tools": null,
+   "variables": {},
+   "text": "<|message_system|><|content_text|>Describe.<|end_message|><|message_system|><|content_text|>Thinking effort level: 0.9<|end_message|><|message_user|><|content_image|><|unused_200054|><|end_message|><|message_user|><|content_text|>what is this?<|end_message|>",
+   "ids": [
+    200002,
+    200004,
+    30777,
+    39891,
+    13,
+    200010,
+    200002,
+    200004,
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    13,
+    24,
+    200010,
+    200000,
+    200005,
+    200054,
+    200010,
+    200000,
+    200004,
+    1420,
+    149884,
+    149928,
+    30,
+    200010
+   ]
+  },
+  {
+   "name": "effort none",
+   "messages": [
+    {
+     "role": "user",
+     "content": "hi"
+    }
+   ],
+   "tools": null,
+   "variables": {
+    "reasoning_effort": "none"
+   },
+   "text": "<|message_system|><|content_text|>Thinking effort level: 0<|end_message|><|message_user|><|content_text|>hi<|end_message|>",
+   "ids": [
+    200002,
+    200004,
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    200010,
+    200000,
+    200004,
+    1910,
+    200010
+   ]
+  },
+  {
+   "name": "effort minimal",
+   "messages": [
+    {
+     "role": "user",
+     "content": "hi"
+    }
+   ],
+   "tools": null,
+   "variables": {
+    "reasoning_effort": "minimal"
+   },
+   "text": "<|message_system|><|content_text|>Thinking effort level: 0.1<|end_message|><|message_user|><|content_text|>hi<|end_message|>",
+   "ids": [
+    200002,
+    200004,
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    13,
+    16,
+    200010,
+    200000,
+    200004,
+    1910,
+    200010
+   ]
+  },
+  {
+   "name": "effort low",
+   "messages": [
+    {
+     "role": "user",
+     "content": "hi"
+    }
+   ],
+   "tools": null,
+   "variables": {
+    "reasoning_effort": "low"
+   },
+   "text": "<|message_system|><|content_text|>Thinking effort level: 0.2<|end_message|><|message_user|><|content_text|>hi<|end_message|>",
+   "ids": [
+    200002,
+    200004,
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    13,
+    17,
+    200010,
+    200000,
+    200004,
+    1910,
+    200010
+   ]
+  },
+  {
+   "name": "effort medium",
+   "messages": [
+    {
+     "role": "user",
+     "content": "hi"
+    }
+   ],
+   "tools": null,
+   "variables": {
+    "reasoning_effort": "medium"
+   },
+   "text": "<|message_system|><|content_text|>Thinking effort level: 0.7<|end_message|><|message_user|><|content_text|>hi<|end_message|>",
+   "ids": [
+    200002,
+    200004,
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    13,
+    22,
+    200010,
+    200000,
+    200004,
+    1910,
+    200010
+   ]
+  },
+  {
+   "name": "effort high",
+   "messages": [
+    {
+     "role": "user",
+     "content": "hi"
+    }
+   ],
+   "tools": null,
+   "variables": {
+    "reasoning_effort": "high"
+   },
+   "text": "<|message_system|><|content_text|>Thinking effort level: 0.9<|end_message|><|message_user|><|content_text|>hi<|end_message|>",
+   "ids": [
+    200002,
+    200004,
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    13,
+    24,
+    200010,
+    200000,
+    200004,
+    1910,
+    200010
+   ]
+  },
+  {
+   "name": "effort xhigh",
+   "messages": [
+    {
+     "role": "user",
+     "content": "hi"
+    }
+   ],
+   "tools": null,
+   "variables": {
+    "reasoning_effort": "xhigh"
+   },
+   "text": "<|message_system|><|content_text|>Thinking effort level: 0.99<|end_message|><|message_user|><|content_text|>hi<|end_message|>",
+   "ids": [
+    200002,
+    200004,
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    13,
+    68436,
+    200010,
+    200000,
+    200004,
+    1910,
+    200010
+   ]
+  },
+  {
+   "name": "effort max",
+   "messages": [
+    {
+     "role": "user",
+     "content": "hi"
+    }
+   ],
+   "tools": null,
+   "variables": {
+    "reasoning_effort": "max"
+   },
+   "text": "<|message_system|><|content_text|>Thinking effort level: 0.99<|end_message|><|message_user|><|content_text|>hi<|end_message|>",
+   "ids": [
+    200002,
+    200004,
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    13,
+    68436,
+    200010,
+    200000,
+    200004,
+    1910,
+    200010
+   ]
+  },
+  {
+   "name": "effort number",
+   "messages": [
+    {
+     "role": "user",
+     "content": "hi"
+    }
+   ],
+   "tools": null,
+   "variables": {
+    "reasoning_effort": 0.42
+   },
+   "text": "<|message_system|><|content_text|>Thinking effort level: 0.42<|end_message|><|message_user|><|content_text|>hi<|end_message|>",
+   "ids": [
+    200002,
+    200004,
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    13,
+    68872,
+    200010,
+    200000,
+    200004,
+    1910,
+    200010
+   ]
+  },
+  {
+   "name": "effort zero",
+   "messages": [
+    {
+     "role": "user",
+     "content": "hi"
+    }
+   ],
+   "tools": null,
+   "variables": {
+    "reasoning_effort": 0.0
+   },
+   "text": "<|message_system|><|content_text|>Thinking effort level: 0<|end_message|><|message_user|><|content_text|>hi<|end_message|>",
+   "ids": [
+    200002,
+    200004,
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    200010,
+    200000,
+    200004,
+    1910,
+    200010
+   ]
+  },
+  {
+   "name": "no messages",
+   "messages": [],
+   "tools": null,
+   "variables": {},
+   "text": "<|message_system|><|content_text|>Thinking effort level: 0.9<|end_message|>",
+   "ids": [
+    200002,
+    200004,
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    13,
+    24,
+    200010
+   ]
+  },
+  {
+   "name": "refuse unknown effort",
+   "messages": [
+    {
+     "role": "user",
+     "content": "hi"
+    }
+   ],
+   "tools": null,
+   "variables": {
+    "reasoning_effort": "ultra"
+   },
+   "error": "TemplateError: Unknown reasoning_effort: ultra"
+  },
+  {
+   "name": "refuse effort negative",
+   "messages": [
+    {
+     "role": "user",
+     "content": "hi"
+    }
+   ],
+   "tools": null,
+   "variables": {
+    "reasoning_effort": -0.1
+   },
+   "error": "TemplateError: reasoning_effort must be in [0.0, 0.99]"
+  },
+  {
+   "name": "refuse effort too high",
+   "messages": [
+    {
+     "role": "user",
+     "content": "hi"
+    }
+   ],
+   "tools": null,
+   "variables": {
+    "reasoning_effort": 1.0
+   },
+   "error": "TemplateError: reasoning_effort must be in [0.0, 0.99]"
+  },
+  {
+   "name": "refuse unknown role",
+   "messages": [
+    {
+     "role": "developer",
+     "content": "hi"
+    }
+   ],
+   "tools": null,
+   "variables": {},
+   "error": "TemplateError: Unknown message role: developer"
+  },
+  {
+   "name": "refuse image on assistant",
+   "messages": [
+    {
+     "role": "assistant",
+     "content": [
+      {
+       "type": "image"
+      }
+     ]
+    }
+   ],
+   "tools": null,
+   "variables": {},
+   "error": "TemplateError: Image content is only supported for user and tool messages"
+  },
+  {
+   "name": "refuse audio part",
+   "messages": [
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "audio"
+      }
+     ]
+    }
+   ],
+   "tools": null,
+   "variables": {},
+   "error": "TemplateError: Inkling 2 does not accept audio input"
+  },
+  {
+   "name": "refuse unsupported part",
+   "messages": [
+    {
+     "role": "user",
+     "content": [
+      {
+       "type": "video"
+      }
+     ]
+    }
+   ],
+   "tools": null,
+   "variables": {},
+   "error": "TemplateError: Unsupported content part type: video"
+  },
+  {
+   "name": "refuse string arguments",
+   "messages": [
+    {
+     "role": "user",
+     "content": "go"
+    },
+    {
+     "role": "assistant",
+     "tool_calls": [
+      {
+       "type": "function",
+       "function": {
+        "name": "shell",
+        "arguments": "{\"command\": \"ls\"}"
+       }
+      }
+     ]
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "shell",
+      "description": "Run a shell command.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string",
+         "description": "the command"
+        },
+        "timeout": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     }
+    }
+   ],
+   "variables": {},
+   "error": "TemplateError: tool call arguments must be a parsed object, not a JSON string; canonicalize upstream"
+  },
+  {
+   "name": "refuse assistant name mismatch",
+   "messages": [
+    {
+     "role": "user",
+     "content": "go"
+    },
+    {
+     "role": "assistant",
+     "name": "other",
+     "tool_calls": [
+      {
+       "type": "function",
+       "function": {
+        "name": "shell",
+        "arguments": {
+         "command": "ls"
+        }
+       }
+      }
+     ]
+    }
+   ],
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "shell",
+      "description": "Run a shell command.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string",
+         "description": "the command"
+        },
+        "timeout": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     }
+    }
+   ],
+   "variables": {},
+   "error": "TemplateError: assistant name other does not match its tool call shell"
+  }
+ ]
+}

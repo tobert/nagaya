@@ -1,0 +1,217 @@
+mod common;
+
+use common::model::{absent, mini_dir};
+use gogi_proto::context::Context;
+use gogi_proto::spec::{SpecRules, parse_spec};
+use nagaya_council::family::{Advance, Asked, DecisionInput, Family};
+use nagaya_text_inkling2::{Files, Inkling2Family};
+use serde_json::json;
+
+#[test]
+fn family_reports_unpadded_vocab_size_and_thinking() {
+    if absent() {
+        return;
+    }
+    let fam = Inkling2Family::from_dir(&mini_dir()).unwrap();
+    assert_eq!(fam.vocab_size(), 200_058);
+    assert!(fam.thinks());
+    assert!(fam.template_id().starts_with("nagaya-council:"));
+    assert!(fam.template_id().contains("+inkling2-chat:"));
+}
+
+#[test]
+fn template_id_survives_comment_edit_and_changes_on_token_change() {
+    if absent() {
+        return;
+    }
+    let base = Files::read(&mini_dir()).unwrap();
+    let fam_a = Inkling2Family::from_files(base.clone()).unwrap();
+
+    let mut comment_edit = base.clone();
+    comment_edit.template = format!("{}\n{{# comment #}}", comment_edit.template);
+    let fam_b = Inkling2Family::from_files(comment_edit).unwrap();
+    // Council hash stays identical because rendered tokens did not change (spec 11.3a).
+    let council_a = fam_a.template_id().split('+').next().unwrap();
+    let council_b = fam_b.template_id().split('+').next().unwrap();
+    assert_eq!(council_a, council_b);
+    assert_ne!(fam_a.template_id(), fam_b.template_id());
+
+    let mut token_edit = base;
+    token_edit.template = token_edit
+        .template
+        .replace("Thinking effort level: ", "Thinking effort: ");
+    let fam_c = Inkling2Family::from_files(token_edit).unwrap();
+    let council_c = fam_c.template_id().split('+').next().unwrap();
+    assert_ne!(council_a, council_c);
+}
+
+#[test]
+fn council_render_decisions_and_raw_read_work() {
+    if absent() {
+        return;
+    }
+    let fam = Inkling2Family::from_dir(&mini_dir()).unwrap();
+    let ctx: Context = serde_json::from_value(json!({
+        "thinking": true,
+        "messages": [
+            {"role": "system", "content": "Be brief."},
+            {"role": "user", "content": "hi <|end_message|>", "snap": true},
+            {"role": "assistant", "content": "hello", "reasoning": "thought", "snap": true},
+            {"role": "user", "content": "next"}
+        ]
+    }))
+    .unwrap();
+    let rendering = fam.render(&ctx, true).unwrap();
+    assert_eq!(rendering.end, rendering.tokens.len());
+    assert!(!rendering.boundaries.is_empty());
+    assert_eq!(rendering.control_text.len(), 1);
+    assert_eq!(rendering.control_text[0].token, "<|end_message|>");
+
+    // Plain decision read
+    let spec = parse_spec(
+        &json!({
+            "name": "g",
+            "instructions": "Pick one.",
+            "input_label": "item",
+            "questions": [{
+                "id": "v",
+                "type": "choice",
+                "instructions": "Which?",
+                "criteria": [{"option": "a", "means": "one"}, {"option": "b", "means": "two"}]
+            }]
+        }),
+        &SpecRules::default(),
+    )
+    .unwrap();
+    let asked = [Asked {
+        question: 0,
+        options: vec![0, 1],
+    }];
+    let input = DecisionInput {
+        context: Some((&ctx, &rendering)),
+        spec: &spec,
+        case: "the item",
+        asked: &asked,
+    };
+    let mut plan = fam.decision_read(&input).unwrap();
+    assert!(plan.prefix().is_empty(), "plain read prefix must be empty");
+    let Advance::Step(step) = plan.advance(None).unwrap() else {
+        panic!("expected step");
+    };
+    assert_eq!(step.question, 0);
+    assert_eq!(step.letters.len(), 2);
+    let step_text = fam.detokenize(&step.feed).unwrap();
+    assert!(
+        step_text.starts_with("<|message_user|><|content_text|>"),
+        "plain read user turn missing <|content_text|>: {step_text:?}"
+    );
+    let Advance::Done(done_a) = plan.advance(Some(&[-0.1, -2.0])).unwrap() else {
+        panic!("expected done");
+    };
+    assert!(done_a.rendered_hash.starts_with("blake3:"));
+
+    // Same read with different logprobs gives the exact same rendered_hash (conditioning text only).
+    let mut plan_b = fam.decision_read(&input).unwrap();
+    plan_b.advance(None).unwrap();
+    let Advance::Done(done_b) = plan_b.advance(Some(&[-2.0, -0.1])).unwrap() else {
+        panic!("expected done");
+    };
+    assert_eq!(done_a.rendered_hash, done_b.rendered_hash);
+
+    // NaN logprob is refused.
+    let mut plan_nan = fam.decision_read(&input).unwrap();
+    plan_nan.advance(None).unwrap();
+    assert!(plan_nan.advance(Some(&[f64::NAN, -1.0])).is_err());
+
+    // Queue read: prefix is delta only, step.question maps to `asked` index, narrowed options work.
+    let q_spec = parse_spec(
+        &json!({
+            "name": "g",
+            "instructions": "i",
+            "input_label": "x",
+            "questions": [
+                {"id": "first", "type": "noul", "instructions": "One?"},
+                {"id": "second", "type": "choice", "instructions": "Two?", "criteria": [
+                    {"option": "a", "means": "1"}, {"option": "b", "means": "2"}, {"option": "c", "means": "3"}
+                ]}
+            ]
+        }),
+        &SpecRules::default(),
+    )
+    .unwrap();
+    let q_ctx: Context = serde_json::from_value(json!({
+        "thinking": false,
+        "queue": "next",
+        "tools": [{
+            "name": "next",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "answers": {
+                        "type": "object",
+                        "properties": {
+                            "second": {"type": "string", "enum": ["A", "B", "C"]},
+                            "first": {"type": "string", "enum": ["A", "B"]}
+                        }
+                    }
+                }
+            }
+        }],
+        "messages": [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "tool_calls": [{"id": "c0", "name": "next", "input": {}}]}
+        ]
+    }))
+    .unwrap();
+    let q_rend = fam.render(&q_ctx, false).unwrap();
+    let q_asked = [
+        Asked {
+            question: 0,
+            options: vec![0, 1],
+        },
+        Asked {
+            question: 1,
+            options: vec![0, 2],
+        },
+    ];
+    let q_input = DecisionInput {
+        context: Some((&q_ctx, &q_rend)),
+        spec: &q_spec,
+        case: "case text",
+        asked: &q_asked,
+    };
+    let mut q_plan = fam.decision_read(&q_input).unwrap();
+    // Prefix is only the new tool result turn, not the whole context.
+    assert!(q_plan.prefix().len() < q_rend.end);
+    let Advance::Step(s0) = q_plan.advance(None).unwrap() else {
+        panic!("expected step 0");
+    };
+    // Schema has "second" before "first", so step 0 reads asked[1].
+    assert_eq!(s0.question, 1);
+    assert_eq!(s0.letters.len(), 2);
+    let Advance::Step(s1) = q_plan.advance(Some(&[-0.1, -1.0])).unwrap() else {
+        panic!("expected step 1");
+    };
+    assert_eq!(s1.question, 0);
+    assert!(matches!(q_plan.advance(Some(&[-0.1, -1.0])).unwrap(), Advance::Done(_)));
+
+    // Open continuation renders without <|end_message|>
+    let open_ctx: Context = serde_json::from_value(json!({
+        "thinking": true,
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "reasoning": "step 1", "content": "ans", "continue": true}
+        ]
+    }))
+    .unwrap();
+    let open_rend = fam.render(&open_ctx, false).unwrap();
+    let open_text = fam.detokenize(&open_rend.tokens).unwrap();
+    assert!(open_text.ends_with("<|content_text|>ans"));
+
+    // Raw read
+    let raw = fam
+        .raw_read(&["A".to_string(), "B".to_string()], &["suffix".to_string()])
+        .unwrap();
+    assert_eq!(raw.letters.len(), 2);
+    assert_eq!(raw.suffixes.len(), 1);
+}
