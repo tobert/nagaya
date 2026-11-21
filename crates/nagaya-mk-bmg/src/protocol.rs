@@ -101,6 +101,19 @@ pub const OP_LFM3_IRFFT: u16 = 122;
 pub const OP_SUBSAMPLE: u16 = 110;
 
 // The ops of the Inkling 2 binary (`kernels/inkling2_ops.cl`, `MK_INKLING2`): opcodes 140 to 169.
+// The layer-part ops of the Inkling 2 binary (`kernels/inkling2_layer_ops.cl`): opcodes 150 to 159.
+/// The attention residual: the softmax mix of the normed block outputs and the partial row, for 1 to 4 queries.
+pub const OP_ATTN_RESIDUAL: u16 = 150;
+/// The message gate of a cycle: `(1 - forget) * h + gain * m`.
+pub const OP_MESSAGE_GATE: u16 = 151;
+/// The L2 clip, or the RMS norm of no weight, of each head, with the log scale of a full layer.
+pub const OP_HEAD_CLIP: u16 = 152;
+/// The sigmoid gate of the attention output, value by value.
+pub const OP_OUTPUT_GATE: u16 = 153;
+/// The short convolution of kernel 4 with its residual, with fixed or dynamic taps.
+pub const OP_RESIDUAL_CONV: u16 = 154;
+/// The router of sigmoid scores with a bias: 8 picks in ascending expert order.
+pub const OP_SIGMOID_ROUTER: u16 = 155;
 /// The `bf16` bits of the repacked NVFP4 planes of an expert: the check of the expansion that the expert ops use.
 pub const OP_EXPAND_NVFP4: u16 = 140;
 /// The `bf16` bits of the repacked MXFP8 planes of an expert.

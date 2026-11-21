@@ -1,6 +1,7 @@
 // The ops of the Inkling 2 binary (MK_INKLING2). Each op is one `else if (op == ...)` branch of the task loop of
 // megakernel.cl, which includes this file, so each op sees the locals of the loop. The opcodes must match
 // src/protocol.rs. The host form of each op is in crates/nagaya-mk-inkling2-bmg/src/host.
+#include "inkling2_layer_ops.cl"
         else if (op == OP_EXPAND_NVFP4) {
             // c[row, col] = the bf16 bits of the NVFP4 planes a (codes) and b (scales) of m rows and k columns, rows
             // in the order of the planes. The factor of the expert is the f32 of p0. A check of the expansion: the
