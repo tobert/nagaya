@@ -101,6 +101,7 @@ pub struct WithContextTerm {
     log: ControlLog,
     seen: Option<Seen>,
     segments: u32,
+    starts: Arc<AtomicU64>,
 }
 
 impl Control for WithContextTerm {
@@ -139,6 +140,7 @@ impl Engine for WithContextTerm {
     }
 
     fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
+        self.starts.fetch_add(1, Ordering::SeqCst);
         std::thread::sleep(self.delay);
         if let Some(segment) = segments.first() {
             let taps = taps.iter().map(|tap| tap.name.clone()).collect();
@@ -261,6 +263,9 @@ pub struct TermFactory {
     pub segments: u32,
     /// The log of the segments of each pass, or none.
     pub seen: Option<Seen>,
+    /// The count of passes that began, before their delay. A test waits for the first one to know that a job holds
+    /// its slot and its claims.
+    pub starts: Arc<AtomicU64>,
 }
 
 impl TermFactory {
@@ -283,6 +288,7 @@ impl TermFactory {
             log: ControlLog::default(),
             seen: None,
             segments: 1,
+            starts: Arc::default(),
         }
     }
 
@@ -315,6 +321,7 @@ impl TermFactory {
             log: self.log.clone(),
             seen: self.seen.clone(),
             segments: self.segments,
+            starts: Arc::clone(&self.starts),
         }
     }
 }
