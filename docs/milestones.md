@@ -429,6 +429,20 @@ Do the steps in this order. Each step ends with the checks green.
 10. **Drafts.** The MTP head drafts tokens, and a pass checks them. This step waits (question 3).
 11. **Long contexts.** The model reads up to 1,048,576 positions. Measure the ledger cost and the speed at 256K.
 12. **Trial and review.** A trial with Amy, and a kaibo review round with a cast of another model family.
+    - Round 1 ran on 2026-11-21 with DeepSeek, Gemini and ChatGPT (`gpt-plan`). The cast `gpt` had no credits.
+    - Not taken: Gemini said the window reads 2,048 keys and the block outputs overflow. The window is 1,024
+      (`inkling2_attn_helpers.cl:24`), `BLOCK` is 6 (`host/weights.rs:22`), and the card gates of the window and
+      of the 24 messages pass.
+    - To fix, after step 8 merges, with a test each:
+      - `extra_runs` changes the parts of a state but not the identity, so two reserves share one recipe.
+      - The plan checks the shape of a few tensors only, and the load panics on a tensor that is not there.
+      - A snapshot holds the stale rows of the reserve that a count does not reach. Thus one recipe can get two
+        content ids. A restore loses the count of the slot, so its first pass can run at another count.
+      - The probe of the oracle clears a slot before it checks the probe. `last_error` is never cleared.
+      - The ABI still says that a pass with rows is refused, and that images come in step 9.
+      - The family's template is not compared with the template of the identity, and the template id does not
+        cover the placeholders of an image.
+      - The tower of an image of 10,609 tokens is not measured against `max_quantum_ms` of 2,000 ms.
 
 **Speed.** Each finding about the speed of the engine goes into milestone 36, not into this milestone.
 
