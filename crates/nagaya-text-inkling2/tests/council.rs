@@ -94,14 +94,119 @@ fn council_render_decisions_and_raw_read_work() {
         asked: &asked,
     };
     let mut plan = fam.decision_read(&input).unwrap();
+    assert!(plan.prefix().is_empty(), "plain read prefix must be empty");
     let Advance::Step(step) = plan.advance(None).unwrap() else {
         panic!("expected step");
     };
+    assert_eq!(step.question, 0);
     assert_eq!(step.letters.len(), 2);
-    let Advance::Done(done) = plan.advance(Some(&[-0.1, -2.0])).unwrap() else {
+    let step_text = fam.detokenize(&step.feed).unwrap();
+    assert!(
+        step_text.starts_with("<|message_user|><|content_text|>"),
+        "plain read user turn missing <|content_text|>: {step_text:?}"
+    );
+    let Advance::Done(done_a) = plan.advance(Some(&[-0.1, -2.0])).unwrap() else {
         panic!("expected done");
     };
-    assert!(done.rendered_hash.starts_with("blake3:"));
+    assert!(done_a.rendered_hash.starts_with("blake3:"));
+
+    // Same read with different logprobs gives the exact same rendered_hash (conditioning text only).
+    let mut plan_b = fam.decision_read(&input).unwrap();
+    plan_b.advance(None).unwrap();
+    let Advance::Done(done_b) = plan_b.advance(Some(&[-2.0, -0.1])).unwrap() else {
+        panic!("expected done");
+    };
+    assert_eq!(done_a.rendered_hash, done_b.rendered_hash);
+
+    // NaN logprob is refused.
+    let mut plan_nan = fam.decision_read(&input).unwrap();
+    plan_nan.advance(None).unwrap();
+    assert!(plan_nan.advance(Some(&[f64::NAN, -1.0])).is_err());
+
+    // Queue read: prefix is delta only, step.question maps to `asked` index, narrowed options work.
+    let q_spec = parse_spec(
+        &json!({
+            "name": "g",
+            "instructions": "i",
+            "input_label": "x",
+            "questions": [
+                {"id": "first", "type": "noul", "instructions": "One?"},
+                {"id": "second", "type": "choice", "instructions": "Two?", "criteria": [
+                    {"option": "a", "means": "1"}, {"option": "b", "means": "2"}, {"option": "c", "means": "3"}
+                ]}
+            ]
+        }),
+        &SpecRules::default(),
+    )
+    .unwrap();
+    let q_ctx: Context = serde_json::from_value(json!({
+        "thinking": false,
+        "queue": "next",
+        "tools": [{
+            "name": "next",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "answers": {
+                        "type": "object",
+                        "properties": {
+                            "second": {"type": "string", "enum": ["A", "B", "C"]},
+                            "first": {"type": "string", "enum": ["A", "B"]}
+                        }
+                    }
+                }
+            }
+        }],
+        "messages": [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "tool_calls": [{"id": "c0", "name": "next", "input": {}}]}
+        ]
+    }))
+    .unwrap();
+    let q_rend = fam.render(&q_ctx, false).unwrap();
+    let q_asked = [
+        Asked {
+            question: 0,
+            options: vec![0, 1],
+        },
+        Asked {
+            question: 1,
+            options: vec![0, 2],
+        },
+    ];
+    let q_input = DecisionInput {
+        context: Some((&q_ctx, &q_rend)),
+        spec: &q_spec,
+        case: "case text",
+        asked: &q_asked,
+    };
+    let mut q_plan = fam.decision_read(&q_input).unwrap();
+    // Prefix is only the new tool result turn, not the whole context.
+    assert!(q_plan.prefix().len() < q_rend.end);
+    let Advance::Step(s0) = q_plan.advance(None).unwrap() else {
+        panic!("expected step 0");
+    };
+    // Schema has "second" before "first", so step 0 reads asked[1].
+    assert_eq!(s0.question, 1);
+    assert_eq!(s0.letters.len(), 2);
+    let Advance::Step(s1) = q_plan.advance(Some(&[-0.1, -1.0])).unwrap() else {
+        panic!("expected step 1");
+    };
+    assert_eq!(s1.question, 0);
+    assert!(matches!(q_plan.advance(Some(&[-0.1, -1.0])).unwrap(), Advance::Done(_)));
+
+    // Open continuation renders without <|end_message|>
+    let open_ctx: Context = serde_json::from_value(json!({
+        "thinking": true,
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "reasoning": "step 1", "content": "ans", "continue": true}
+        ]
+    }))
+    .unwrap();
+    let open_rend = fam.render(&open_ctx, false).unwrap();
+    let open_text = fam.detokenize(&open_rend.tokens).unwrap();
+    assert!(open_text.ends_with("<|content_text|>ans"));
 
     // Raw read
     let raw = fam

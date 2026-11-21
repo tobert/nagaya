@@ -139,6 +139,19 @@ pub(crate) fn messages_json(messages: &[Message]) -> Result<Vec<Json>, FamilyErr
 
 /// All client strings in a message, for control-text reporting.
 pub(crate) fn message_strings(m: &Message) -> Vec<&str> {
+    fn walk_value<'a>(v: &'a Value, out: &mut Vec<&'a str>) {
+        match v {
+            Value::String(s) => out.push(s.as_str()),
+            Value::Array(a) => a.iter().for_each(|x| walk_value(x, out)),
+            Value::Object(m) => {
+                for (k, val) in m {
+                    out.push(k.as_str());
+                    walk_value(val, out);
+                }
+            }
+            _ => {}
+        }
+    }
     let mut out = Vec::new();
     match &m.content {
         Some(Content::Text(s)) => out.push(s.as_str()),
@@ -153,6 +166,13 @@ pub(crate) fn message_strings(m: &Message) -> Vec<&str> {
     }
     if let Some(r) = &m.reasoning {
         out.push(r.as_str());
+    }
+    for tc in &m.tool_calls {
+        out.push(tc.name.as_str());
+        for (k, v) in &tc.input {
+            out.push(k.as_str());
+            walk_value(v, &mut out);
+        }
     }
     out
 }
