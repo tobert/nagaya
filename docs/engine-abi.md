@@ -1544,7 +1544,8 @@ card. Thus the experts stay in the format of the checkpoint: NVFP4 in layers 0 t
 
 **The cost of a slot.** At 3 cycles, 8 runs of the full layers hold cells: 65,536 bytes of each position. The 40
 runs of the sliding layers hold rings of 2,048 rows and a spill of 1,024 rows, as for LFM3: 960 MiB. The conv parts
-take 3.8 MB. Thus a slot of 32,768 positions takes about 3.0 GiB. Each more cycle adds 2 runs of cells and 10 rings.
+take 3.8 MB. Thus a slot of 32,768 positions takes 3,157,950,464 bytes, about 2.9 GiB. Each more cycle adds 2 runs
+of cells and 10 rings.
 - A ring holds more rows than the window of 1,024. Reason: a block of 512 writes its keys before its attention
   reads them. Its first query still needs the key 1,023 positions before it. The keys of one block can span
   1,535 positions (review by ChatGPT through kaibo, 2026-11-21).
@@ -1628,6 +1629,45 @@ Opus 5.5, 2026-11-21).
 - **The buffers of a block.** All are `f32`: the residual, the block outputs, the block outputs of the cycle
   before, and the input of the cycles. The block outputs hold at most 4 rows of each position. The engine copies the
   residual and the block outputs after layer 5, and each cycle starts from the copy.
+
+**The host spec.** `src/spec.rs` holds the rules of the engine that need no card. These rules are **Proposed**
+(Claude Opus 5.5, 2026-11-21).
+
+- **The config.** The kind is `mk-inkling2-bmg`, and its config has four keys:
+  - `model_dir` names the model folder. It has no default, because one kind serves two models.
+  - `slots` is a count of slots of 32,768 positions, or a list of the positions of each slot, from short to long.
+    A slot holds 1 to 1,048,576 positions, the `model_max_length` of the config.
+  - `max_block` is the feed block: 512 when the key is absent, and 1 to 512.
+  - `extra_runs` is the reserve of each slot: 24 when the key is absent, and 24, 36 or 48. Reason: a reserve of
+    less than 24 cannot run the default of 3 cycles.
+- **The model.** The open reads `config.json` and checks each field that the ops read, with its value. Another
+  value is refused, and the message names the field and the value. `loop_config.is_varloop` is false for Mini and
+  true for the research model. The two configs differ in no other field.
+- **The runs.** Until `cycles` comes in step 7, each pass runs 3 cycles, and the engine declares no `cycles` limit.
+  State `l` of a slot holds the run of layer `l` outside the cycles, or in cycle 1. Cycle `c` of 2 or more uses
+  entries `12 * (c - 2)` to `12 * (c - 2) + 11` of the reserve.
+- **Slot sizes.** A slot of 2,048 positions or fewer holds every position in each sliding run. A longer slot holds
+  a ring of 2,048 rows and a spill of 1,024 in each sliding run.
+  - A slot of 32,768 positions takes 3,157,950,464 bytes with a reserve of 24, and 4,736,925,696 with 48.
+  - A slot of 262,144 positions takes 18,190,336,000 bytes with a reserve of 24.
+- **A restore of a ring part** must hold the last 1,024 positions, the window of a sliding layer.
+- **Tokens.** A token id of 200,058 or more is refused. Reason: the rows past the unpadded vocabulary are padding
+  of the head and the embedding.
+- **The term `weights`.** The plan counts the bytes of the header, and it reads no weight bytes (spec 2.4).
+  - Each expert matrix is one slab of `repack::expert_slab`: the codes, the scales, and one `f32` factor of each
+    expert for NVFP4. The tensors `amax` and `outer_scale_denominator` go into the factors.
+  - The embedding and the head hold their first 200,058 rows. Each other tensor of `model.llm.` keeps its bytes.
+  - Each allocation rounds up to 64 bytes. Mini gives 18,880,455,680 bytes.
+  - The tensors of `model.visual.` wait for images (step 9). Another tensor is refused, and so is a missing one.
+- **The term `work`.** It is the buffers of a block (`spec::block_buffers`), the logits and the ring of the card.
+  The list of buffers follows "The ring of one run", and the ring builder of step 5 changes it. The scratch of the
+  attention follows `OP_ATTN_STREAM` with 24 heads, until the new op names its own.
+- **The other terms.** `kv` is the sum of the slots, on `device(0)`. `pinned` is host memory: the tasks, the
+  statistics and a staging buffer of 64 MiB, as for LFM3.
+- **The limits.** One segment in each pass, and 16 logit rows. `max_quantum_ms` is 2,000, a budget that a card
+  test measures later. The capabilities are `parts`, `slots`, `coverage` and `close`.
+- **Not declared yet.** `control`, `layer_loops` and the tap `residual`. The tap comes with the plan of its buffer
+  in step 8. A pass with a control list, a layer loop, rows or `meta` is refused.
 
 ## Not covered yet
 

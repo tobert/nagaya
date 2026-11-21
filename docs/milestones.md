@@ -319,7 +319,7 @@ below come from its `config.json` and `modeling_inkling2_loop.py`.
   8 tokens. A tiktoken vocabulary of 201,024 entries. A template with `reasoning_effort` from 0.0 to 0.99.
 
 The cost on a card: the weights stay in the formats of the checkpoint, about 19.5 GB. Expanded to `bf16`, the
-experts alone take 49 GB. The keys and values are `f32`, so a slot of 32,768 positions takes about 3.0 GiB
+experts alone take 49 GB. The keys and values are `f32`, so a slot of 32,768 positions takes about 2.9 GiB
 (`docs/engine-abi.md`, "Inkling 2"). Thus a card of 32 GiB holds the weights and about 3 such slots.
 
 The names are `nagaya-mk-inkling2-bmg` and `nagaya-text-inkling2`. The family is `inkling2`. Each model is an engine
