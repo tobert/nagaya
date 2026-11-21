@@ -5006,6 +5006,9 @@ research model (milestone 35, engine-abi "Inkling 2"). Each rule below is **Prop
 - **On demand.** The factory describes an engine with no load (11.1): the identity and the limits come from the
   folder, sysfs and the Level Zero driver. The checkpoint digest reads every tensor, so the description of each start
   reads about 20 GB. An open that reports another identity than its description is an error.
+- **Images.** The served model lists `media.inputs` of `image/png` and `image/jpeg`. The process gives the family its
+  reader of objects, as for LFM3 (11.11, "Objects"). The engine runs the tower inside the pass (engine-abi "The images
+  of Inkling 2").
 - **Cycles.** The served model declares `cycles` with the limit of the engine (11.17). The research model is trained
   at 1 to 5 cycles. Mini is post-trained at 3, so another count on Mini runs outside its training.
 

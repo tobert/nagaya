@@ -1676,8 +1676,34 @@ family library. It is the oracle of the family and of the device ops.
 - **The weights** of the tower and the rotary table take 636,825,472 bytes (`vision::WEIGHTS_BYTES`).
 - **The merge.** The class row and the patch rows are one buffer. The projector reads the rows after the class row
   as `T` rows of 4,096 values, so the merge needs no op.
-- **Open: the cost of a large image.** An image of 10,609 tokens meets 21 feed blocks of 512, and the pattern of
-  LFM3 runs the tower once for each block. A later step can keep the rows of the tower for the blocks of one span.
+
+**The choices of the pass.** These rules tie the tower to a pass of the engine. Each one is **Proposed** (Claude
+Opus 5.5, 2026-11-21). Reason: each is the rule of "The LFM3 vision binding" or of its code, and the docs leave the
+choice open.
+
+- **Inputs.** The engine declares `tokens+rows`. Both models hold the tower, so both declare it. A segment of tokens
+  alone, with no `meta`, is a text block, as for LFM3.
+- **The records.** The engine reads the record of "The meta of a span" with the kind 1 only. `grid_t` is 1, and the
+  fourth word is 0. `grid_h` and `grid_w` are even, from 2 to 206 patches, and the count of positions is
+  `grid_h * grid_w / 4`. Another record is refused, and the message names the record.
+- **The rows of a segment.** They are the rows of each span whole, in the order of the records. A span of `T`
+  positions has `4 * T` rows of 1,200 `f32` values.
+- **Placeholders.** Each position of a span in the block holds the placeholder 200,054. Each placeholder in the
+  block is in a span. Thus the count of placeholders of an image equals its count of projector rows. A pass that
+  breaks either rule is refused, so a placeholder never enters the model as its embedding row.
+- **A span longer than a block.** Each pass that holds positions of a span gets the rows of the whole span. The
+  engine keeps the projector rows of the last image that the tower ran, with its grid and the BLAKE3 of its rows. A
+  later block of the same image copies its rows from them, and the tower does not run again. Reason: an image of
+  10,609 tokens meets 21 feed blocks of 512. The tower of one image gives the same bits in each run, so the bits do
+  not change. The LFM3 engine does the same (`HeldRows`).
+- **The place.** The tower of each span runs in launches of its own, before the launches of the pass. A copy then
+  puts the projector rows of the block's positions into the media rows of the block. In the first launch of the pass,
+  after the norm of the embedding, a copy puts the media rows over the rows of the placeholders.
+- **The memory terms.** The term `vision` holds the weights of the tower, 636,825,472 bytes. The term `work` adds
+  the buffers of the tower, the patch rows, the taps and the projector rows of the largest image. It also adds the
+  media rows of a block, 2,304 `f32` values for each position. For a block of 512 that is 1,870,588,096 bytes more.
+- **Open: the time of a large image.** The tower of an image of 10,609 tokens runs in the quantum of its first block.
+  A card test measures it later, against `max_quantum_ms`.
 
 ### The first Inkling 2 binding
 
