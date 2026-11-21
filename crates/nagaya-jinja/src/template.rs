@@ -156,7 +156,7 @@ fn py_repr(value: &Value) -> String {
             }
         }
         ValueKind::String => pystr::repr(value.as_str().expect("a string value has text")),
-        ValueKind::Seq => {
+        ValueKind::Seq | ValueKind::Iterable => {
             let items: Vec<String> = value.try_iter().into_iter().flatten().map(|v| py_repr(&v)).collect();
             format!("[{}]", items.join(", "))
         }
@@ -312,7 +312,7 @@ fn write_json(value: &Value, opts: &JsonOptions, out: &mut String) -> Result<(),
         },
         ValueKind::Number => out.push_str(&python_float(f64::try_from(value.clone()).map_err(|e| e.to_string())?)?),
         ValueKind::String => write_json_string(value.as_str().ok_or("a string value has no text")?, out),
-        ValueKind::Seq => {
+        ValueKind::Seq | ValueKind::Iterable => {
             out.push('[');
             for (n, item) in value.try_iter().map_err(|e| e.to_string())?.enumerate() {
                 if n > 0 {

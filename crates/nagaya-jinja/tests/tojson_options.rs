@@ -37,6 +37,7 @@ fn tojson_sort_keys_and_separators_match_python() {
             r#"{{ d | tojson(sort_keys=false, separators=none) }}"#,
             r#"{"b": 1, "a": {"z": 2, "m": [3, 4]}}"#,
         ),
+        (r#"{{ ([1] + [2]) | tojson }}"#, "[1, 2]"),
     ];
     for (source, want) in cases {
         assert_eq!(render(source).as_deref(), Ok(want), "{source}");
