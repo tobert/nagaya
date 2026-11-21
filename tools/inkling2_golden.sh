@@ -7,13 +7,14 @@
 #
 #   INKLING2_MODEL_DIR=<snapshot of thinkingmachines/Inkling-2-Mini> \
 #   INKLING2_VARLOOP_MODEL_DIR=<snapshot of thinkingmachines/TML-d24-varloop-research> \
-#       tools/inkling2_golden.sh [--stages text,layers,cycles,decode]
+#       tools/inkling2_golden.sh [--stages text,layers,cycles,decode,vision]
 #
 # The pinned revisions are Inkling-2-Mini ed40e7da625f594fc9c4990f5f66be24873c22d7 and TML-d24-varloop-research
 # 657b53ba5da7baefe9ff15dca5cd25f5bd3dbaa2. The script refuses another revision.
 #
 # REF_PYTHON names the Python of the reference venv, with no default. The venv holds Python 3.13, torch 2.15.0+cpu,
-# transformers 5.24.0.dev0 from git commit 046bdb8cc2, and safetensors. The files go to $INKLING2_GOLDEN_DIR, or to
+# transformers 5.24.0.dev0 from git commit 046bdb8cc2, and safetensors. The stage "vision" also needs torchvision
+# 0.29.2+cpu and pillow 13.0.0, because the image processor reads them. The files go to $INKLING2_GOLDEN_DIR, or to
 # target/inkling2-golden. Do not commit them.
 #
 # A cycle is one walk through layers 6 to 17. A run is one execution of one layer. At 3 cycles a position has 48 runs:
@@ -31,6 +32,21 @@
 # <model>.decode.safetensors: 8 greedy tokens after "chat" with the cache of the reference.
 #   ids [P] i64, tokens [8] i64, logits [8, 200058] (the logits of the position before each token, with no cache)
 # facts.json: the measured facts: the prompt sizes, the gap of the cache, the greedy text.
+#
+# The stage "vision" runs Mini only, and it writes new files only. Its facts go to vision.facts.json. T is a count of
+# image tokens, and each one is a square of 40 px, or 2 x 2 patches of 20 px. N = 4 T is a count of patches.
+# inkling2-vision-image0.png, inkling2-vision-image1.png: two synthetic RGB images of 213 x 118 and 637 x 479 px, from
+#   fixed seeds. No side is a multiple of 40, so the processor pads each one.
+# inkling2-mini.vision.safetensors, for each image i in 0 and 1:
+#   image<i>.rgb [H, W, 3] i64 (the bytes of the PNG), image<i>.pixel_values [T, 40, 40, 3] (the output of the
+#   processor), image<i>.grid [3] i64 (1, rows, columns of image tokens), image<i>.patch_embed [N, 1024] (the patch
+#   embedding alone), image<i>.embeddings [N + 1, 1024] (the class row, then the patches with their position
+#   embedding), image<i>.pre_layernorm [N + 1, 1024], image<i>.tower [N + 1, 1024] (the output of the last layer),
+#   image<i>.projector [T, 2304] (the rows that replace the placeholders). Image 0 also has image0.layer00 ..
+#   image0.layer22 [N + 1, 1024], the rows after each layer of the tower. The patches go in the order of the merge
+#   blocks. prompt.ids [P] i64: a chat with both images and a question, with the placeholders expanded.
+#   prompt.logits_last [200058]: the logits of its last position at 3 cycles.
+# inkling2-mini.vision.json: that prompt in the format of the oracle, with the top-64 logits and the logsumexp.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 PY="${REF_PYTHON:?set REF_PYTHON to the Python of the reference venv}"
