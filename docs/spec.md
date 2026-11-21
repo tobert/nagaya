@@ -5009,6 +5009,16 @@ research model (milestone 35, engine-abi "Inkling 2"). Each rule below is **Prop
 - **Images.** The served model lists `media.inputs` of `image/png` and `image/jpeg`. The process gives the family its
   reader of objects, as for LFM3 (11.11, "Objects"). The engine runs the tower inside the pass (engine-abi "The images
   of Inkling 2").
+- **Reads.** A plain read follows "The plain read of the LFM3 family" (11.11). Reason: gogi puts the case in a user
+  message of its own, and the template refuses an image in a message of the model. These rules fill the choices of
+  the template:
+  - The template renders the context, the case turn and each question turn with the effort of the context. A read
+    with no context renders with thinking off. Reason: the template writes the effort line before the first message
+    that is not a system message. Thus another effort changes the tokens of the context.
+  - The question turn ends with `<|message_model|><|content_text|>Answer:`. The letter token has a leading space.
+  - Each object of `case_media` is an image part of the case turn ("Media in a decision"). The family expands its
+    placeholder, and it gives the rows and the record of each image, as for an image of a context.
+  - A queue read holds no image. An image part of its context, or a `case_media`, is a 400 that names it.
 - **Cycles.** The served model declares `cycles` with the limit of the engine (11.17). The research model is trained
   at 1 to 5 cycles. Mini is post-trained at 3, so another count on Mini runs outside its training.
 

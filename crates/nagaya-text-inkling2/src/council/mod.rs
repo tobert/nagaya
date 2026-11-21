@@ -260,8 +260,13 @@ impl Inkling2Family {
 
     /// The grid of an image part from the header of its object.
     fn part_grid(&self, part: &ImagePart) -> Result<crate::media::Grid, FamilyError> {
-        let bytes = self.object_bytes(&part.id, &part.param())?;
-        crate::media::grid(&bytes, &part.mime).map_err(|e| media_error(&part.param(), e))
+        self.grid_named(part, &part.param())
+    }
+
+    /// The grid of an image part, with `param` as the request member that an error names.
+    fn grid_named(&self, part: &ImagePart, param: &str) -> Result<crate::media::Grid, FamilyError> {
+        let bytes = self.object_bytes(&part.id, param)?;
+        crate::media::grid(&bytes, &part.mime).map_err(|e| media_error(param, e))
     }
 
     /// The record and the rows of one span of a rendering. The object can leave the store after the render, so an
@@ -270,9 +275,17 @@ impl Inkling2Family {
         &self,
         span: &nagaya_council::family::MediaSpan,
     ) -> Result<nagaya_council::family::MediaInput, FamilyError> {
-        let param = format!("the object {}", span.id);
-        let bytes = self.object_bytes(&span.id, &param)?;
-        let rows = crate::media::prepare(&bytes, &span.mime).map_err(|e| media_error(&param, e))?;
+        self.media_input_named(span, &format!("the object {}", span.id))
+    }
+
+    /// The record and the rows of one span, with `param` as the request member that an error names.
+    fn media_input_named(
+        &self,
+        span: &nagaya_council::family::MediaSpan,
+        param: &str,
+    ) -> Result<nagaya_council::family::MediaInput, FamilyError> {
+        let bytes = self.object_bytes(&span.id, param)?;
+        let rows = crate::media::prepare(&bytes, &span.mime).map_err(|e| media_error(param, e))?;
         if rows.positions() != span.count {
             return Err(FamilyError::internal(format!(
                 "the span of {} has {} positions, and its rows give {}",
@@ -444,16 +457,7 @@ impl Family for Inkling2Family {
     }
 
     fn decision_read(&self, input: &DecisionInput<'_>) -> Result<Box<dyn ReadPlan>, FamilyError> {
-        // engine-abi "The images of Inkling 2", "Decisions": a read holds no image yet.
-        if let Some((context, _)) = input.context
-            && let Some(part) = self.image_parts(context)?.first()
-        {
-            return Err(FamilyError::client_param(
-                part.param(),
-                "nothing ran: a decision of Inkling 2 reads no image yet. Send the decision with a context of text.",
-            ));
-        }
-        read::decision_read(self, input)
+        read::decision_read(self, input, &[])
     }
 
     fn decision_read_with_media(
@@ -461,13 +465,7 @@ impl Family for Inkling2Family {
         input: &DecisionInput<'_>,
         case_media: &[gogi_proto::objects::ObjectRef],
     ) -> Result<Box<dyn ReadPlan>, FamilyError> {
-        if !case_media.is_empty() {
-            return Err(FamilyError::client_param(
-                "case_media[0]",
-                "nothing ran: a decision of Inkling 2 reads no image yet. Send the decision with no case_media.",
-            ));
-        }
-        self.decision_read(input)
+        read::decision_read(self, input, case_media)
     }
 
     fn raw_read(&self, letters: &[String], suffixes: &[String]) -> Result<RawRead, FamilyError> {

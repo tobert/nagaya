@@ -1649,8 +1649,9 @@ family library. It is the oracle of the family and of the device ops.
   each text part is a block of its own, as in the reference. A message of text parts only stays one block.
 - **Roles.** An image part of a `system` or an `assistant` message is a 400 that names the part. The template
   refuses such a part too.
-- **Decisions.** A decision whose context holds an image part, or that names `case_media`, is a 400 that names the
-  member. A later step adds media to the reads.
+- **Decisions.** A plain read holds the images of its context and of its `case_media` (spec 11.18, "Reads"). The
+  case turn holds each object of `case_media` in its order, then the text of the case. An error of a case image
+  names `case_media[i]`. A queue read refuses each image with a 400 that names it.
 - **Objects.** The process gives the family a reader of the objects of this machine, as for LFM3. A family with no
   reader refuses an image part with a 400 that names the part.
 
