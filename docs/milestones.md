@@ -394,9 +394,12 @@ Do the steps in this order. Each step ends with the checks green.
    - The first run found a defect of the family: a generation was a 500, because the template has no generation
      prompt. The family now gives `<|message_model|>` (spec 11.18).
    - With `thinking: false`, both models still write a thinking block, so the suite holds no head after such a reply.
-   - The place on b70host: Inkling 2 is the resident engine of card 0, and `lfm3` goes on demand. Card 1 keeps
-     its pinned engines and `lfm3-omni`. Amy, 2026-11-21: "card 0 can load inkling 2, if it lives up to the hype
-     it will likely be there a while".
+   - The place on b70host: card 0 is for Inkling 2. Card 1 keeps its pinned engines and `lfm3-omni`. Amy,
+     2026-11-21: "card 0 can load inkling 2, if it lives up to the hype it will likely be there a while".
+   - Deployed on 2026-11-21 from `c936337`. A text engine on demand with a family table is refused (`deploy.rs`), and
+     the family of LFM3 needs its table. Thus `lfm3` stays resident, and `inkling2-mini` is on demand on card 0. A
+     load names `lfm3` in `unload` and takes about 15 s, and the engine stays until another load. Its family reads
+     `INKLING2_MODEL_DIR` from the unit. Live: a chat and the counts 1 and 5 gave replies.
 7. **Cycles in a call.** The context member `cycles` chooses 1 to 5 cycles. Card gate: the research model against
    the reference at each count. Mini takes the same counts, out of the range of its training.
    - The engine is done (`xe_cycles.rs`, 2026-11-21). With a reserve of 48 runs, it runs 1 to 5 cycles. A pass of 4
