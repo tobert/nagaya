@@ -19,7 +19,7 @@ use nagaya::process::{Event, Process, Start, WaitError};
 use nagaya::profile::{BudgetSpec, EnginePlacement, PlacementProfile, Residency, StoreSpec, TierSpec};
 use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{Capability, Engine, Identity, Kind, Limits, PassError, PassOut, Segment, Stages, Tap, Tier};
-use nagaya_sched::{Class, Item};
+use nagaya_sched::{Class, Item, JobState};
 
 type Log = Arc<Mutex<Vec<String>>>;
 
@@ -875,7 +875,7 @@ fn the_telemetry_of_a_job_on_the_group_thread_names_the_engine_of_the_job() {
 /// A body that ends its job in its first quantum with `outcome`.
 struct Ends {
     outcome: Ran,
-    done: Sender<()>,
+    done: Sender<JobState>,
 }
 
 impl JobBody for Ends {
@@ -884,8 +884,13 @@ impl JobBody for Ends {
     }
 
     fn run(&mut self, _kind: Kind, _engines: &mut [Box<dyn Engine>]) -> Ran {
-        let _ = self.done.send(());
         self.outcome.clone()
+    }
+
+    // The group logs the end of a quantum before it calls `ended`, so the line exists when this sends. A stop that
+    // comes earlier cancels the job, and the group never reads the end of its quantum.
+    fn ended(&mut self, state: JobState) {
+        let _ = self.done.send(state);
     }
 }
 
@@ -906,8 +911,8 @@ fn failure_lines_on_a_device_thread(outcome: Ran) -> Vec<String> {
             body: Box::new(Ends { outcome, done }),
         };
         process.submit_job(0, spec).unwrap();
-        done_rx.recv_timeout(Duration::from_secs(5)).expect("the job ran");
-        // The stop joins the threads, so each line is written when it returns.
+        let state = done_rx.recv_timeout(Duration::from_secs(5)).expect("the job ended");
+        assert_eq!(state, JobState::Failed, "the stop did not cancel the job");
         process.stop(Duration::from_secs(5), &nagaya::signal::SignalFlag::new());
     });
     lines
