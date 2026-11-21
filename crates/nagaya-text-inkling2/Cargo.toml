@@ -7,9 +7,6 @@ edition = "2024"
 gogi-proto.workspace = true
 nagaya-council = { version = "0.1.0", path = "../nagaya-council" }
 nagaya-jinja = { version = "0.1.0", path = "../nagaya-jinja" }
-# The rules of the image processor are the host form of the engine crate (engine-abi "The images of Inkling 2"). The
-# crate has no feature here, so it needs no card.
-nagaya-mk-inkling2-bmg = { version = "0.1.0", path = "../nagaya-mk-inkling2-bmg" }
 png = "0.18"
 serde_json = { version = "1.0.154", features = ["float_roundtrip", "preserve_order"] }
 sha2 = "0.10.9"

@@ -3,7 +3,8 @@
 # (docs/deploy.md). The loader is `crates/nagaya/src/profile.rs`, and `crates/nagaya/tests/deploy.rs` reads this file.
 #
 # Both cards serve. Card 1 (device 1) holds an image model, the embedding model and LFM3-Omni, and card 0 (device 0)
-# holds LFM3-1.7B. Each loads at the start. Gemma 4 is on demand on both cards. Device 2 is the ignored iGPU.
+# holds LFM3-1.7B. Each loads at the start. Gemma 4 is on demand on both cards, and Inkling 2 Mini on card 0. Device 2
+# is the ignored iGPU.
 #
 # A card test needs card 0 free. `POST /nagaya/v1/devices/0/release` unloads its engines, and
 # `POST /nagaya/v1/devices/0/reclaim` loads the resident ones again (spec 3.3b, "The release of a device"). A start
@@ -68,6 +69,23 @@ model_dir = "/srv/models/huggingface/hub/models--LiquidAI--LFM3-1.7B/snapshots/0
 # The J-Lens of LFM3-1.7B (docs/lab.md, "The rules of the J-Lens"). The file is outside the ledger.
 [engines.lab]
 jlens = "/srv/nagaya/lens/lfm3.jlens.safetensors"
+
+# Inkling 2 Mini on card 0 (docs/spec.md 11.18). The engine name is the served name. One kind serves Mini and the
+# research model, so the config names the snapshot folder. Two slots of 32,768 positions and the reserve of 3 cycles.
+# It plans 18,881,368,064 bytes of weights, 6,315,900,928 bytes of slots and the work: 25,543,784,132 bytes of its
+# card. It does not fit beside `lfm3`, so it is on demand, and its load names `lfm3` in `unload`. An engine on demand
+# has no family table: the family reads `INKLING2_MODEL_DIR` of the unit (spec 3.3a). The owner decides its place at
+# the deploy.
+[[engines]]
+name = "inkling2-mini"
+kind = "mk-inkling2-bmg"
+devices = [0]
+share = 1
+residency = "on_demand"
+
+[engines.config]
+model_dir = "/srv/models/huggingface/hub/models--thinkingmachines--Inkling-2-Mini/snapshots/ed40e7da625f594fc9c4990f5f66be24873c22d7"
+slots = 2
 
 # Gemma 4 on the two cards (docs/engine-abi.md "How the Gemma 4 engine maps"): stage 0 on device 0, and stage 1 on
 # device 1.

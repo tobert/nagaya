@@ -146,6 +146,8 @@ The crates live in directories under `crates/`. Use these crates:
 | `nagaya-text-qwenimage21` | the Qwen-Image 2.1 family library: tokenizer, the template, the cut of the system ids | 11.9c |
 | `nagaya-mk-lfm3-bmg` | the LFM3 engine of both models on one B70 card: the backbone, vision, audio, speech, control vectors, batched passes | ABI "LFM3" |
 | `nagaya-text-lfm3` | the LFM3 family library of both models: tokenizer, templates, escapes, XML tool calls, media positions | 11.3, 11.11 |
+| `nagaya-mk-inkling2-bmg` | the Inkling 2 engine of both models on one B70 card: the weight formats, the host form, the ring of a pass, cycles | ABI "Inkling 2" |
+| `nagaya-text-inkling2` | the Inkling 2 family library of both models: tokenizer, template, effort, escapes, council rendering, reply parser | 11.3, 11.18 |
 | `nagaya-text-toy` | the toy family library on gogi's `gogi-toy`, for tests with the fake engine | 11.3b |
 | `nagaya-conformance` | the conformance suite (8.3), generic over the `Engine` trait | 8.3 |
 | `nagaya-telemetry` | the instruments, the stderr log, the OTLP export and the sampler | 9 |
@@ -319,6 +321,11 @@ get ran sometimes, perhaps just a bump in our AGENTS.md"
   folder from `QWENIMAGE21_FUSAL_DIR`, and the base folder too. Neither variable has a default.
   `tools/qwenimage21_golden.sh` writes the oracle into `target/qwenimage21-golden` or `QWENIMAGE21_GOLDEN_DIR`, with
   `nagaya.service` stopped. An absent oracle file skips a test, as an absent model does.
+- b70host holds Inkling 2 Mini and the variable-loop research model in the Hugging Face cache. The tests of
+  `nagaya-text-inkling2`, `nagaya-mk-inkling2-bmg` and `nagaya` read Mini from `INKLING2_MODEL_DIR` and the research
+  model from `INKLING2_VARLOOP_MODEL_DIR`. Neither variable has a default. The B70 unit names the folder of Mini.
+  `tools/inkling2_golden.sh` writes the oracle into `target/inkling2-golden` or `INKLING2_GOLDEN_DIR`, with no GPU job.
+  An absent oracle file skips a test, as an absent model does.
 - The tests `deploy` and `qwen38_wire` of `nagaya` plan the Strix Halo example. They read both Qwen-Image folders.
 - The report of a check names how many tests skipped for a missing model.
 

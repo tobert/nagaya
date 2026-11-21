@@ -313,6 +313,23 @@ impl Factory for Lfm3PlanOnly {
     }
 }
 
+/// The plan of an Inkling 2 model, from its folder and no card.
+struct Inkling2PlanOnly;
+
+impl Factory for Inkling2PlanOnly {
+    fn plan(&self, config: &toml::Table, devices: &[GroupDevice]) -> Result<Limits, PlanError> {
+        nagaya::inkling2::plan(config, devices)
+    }
+
+    fn served_names(&self, engine: &str, config: &toml::Table) -> Option<Vec<String>> {
+        nagaya::inkling2::served_names(engine, config)
+    }
+
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
+        panic!("a deploy test opens no engine")
+    }
+}
+
 /// The plan of the speech engine, from its checkpoint and no card.
 struct SpeechPlanOnly;
 
@@ -401,13 +418,14 @@ fn checkpoint() -> Option<PathBuf> {
     }
 }
 
-/// True when each single file that the profile names exists. Without one, the test skips; a machine that does not
-/// hold the files is normal (AGENTS.md, "Tests that need a model file").
+/// True when each single file and each model folder that the profile names exists. Without one, the test skips; a
+/// machine that does not hold the files is normal (AGENTS.md, "Tests that need a model file").
 fn named_checkpoints(profile: &PlacementProfile) -> bool {
     let absent: Vec<String> = profile
         .engines
         .iter()
-        .filter_map(|engine| engine.config.get("checkpoint").and_then(|value| value.as_str()))
+        .flat_map(|engine| ["checkpoint", "model_dir"].map(|key| engine.config.get(key)))
+        .filter_map(|value| value.and_then(|value| value.as_str()))
         .filter(|path| !std::path::Path::new(path).exists())
         .map(str::to_owned)
         .collect();
@@ -457,6 +475,7 @@ fn the_b70_profile_admits_on_the_probed_b70_machine() {
     registry.register(nagaya::sdxl::KIND, Box::new(ImagePlanOnly));
     registry.register(nagaya::embeddinggemma2::KIND, Box::new(EmbeddingPlanOnly));
     registry.register(nagaya::lfm3::KIND, Box::new(Lfm3PlanOnly));
+    registry.register(nagaya::inkling2::KIND, Box::new(Inkling2PlanOnly));
     // The admission runs the start rules that need no card: the plans, the ledger and the residency (spec 3.3a).
     let admitted = admit(&profile, &registry, &inventory, &mut Ledger::new()).expect("the B70 profile admits");
     assert_eq!(admitted.engines.len(), profile.engines.len());
@@ -499,6 +518,9 @@ fn check_served_names(profile: &PlacementProfile, admitted: &[nagaya::admission:
     for (placement, engine) in profile.engines.iter().zip(admitted) {
         assert_eq!(placement.name, engine.name);
         names.extend(engine.served.clone().unwrap_or_default());
+        if placement.kind == nagaya::inkling2::KIND {
+            assert_eq!(engine.served, Some(vec![engine.name.clone()]), "{}", engine.name);
+        }
         if placement.kind != nagaya::lfm3::KIND {
             continue;
         }
@@ -553,6 +575,10 @@ fn the_b70_unit_reads_its_config_and_the_checkpoints_and_hides_no_card() {
     assert!(environment.contains(
         &"EMBEDDINGGEMMA2_MODEL_DIR=%h/.cache/huggingface/hub/models--google--embeddinggemma-2/snapshots/\
           f9972ac22e696a105c482202646979e33e4b5a1e"
+    ));
+    assert!(environment.contains(
+        &"INKLING2_MODEL_DIR=%h/.cache/huggingface/hub/models--thinkingmachines--Inkling-2-Mini/snapshots/\
+          ed40e7da625f594fc9c4990f5f66be24873c22d7"
     ));
     // The engine finds its cards by PCI address, so no Level Zero variable may hide one.
     assert!(

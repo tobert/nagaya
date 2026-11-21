@@ -1,15 +1,15 @@
 //! The images of a media part on the CPU (engine-abi "The images of Inkling 2"): the decode, the convert of an
 //! alpha channel, and the patch rows that the engine reads.
 //!
-//! The rules of the processor are those of the engine crate's host form (`nagaya_mk_inkling2_bmg::host::vision`),
-//! which the oracle checks. This module adds only the decode of the bytes. The tests compare each stage with the
+//! The rules of the processor are in `crate::processor`, which the host form of the engine also uses, so the oracle
+//! checks them. This module adds only the decode of the bytes. The tests compare each stage with the
 //! reference processor (`tools/inkling2_media_fixture.py`) and with the oracle of the tower
 //! (`tools/inkling2_golden.sh`).
 
 use std::fmt;
 use std::io::Cursor;
 
-pub use nagaya_mk_inkling2_bmg::host::vision::{self, Grid, IMAGE_TOKEN, PATCH_VALUES};
+pub use crate::processor::{self as vision, Grid, IMAGE_TOKEN, PATCH_VALUES};
 
 /// The media types that the family reads.
 pub const MEDIA_INPUTS: [&str; 2] = ["image/png", "image/jpeg"];

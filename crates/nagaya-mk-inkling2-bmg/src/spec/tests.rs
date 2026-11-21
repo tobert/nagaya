@@ -221,10 +221,22 @@ fn the_limits_hold_the_terms_and_declare_no_loop_no_control_and_no_tap() {
             Capability::Parts,
             Capability::Slots,
             Capability::Coverage,
-            Capability::Close
+            Capability::Close,
+            Capability::Cycles
         ]
     );
     assert_eq!((l.layer_loops.clone(), l.control), (None, None));
+    // The reserve of 24 runs holds cycles 2 and 3. Layers 6 to 17 make a cycle (engine-abi "Inkling 2").
+    assert_eq!(
+        l.cycles,
+        Some(CyclesLimit {
+            min: 1,
+            max: 3,
+            default: 3,
+            start: 6,
+            end: 18
+        })
+    );
     assert!(l.taps.is_empty());
     assert_eq!(l.inputs, Inputs::Tokens);
     assert_eq!((l.max_segments, l.max_pass_inputs, l.max_logit_rows), (1, 512, 16));
@@ -293,6 +305,8 @@ fn the_limits_hold_the_terms_and_declare_no_loop_no_control_and_no_tap() {
         1,
     );
     five.check().unwrap();
+    assert_eq!(five.cycles.map(|c| (c.min, c.max, c.default)), Some((1, 5, 3)));
+    assert_eq!(cycles_limit(36).max, 4);
     assert_eq!(five.parts.len(), 3 * 72);
     assert_eq!(five.slots[0].bytes, 4_736_925_696);
 }
@@ -385,6 +399,10 @@ fn a_pass_runs_on_from_the_token_count_and_never_goes_back() {
     });
     let mut cycled = segment(0, 3, &[1], &[]);
     cycled.cycles = Some(3);
+    let mut many = segment(0, 3, &[1], &[]);
+    many.cycles = Some(4);
+    let mut none = segment(0, 3, &[1], &[]);
+    none.cycles = Some(0);
     let mut meta = segment(0, 3, &[1], &[]);
     meta.meta = vec![0; 16];
     let rows = Segment {
@@ -412,7 +430,9 @@ fn a_pass_runs_on_from_the_token_count_and_never_goes_back() {
         (vec![segment(0, 3, &[1; 16], &(3..19).collect::<Vec<_>>())], ""),
         (vec![control], "control"),
         (vec![looped], "layer_loops"),
-        (vec![cycled], "a count of cycles"),
+        (vec![cycled], ""),
+        (vec![many], "runs 4 cycles; the engine runs 1 to 3"),
+        (vec![none], "runs 0 cycles"),
         (vec![meta], "meta"),
         (vec![rows], "rows"),
         (vec![positions], "2 tokens and 1 positions"),
@@ -568,4 +588,45 @@ fn a_read_stays_inside_the_rows_that_a_part_holds() {
             .unwrap_err()
             .contains("no part 144")
     );
+}
+
+/// A pass runs the count of its segment, or the default. A slot keeps the count that fed its positions, because each
+/// run of a cycle reads the keys of its own run at the earlier positions (engine-abi "Inkling 2").
+#[test]
+fn a_slot_runs_the_count_of_cycles_that_fed_it() {
+    let mut held = Held::new(&[1024, 4096], MAX_EXTRA_RUNS);
+    let counted = |slot, from, n: usize, cycles| Segment {
+        cycles,
+        ..segment(slot, from, &vec![1; n], &[])
+    };
+    let block = held.check_pass(&[counted(0, 0, 3, None)], 512).unwrap();
+    assert_eq!(block.cycles, DEFAULT_CYCLES);
+    let block = held.check_pass(&[counted(0, 0, 3, Some(5))], 512).unwrap();
+    assert_eq!(block.cycles, 5);
+    held.ran(&block);
+    assert_eq!(held.cycles[0], Some(5));
+    let e = held.check_pass(&[counted(0, 3, 1, None)], 512).unwrap_err();
+    assert!(
+        e.contains("slot 0 holds 3 positions of 5 cycles, and the pass runs 3"),
+        "{e}"
+    );
+    let e = held.check_pass(&[counted(0, 3, 1, Some(2))], 512).unwrap_err();
+    assert!(e.contains("feed the slot at 5 cycles"), "{e}");
+    assert_eq!(held.check_pass(&[counted(0, 3, 1, Some(5))], 512).unwrap().cycles, 5);
+    let e = held.check_pass(&[counted(0, 3, 1, Some(6))], 512).unwrap_err();
+    assert!(e.contains("runs 6 cycles; the engine runs 1 to 5"), "{e}");
+    // The other slot is empty, so it takes any count.
+    assert_eq!(held.check_pass(&[counted(1, 0, 2, Some(1))], 512).unwrap().cycles, 1);
+    // A clear empties the slot, so the next pass takes another count.
+    held.clear(0);
+    assert_eq!(held.cycles[0], None);
+    let block = held.check_pass(&[counted(0, 0, 2, Some(2))], 512).unwrap();
+    held.ran(&block);
+    assert_eq!(held.cycles[0], Some(2));
+    // A restore writes parts and a count. The bytes do not say their count, so the next pass sets it; the council
+    // keys a state by its count (spec 11.17).
+    held.wrote(0, CONV, None);
+    assert_eq!(held.cycles[0], None);
+    held.set_n(0, 0);
+    assert_eq!(held.cycles[0], None);
 }

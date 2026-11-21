@@ -105,3 +105,27 @@ fn reply_parser_refuses_post_stop_and_out_of_vocab_and_oversized_int() {
         .unwrap();
     assert_eq!(parser.phase(), Phase::Reasoning);
 }
+
+/// A reply after the generation prompt starts inside `<|message_model|>`: the prompt holds that token, so the reply
+/// gives the header text first. The header of a tool call is not content (spec 11.18).
+#[test]
+fn a_reply_after_the_generation_prompt_starts_in_the_header() {
+    if absent() {
+        return;
+    }
+    let fam = Inkling2Family::from_dir(&mini_dir()).unwrap();
+    let reply = r#"shell<|content_invoke_tool_json|>{"name":"shell","args":{"command":"ls"}}<|end_message|><|content_model_end_sampling|>"#;
+    for thinking in [false, true] {
+        let mut parser = fam.reply_parser(ReplyStart::prompt(thinking), &[]).unwrap();
+        for id in fam.tokenize_special(reply).unwrap() {
+            parser.push(id).unwrap();
+        }
+        let parsed = parser.finish(false);
+        assert_eq!(parsed.content, "", "thinking {thinking}: the header is not content");
+        assert!(
+            matches!(parsed.calls.as_slice(), [ReplyCall::Parsed { name, .. }] if name == "shell"),
+            "{:?}",
+            parsed.calls
+        );
+    }
+}

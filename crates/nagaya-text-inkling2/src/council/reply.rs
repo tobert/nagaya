@@ -28,10 +28,11 @@ enum State {
 }
 
 pub(crate) fn reply_parser(family: &Inkling2Family, start: ReplyStart, _tools: &[Tool]) -> Box<dyn ReplyParser> {
-    let state = if start.open && start.thinking {
-        State::Thinking
-    } else {
-        State::Idle
+    // A reply after the generation prompt starts inside `<|message_model|>`, so its header text is not content.
+    let state = match (start.open, start.thinking) {
+        (true, true) => State::Thinking,
+        (true, false) => State::Idle,
+        (false, _) => State::Header,
     };
     Box::new(Inkling2ReplyParser {
         tokenizer: family.shared_tokenizer(),

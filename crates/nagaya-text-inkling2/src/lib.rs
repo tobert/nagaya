@@ -15,6 +15,7 @@ pub mod chat;
 pub mod council;
 mod error;
 pub mod media;
+pub mod processor;
 pub mod tokenizer;
 
 pub use chat::{Chat, Effort, Options, Rendered};

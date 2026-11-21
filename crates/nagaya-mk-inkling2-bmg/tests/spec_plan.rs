@@ -6,10 +6,37 @@ mod common;
 use common::Which;
 use nagaya_mk_bmg::safetensors::{Dtype, MappedSafeTensors};
 use nagaya_mk_inkling2_bmg::spec::{self, Config, Model};
+use nagaya_text_inkling2::Inkling2Family;
+use nagaya_text_inkling2::tokenizer::sha256_of;
 use std::path::PathBuf;
 
 fn folder(which: Which) -> PathBuf {
     common::model_weights(which).parent().unwrap().to_path_buf()
+}
+
+/// The identity takes the tokenizer hash and the template of the family library, so the check of the registry at the
+/// start passes (spec 11.3, 12.3). The hash is `sha256:` and 64 hex digits of the whole `tokenizer.json`.
+#[test]
+fn the_text_facts_are_the_facts_of_the_family() {
+    for which in Which::BOTH {
+        if common::model_absent(which) {
+            continue;
+        }
+        let dir = folder(which);
+        let facts = spec::text_facts(&dir).unwrap();
+        let family = Inkling2Family::from_dir(&dir).unwrap();
+        assert_eq!(facts.tokenizer_hash, family.tokenizer_hash(), "{which:?}");
+        let bytes = std::fs::read(dir.join("tokenizer.json")).unwrap();
+        assert_eq!(facts.tokenizer_hash, sha256_of(&bytes), "{which:?}");
+        let hex = facts.tokenizer_hash.strip_prefix("sha256:").unwrap();
+        assert!(
+            hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()),
+            "{}",
+            facts.tokenizer_hash
+        );
+        let template = std::fs::read_to_string(dir.join("chat_template.jinja")).unwrap();
+        assert_eq!(facts.template, template, "{which:?}");
+    }
 }
 
 /// Each model reads as itself, and the weights of the two take the same bytes: they share every tensor.

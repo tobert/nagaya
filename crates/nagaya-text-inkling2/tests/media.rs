@@ -265,8 +265,10 @@ fn a_context_with_the_two_images_of_the_oracle_gives_its_ids_its_spans_and_its_r
     assert_eq!(fam.media_inputs(), ["image/png", "image/jpeg"]);
     let r = fam.render(&oracle_context(), true).unwrap();
     let want: Vec<u32> = i64s(&t["prompt.ids"].1).iter().map(|v| *v as u32).collect();
-    assert_eq!(r.tokens, want, "the ids of the oracle prompt");
+    // The rendering of the context is the oracle prompt, then the generation prompt `<|message_model|>`.
+    assert_eq!(r.tokens[..r.end], want[..], "the ids of the oracle prompt");
     assert_eq!(r.end, want.len());
+    assert_eq!(r.tokens[r.end..], [200_001]);
     assert_eq!(r.boundaries.last().unwrap().tokens, want.len());
     let counts: Vec<usize> = r.media.iter().map(|s| s.count).collect();
     assert_eq!(counts, [18, 192]);

@@ -296,6 +296,11 @@ impl Inkling2Family {
         self.tokenizer().hash()
     }
 
+    /// The chat template text of the folder. The identity's `template` is this text (spec 12.1).
+    pub fn template(&self) -> &str {
+        self.chat.source()
+    }
+
     /// Render the messages with the effort that `thinking` chooses: with thinking off the template writes the effort
     /// "none", and with thinking on its default, 0.9 (milestone 35 question 4).
     pub(crate) fn run(&self, messages: &[Json], tools: &[Json], thinking: bool) -> Result<Rendered, FamilyError> {
@@ -367,7 +372,10 @@ impl Inkling2Family {
 }
 
 impl Family for Inkling2Family {
-    fn render(&self, context: &Context, _generation_prompt: bool) -> Result<Rendering, FamilyError> {
+    /// The generation prompt is `<|message_model|>`. The template has none, and the model writes this token first: the
+    /// reference gives it a probability of 1 - 6e-12 after the prompt "chat". The council needs a generation prompt for
+    /// the first logit row (spec 11.18). An open message takes its place.
+    fn render(&self, context: &Context, generation_prompt: bool) -> Result<Rendering, FamilyError> {
         context.check()?;
         let tools = messages::tools_json(&context.tools);
         let msgs = messages::messages_json(&context.messages)?;
@@ -412,8 +420,12 @@ impl Family for Inkling2Family {
                     .collect::<Vec<_>>()
             })
             .collect();
+        let mut tokens = base.tokens;
+        if generation_prompt && open.is_none() {
+            tokens.push(self.marks.message_model);
+        }
         let rendering = Rendering {
-            tokens: base.tokens,
+            tokens,
             end,
             boundaries,
             control_text,

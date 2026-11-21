@@ -187,7 +187,7 @@ class Markup(unittest.TestCase):
     def test_each_model_list_has_the_element_of_its_state(self):
         page = WEB.joinpath("index.html").read_text()
         lists = re.findall(r'modelSelect\("([a-z-]+)"', page_script())
-        self.assertGreaterEqual(len(lists), 7)
+        self.assertGreaterEqual(len(lists), 6)
         ids = set(re.findall(r'\bid="([^"]+)"', page))
         self.assertEqual([name for name in lists if f"{name}-state" not in ids], [])
 
@@ -218,7 +218,7 @@ class Markup(unittest.TestCase):
         page = WEB.joinpath("index.html").read_text()
         self.assertNotIn('<p class="note">', page)
         sections = re.findall(r'<section id="(\w+)">(.*?)</section>', page, re.S)
-        self.assertEqual(len(sections), 8)
+        self.assertEqual(len(sections), 7)
         for name, body in sections:
             head = body[:body.index("</div>\n", body.index('<div class="head">'))]
             self.assertEqual(head.count('<details class="help">'), 1, name)
@@ -917,26 +917,88 @@ class Page(unittest.TestCase):
         self.assertNotIn("lfm3-omni", out["speech"])
         self.assertIn('value="voice"', out["speech"])
 
-    def test_the_omni_tab_lists_the_models_that_read_media_and_reply_with_text(self):
-        out = self.run_page('out.models = document.getElementById("omni-model").innerHTML;')
-        self.assertEqual(out["models"], '<option value="lfm3-omni">lfm3-omni</option>')
+    # Two served models with the members of gogi "Identity, limits, capabilities": one with cycles, as Inkling 2 Mini
+    # declares them, and one with layer loops. `before` adds them to the identity of a page.
+    MORE_MODELS = """
+        IDENTITY.models.push(
+          {model: "inkling-2-mini", engine: "inkling", status: "ready", capabilities: ["generate", "thinking", "cycles"],
+           cycles: {min: 1, max: 5, default: 3, start: 6, end: 18}},
+          {model: "lfm3-loop", engine: "lfm3-loop", status: "ready", capabilities: ["generate", "layer_loops"],
+           layer_loops: {layers: 24, bounds: [2, 6, 10, 14, 18, 22], count: 4, extra_runs: 16}});"""
 
-    # The values of the Omni form, as a person sets them, with one image attached.
-    OMNI = """
-        set("omni-model", "lfm3-omni"); set("omni-system", "Respond with interleaved text and audio.");
-        set("omni-max", "64"); set("omni-temp", "0.3"); set("omni-output", "interleaved");
-        omniFiles = [{id: "blake3:" + "f".repeat(64), mime: "image/png", name: "cat.png", host}];
-        set("omni-input", "What is this?");
-        const sent = () => calls.filter((c) => c[1] === "/council/v2/generations").map((c) => JSON.parse(c[2]));"""
+    def test_the_chat_tab_lists_each_model_whose_replies_hold_text_and_the_page_has_no_omni_tab(self):
+        out = self.run_page('out.models = document.getElementById("chat-model").innerHTML;', before=self.MORE_MODELS)
+        names = re.findall(r'<option value="([^"]+)">', out["models"])
+        self.assertEqual(names, ["gemma-4-26b-a4b", "lfm3-omni", "lfm3", "inkling-2-mini", "lfm3-loop"])
+        page = WEB.joinpath("index.html").read_text().lower()
+        self.assertNotIn("omni", page.replace("lfm3-omni", ""))
 
-    def test_an_omni_turn_sends_the_text_and_the_objects_and_plays_the_spoken_reply(self):
+    def test_each_control_of_the_chat_shows_only_for_a_model_that_declares_it(self):
+        out = self.run_page("""
+            const shown = (id) => !document.getElementById(id).hidden;
+            for (const model of ["gemma-4-26b-a4b", "lfm3-omni", "lfm3", "inkling-2-mini", "lfm3-loop"]) {
+              set("chat-model", model); await refresh();
+              out[model] = {thinking: shown("chat-thinking-box"), files: shown("chat-attach"),
+                            speech: shown("chat-output-box"), steer: shown("chat-steer-box"),
+                            loop: shown("chat-loop-box"), cycles: shown("chat-cycles-box")};
+              if (model === "lfm3-omni") out.accept = document.getElementById("chat-file").accept;
+              if (model === "inkling-2-mini") {
+                const c = document.getElementById("chat-cycles");
+                out.cycles = [c.min, c.max, c.placeholder];
+              }
+              if (model === "lfm3-loop") {
+                out.starts = document.getElementById("chat-loop-start").innerHTML;
+                out.ends = document.getElementById("chat-loop-end").innerHTML;
+                out.count = document.getElementById("chat-loop-count").max;
+              }
+            }""", before=self.MORE_MODELS)
+        none = dict(thinking=False, files=False, speech=False, steer=False, loop=False, cycles=False)
+        self.assertEqual(out["gemma-4-26b-a4b"], dict(none, thinking=True))
+        self.assertEqual(out["lfm3-omni"], dict(none, files=True, speech=True, steer=True))
+        self.assertEqual(out["lfm3"], dict(none, thinking=True, steer=True))
+        self.assertEqual(out["inkling-2-mini"], dict(none, thinking=True, cycles=True))
+        self.assertEqual(out["lfm3-loop"], dict(none, loop=True))
+        self.assertEqual(out["accept"], "image/png,image/jpeg,audio/wav")
+        self.assertEqual(out["cycles"][:2], [1, 5])
+        self.assertIn("3", out["cycles"][2])
+        # A span starts at a bound below the last one and ends at a bound above the first one.
+        self.assertEqual(re.findall(r'<option value="(\d*)">', out["starts"]), ["", "2", "6", "10", "14", "18"])
+        self.assertEqual(re.findall(r'<option value="(\d*)">', out["ends"]), ["6", "10", "14", "18", "22"])
+        self.assertEqual(out["count"], 4)
+
+    # A streamed reply of the chat for each request: its text, a WAV when the request asks for speech, and the next
+    # context id of `RECORDS`, when it has one. `sent()` gives the body of each generation.
+    MEDIA = """
+        const real = fetch, RECORDS = typeof RECORDS_OF === "undefined" ? [] : RECORDS_OF;
+        let turn = 0;
+        fetch = (path, o) => {
+          const b = /generations$/.test(path) ? JSON.parse(o.body) : null;
+          if (!b?.stream) return real(path, o);
+          calls.push(["POST", "/council/v2/generations", o.body]);
+          const outputs = b.output ? [{index: 0, id: "blake3:" + "a".repeat(64), mime: "audio/wav"}] : [];
+          const context = RECORDS[turn++];
+          return sse([["token", {phase: "content", piece: "A <b>cat</b>.", n: 5}],
+                      ["done", {content: "A <b>cat</b>.", reasoning: "", finish: "end_turn", outputs, snapshots: [],
+                                usage: {prompt: 90, fed: 90, completion: 5, media: {written: {audio_ms: 1680}}},
+                                ...(context ? {context} : {})}]]);
+        };
+        const sent = () => calls.filter((c) => c[1] === "/council/v2/generations").map((c) => JSON.parse(c[2]));
+        const say = async (text) => { set("chat-input", text); await document.getElementById("chat-go").onclick(); };"""
+
+    # The values of the chat form, as a person sets them for a model that reads media, with one image attached.
+    OMNI = MEDIA + """
+        set("chat-model", "lfm3-omni"); set("chat-system", "Respond with interleaved text and audio.");
+        set("chat-max", "64"); set("chat-temp", "0.3"); set("chat-topk", ""); set("chat-output", "interleaved");
+        chatFiles = [{id: "blake3:" + "f".repeat(64), mime: "image/png", name: "cat.png", host}];"""
+
+    def test_a_chat_turn_sends_the_text_and_the_objects_and_plays_the_spoken_reply(self):
         out = self.run_page(self.OMNI + """
-            await document.getElementById("omni-go").onclick();
-            out.body = sent()[0]; out.log = document.getElementById("omni-log").innerHTML;
-            out.err = document.getElementById("omni-error").textContent;
+            await say("What is this?");
+            out.body = sent()[0]; out.log = document.getElementById("chat-log").innerHTML;
+            out.err = document.getElementById("chat-error").textContent;
             out.keep = JSON.parse(calls.filter((c) => c[1] === "/council/v2/keeps/nagaya-web").pop()[2]).objects;
-            set("omni-input", "And now?"); set("omni-output", "");
-            await document.getElementById("omni-go").onclick();
+            set("chat-output", "");
+            await say("And now?");
             out.second = sent()[1];""")
         self.assertEqual(out["err"], "")
         body = out["body"]
@@ -944,48 +1006,99 @@ class Page(unittest.TestCase):
         self.assertEqual(body["output"], {"mime": "audio/wav", "options": {"mode": "interleaved"}})
         self.assertEqual(body["max_tokens"], 64)
         self.assertEqual(body["sample"], {"temperature": 0.3})
+        # lfm3-omni does not think, so its context names thinking false.
         self.assertFalse(body["context"]["thinking"])
         system, user = body["context"]["messages"]
         self.assertEqual(system, {"role": "system", "content": "Respond with interleaved text and audio.", "snap": True})
-        self.assertEqual(user["content"], [{"type": "text", "text": "What is this?"},
-                                           {"type": "object", "id": "blake3:" + "f" * 64, "mime": "image/png"}])
+        self.assertEqual(user, {"role": "user", "snap": True, "content": [
+            {"type": "text", "text": "What is this?"}, {"type": "object", "id": "blake3:" + "f" * 64, "mime": "image/png"}]})
         # The reply's text shows escaped, and its audio plays from the object.
         self.assertIn("A &lt;b&gt;cat&lt;/b&gt;.", out["log"])
         self.assertNotIn("<b>cat", out["log"])
         self.assertIn("<audio controls", out["log"])
         self.assertIn('/council/v2/objects/blake3:' + "a" * 64 + '"', out["log"])
+        self.assertIn("1.7 s of speech", out["log"])
         self.assertIn("blake3:" + "a" * 64, out["keep"])
         self.assertIn("blake3:" + "f" * 64, out["keep"])
         # Each file of a message shows the content id that the request names in place of its bytes.
         self.assertIn('objects/blake3:' + "f" * 64 + '" target="_blank" title="blake3:' + "f" * 64, out["log"])
         self.assertIn(">ffffffff</a>", out["log"])
         self.assertIn(">aaaaaaaa</a>", out["log"])
-        # The next turn sends the spoken reply back as its text and its audio (spec 11.11, "Assistant audio"), and no
-        # output asks for text only.
+        # The stub names no record, so the next turn sends the chat whole. It sends the spoken reply back as its text
+        # and its audio (spec 11.11, "Assistant audio"), and with no output it asks for text only. A message with no
+        # file is plain text.
         second = out["second"]
         self.assertNotIn("output", second)
         reply = second["context"]["messages"][2]
         self.assertEqual(reply, {"role": "assistant", "content": [{"type": "text", "text": "A <b>cat</b>."},
                                  {"type": "object", "id": "blake3:" + "a" * 64, "mime": "audio/wav"}]})
-        self.assertEqual(second["context"]["messages"][3]["content"], [{"type": "text", "text": "And now?"}])
+        self.assertEqual(second["context"]["messages"][3], {"role": "user", "content": "And now?", "snap": True})
 
-    def test_the_omni_tab_refuses_a_file_of_a_type_that_the_model_does_not_read(self):
+    def test_a_turn_by_parent_sends_only_its_new_message_with_its_files(self):
+        out = self.run_page(f"const RECORDS_OF = {json.dumps([self.R1, self.R2])};" + self.OMNI + """
+            set("chat-output", "");
+            await say("What is this?");
+            chatFiles = [{id: "blake3:" + "b".repeat(64), mime: "audio/wav", name: "a.wav", host}];
+            await say("And this?");
+            out.second = sent()[1].context;""")
+        self.assertEqual(out["second"], {"parent": self.R1, "thinking": False, "control": [], "messages": [
+            {"role": "user", "snap": True, "content": [{"type": "text", "text": "And this?"},
+                                                       {"type": "object", "id": "blake3:" + "b" * 64, "mime": "audio/wav"}]}]})
+
+    def test_the_whole_chat_drops_a_spoken_reply_whose_codes_the_nagaya_does_not_hold(self):
+        # A 404 that names the audio part of a reply: the nagaya holds no codes of it (spec 11.11, "Assistant audio").
+        # The page sends the text of that reply in its place, once.
+        out = self.run_page(self.MEDIA + """
+            const media = fetch;
+            let refused = 0;
+            fetch = (path, o) => {
+              const b = /generations$/.test(path) ? JSON.parse(o.body) : null;
+              if (b?.context?.messages?.[1]?.content?.length === 2) {
+                refused++; calls.push(["POST", "/council/v2/generations", o.body]);
+                return reply(404, {error: {type: "not_found", param: "messages[1].content[1]", message: "no codes"}});
+              }
+              return media(path, o);
+            };
+            set("chat-model", "lfm3-omni"); set("chat-system", "");
+            chat = [{role: "user", content: "hi"},
+                    {role: "assistant", content: "A cat.", files: [{id: "blake3:" + "a".repeat(64), mime: "audio/wav", host}]}];
+            await say("more");
+            out.refused = refused; out.bodies = sent().map((b) => b.context.messages);
+            out.err = document.getElementById("chat-error").textContent;""")
+        self.assertEqual(out["err"], "")
+        self.assertEqual(out["refused"], 1)
+        self.assertEqual(out["bodies"][1][1], {"role": "assistant", "content": [{"type": "text", "text": "A cat."}]})
+
+    def test_the_chat_refuses_a_file_of_a_type_that_the_model_does_not_read(self):
         out = self.run_page("""
-            set("omni-model", "lfm3-omni");
-            await document.getElementById("omni-file").onchange({target: {files: [{name: "x.wav", type: "audio/x-wav"}],
+            set("chat-model", "lfm3-omni");
+            await document.getElementById("chat-file").onchange({target: {files: [{name: "x.wav", type: "audio/x-wav"}],
                                                                            value: ""}});
-            out.err = document.getElementById("omni-error").textContent;
-            out.puts = calls.filter((c) => c[0] === "PUT" && c[1].includes("/objects/")).length;""")
+            out.err = document.getElementById("chat-error").textContent;
+            out.puts = calls.filter((c) => c[0] === "PUT" && c[1].includes("/objects/")).length;
+            // A file of the next message goes only to a model that reads it.
+            set("chat-model", "lfm3");
+            chatFiles = [{id: "blake3:" + "f".repeat(64), mime: "image/png", name: "cat.png", host}];
+            set("chat-input", "What is this?"); await document.getElementById("chat-go").onclick();
+            out.late = document.getElementById("chat-error").textContent;
+            out.sent = calls.filter((c) => /generations$/.test(c[1])).length;
+            out.input = document.getElementById("chat-input").value;
+            out.wild = [reads(["image/*"], "image/webp"), reads(["image/*"], "audio/wav"), reads(["audio/wav"], "audio/wav")];""")
         self.assertIn("x.wav is audio/x-wav", out["err"])
         self.assertIn("audio/wav", out["err"])
         self.assertEqual(out["puts"], 0)
+        self.assertIn("cat.png is image/png", out["late"])
+        self.assertIn("lfm3 reads no files", out["late"])
+        self.assertEqual(out["sent"], 0)
+        self.assertEqual(out["input"], "What is this?")
+        self.assertEqual(out["wild"], [True, False, True])
 
     def test_a_reply_mode_fills_in_the_system_prompt_of_the_model_card_and_keeps_one_the_person_wrote(self):
         out = self.run_page("""
-            const pick = (mode) => { set("omni-output", mode); document.getElementById("omni-output").onchange();
-                                     return document.getElementById("omni-system").value; };
+            const pick = (mode) => { set("chat-output", mode); document.getElementById("chat-output").onchange();
+                                     return document.getElementById("chat-system").value; };
             out.speech = pick("speech"); out.mixed = pick("interleaved"); out.text = pick("");
-            set("omni-system", "Perform TTS in British English using a male voice.");
+            set("chat-system", "Perform TTS in British English using a male voice.");
             out.kept = pick("speech");""")
         self.assertEqual(out["speech"], "Perform TTS in American English using a female voice.")
         self.assertEqual(out["mixed"], "Respond with interleaved text and audio.")
@@ -995,13 +1108,15 @@ class Page(unittest.TestCase):
     def test_speech_mode_speaks_a_long_text_in_chunks_of_whole_sentences(self):
         long = " ".join(["This is sentence number %d of a long story that goes on." % i for i in range(1, 9)])
         out = self.run_page(f"""
-            set("omni-model", "lfm3-omni"); set("omni-output", "speech");
-            document.getElementById("omni-output").onchange();
-            set("omni-input", {json.dumps(long)});
-            await document.getElementById("omni-go").onclick();
+            set("chat-model", "lfm3-omni"); set("chat-output", "speech");
+            document.getElementById("chat-output").onchange();
+            set("chat-input", {json.dumps(long)});
+            await document.getElementById("chat-go").onclick();
             out.bodies = calls.filter((c) => c[1] === "/council/v2/generations").map((c) => JSON.parse(c[2]));
-            out.log = document.getElementById("omni-log").innerHTML;
+            out.log = document.getElementById("chat-log").innerHTML;
+            out.err = document.getElementById("chat-error").textContent;
             out.chunks = speechChunks("one two. " + "w ".repeat(90).trim() + ". three.");""")
+        self.assertEqual(out["err"], "")
         bodies = out["bodies"]
         # 8 sentences of 12 words: 3 a chunk, so 3 chunks; each a TTS request of one user message.
         self.assertEqual(len(bodies), 3)
@@ -1015,19 +1130,64 @@ class Page(unittest.TestCase):
         # A sentence longer than a chunk splits at its words.
         self.assertEqual([len(c.split()) for c in out["chunks"]], [2, 40, 40, 10, 1])
 
-    def test_an_omni_turn_takes_a_vector_of_its_model_and_not_one_of_another_model(self):
+    def test_a_chat_turn_of_a_model_that_reads_media_takes_a_vector_of_its_model_and_not_one_of_another(self):
         omni_vector = "blake3:" + "9" * 64
         out = self.run_page(self.OMNI + f"""
             vectors = [{{name: "omni refusal", id: "{omni_vector}", model: "lfm3-omni", host}},
                        {{name: "text refusal", id: "{LAB_VECTOR}", model: "lfm3", host}}];
             fillVectors();
-            out.options = document.getElementById("omni-vector").innerHTML;
-            set("omni-vector", "{omni_vector}"); set("omni-op", "ablate"); set("omni-strength", "0.5");
-            await document.getElementById("omni-go").onclick();
+            out.options = document.getElementById("chat-vector").innerHTML;
+            set("chat-vector", "{omni_vector}"); set("chat-op", "ablate"); set("chat-strength", "0.5");
+            await say("What is this?");
             out.body = sent()[0];""")
         self.assertIn("omni refusal", out["options"])
         self.assertNotIn("text refusal", out["options"])
         self.assertEqual(out["body"]["context"]["control"], [{"vector": omni_vector, "op": "ablate", "strength": 0.5}])
+
+    def test_a_layer_loop_goes_only_to_a_model_with_layer_loops_and_only_with_a_start(self):
+        out = self.run_page(self.MEDIA + """
+            const loopOf = () => { const c = sent().pop().context; return "loop" in c ? c.loop : "absent"; };
+            set("chat-model", "lfm3-loop"); await refresh();
+            set("chat-loop-start", "10"); set("chat-loop-end", "14"); set("chat-loop-count", "2");
+            await say("one"); out.looped = loopOf();
+            set("chat-loop-start", ""); await say("two"); out.off = loopOf();
+            set("chat-model", "lfm3"); set("chat-loop-start", "10"); await say("three"); out.other = loopOf();""",
+                            before=self.MORE_MODELS)
+        self.assertEqual(out["looped"], {"start": 10, "end": 14, "count": 2})
+        self.assertEqual((out["off"], out["other"]), ("absent", "absent"))
+
+    def test_the_count_of_cycles_goes_only_when_it_is_not_the_default_of_the_model(self):
+        out = self.run_page(self.MEDIA + """
+            const cyclesOf = () => { const c = sent().pop().context; return "cycles" in c ? c.cycles : "absent"; };
+            set("chat-model", "inkling-2-mini"); await refresh();
+            set("chat-cycles", ""); await say("one"); out.empty = cyclesOf();
+            set("chat-cycles", "3"); await say("two"); out.at_default = cyclesOf();
+            set("chat-cycles", "5"); await say("three"); out.five = cyclesOf();
+            set("chat-cycles", "1"); await say("four"); out.one = cyclesOf();
+            set("chat-model", "lfm3"); set("chat-cycles", "5"); await say("five"); out.other = cyclesOf();""",
+                            before=self.MORE_MODELS)
+        self.assertEqual((out["empty"], out["at_default"]), ("absent", "absent"))
+        self.assertEqual((out["five"], out["one"], out["other"]), (5, 1, "absent"))
+
+    def test_cycles_and_a_loop_beside_a_parent_replace_those_of_the_record_and_null_drops_them(self):
+        # gogi "Context records": a member beside `parent` replaces the parent's, and `cycles: null` or `loop: null`
+        # drops it. A record that holds no count gets no member, so its records match those of other clients.
+        records = [self.R1, self.R2, self.R1, self.R2]
+        out = self.run_page(f"const RECORDS_OF = {json.dumps(records)};" + self.MEDIA + """
+            const of = (c) => [c.parent ?? null, "cycles" in c ? c.cycles : "absent", "loop" in c ? c.loop : "absent"];
+            set("chat-model", "inkling-2-mini"); await refresh();
+            set("chat-cycles", "5"); await say("one"); await say("two");
+            set("chat-cycles", ""); await say("three"); await say("four");
+            out.cycles = sent().map((b) => of(b.context));
+            turn = 0; await document.getElementById("chat-clear").onclick();
+            set("chat-model", "lfm3-loop"); await refresh();
+            set("chat-loop-start", "10"); set("chat-loop-end", "14"); set("chat-loop-count", "2");
+            await say("one"); set("chat-loop-start", ""); await say("two"); await say("three");
+            out.loops = sent().slice(4).map((b) => of(b.context));""", before=self.MORE_MODELS)
+        self.assertEqual(out["cycles"], [[None, 5, "absent"], [self.R1, 5, "absent"], [self.R2, None, "absent"],
+                                         [self.R1, "absent", "absent"]])
+        loop = {"start": 10, "end": 14, "count": 2}
+        self.assertEqual(out["loops"], [[None, "absent", loop], [self.R1, "absent", None], [self.R2, "absent", "absent"]])
 
     def test_the_lab_lists_only_the_local_models_of_the_lfm3_engine_kind(self):
         out = self.run_page('out.models = document.getElementById("lab-model").innerHTML;')
