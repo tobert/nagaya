@@ -4954,6 +4954,36 @@ The notes below fill the choices that gogi leaves to the server. Each note is **
 `docs/lab.md`, "Layer loops", holds what other runtimes do and what to expect of a loop on a model that was not
 trained with one.
 
+**11.17 Cycles in the council.** gogi "Cycles" has the rules. A context's `cycles` is the count of cycles that a
+model built to cycle runs for each position (ontology "Cycle"). A context with no `cycles` runs the served model's
+`default`. A cycle is not a layer loop (decided 2026-11-21).
+
+The notes below fill the choices that gogi leaves to the server. Each note is **Proposed** (Claude Opus 5.5,
+2026-11-21). Reason: each is the simplest one, and each follows the rule of the loop in 11.16.
+
+- **The capability.** A served model declares `cycles` when its engine declares `cycles` (engine-abi "Inkling 2").
+  Its `cycles` member copies `limits().cycles` of the engine: `min`, `max`, `default`, `start` and `end`.
+- **The checks.** The route checks `cycles` before the job, after `thinking`, `control` and `loop`. The check of
+  `loop` and `cycles` together comes last (`check_members` of gogi-proto). The context is whole at this time, so a
+  member of its parent counts.
+- **The count that runs.** The council resolves the count: the context's `cycles`, or the `default` of the engine.
+  Each segment of the job carries that count in `segment.cycles`. A segment of an engine with no `cycles` carries
+  none.
+- **The recipe.** A count other than `default` goes into the root recipe as the lab state, tag 4 (6.2), after the
+  bytes of the control list. Its bytes are these, little-endian: the `u64` value `0xFFFF_FFFF_FFFF_FFFE`, then the
+  count as a `u32`. The first value is never the count of a control list, and it is not the marker of a loop.
+- **The default count adds no bytes.** Thus a context with `cycles` equal to `default` and the same context with
+  none have one root, and they share model state, as gogi allows. The identity of the engine fixes `default`, so the
+  root still names the computation. The root of each context with no `cycles` does not change.
+- **Joins.** The worker joins decode rows with an equal count only. Reason: the segments of one pass run one count
+  (`Limits::check_segment_cycles`).
+- **A reply with audio** runs at the default count only. A frame feeds its position as a plain pass. Another count
+  is a 400 that names `cycles`.
+- **`ensemble`** takes contexts with one `cycles` member, as it takes one `loop`. Another member is a 400 that names
+  `contexts[i].cycles`. An ensemble over counts of cycles is milestone 35 step 8.
+
+The tests are in `crates/nagaya/tests/council_cycles.rs` and `crates/nagaya/tests/http_conformance.rs`.
+
 ## 12. Identity
 
 **12.1 Fields.** An engine identity has the fields of `identity()` in the ABI:
