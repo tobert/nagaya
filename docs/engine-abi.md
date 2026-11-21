@@ -1485,6 +1485,82 @@ The worker joins only the segments of one loop, so the engine never mixes two lo
 Reason: a claim keeps an entry that a queued job needs, and the least recent use keeps the vectors that clients use
 most.
 
+## Inkling 2
+
+The engine kind `mk-inkling2-bmg` serves Inkling 2 Mini and the variable-loop research model on one B70 card
+(milestone 35). The facts come from the checkpoint and from transformers `inkling2_loop` at `046bdb8cc2`. Each rule
+is **Proposed** (Claude Opus 5.5, 2026-11-21).
+
+```
+limits().cycles: {min, max, default}?   the counts of cycles that the engine runs
+segment.cycles: u8?                      the count of cycles of each position; none gives `default`
+taps: residual                           the row after each run, in the order of the runs
+```
+
+**Runs and cycles.** A cycle is one walk through layers 6 to 17. A position runs layers 0 to 5, then `count`
+cycles, then layers 18 to 23. Cycle 1 reads the residual after layer 5. Each later cycle starts again from that
+residual and from the block outputs after layer 5. Each of its layers also reads a message from the cycle before it,
+through four learned gates: query, key, value and expert input. At 3 cycles a position has 48 runs.
+
+**Cycles are not layer loops.** A layer loop runs a span again on its own output ("Layer loops"). A cycle starts
+again from layer 6 and reads a message. Thus a cycle has a capability, a limit and a segment field of its own. The
+engine declares no `layer_loops`.
+
+- `min` is 1, and `default` is 3. Mini is post-trained at 3 cycles, and the research model at 1 to 5.
+- `max` is 1 + `extra_runs` / 12. `extra_runs` comes from the profile: 24 by default, and 48 at most.
+- A segment with a count outside `min` to `max` is refused. The segments of one pass name one count.
+- The count is part of the root recipe of a context. A context keeps one count: each run of an earlier position
+  holds keys and values that a later position reads.
+- gogi writes the context member `cycles` first. Until then, each context runs `default`.
+
+**The weights on the card.** Expanded to `bf16`, the experts take about 49 GB, which is more than the 32 GiB of the
+card. Thus the experts stay in the format of the checkpoint: NVFP4 in layers 0 to 19, and MXFP8 in layers 20 to 23.
+
+- A kernel expands each value as the reference does: the product in `f32`, then a round to `bf16`.
+- In the checkpoint, row `2i` of `w13` is the gate row `i`, and row `2i + 1` is the up row `i`. The engine keeps
+  that order.
+- The other weights keep the dtype of the checkpoint: `bf16`, and `f32` for the queries of the residuals, the
+  router bias and the message queries.
+- Every sum is `f32`. A run in `bf16` differs from the `f32` reference by about 0.2 in each logit (milestone 35
+  step 1).
+
+**The parts.** Each run has three parts, and `ll` is its layer in two digits:
+
+- `k.<ll>` and `v.<ll>`: `f32` rows of 8 heads of 128, after the clip of the key and the norm of the value. They are
+  cells on the full layers 5, 11, 17 and 23, and rings of 1,024 rows on the other layers.
+- `conv.<ll>`: a fixed `f32` part of 3 rows of 6,656 values, oldest first. A row holds the inputs of four
+  convolutions, in this order:
+  - the key, 1,024 values;
+  - the value, 1,024 values;
+  - the output of the attention, 2,304 values;
+  - the output of the experts, 2,304 values.
+- The runs of cycles 2 and later take the parts of the reserve: `k.x<ii>`, `v.x<ii>` and `conv.x<ii>`. They go in
+  the order of the runs, as in "Layer loops".
+
+**The cost of a slot.** At 3 cycles, 8 runs of the full layers hold cells: 65,536 bytes of each position. The 40
+runs of the sliding layers hold rings of 1,024 rows and a spill of 1,024 rows, as for LFM3: 640 MiB. The conv parts
+take 3.8 MB. Thus a slot of 32,768 positions takes about 2.7 GiB. Each more cycle adds 2 runs of cells and 10 rings.
+
+**Positions.** The model has no rotary embedding.
+
+- Each layer adds a bias to each score: the layer input of the query mixes 16 learned profiles of the distance. The
+  bias is 0 at a distance of 1,024 or more.
+- The full layers also scale the query and the bias by `1 + 0.1 * ln(max((p + 1) / 8192, 1))`, where `p` is the
+  position. Below position 8,191 the scale is 1.
+- Each head adds a sink: one more score of each position, with a value of zero, from the layer input.
+
+**Position 0 and no way back.** A pass from position 0 starts from conv states of zeros, as the reference does. A
+pass starts at the token count of its slot, as for LFM3 ("The first LFM3 binding", "No way back").
+
+**Logits.** A logit row has 200,058 values, the `unpadded_vocab_size` of the config. The engine applies the softcap
+of 30, as the reference does: the logits are `30 * tanh(z / 30)`.
+
+**Taps.** The tap `residual` gives the row after each run, not after each layer: 48 rows at 3 cycles. Reason: each
+run of a cycle has its own row, and the lab compares the cycles. A control item acts after each run of each layer
+that its vector holds. Milestone 35 step 8 adds taps of the block outputs, the messages, the gates and the routes.
+
+**Not covered yet.** Images (milestone 35 step 9), and the drafts of the MTP head, which wait (step 10).
+
 ## Not covered yet
 
 - Streams. They need a period, a deadline and a late policy, in `limits()` or per job. A pass blocks, so the

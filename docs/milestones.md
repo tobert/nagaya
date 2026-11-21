@@ -318,9 +318,9 @@ below come from its `config.json` and `modeling_inkling2_loop.py`.
 - **Other parts.** A ViT of 23 layers for images of 40 to 4,096 px. An MTP head of 3 layers that drafts blocks of
   8 tokens. A tiktoken vocabulary of 201,024 entries. A template with `reasoning_effort` from 0.0 to 0.99.
 
-The cost of a slot, from the config: 8 runs of the full layers hold 32,768 bytes for each position. The 40 runs of
-the sliding layers hold rings of 1,024 positions, about 160 MiB. Thus a slot of 32,768 positions costs about 1.2 GiB,
-and a card of 32 GiB holds the weights and about 8 such slots.
+The cost on a card: the weights stay in the formats of the checkpoint, about 19.5 GB. Expanded to `bf16`, the
+experts alone take 49 GB. The keys and values are `f32`, so a slot of 32,768 positions takes about 2.7 GiB
+(`docs/engine-abi.md`, "Inkling 2"). Thus a card of 32 GiB holds the weights and about 3 such slots.
 
 The names are `nagaya-mk-inkling2-bmg` and `nagaya-text-inkling2`. The family is `inkling2`. Each model is an engine
 of its own with an identity of its own.
@@ -328,18 +328,22 @@ of its own with an identity of its own.
 The ontology defines "Pass" as one run of an engine. Thus this plan writes "cycle" for one walk through layers 6
 to 17. The reference uses the same word (`middle_cycle_cross_pass_queries`).
 
-Amy decides these questions before the step that needs each one:
+The questions of the plan, and their answers:
 
 1. **Cycles and layer loops.** A layer loop of LFM3 runs a span again on its own output. A cycle of Inkling 2 starts
-   again from layer 6 and reads a message. Proposed: the engine declares one span, 6 to 18, and the `count` of a
-   loop is the count of cycles. A context with no loop runs 3 cycles. Spec 11.16 then needs a mode for each form.
+   again from layer 6 and reads a message. Amy, 2026-11-21: "perhaps cycles should just be called cycles if they're
+   different things?" Thus a cycle has a capability and a context member of its own, `cycles`. The engine declares
+   no `layer_loops`. A context with no `cycles` runs 3 cycles (`docs/engine-abi.md`, "Inkling 2").
 2. **Activations of the experts.** The quant config asks for NVFP4 activations before each expert. The reference
    expands each expert to `bf16` at load, and its activations stay `bf16` (`Inkling2LoopDequantizeExperts` in
    transformers). It rounds each expanded weight to `bf16`. In the checkpoint, row `2i` of `w13` is gate row `i`,
    and row `2i + 1` is up row `i`. Proposed: the engine expands the weights as the reference does.
-3. **Drafts of the MTP head.** The nagaya has no speculative decode. It needs a rule in the spec and in gogi first.
-4. **The effort.** `reasoning_effort` needs a member of a council request, or a rule that maps an existing member.
-   gogi writes it first.
+3. **Drafts of the MTP head.** They wait. Amy, 2026-11-21: "MTP can wait, I'm not a big fan, would rather make the
+   model fast". The head learned the plain model at 3 cycles. Under a control vector or another count of cycles, its
+   drafts miss more often.
+4. **The effort.** The template writes `Thinking effort level: <n>` from a number of 0.0 to 0.99, and a gogi context
+   has only `thinking: true | false`. Proposed: `false` gives 0 and `true` gives the default of the template, 0.9.
+   A number for the levels between them is a later change of gogi. Open for Amy.
 
 Do the steps in this order. Each step ends with the checks green.
 
@@ -353,7 +357,8 @@ Do the steps in this order. Each step ends with the checks green.
    - The self checks: 48 runs in order at 3 cycles, and the cache of the reference gives the logits of no cache to
      3.6e-5. The two models share every file but `config.json`, so one family library serves both.
 2. **Spec and ABI.** `docs/engine-abi.md`, "Inkling 2": the parts of a state, the cycles, the taps, the weight
-   formats. The ontology gets "Cycle". Each rule that the docs leave open is **Proposed**.
+   formats. The ontology gets "Cycle". Each rule that the docs leave open is **Proposed**. gogi writes the context
+   member `cycles` and its suite checks.
 3. **The family library.** The tiktoken tokenizer and the template through `nagaya-jinja`. The reply parser with the
    thinking block and the tool calls, the escapes and the council rendering. Fixtures of the reference.
 4. **Weights.** The safetensors reader for NVFP4, MXFP8 and `f32`. A host op expands each format, and it is the
@@ -362,12 +367,12 @@ Do the steps in this order. Each step ends with the checks green.
    the attention residuals, the gates, the routing and the experts. Prefill, decode and snapshots. Card gates
    against the oracle, and two plans with equal bits.
 6. **Council and deploy.** The factory, the registries, an example profile, and the gogi suite on the card.
-7. **Cycles in a call.** The `count` of a loop chooses 1 to 5 cycles. Card gate: the research model against the
-   reference at each count. Mini takes the same counts, out of the range of its training.
+7. **Cycles in a call.** The context member `cycles` chooses 1 to 5 cycles. Card gate: the research model against
+   the reference at each count. Mini takes the same counts, out of the range of its training.
 8. **The lab.** The taps: the row after each run, the block outputs, the messages, the gates and the routes. Control
    vectors, latent steps, and `ensemble` over counts of cycles.
 9. **Images.** The ViT, the placeholders of an image and its sizes. Card gate against the reference.
-10. **Drafts.** The MTP head drafts tokens, and a pass checks them. This step waits for question 3.
+10. **Drafts.** The MTP head drafts tokens, and a pass checks them. This step waits (question 3).
 11. **Long contexts.** The model reads up to 1,048,576 positions. Measure the ledger cost and the speed at 256K.
 12. **Trial and review.** A trial with Amy, and a kaibo review round with a cast of another model family.
 

@@ -137,6 +137,10 @@ it (`docs/spec.md` 11.16). Other texts call it a looped or recurrent block, or l
 **Run.** One execution of one layer for one position. A layer outside a loop has one run, and a layer inside it has
 `count` runs. Each run has its own state: keys and values, or a recurrent state.
 
+**Cycle.** One walk through a span of middle layers that a model runs several times for each position. Inkling 2
+runs layers 6 to 17 in cycles. A cycle after the first starts again from the same input, and it reads a message from
+the cycle before it. A layer loop runs a span again on its own output; a cycle is not a layer loop.
+
 **Recipe.** What a snapshot was made from: a hash of the engine identity, the inputs and the boundaries. For an
 engine that declares a geometry key, the recipe holds that key too. The store maps a recipe to the content ids made
 from it, so the nagaya can ask "do we already have this?" before it builds.
