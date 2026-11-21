@@ -1,5 +1,5 @@
 //! The `f32` host form of the Inkling 2 text model: one op for each layer part, and a forward that composes them
-//! over the real checkpoint.
+//! over the real checkpoint. `vision` holds the host form of the image path.
 //!
 //! It fixes the meaning of each op and each checkpoint tensor before the device code exists. Each device op is gated
 //! against the host form of its op. The reference is transformers `inkling2_loop` at `046bdb8cc2`
@@ -47,4 +47,5 @@
 
 pub mod forward;
 pub mod ops;
+pub mod vision;
 pub mod weights;

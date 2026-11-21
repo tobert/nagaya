@@ -1571,7 +1571,62 @@ of 30, as the reference does: the logits are `30 * tanh(z / 30)`.
 run of a cycle has its own row, and the lab compares the cycles. A control item acts after each run of each layer
 that its vector holds. Milestone 35 step 8 adds taps of the block outputs, the messages, the gates and the routes.
 
-**Not covered yet.** Images (milestone 35 step 9), and the drafts of the MTP head, which wait (step 10).
+**Not covered yet.** The drafts of the MTP head, which wait (milestone 35 step 10). The images come in step 9
+("The images of Inkling 2").
+
+### The images of Inkling 2
+
+Images follow the pattern of LFM3 ("LFM3", "The LFM3 vision binding"). The family prepares the rows of an image.
+The engine runs the vision tower inside the pass, and the rows of the projector replace the placeholders. The facts
+come from transformers `inkling2` at `046bdb8cc2`. Each rule is **Proposed** (Claude Opus 5.5, 2026-11-21).
+
+- **No resize.** The processor pads each image on the right and at the bottom to a multiple of 40 px. The pad value
+  is -1 on the scale of 0 to 255 (`image_processing_inkling2.py:89`). Then each value `v` becomes
+  `(v - 127.5) / 127.5` in `f32` (line 91). An image with an alpha channel goes over a checkerboard of 204 and 153
+  first (line 67).
+- **Tokens and patches.** An image token is a square of 40 px. It holds 2 by 2 patches of 20 px. An image of `H` by
+  `W` px has `rows = ceil(H / 40)` and `columns = ceil(W / 40)`, and thus `rows * columns` image tokens.
+- **The placeholder.** The template writes `<|content_image|><|unused_200054|><|end_message|>`. The family puts one
+  placeholder `<|unused_200054|>` (id 200,054) for each image token in place of the one that the template writes
+  (`processing_inkling2.py:37`).
+- **The rows of a span.** The family gives one row of 1,200 `f32` values for each patch. A row is the 20 lines of
+  the patch, each line is its 20 pixels, and each pixel is its 3 channels (`modeling_inkling2.py:1230`).
+- **The order of the rows.** The rows go in the order of the image tokens, line by line. The 4 patches of one token
+  follow each other, line by line. This is the order of the merge (`vision_utils.py:119`).
+- **The meta of a span.** It is the record of "The LFM3 vision binding": the kind 1, the count of positions, the
+  first position, then `grid_t = 1`, `grid_h = 2 * rows`, `grid_w = 2 * columns` and 0. The grid counts patches.
+  Reason: one reader and one rule serve both engines, because the span has `grid_t * grid_h * grid_w / 4` positions.
+- **Sizes.** The family accepts a side of 1 to 4,096 px and 512 image tokens at most. Another image is a 400 that
+  names the part. Reason: the reference refuses no size, and the model card advises 40 to 4,096 px for each side.
+- **The reason of the cap.** It bounds the work of the tower. A span of 512 positions or fewer meets at most two
+  feed blocks, so the tower runs at most twice for it. A larger cap waits for a measure of the tower on the card
+  (Proposed, ChatGPT by kaibo `gpt-plan`, 2026-11-21).
+
+**What the engine runs.** The tower runs over each image of the pass alone: its class row and its `4 * T` patches,
+for `T` image tokens. These are the steps:
+
+1. The patch embedding: a matrix of 1,024 by 1,200, with no bias.
+2. The position embedding. The table holds 32 by 32 rows, and the engine resamples it to the grid of patches with
+   bilinear weights. The weights are those of `F.interpolate` with `align_corners=False` and a clamp at the border
+   (`vision_utils.py:206`).
+3. The class row in front of the patches: `class_embedding + cls_position_embedding`. Then the LayerNorm `ln_pre`.
+4. 23 layers. Each layer is `x + ls_1 * attn(ln_1(x))`, then `x + ls_2 * mlp(ln_2(x))`. The attention has 16 heads
+   of 64 values, with biases, in both directions. The MLP is `c_proj(gelu(c_fc(x)))`, with the GELU of `erf`.
+5. A rotary embedding in two axes, on the query and the key, with a base of 10,000. A patch in line `r` and column
+   `c` has the position `(r + 1, c + 1)`, and the class row has `(0, 0)`.
+6. The channel pair `j` of a head turns by the column for `j < 16`, and by the line for `j >= 16`. Its frequency is
+   `10000^(-(j mod 16) / 16)` (`modeling_inkling2.py:1035`).
+7. The class row goes. The 4 rows of each token join into one row of 4,096 values. The projector is
+   `proj_out(gelu(proj_in(x)))`, from 4,096 to 4,096 to 2,304, with no bias.
+
+**The output.** The pass copies the rows of the projector over the normed embedding rows of the placeholders. The
+engine does not norm them (`modeling_inkling2_loop.py:1694`).
+
+**The weights.** The 422 tensors of `model.visual.` stay `bf16`, and every sum is `f32`, as in the text model. They
+take the term `vision` on `device(0)`. The two models hold the same tensors.
+
+**The host form.** `src/host/vision.rs` holds the rules of the processor and of the tower in `f32`. It is the oracle
+of the family and of the device ops. The family library calls the same rules of the processor.
 
 ### The first Inkling 2 binding
 

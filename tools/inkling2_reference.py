@@ -21,6 +21,8 @@ The stages:
   layers   the prompt "plain" through Mini: the row after each run, each message and each gate, and the logits
   cycles   the prompts "plain" and "chat" at 1 to 5 cycles, for each model
   decode   8 greedy tokens of "chat" with the cache of the reference, and the logits after each, for each model
+  vision   two synthetic images through the processor, the vision tower and the projector, and a chat prompt that
+           holds both, through Mini
 
 The tool stops with an AssertionError when a self check fails. The checks:
 
@@ -28,7 +30,11 @@ The tool stops with an AssertionError when a self check fails. The checks:
   - each prompt fits in MAX_TOKENS tokens;
   - the hooks see 24 + 2 * 12 = 48 runs of the decoder layers at 3 cycles;
   - the final norm of the hooks, the head and the softcap give the logits of the model;
-  - a decode with the cache gives the logits of a forward over the whole sequence with no cache.
+  - a decode with the cache gives the logits of a forward over the whole sequence with no cache;
+  - the count of placeholders of an image equals its count of projector rows;
+  - the rows that the model scatters into the placeholders are the projector rows, and the other rows are the
+    normed embeddings of their tokens;
+  - the hooks of the tower give its output, and a tower run of both images gives the rows of two runs of one.
 """
 
 import argparse
@@ -48,7 +54,11 @@ ROOT = Path(__file__).resolve().parent.parent
 TOP = 64
 MAX_TOKENS = 640
 DECODE_STEPS = 8
-STAGES = ("text", "layers", "cycles", "decode")
+STAGES = ("text", "layers", "cycles", "decode", "vision")
+# The synthetic images of the stage "vision": (width, height, seed). No side is a multiple of 40, so the processor
+# pads each image on the right and at the bottom.
+VISION_IMAGES = ((213, 118, 35_0), (637, 479, 35_1))
+VISION_PROMPT = "Describe the two images."
 STARTED = time.time()
 
 
@@ -343,6 +353,184 @@ def run_decode(model, tokenizer, label, out, facts):
     facts[f"{label}.decode.text"] = tokenizer.decode(tokens)
 
 
+def synthetic_image(width, height, seed):
+    """An RGB image of `height x width x 3` bytes: smooth gradients with noise, from a fixed seed."""
+    g = torch.Generator().manual_seed(seed)
+    y = torch.linspace(0, 1, height)[:, None, None]
+    x = torch.linspace(0, 1, width)[None, :, None]
+    phase = torch.rand(3, generator=g)
+    base = 127.5 + 100 * torch.sin(6.2832 * (x * (1 + phase) + y * (2 - phase) + phase))
+    noise = torch.randint(-27, 28, (height, width, 3), generator=g).float()
+    return (base + noise).round().clamp(0, 255).to(torch.uint8)
+
+
+class VisionTap:
+    """Keeps the outputs of the parts of the vision tower for each call of the tower."""
+
+    def __init__(self, tower):
+        self.rows = []
+        self.handles = [
+            tower.embeddings.patch_embedding.register_forward_hook(self.keep("patch_embed")),
+            tower.embeddings.register_forward_hook(self.keep("embeddings")),
+            tower.pre_layernorm.register_forward_hook(self.keep("pre_layernorm")),
+            tower.merger.register_forward_hook(self.keep("projector")),
+        ]
+        for index, layer in enumerate(tower.layers):
+            self.handles.append(layer.register_forward_hook(self.keep(f"layer{index:02}")))
+        self.handles.append(tower.register_forward_hook(self.keep_tower))
+
+    def keep(self, name):
+        def hook(_module, _args, output):
+            row = output[0] if isinstance(output, tuple) else output
+            self.rows.append((name, row.detach().float().clone()))
+
+        return hook
+
+    def keep_tower(self, _module, _args, output):
+        self.rows.append(("tower", output.last_hidden_state.detach().float().clone()))
+
+    def named(self):
+        return dict(self.rows)
+
+    def remove(self):
+        for handle in self.handles:
+            handle.remove()
+
+
+class EmbedsTap:
+    """Keeps the input rows of the text model: the rows after the scatter of the image features."""
+
+    def __init__(self, text):
+        self.rows = None
+        self.handle = text.register_forward_pre_hook(self.keep, with_kwargs=True)
+
+    def keep(self, _module, _args, kwargs):
+        self.rows = kwargs["inputs_embeds"][0].detach().float().clone()
+
+    def remove(self):
+        self.handle.remove()
+
+
+def run_vision(model, text, folder, out, facts):
+    """Two images through the processor, the tower and the projector, and a chat prompt with both through Mini."""
+    import numpy
+    from PIL import Image
+    from transformers import AutoProcessor
+
+    processor = AutoProcessor.from_pretrained(folder)
+    tower = model.model.vision_tower
+    vcfg = model.config.vision_config
+    merge = vcfg.spatial_merge_size
+    image_token = model.config.image_token_id
+    check(processor.image_token_id == image_token, "the processor and the model name one image token")
+    check(tower.embeddings.patch_embedding.weight.dtype == torch.float32, "the tower runs in f32")
+    tensors, images, records = {}, [], []
+    for index, (width, height, seed) in enumerate(VISION_IMAGES):
+        rgb = synthetic_image(width, height, seed)
+        png = out / f"inkling2-vision-image{index}.png"
+        Image.fromarray(rgb.numpy()).save(png)
+        image = Image.open(png)
+        image.load()
+        check(torch.equal(torch.from_numpy(numpy.array(image)), rgb), "the PNG holds the bytes")
+        images.append(image)
+        features = processor.image_processor(images=[image], return_tensors="pt")
+        pixels, grid = features["pixel_values"], features["image_grid_thw"]
+        tap = VisionTap(tower)
+        with torch.no_grad():
+            result = tower(pixel_values=pixels, image_grid_thw=grid)
+        tap.remove()
+        rows = tap.named()
+        check(torch.equal(rows["tower"], result.last_hidden_state.float()), "the tap holds the tower output")
+        check(torch.equal(rows["projector"], result.pooler_output.float()), "the tap holds the projector rows")
+        tokens = int(grid.prod())
+        check(rows["projector"].shape == (tokens, vcfg.text_hidden_size), "one projector row for each token")
+        check(rows["tower"].shape[0] == tokens * merge * merge + 1, "one class row and the patches")
+        prefix = f"image{index}."
+        tensors[prefix + "rgb"] = rgb.to(torch.int64)
+        tensors[prefix + "pixel_values"] = pixels.float()
+        tensors[prefix + "grid"] = grid[0].to(torch.int64)
+        for name in ("patch_embed", "embeddings", "pre_layernorm", "tower", "projector"):
+            tensors[prefix + name] = rows[name]
+        if index == 0:
+            for layer in range(vcfg.num_hidden_layers):
+                tensors[prefix + f"layer{layer:02}"] = rows[f"layer{layer:02}"]
+        records.append({"width": width, "height": height, "seed": seed, "grid": grid[0].tolist(), "png": png.name})
+        log(f"vision image {index}: {width}x{height}, grid {grid[0].tolist()}, {tokens} placeholders")
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image", "image": images[0]},
+                {"type": "image", "image": images[1]},
+                {"type": "text", "text": VISION_PROMPT},
+            ],
+        }
+    ]
+    rendered = processor.apply_chat_template(messages, tokenize=False, reasoning_effort="none")
+    inputs = processor.apply_chat_template(
+        messages, tokenize=True, return_dict=True, return_tensors="pt", reasoning_effort="none"
+    )
+    ids = inputs["input_ids"][0]
+    counts = [int(g.prod()) for g in inputs["image_grid_thw"]]
+    check(int((ids == image_token).sum()) == sum(counts), "the count of placeholders equals the projector rows")
+    for index, count in enumerate(counts):
+        check(count == tensors[f"image{index}.projector"].shape[0], f"image {index} has {count} placeholders")
+    pixels = torch.cat([tensors[f"image{i}.pixel_values"] for i in (0, 1)])
+    check(torch.equal(inputs["pixel_values"].float(), pixels), "the processor gives the same pixels for the chat")
+    embeds = EmbedsTap(text)
+    tap = VisionTap(tower)
+    before = ExpertCalls.count
+    with torch.no_grad():
+        logits = model(
+            input_ids=inputs["input_ids"],
+            pixel_values=inputs["pixel_values"],
+            image_grid_thw=inputs["image_grid_thw"],
+            use_cache=False,
+        ).logits[0].float()
+    check(ExpertCalls.count > before, "the f32 expert call ran")
+    embeds.remove()
+    tap.remove()
+    joint = tap.named()["projector"]
+    separate = torch.cat([tensors["image0.projector"], tensors["image1.projector"]])
+    joint_gap = max_abs(joint, separate)
+    log(f"vision: one tower run of both images against two runs, max abs {joint_gap:.3g}")
+    check(joint_gap <= 1e-4, f"a tower run of both images gives the rows of two runs: {joint_gap:.3g}")
+    mask = ids == image_token
+    check(torch.equal(embeds.rows[mask], joint), "the scattered rows are the projector rows")
+    with torch.no_grad():
+        plain = text.embed_tokens(ids[None])[0].float()
+    check(torch.equal(embeds.rows[~mask], plain[~mask]), "the other rows are the normed embeddings")
+    tensors["prompt.ids"] = ids.to(torch.int64)
+    tensors["prompt.logits_last"] = logits[-1]
+    meta = {
+        "images": records,
+        "prompt": rendered,
+        "rope_parameters": vcfg.rope_parameters,
+        "hidden_act": vcfg.hidden_act,
+        "attn_implementation": vcfg._attn_implementation,
+        "joint_gap": joint_gap,
+        "versions": versions(),
+    }
+    save(tensors, out / "inkling2-mini.vision.safetensors", meta)
+    source = "two synthetic images of this tool and a fixed question"
+    entry = top_entry("vision", source, rendered, ids.tolist(), logits[-1])
+    entry["images"] = records
+    fixture = {
+        "family": "inkling2",
+        "model": "inkling2-mini",
+        "reference": "transformers inkling2_loop 046bdb8cc2, f32 sums with bf16 weights, CPU",
+        "source": source_record(folder),
+        "versions": versions(),
+        "prompts": [entry],
+    }
+    (out / "inkling2-mini.vision.json").write_text(json.dumps(fixture, indent=1) + "\n")
+    facts["vision.placeholders"] = counts
+    facts["vision.prompt_tokens"] = len(ids)
+    facts["vision.joint_gap"] = joint_gap
+    facts["vision.top"] = processor.tokenizer.decode([entry["top_ids"][0]])
+    log(f"wrote vision: {len(ids)} prompt tokens, top {facts['vision.top']!r}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--mini", required=True, help="the snapshot folder of Inkling 2 Mini")
@@ -357,10 +545,12 @@ def main():
     torch.set_num_threads(args.threads)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    facts_path = out / "facts.json"
+    # The stage "vision" keeps its facts in a file of its own, so that it writes no file of the other stages.
+    facts_name = "vision.facts.json" if stages == ["vision"] else "facts.json"
+    facts_path = out / facts_name
     facts = json.loads(facts_path.read_text()) if facts_path.exists() else {}
     for label, folder in (("inkling2-mini", args.mini), ("inkling2-varloop", args.varloop)):
-        wanted = [s for s in stages if s != "layers" or label == "inkling2-mini"]
+        wanted = [s for s in stages if s not in ("layers", "vision") or label == "inkling2-mini"]
         if not wanted:
             continue
         model, text, tokenizer = load(folder)
@@ -372,6 +562,8 @@ def main():
             run_cycles(model, text, tokenizer, label, out, facts)
         if "decode" in wanted:
             run_decode(model, tokenizer, label, out, facts)
+        if "vision" in wanted:
+            run_vision(model, text, folder, out, facts)
         del model, text
         facts_path.write_text(json.dumps(facts, indent=1, sort_keys=True) + "\n")
     log("done")
