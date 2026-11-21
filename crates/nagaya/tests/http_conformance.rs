@@ -128,11 +128,34 @@ const LOOP_CHECKS: [&str; 9] = [
     "a control vector request with a looped context is a 400 naming positive[0].loop",
 ];
 
+/// The checks of gogi's suite for a served model with `cycles` (gogi `checks/cycles.rs`, spec 11.17). Each must run
+/// and pass.
+const CYCLE_CHECKS: [&str; 18] = [
+    "cycles has 1 <= min <= default <= max and a span with start below end",
+    "cycles at the default shares the model state of no cycles",
+    "a context with cycles and one without are two records",
+    "another count never shares model state with the default",
+    "an equal count shares its model state",
+    "cycles: null beside parent drops the parent's count",
+    "cycles at the default gives the numbers of no cycles",
+    "a context at another count gives other numbers",
+    "a generation at another count writes a reply",
+    "a build with cycles that is not a number is a 400 naming cycles",
+    "a build with cycles that is not a whole number is a 400 naming cycles",
+    "a build with a count of 0, below the least is a 400 naming cycles",
+    "a build with a count of 6, above the most is a 400 naming cycles",
+    "raw reads with a count above the most are a 400 naming contexts[1].cycles",
+    "a control vector request with cycles is a 400 naming positive[0].cycles",
+    "a build with a loop and cycles is a 400 naming cycles",
+    "a build with a loop and a count out of range is a 400 naming cycles, with the range, the member's own check first",
+    "a build with a bad loop and cycles is a 400 naming loop.count, the member's own check first",
+];
+
 /// A profile with two fake-toy engines, each its own text served model (spec 11.7, "Several text models in one
-/// process", Proposed). `toy-a` has a control table and layer loops, and `toy-b` has neither, so the suite checks
-/// both paths.
+/// process", Proposed). `toy-a` has a control table, layer loops and cycles, and `toy-b` has none of them, so the
+/// suite checks both paths.
 const TWO_MODELS: &str = "[[engines]]\nname = \"toy-a\"\nkind = \"fake-toy\"\ndevices = [0]\nshare = 1\n\
-     config = { model = \"toy-a\", control = 4, extra_runs = 4 }\n\
+     config = { model = \"toy-a\", control = 4, extra_runs = 4, cycles = { min = 1, max = 5, default = 3 } }\n\
      [[engines]]\nname = \"toy-b\"\nkind = \"fake-toy\"\ndevices = [0]\nshare = 1\n\
      config = { model = \"toy-b\" }\n\
      [[budgets]]\ntiers = [\"device(0)\"]\nbytes = 8320\n\
@@ -469,6 +492,17 @@ fn gogi_conformance_passes_on_each_of_two_text_models_of_one_process() {
             _ => &["a build with a loop to a model without layer_loops is a 400 naming loop"],
         };
         for name in loops {
+            assert!(ok(name), "{model}: {name}");
+        }
+        // toy-a runs the checks of cycles, and toy-b, with none, the refusals (gogi "Cycles", spec 11.17).
+        let cycles: &[&str] = match model {
+            "toy-a" => &CYCLE_CHECKS,
+            _ => &[
+                "a build with cycles to a model without cycles is a 400 naming cycles",
+                "a count of 0 to a model without cycles is refused for the capability first",
+            ],
+        };
+        for name in cycles {
             assert!(ok(name), "{model}: {name}");
         }
         // Both served models share the records of the server.

@@ -539,6 +539,7 @@ fn batches(begun: Vec<(JobId, usize, Segment)>, engines: &[Box<dyn Engine>]) -> 
                 && matches!(first.inputs, nagaya_abi::SegmentInputs::Tokens(_))
                 && first.control == segment.control
                 && first.layer_loop == segment.layer_loop
+                && first.cycles == segment.cycles
         });
         match joins {
             Some(batch) => batch.push(item),

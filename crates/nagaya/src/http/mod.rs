@@ -575,7 +575,14 @@ impl Council {
                 count: limit.count,
                 extra_runs: u64::from(limit.extra_runs),
             }),
-            cycles: None,
+            // A served model runs the counts of cycles of its engine (spec 11.17).
+            cycles: service.cycles().map(|limit| gogi_proto::cycles::Cycles {
+                min: u32::from(limit.min),
+                max: u32::from(limit.max),
+                default: u32::from(limit.default),
+                start: limit.start,
+                end: limit.end,
+            }),
             capabilities: [
                 Capability::Reads,
                 Capability::Generate,
@@ -590,6 +597,7 @@ impl Council {
             .chain(service.family().describes().then_some(Capability::Describe))
             .chain(service.controls().then_some(Capability::ControlVectors))
             .chain(service.layer_loops().is_some().then_some(Capability::LayerLoops))
+            .chain(service.cycles().is_some().then_some(Capability::Cycles))
             .collect(),
         }
     }

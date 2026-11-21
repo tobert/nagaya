@@ -143,12 +143,12 @@ impl Service {
             let shared = Arc::clone(&self.shared);
             let cuts = self.cuts(root, context, &rendering)?;
             let media = self.media_rows(&rendering)?;
-            let (control, layer_loop) = (steer.control, steer.layer_loop);
+            let (control, layer_loop, cycles) = (steer.control, steer.layer_loop, steer.cycles);
             let job = |tx| {
                 ContextBody::with(shared, tokens, recipes, end + longest, then, tx)
                     .media(media)
                     .cuts(cuts)
-                    .control(root, control, layer_loop)
+                    .control(root, control, layer_loop, cycles)
             };
             let finished = self.run_context(job, schedule, None)?;
             let head = finished

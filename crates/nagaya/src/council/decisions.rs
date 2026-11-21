@@ -422,9 +422,9 @@ impl Service {
             // later decision on the same case starts from it (spec 11.11, "The plain read of the LFM3 family").
             let head = plan.prefix_is_head() && !plan.prefix().is_empty();
             let built = end + if head { plan.prefix().len() } else { 0 };
-            let (root, job_control, layer_loop) = match steer {
-                Some(steer) => (steer.root, steer.control, steer.layer_loop),
-                None => (self.root, None, None),
+            let (root, job_control, layer_loop, cycles) = match steer {
+                Some(steer) => (steer.root, steer.control, steer.layer_loop, steer.cycles),
+                None => (self.root, None, None, None),
             };
             let (mut tokens, mut recipes, cuts, media): (Arc<[u32]>, _, _, _) = match (&rendering, context) {
                 (Some(r), Some(c)) => (
@@ -448,7 +448,7 @@ impl Service {
                 ContextBody::with(shared, tokens, recipes, room, then, tx)
                     .media(media)
                     .cuts(cuts)
-                    .control(root, job_control, layer_loop)
+                    .control(root, job_control, layer_loop, cycles)
             };
             let finished = self.run_context(job, schedule, Some(deadline))?;
             let then = finished.then;

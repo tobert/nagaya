@@ -627,6 +627,8 @@ pub struct ContextBody<T: Then> {
     control: Option<JobControl>,
     /// The layer loop of each segment of the job, when the context names one (spec 11.16).
     layer_loop: Option<LayerLoop>,
+    /// The count of cycles of each segment of the job (spec 11.17). With none, the engine runs its default.
+    cycles: Option<u8>,
     /// The items of each segment of the job, after the worker bound the vectors of the list to entries of the table.
     items: Vec<ControlItem>,
     /// False when the job makes no interval copy, as the job of a control vector (spec 11.12).
@@ -723,6 +725,7 @@ impl<T: Then> ContextBody<T> {
             root,
             control: None,
             layer_loop: None,
+            cycles: None,
             items: Vec::new(),
             copies: true,
             residual: None,
@@ -800,12 +803,20 @@ impl<T: Then> ContextBody<T> {
         self
     }
 
-    /// Run the job under the root recipe of its control list and its loop, with the items of the list and the loop on
-    /// each pass (spec 11.12, 11.16). The recipes of the job must chain from `root`.
-    pub fn control(mut self, root: RecipeId, control: Option<JobControl>, layer_loop: Option<LayerLoop>) -> Self {
+    /// Run the job under the root recipe of its control list, its loop and its count of cycles, with the items of the
+    /// list, the loop and the count on each pass (spec 11.12, 11.16, 11.17). The recipes of the job must chain from
+    /// `root`.
+    pub fn control(
+        mut self,
+        root: RecipeId,
+        control: Option<JobControl>,
+        layer_loop: Option<LayerLoop>,
+        cycles: Option<u8>,
+    ) -> Self {
         self.root = root;
         self.control = control;
         self.layer_loop = layer_loop;
+        self.cycles = cycles;
         self
     }
 
@@ -1354,7 +1365,7 @@ impl<T: Then> ContextBody<T> {
                 logit_rows: if pending.row { vec![to as u64 - 1] } else { Vec::new() },
             },
             layer_loop: self.layer_loop,
-            cycles: None,
+            cycles: self.cycles,
         };
         self.in_flight.push_back(pending);
         Ok(segment)
