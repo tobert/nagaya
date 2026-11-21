@@ -812,6 +812,15 @@ async fn ensemble(State(council): Shared, Extension(id): Id, body: Body) -> Resp
                 "the contexts of an ensemble share one layer loop, so their rows share a pass",
             ));
         }
+        if let Some(i) = contexts
+            .iter()
+            .position(|c| c.get("cycles") != contexts[0].get("cycles"))
+        {
+            return Err(refuse(
+                &format!("contexts[{i}].cycles"),
+                "the contexts of an ensemble share one cycles member, so their rows share a pass",
+            ));
+        }
         let mut requests = Vec::with_capacity(contexts.len());
         for context in contexts {
             let mut request = serde_json::json!({"model": model, "context": context});

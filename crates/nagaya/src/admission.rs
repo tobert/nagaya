@@ -420,9 +420,9 @@ pub struct FakeToyFactory;
 
 #[cfg(feature = "fake")]
 impl FakeToyFactory {
-    /// The engine, with the model name of the config key `model`, a control table of the entries of the key `control`
-    /// and a reserve of `extra_runs` for layer loops, when the config has them (engine-abi "Control vectors", "Layer
-    /// loops").
+    /// The engine, with the model name of the config key `model`, a control table of the entries of the key `control`,
+    /// a reserve of `extra_runs` for layer loops and the counts of `cycles`, when the config has them (engine-abi
+    /// "Control vectors", "Layer loops", "Inkling 2").
     fn engine_of(config: &toml::Table) -> Result<FakeAlways, String> {
         let engine = match config.get("model") {
             None => Self::engine(),
@@ -442,13 +442,51 @@ impl FakeToyFactory {
                 ));
             }
         };
-        match config.get("extra_runs") {
+        let engine = match config.get("extra_runs") {
+            None => engine,
+            Some(toml::Value::Integer(runs)) if (1..=64).contains(runs) => engine.with_layer_loops(*runs as u32),
+            Some(other) => {
+                return Err(format!(
+                    "the key `extra_runs` of a fake-toy engine is {other}; give the reserve of its slots, 1 to 64"
+                ));
+            }
+        };
+        match config.get("cycles") {
             None => Ok(engine),
-            Some(toml::Value::Integer(runs)) if (1..=64).contains(runs) => Ok(engine.with_layer_loops(*runs as u32)),
+            Some(toml::Value::Table(table)) => Ok(engine.with_cycles(Self::cycles_of(table)?)),
             Some(other) => Err(format!(
-                "the key `extra_runs` of a fake-toy engine is {other}; give the reserve of its slots, 1 to 64"
+                "the key `cycles` of a fake-toy engine is {other}; give a table with min, max and default"
             )),
         }
+    }
+
+    /// The cycles of the config key `cycles`: a table of `min`, `max` and `default`, over layer 1 of the fake's 2
+    /// (engine-abi "Inkling 2"). The limit must hold `1 <= min <= default <= max <= 255`.
+    fn cycles_of(table: &toml::Table) -> Result<nagaya_abi::CyclesLimit, String> {
+        let count = |name: &str| match table.get(name) {
+            Some(toml::Value::Integer(n)) if (1..=255).contains(n) => Ok(*n as u8),
+            other => Err(format!(
+                "the key `cycles.{name}` of a fake-toy engine is {other:?}; give a count of 1 to 255"
+            )),
+        };
+        if let Some(name) = table.keys().find(|k| !["min", "max", "default"].contains(&k.as_str())) {
+            return Err(format!(
+                "the key `cycles.{name}` of a fake-toy engine is not known; give min, max and default"
+            ));
+        }
+        let limit = nagaya_abi::CyclesLimit {
+            min: count("min")?,
+            max: count("max")?,
+            default: count("default")?,
+            start: 1,
+            end: 2,
+        };
+        if !(limit.min <= limit.default && limit.default <= limit.max) {
+            return Err(format!(
+                "the key `cycles` of a fake-toy engine is {limit:?}; give min <= default <= max"
+            ));
+        }
+        Ok(limit)
     }
 
     fn engine() -> FakeAlways {

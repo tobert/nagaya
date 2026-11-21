@@ -60,6 +60,12 @@ impl Engine for Rows {
             "a pass mixes layer loops: {:?}",
             segments.iter().map(|s| s.layer_loop).collect::<Vec<_>>()
         );
+        // The segments of one pass run one count of cycles (engine-abi "Inkling 2").
+        assert!(
+            segments.iter().all(|s| s.cycles == segments[0].cycles),
+            "a pass mixes counts of cycles: {:?}",
+            segments.iter().map(|s| s.cycles).collect::<Vec<_>>()
+        );
         self.passes.lock().unwrap().push(segments.len());
         let mut outputs = Vec::new();
         for segment in segments {
@@ -124,6 +130,8 @@ struct Decoder {
     prepares: Option<Prepares>,
     /// The layer loop of each segment of the job.
     layer_loop: Option<LayerLoop>,
+    /// The count of cycles of each segment of the job.
+    cycles: Option<u8>,
 }
 
 impl Decoder {
@@ -138,7 +146,7 @@ impl Decoder {
                 logit_rows: vec![self.position],
             },
             layer_loop: self.layer_loop,
-            cycles: None,
+            cycles: self.cycles,
         }
     }
 
@@ -241,6 +249,7 @@ fn decoder(slot: u32, steps: usize, joins: bool, fail_at: Option<usize>) -> (Dec
         seen: Arc::clone(&seen),
         prepares: None,
         layer_loop: None,
+        cycles: None,
     };
     (body, seen)
 }
@@ -309,6 +318,29 @@ fn decode_rows_join_only_with_rows_of_the_same_layer_loop() {
     for (slot, layer_loop) in [(0, looped), (1, None), (2, looped), (3, None)] {
         let (mut body, s) = decoder(slot, 3, true, None);
         body.layer_loop = layer_loop;
+        add(&mut jobs, body);
+        seen.push(s);
+    }
+    run_all(&mut jobs, &mut engines);
+    assert_eq!(*passes.lock().unwrap(), [2, 2, 2, 2, 2, 2]);
+    for (slot, s) in seen.iter().enumerate() {
+        saw_its_own_rows(s, slot as u32, 3);
+    }
+}
+
+/// Decode rows join only with rows of the same count of cycles, because the segments of one pass run one count (spec
+/// 11.17). Two jobs at 5 cycles share a pass, and the two jobs at the default share another.
+///
+/// Falsified by a driver that joins rows of any count: the engine sees a pass that mixes counts.
+#[test]
+fn decode_rows_join_only_with_rows_of_the_same_count_of_cycles() {
+    let passes = Passes::default();
+    let mut engines: Vec<Box<dyn Engine>> = vec![Box::new(Rows::new(true, false, 8, &passes))];
+    let mut jobs = GroupJobs::new(0, ["inkling2"]);
+    let mut seen = Vec::new();
+    for (slot, cycles) in [(0, Some(5)), (1, Some(3)), (2, Some(5)), (3, Some(3))] {
+        let (mut body, s) = decoder(slot, 3, true, None);
+        body.cycles = cycles;
         add(&mut jobs, body);
         seen.push(s);
     }

@@ -256,6 +256,8 @@ pub struct TermFactory {
     /// The reserve of extra runs of an engine with layer loops, or `None` for an engine with none (engine-abi "Layer
     /// loops").
     pub layer_loops: Option<u32>,
+    /// The counts of cycles of an engine with cycles, or `None` for an engine with none (engine-abi "Inkling 2").
+    pub cycles: Option<nagaya_abi::CyclesLimit>,
     /// What the engines saw of control vectors.
     pub log: ControlLog,
     /// The most segments in a pass. The toy has 1, so its council jobs never join. With more, the engine declares
@@ -285,6 +287,7 @@ impl TermFactory {
             control: None,
             lens: false,
             layer_loops: None,
+            cycles: None,
             log: ControlLog::default(),
             seen: None,
             segments: 1,
@@ -308,6 +311,9 @@ impl TermFactory {
         }
         if let Some(runs) = self.layer_loops {
             inner = inner.with_layer_loops(runs);
+        }
+        if let Some(limit) = self.cycles {
+            inner = inner.with_cycles(limit);
         }
         WithContextTerm {
             inner,

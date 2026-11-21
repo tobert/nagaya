@@ -350,7 +350,8 @@ The Qwen3.8 binding gives logits one way, and the fake engine follows it.
 - The dtype is F32 and the bytes are little-endian. A row has one element for each token of the vocabulary.
 - The vocabulary size is not in `limits()`. The family library knows it (spec 11.3).
 - The fake engine gives logits only when it has a vocabulary size. Its outputs for one segment are `state`, then its
-  `logits` rows. The Qwen3.8 binding gives `logits` only, and only for the last position.
+  `logits` rows. A pass of several segments with a vocabulary gives `logits` rows only.
+  The Qwen3.8 binding gives `logits` only, and only for the last position.
 
 Reason: the fake engine must serve a family with a vocabulary, and the output rows must compare as F32 in the gates
 (spec 8.3). The simplest rule is the one that the Qwen3.8 engine already follows.

@@ -575,6 +575,14 @@ impl Council {
                 count: limit.count,
                 extra_runs: u64::from(limit.extra_runs),
             }),
+            // A served model runs the counts of cycles of its engine (spec 11.17).
+            cycles: service.cycles().map(|limit| gogi_proto::cycles::Cycles {
+                min: u32::from(limit.min),
+                max: u32::from(limit.max),
+                default: u32::from(limit.default),
+                start: limit.start,
+                end: limit.end,
+            }),
             capabilities: [
                 Capability::Reads,
                 Capability::Generate,
@@ -589,20 +597,24 @@ impl Council {
             .chain(service.family().describes().then_some(Capability::Describe))
             .chain(service.controls().then_some(Capability::ControlVectors))
             .chain(service.layer_loops().is_some().then_some(Capability::LayerLoops))
+            .chain(service.cycles().is_some().then_some(Capability::Cycles))
             .collect(),
         }
     }
 
     /// Refuse what a context asks of a served model that does not declare it (gogi "Contexts"): `thinking: true`
-    /// without `thinking`, a control list without `control_vectors` (spec 11.12), and a loop that the served model's
-    /// `layer_loops` does not allow (gogi "Layer loops"). The 400 names the member, such as `thinking` or
-    /// `loop.count`, under `contexts[i].` in a request with several contexts.
+    /// without `thinking`, a control list without `control_vectors` (spec 11.12), a loop that the served model's
+    /// `layer_loops` does not allow (gogi "Layer loops"), and a count of cycles that its `cycles` does not allow (gogi
+    /// "Cycles", spec 11.17). The check of a loop and cycles together comes after the check of each member. The 400
+    /// names the member, such as `thinking` or `loop.count`, under `contexts[i].` in a request with several contexts.
     fn check_thinking(model: &ServedModel, contexts: &[&gogi_proto::Context], several: bool) -> Result<(), Failure> {
         for (i, context) in contexts.iter().enumerate() {
             for (member, check) in [
                 ("thinking", context.check_thinking(model)),
                 ("control", context.check_control(model)),
                 ("loop", context.check_loop(model)),
+                ("cycles", context.check_cycles(model)),
+                ("cycles", context.check_members()),
             ] {
                 check.map_err(|e| {
                     let invalid = match several {

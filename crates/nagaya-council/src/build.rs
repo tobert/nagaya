@@ -1,6 +1,6 @@
 //! The pure parts of a build (spec 6.2, 11.3c): the recipe of each boundary, and the steps that feed the rest.
 
-use nagaya_abi::{Kind, LayerLoop};
+use nagaya_abi::{CyclesLimit, Kind, LayerLoop};
 use nagaya_store::{ContentId, RecipeId, RecipeMedia, recipe_boundary_media, recipe_decoded, recipe_root};
 
 use crate::control::{self, ControlEntry};
@@ -24,20 +24,44 @@ pub fn root_recipe(identity_digest: &[u8; 32], geometry_key: &[u8]) -> RecipeId 
 /// The root recipe of a context with a control list: the list is the lab state (spec 11.12). An empty list gives the
 /// root of a plain context. The job path of a context calls it when the context names a list (milestone 25 step 7).
 pub fn root_recipe_with_control(identity_digest: &[u8; 32], geometry_key: &[u8], list: &[ControlEntry]) -> RecipeId {
-    root_recipe_with_lab(identity_digest, geometry_key, list, None)
+    root_recipe_with_lab(identity_digest, geometry_key, list, None, None)
 }
 
-/// The root recipe of a context with a control list and a layer loop: the lab state is the bytes of the list, then the
-/// bytes of the loop (spec 11.16). With no loop, it is the root of the list alone.
+/// The root recipe of a context with a control list, a layer loop and a count of cycles: the lab state is the bytes of
+/// the list, then the bytes of the loop, then the bytes of the count (spec 11.16, 11.17). `cycles` is a count other
+/// than the default of the engine, from [`cycles_in_recipe`]. With no loop and no count, it is the root of the list
+/// alone.
 pub fn root_recipe_with_lab(
     identity_digest: &[u8; 32],
     geometry_key: &[u8],
     list: &[ControlEntry],
     layer_loop: Option<LayerLoop>,
+    cycles: Option<u8>,
 ) -> RecipeId {
     let mut lab = control::recipe_bytes(list);
     lab.extend(loop_recipe_bytes(layer_loop));
+    lab.extend(cycles_recipe_bytes(cycles));
     recipe_root(identity_digest, geometry_key, &[], &lab)
+}
+
+/// The count of cycles that goes into the recipe (spec 11.17): the count that runs, when it is not the default of the
+/// engine. The default count adds no bytes, so a context with `cycles` equal to `default` and one with no `cycles`
+/// share a root. The identity of the engine fixes `default`. An engine with no cycles gives `None`.
+pub fn cycles_in_recipe(limit: Option<&CyclesLimit>, count: Option<u8>) -> Option<u8> {
+    let limit = limit?;
+    Some(limit.resolve(count)).filter(|count| *count != limit.default)
+}
+
+/// The bytes of a count of cycles in the lab state (spec 11.17), little-endian: the `u64` marker `u64::MAX - 1`, which
+/// no count of a control list is and which is not the marker of a loop, then the count as a `u32`. No count has no
+/// bytes.
+pub fn cycles_recipe_bytes(cycles: Option<u8>) -> Vec<u8> {
+    let Some(count) = cycles else {
+        return Vec::new();
+    };
+    let mut bytes = (u64::MAX - 1).to_le_bytes().to_vec();
+    bytes.extend(u32::from(count).to_le_bytes());
+    bytes
 }
 
 /// The bytes of a layer loop in the lab state (spec 11.16), little-endian: the `u64` marker `u64::MAX`, which no count

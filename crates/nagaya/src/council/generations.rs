@@ -1303,6 +1303,7 @@ impl Service {
             root,
             control: steer.control,
             layer_loop: steer.layer_loop,
+            cycles: steer.cycles,
         };
         Ok(Prepared {
             then,
@@ -1389,6 +1390,7 @@ pub(crate) struct JobParts {
     root: RecipeId,
     control: Option<JobControl>,
     layer_loop: Option<nagaya_abi::LayerLoop>,
+    cycles: Option<u8>,
 }
 
 impl JobParts {
@@ -1398,6 +1400,6 @@ impl JobParts {
             .media(self.media)
             .cuts(self.cuts)
             .extension(self.extension)
-            .control(self.root, self.control, self.layer_loop)
+            .control(self.root, self.control, self.layer_loop, self.cycles)
     }
 }
