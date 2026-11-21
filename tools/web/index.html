@@ -13,7 +13,6 @@
   <nav>
     <h3>Make</h3>
     <button data-tab="chat">Chat</button>
-    <button data-tab="omni">Omni</button>
     <button data-tab="images">Images</button>
     <button data-tab="speech">Speech</button>
     <h3>Lab</h3>
@@ -34,7 +33,14 @@
 <section id="chat">
   <div class="head"><h1>Chat</h1>
     <details class="help"><summary title="what this tab does">?</summary><div class="help-text">
-      <p>A conversation with a text model, with thinking and one control vector.</p>
+      <p>A conversation with a model whose replies hold text. The form shows only the controls that the model
+        declares in its identity: thinking, files, a spoken reply, a control vector, a layer loop and cycles.</p>
+      <p>Each file goes to the nagaya as an object, and the message names it. A spoken reply plays here, and the
+        next turn sends it back as the assistant's audio (spec 11.11, "Assistant audio"). The reply mode
+        "speech" reads the message aloud, in chunks of whole sentences, and it is not a turn of the chat.</p>
+      <p>A layer loop runs the layers from its start to its end more than once (gogi "Layer loops"). Cycles are
+        the count of cycles of a model that was built to cycle (gogi "Cycles"). An empty field is the count of
+        the model, and the page then sends no count.</p>
       <p>The start values follow the model card of LFM3: top k 50, and a low temperature. The card gives 0.1 for
         general work, and 1.0 with top p 0.95 and top k 20 for math. The nagaya has no repetition penalty, which
         the card sets to 1.1.</p>
@@ -56,21 +62,41 @@
       </div>
       <label>System message</label>
       <textarea id="chat-system" rows="4" placeholder="optional"></textarea>
-      <label class="check"><input id="chat-thinking" type="checkbox" checked> Thinking
+      <label class="check" id="chat-thinking-box"><input id="chat-thinking" type="checkbox" checked> Thinking
         <span class="tip" tabindex="0" title="the default of a model that thinks; with it off, LFM3 can write a stray &lt;/think&gt; after a first draft">ⓘ</span></label>
-      <label>Steering <span class="tip" tabindex="0" title="a vector of this model, from the Steering tab">ⓘ</span></label>
-      <div class="fields">
-        <select id="chat-vector"></select>
-        <select id="chat-op"><option>ablate</option><option>add</option><option>clamp</option></select>
-        <input id="chat-strength" type="number" step="0.1" value="1" title="strength">
+      <div id="chat-output-box" hidden>
+        <label>Reply <span class="tip" tabindex="0" title="text, or speech beside it; the mode fills in the system prompt of the model card, and speech needs it">ⓘ</span></label>
+        <select id="chat-output"><option value="">text</option><option value="interleaved">text and speech</option>
+          <option value="speech">speech</option></select>
       </div>
-      <label>Layers <span class="note" id="chat-layers-note">— every layer of the vector</span></label>
-      <div class="fields">
-        <input id="chat-layers" placeholder="every layer; or 9-14, or 9-14:0.3, 15-22:1" class="wide"
-               title="layers to act on, each at strength times its number (spec 11.12)">
-        <button class="plain" id="chat-layers-all">all</button>
-        <button class="plain" id="chat-layers-early">early 9-14</button>
-        <button class="plain" id="chat-layers-late">late 15-22</button>
+      <div id="chat-steer-box">
+        <label>Steering <span class="tip" tabindex="0" title="a vector of this model, from the Steering tab">ⓘ</span></label>
+        <div class="fields">
+          <select id="chat-vector"></select>
+          <select id="chat-op"><option>ablate</option><option>add</option><option>clamp</option></select>
+          <input id="chat-strength" type="number" step="0.1" value="1" title="strength">
+        </div>
+        <label>Layers <span class="note" id="chat-layers-note">— every layer of the vector</span></label>
+        <div class="fields">
+          <input id="chat-layers" placeholder="every layer; or 9-14, or 9-14:0.3, 15-22:1" class="wide"
+                 title="layers to act on, each at strength times its number (spec 11.12)">
+          <button class="plain" id="chat-layers-all">all</button>
+          <button class="plain" id="chat-layers-early">early 9-14</button>
+          <button class="plain" id="chat-layers-late">late 15-22</button>
+        </div>
+      </div>
+      <div id="chat-loop-box" hidden>
+        <label>Layer loop <span class="tip" tabindex="0" title="the layers from the start to the end run count times; off is the plain model">ⓘ</span>
+          <span class="note" id="chat-loop-note"></span></label>
+        <div class="fields">
+          <select id="chat-loop-start" title="the first layer of the span; off sends no loop"></select>
+          <select id="chat-loop-end" title="the layer after the span"></select>
+          <input id="chat-loop-count" type="number" min="1" value="2" title="the runs of the span">
+        </div>
+      </div>
+      <div id="chat-cycles-box" hidden>
+        <label>Cycles <span class="tip" tabindex="0" title="the count of cycles; empty is the count of the model, and then the page sends none">ⓘ</span></label>
+        <input id="chat-cycles" type="number" step="1">
       </div>
       <div class="row">
         <div><label>Max tokens</label><input id="chat-max" type="number" min="1" value="2048"></div>
@@ -87,58 +113,16 @@
     <div class="card">
       <div class="dock"><div id="chat-log"></div><div id="chat-tray" class="tray"></div></div>
       <div id="chat-error" class="err"></div>
+      <div id="chat-files" class="note"></div>
       <div class="composer">
         <textarea id="chat-input" rows="3" placeholder="Message — Enter sends, Shift+Enter is a new line"></textarea>
         <div class="stack">
+          <label class="plain file" id="chat-attach" hidden>Attach<input id="chat-file" type="file" multiple hidden></label>
           <button class="go" id="chat-go">Send</button>
           <button class="plain" id="chat-stop" hidden>Stop</button>
         </div>
       </div>
-    </div>
-  </div>
-</section>
-
-<section id="omni">
-  <div class="head"><h1>Omni</h1>
-    <details class="help"><summary title="what this tab does">?</summary><div class="help-text">
-      <p>A conversation with a model that reads images, audio and video, and can speak its reply.</p>
-      <p>Each file goes to the nagaya as an object, and the message names it. A spoken reply plays here, and the
-        next turn sends it back as the assistant's audio (spec 11.11, "Assistant audio").</p>
-    </div></details>
-  </div>
-  <div class="cols">
-    <div class="card">
-      <label>Model <span class="tip" tabindex="0" title="a model that reads images, audio or video">ⓘ</span></label>
-      <div class="model"><select id="omni-model"></select><span id="omni-model-state" class="note"></span></div>
-      <label>System message <span class="tip" tabindex="0" title="the reply mode fills in the model card's prompt; speech needs it">ⓘ</span></label>
-      <textarea id="omni-system" rows="3" placeholder="Respond with interleaved text and audio."></textarea>
-      <label>Steering <span class="tip" tabindex="0" title="a vector of this model, from the Steering tab; it steers the text">ⓘ</span></label>
-      <div class="fields">
-        <select id="omni-vector"></select>
-        <select id="omni-op"><option>ablate</option><option>add</option><option>clamp</option></select>
-        <input id="omni-strength" type="number" step="0.1" value="1" title="strength">
-      </div>
-      <label>Reply</label>
-      <select id="omni-output"><option value="">text</option><option value="interleaved">text and speech</option>
-        <option value="speech">speech</option></select>
-      <div class="row">
-        <div><label>Max tokens</label><input id="omni-max" type="number" min="1" value="512"></div>
-        <div><label>Temperature</label><input id="omni-temp" type="number" min="0" step="0.1" value="0.3"></div>
-      </div>
-      <div class="actions"><button class="plain" id="omni-clear">New conversation</button></div>
-    </div>
-    <div class="card">
-      <div id="omni-log"></div>
-      <div id="omni-error" class="err"></div>
-      <div id="omni-files" class="note"></div>
-      <div class="composer">
-        <textarea id="omni-input" rows="3" placeholder="Message"></textarea>
-        <div class="stack">
-          <label class="plain file">Attach<input id="omni-file" type="file" multiple hidden></label>
-          <button class="go" id="omni-go">Send</button>
-        </div>
-      </div>
-      <span id="omni-status" class="note"></span>
+      <span id="chat-status" class="note"></span>
     </div>
   </div>
 </section>
@@ -465,7 +449,6 @@ Qwen3-TTS designs a voice from a text prompt.</textarea>
 <script src="/app/web/core.js"></script>
 <script src="/app/web/engines.js"></script>
 <script src="/app/web/chat.js"></script>
-<script src="/app/web/omni.js"></script>
 <script src="/app/web/images.js"></script>
 <script src="/app/web/speech.js"></script>
 <script src="/app/web/embed.js"></script>

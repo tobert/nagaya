@@ -40,9 +40,9 @@ const prompts = (text) => text.split("\n").map((t) => t.trim()).filter(Boolean);
 const plainContext = (text) => ({thinking: false, messages: [{role: "user", content: text}]});
 function fillVectors() {
   for (const [id, model] of [["cv-vector", $("cv-model").value], ["chat-vector", $("chat-model").value],
-                            ["lab-vector", $("lab-model").value], ["omni-vector", $("omni-model").value]]) {
+                            ["lab-vector", $("lab-model").value]]) {
     const list = vectors.filter((v) => v.model === model && here(v.host));
-    const none = {"chat-vector": "none", "lab-vector": "none: trace plain only", "omni-vector": "none"}[id]
+    const none = {"chat-vector": "none", "lab-vector": "none: trace plain only"}[id]
       || "choose a vector";
     const html = `<option value="">${none}</option>` +
       list.map((v) => `<option value="${esc(v.id)}">${esc(v.name)}</option>`).join("");
