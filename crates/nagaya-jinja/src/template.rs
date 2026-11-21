@@ -232,13 +232,76 @@ fn trim(value: Value, rest: Rest<Value>) -> Result<String, minijinja::Error> {
 }
 
 /// `json.dumps(value, ensure_ascii=False)`: a comma and a space between items, a colon and a space after a key.
-fn tojson(value: Value) -> Result<String, minijinja::Error> {
+/// Supports `sort_keys` and `separators` keyword options as Python's `json.dumps` does.
+fn tojson(value: Value, rest: Rest<Value>) -> Result<String, minijinja::Error> {
+    let opts = JsonOptions::from_rest(&rest)?;
     let mut out = String::new();
-    write_json(&value, &mut out).map_err(|m| minijinja::Error::new(ErrorKind::InvalidOperation, m))?;
+    write_json(&value, &opts, &mut out).map_err(|m| minijinja::Error::new(ErrorKind::InvalidOperation, m))?;
     Ok(out)
 }
 
-fn write_json(value: &Value, out: &mut String) -> Result<(), String> {
+struct JsonOptions {
+    sort_keys: bool,
+    item_sep: String,
+    key_sep: String,
+}
+
+impl Default for JsonOptions {
+    fn default() -> Self {
+        JsonOptions {
+            sort_keys: false,
+            item_sep: ", ".to_string(),
+            key_sep: ": ".to_string(),
+        }
+    }
+}
+
+impl JsonOptions {
+    fn from_rest(rest: &[Value]) -> Result<Self, minijinja::Error> {
+        let mut opts = JsonOptions::default();
+        if rest.is_empty() {
+            return Ok(opts);
+        }
+        if rest.len() != 1 || !rest[0].is_kwargs() {
+            return Err(minijinja::Error::new(
+                ErrorKind::InvalidOperation,
+                "tojson takes only keyword options: sort_keys and separators",
+            ));
+        }
+        let kwargs = Kwargs::try_from(rest[0].clone())?;
+        if let Some(sort) = kwargs.get::<Option<bool>>("sort_keys")? {
+            opts.sort_keys = sort;
+        }
+        if let Some(seps) = kwargs.get::<Option<Value>>("separators")?
+            && !seps.is_none()
+        {
+            let parts: Vec<Value> = seps
+                .try_iter()
+                .map_err(|_| {
+                    minijinja::Error::new(ErrorKind::InvalidOperation, "separators must be a 2-tuple of strings")
+                })?
+                .collect();
+            if parts.len() != 2 {
+                return Err(minijinja::Error::new(
+                    ErrorKind::InvalidOperation,
+                    "separators must be a 2-tuple of strings",
+                ));
+            }
+            let item = parts[0].as_str().ok_or_else(|| {
+                minijinja::Error::new(ErrorKind::InvalidOperation, "separators must be a 2-tuple of strings")
+            })?;
+            let key = parts[1].as_str().ok_or_else(|| {
+                minijinja::Error::new(ErrorKind::InvalidOperation, "separators must be a 2-tuple of strings")
+            })?;
+            opts.item_sep = item.to_string();
+            opts.key_sep = key.to_string();
+        }
+        kwargs.assert_all_used()?;
+        Ok(opts)
+    }
+}
+
+fn write_json(value: &Value, opts: &JsonOptions, out: &mut String) -> Result<(), String> {
     match value.kind() {
         ValueKind::None => out.push_str("null"),
         ValueKind::Bool => out.push_str(if value.is_true() { "true" } else { "false" }),
@@ -253,21 +316,29 @@ fn write_json(value: &Value, out: &mut String) -> Result<(), String> {
             out.push('[');
             for (n, item) in value.try_iter().map_err(|e| e.to_string())?.enumerate() {
                 if n > 0 {
-                    out.push_str(", ");
+                    out.push_str(&opts.item_sep);
                 }
-                write_json(&item, out)?;
+                write_json(&item, opts, out)?;
             }
             out.push(']');
         }
         ValueKind::Map => {
             out.push('{');
-            for (n, key) in value.try_iter().map_err(|e| e.to_string())?.enumerate() {
+            let mut entries: Vec<(String, Value)> = value
+                .try_iter()
+                .map_err(|e| e.to_string())?
+                .map(|key| Ok((json_key(&key)?, key)))
+                .collect::<Result<Vec<_>, String>>()?;
+            if opts.sort_keys {
+                entries.sort_by(|a, b| a.0.cmp(&b.0));
+            }
+            for (n, (key_str, key)) in entries.into_iter().enumerate() {
                 if n > 0 {
-                    out.push_str(", ");
+                    out.push_str(&opts.item_sep);
                 }
-                write_json_string(&json_key(&key)?, out);
-                out.push_str(": ");
-                write_json(&value.get_item(&key).map_err(|e| e.to_string())?, out)?;
+                write_json_string(&key_str, out);
+                out.push_str(&opts.key_sep);
+                write_json(&value.get_item(&key).map_err(|e| e.to_string())?, opts, out)?;
             }
             out.push('}');
         }
@@ -283,7 +354,7 @@ fn json_key(key: &Value) -> Result<String, String> {
         ValueKind::String => Ok(key.as_str().ok_or("a string key has no text")?.to_string()),
         ValueKind::None | ValueKind::Bool | ValueKind::Number => {
             let mut text = String::new();
-            write_json(key, &mut text)?;
+            write_json(key, &JsonOptions::default(), &mut text)?;
             Ok(text)
         }
         other => Err(format!(
