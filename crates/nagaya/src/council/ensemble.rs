@@ -18,6 +18,9 @@ use super::generations::{GenerateThen, Latent, Soft};
 use super::{Charge, Schedule, Service, submit};
 use crate::jobs::{JobBody, Ran};
 
+/// The most contexts of an ensemble (`docs/lab.md`, "`ensemble`: joined forks").
+pub(crate) const MAX_CONTEXTS: usize = 8;
+
 /// What the contexts of one step share.
 #[derive(Default)]
 struct Ballot {
@@ -269,6 +272,11 @@ impl EnsembleBody {
     fn end_step(&mut self, kind: Kind, result: Result<PassOut, PassError>, engines: &mut [Box<dyn Engine>]) -> Ran {
         let segments = std::mem::take(&mut self.stepping);
         let outs = crate::jobs::split(result, &segments);
+        self.end_rows(kind, outs, engines)
+    }
+
+    /// Each context gets the result of its row of a step, then the step runs.
+    fn end_rows(&mut self, kind: Kind, outs: Vec<Result<PassOut, PassError>>, engines: &mut [Box<dyn Engine>]) -> Ran {
         let mut last = Ran::Done;
         for (index, out) in outs.into_iter().enumerate() {
             let ran = self.contexts[index].end_pass(kind, out, engines);
@@ -297,13 +305,27 @@ impl JobBody for EnsembleBody {
 
     fn run(&mut self, kind: Kind, engines: &mut [Box<dyn Engine>]) -> Ran {
         if self.phase == Phase::Stepping {
-            // The pass of a step, on a group that runs whole quanta.
+            // The passes of a step, on a group that runs whole quanta. The rows join by the rule of the joins of the
+            // scheduler, so each count of cycles runs in a pass of its own (docs/lab.md, "The passes of a step").
             let segments = match self.begin_pass(kind, engines) {
                 Ok(segments) => segments,
                 Err(ran) => return ran,
             };
-            let result = engines[self.engine].pass(&segments, &[]);
-            return self.end_pass(kind, result, engines);
+            self.stepping.clear();
+            let limits = engines[self.engine].limits();
+            let mut outs: Vec<Option<Result<PassOut, PassError>>> = (0..segments.len()).map(|_| None).collect();
+            for group in crate::jobs::pass_groups(&segments, &limits) {
+                let pass: Vec<Segment> = group.iter().map(|i| segments[*i].clone()).collect();
+                let result = engines[self.engine].pass(&pass, &[]);
+                for (i, out) in group.iter().zip(crate::jobs::split(result, &pass)) {
+                    outs[*i] = Some(out);
+                }
+            }
+            let outs = outs
+                .into_iter()
+                .map(|out| out.expect("each row of a step is in one group"))
+                .collect();
+            return self.end_rows(kind, outs, engines);
         }
         let index = self.running().start;
         let ran = self.contexts[index].run(kind, engines);
@@ -379,20 +401,9 @@ impl Service {
             return self.single_generation(requests, &weights, latent, soft, forced);
         }
         let count = requests.len();
-        let limits = &self.shared.limits;
-        // Forks join in batched passes by the rule of the scheduler's joins.
-        let batched = crate::jobs::joins_decode(limits);
-        if count > 1 && !batched {
-            return Err(Invalid::param(
-                "model",
-                format!(
-                    "nothing ran: {} has no batched passes, so its ensemble holds one context; send one context",
-                    self.config.model
-                ),
-            )
-            .into());
-        }
-        let most = if batched { limits.max_segments as usize } else { 1 };
+        // The rows of a step join in passes by the rule of the scheduler's joins, so an engine with no batched passes
+        // runs each row in a pass of its own (docs/lab.md, "The passes of a step").
+        let most = MAX_CONTEXTS;
         if count == 0 || count > most {
             return Err(Invalid::param(
                 "contexts",

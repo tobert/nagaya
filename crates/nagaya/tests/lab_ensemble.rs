@@ -282,17 +282,53 @@ fn equal_contexts_give_one_greedy_reply_by_each_rule() {
     assert_eq!(greedy("contrast"), sum, "a contrast of two equal rows is the row");
 }
 
+/// On a model with no batched passes, each row of a step runs in a pass of its own (docs/lab.md, "The passes of a
+/// step").
 #[test]
-fn several_contexts_on_a_model_with_no_batched_passes_are_a_400_that_names_model() {
+fn several_contexts_on_a_model_with_no_batched_passes_run_a_pass_for_each_row() {
     let lab = lab();
     let two = vec![
         context("Tell the tale of the dragon."),
         context("Tell the tale of the moon."),
     ];
     let (status, got) = send(&lab.council, PATH, &ensemble(two, "prob_mean"));
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{got}");
-    assert_eq!(got["error"]["param"], "model", "{got}");
-    assert!(lab.log.take().passes.is_empty(), "a refused ensemble runs no pass");
+    assert_eq!(status, StatusCode::OK, "{got}");
+    let completion = got["usage"]["completion"].as_u64().unwrap() as usize;
+    assert!(completion >= 2, "{got}");
+    let sizes = lab.log.take().sizes;
+    assert!(sizes.iter().all(|&n| n == 1), "passes: {sizes:?}");
+}
+
+/// An ensemble over counts of cycles: the contexts take other counts, and at each step the rows of each count run in
+/// a pass of their own (spec 11.17, docs/lab.md "Counts of cycles"). The toy joins its decode rows, so the two rows of
+/// count 1 share a pass, and the row of count 5 has its own.
+#[test]
+fn an_ensemble_over_counts_of_cycles_runs_each_count_in_a_pass_of_its_own() {
+    let lab = lab_of(8);
+    let counted = |cycles: u8| {
+        let mut c = context("Tell the tale of the dragon.");
+        c["cycles"] = json!(cycles);
+        c
+    };
+    let body = ensemble(vec![counted(1), counted(5), counted(1)], "prob_mean");
+    let (status, got) = send(&lab.council, PATH, &body);
+    assert_eq!(status, StatusCode::OK, "{got}");
+    let completion = got["usage"]["completion"].as_u64().unwrap() as usize;
+    assert!(completion >= 2, "{got}");
+    let log = lab.log.take();
+    // Each step after the first row: one pass of the two rows of count 1, and one pass of the row of count 5.
+    let ones = log.cycles.iter().filter(|c| *c == &vec![Some(1), Some(1)]).count();
+    assert_eq!(ones, completion - 1, "passes: {:?}", log.cycles);
+    for pass in &log.cycles {
+        assert!(
+            pass.windows(2).all(|w| w[0] == w[1]),
+            "a pass runs one count: {:?}",
+            log.cycles
+        );
+    }
+    // The prompt of count 5 feeds alone too, so its passes are one more than the steps.
+    let fives = log.cycles.iter().filter(|c| *c == &vec![Some(5)]).count();
+    assert!(fives > completion - 1, "passes: {:?}", log.cycles);
 }
 
 #[test]
@@ -325,10 +361,10 @@ fn each_fault_is_a_400_that_names_its_member() {
             looped["loop"] = json!({"start": 0, "end": 2, "count": 2});
             ensemble(vec![one(), looped], "logprob_sum")
         }),
-        // A pass runs one count of cycles (spec 11.17).
+        // A count past the limit of the engine (spec 11.17).
         ("contexts[1].cycles", {
             let mut counted = one();
-            counted["cycles"] = json!(5);
+            counted["cycles"] = json!(6);
             ensemble(vec![one(), counted], "logprob_sum")
         }),
     ];

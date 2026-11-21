@@ -510,6 +510,44 @@ pub(crate) fn joins_decode(limits: &Limits) -> bool {
     (limits.feed.is_some() || limits.segments_exact) && limits.max_segments > 1
 }
 
+/// True when `segment` joins a pass whose first segment is `first`: both are plain rows of one control list, one loop
+/// and one count of cycles. A plain row is one token with its logit row and no media.
+fn joins(first: &Segment, segment: &Segment) -> bool {
+    let plain = |s: &Segment| {
+        s.positions.len() == 1
+            && s.outputs.logit_rows.len() == 1
+            && s.meta.is_empty()
+            && matches!(s.inputs, nagaya_abi::SegmentInputs::Tokens(_))
+    };
+    plain(first)
+        && plain(segment)
+        && first.control == segment.control
+        && first.layer_loop == segment.layer_loop
+        && first.cycles == segment.cycles
+}
+
+/// The passes of the segments of one job on one engine, as lists of their places, by the rule of the joins
+/// (`batches`). A pass holds at most `max_segments` rows of an engine that joins its decode rows, and one row of
+/// another engine. The places of a pass are in rising order.
+pub(crate) fn pass_groups(segments: &[Segment], limits: &Limits) -> Vec<Vec<usize>> {
+    let most = if joins_decode(limits) {
+        limits.max_segments as usize
+    } else {
+        1
+    };
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    for (i, segment) in segments.iter().enumerate() {
+        match out
+            .iter_mut()
+            .find(|group| group.len() < most && joins(&segments[group[0]], segment))
+        {
+            Some(group) => group.push(i),
+            None => out.push(vec![i]),
+        }
+    }
+    out
+}
+
 /// The passes of a joined quantum. The plain rows of one engine with one control list share a pass, up to the
 /// engine's limit; a plain row is one token with its logit row and no media. Every other segment has a pass alone.
 fn batches(begun: Vec<(JobId, usize, Segment)>, engines: &[Box<dyn Engine>]) -> Vec<Vec<(JobId, usize, Segment)>> {
@@ -524,24 +562,11 @@ fn batches(begun: Vec<(JobId, usize, Segment)>, engines: &[Box<dyn Engine>]) -> 
     }
     for item in begun {
         let (_, engine, segment) = &item;
-        let plain = segment.positions.len() == 1
-            && segment.outputs.logit_rows.len() == 1
-            && segment.meta.is_empty()
-            && matches!(segment.inputs, nagaya_abi::SegmentInputs::Tokens(_));
-        let joins = out.iter_mut().find(|batch| {
+        let found = out.iter_mut().find(|batch| {
             let (_, other, first) = &batch[0];
-            plain
-                && other == engine
-                && batch.len() < limits[engine] as usize
-                && first.positions.len() == 1
-                && first.outputs.logit_rows.len() == 1
-                && first.meta.is_empty()
-                && matches!(first.inputs, nagaya_abi::SegmentInputs::Tokens(_))
-                && first.control == segment.control
-                && first.layer_loop == segment.layer_loop
-                && first.cycles == segment.cycles
+            other == engine && batch.len() < limits[engine] as usize && joins(first, segment)
         });
-        match joins {
+        match found {
             Some(batch) => batch.push(item),
             None => out.push(vec![item]),
         }
