@@ -335,7 +335,8 @@ Amy decides these questions before the step that needs each one:
    loop is the count of cycles. A context with no loop runs 3 cycles. Spec 11.16 then needs a mode for each form.
 2. **Activations of the experts.** The quant config asks for NVFP4 activations before each expert. The reference
    expands each expert to `bf16` at load, and its activations stay `bf16` (`Inkling2LoopDequantizeExperts` in
-   transformers). It also interleaves the gate and up rows of `w13`. Proposed: the engine does the same.
+   transformers). It rounds each expanded weight to `bf16`. In the checkpoint, row `2i` of `w13` is gate row `i`,
+   and row `2i + 1` is up row `i`. Proposed: the engine expands the weights as the reference does.
 3. **Drafts of the MTP head.** The nagaya has no speculative decode. It needs a rule in the spec and in gogi first.
 4. **The effort.** `reasoning_effort` needs a member of a council request, or a rule that maps an existing member.
    gogi writes it first.
@@ -345,6 +346,12 @@ Do the steps in this order. Each step ends with the checks green.
 1. **Spikes and the oracle.** Make a CPU venv with transformers at `046bdb8cc2`. Measure the time and the memory of
    one prompt on the CPU.
    `tools/inkling2_golden.sh` writes the rows after each run and the block outputs, messages and gates of each cycle.
+   - Done on 2026-11-21. The reference keeps the experts in `bf16` and expands each one to `f32` in its call, so
+     every sum is `f32`. A model holds 74 GiB of RAM, and a prompt of 637 tokens takes 19 s.
+   - A run in `bf16` differs from the `f32` reference by 0.18 to 0.22 on average in each logit. Its argmax differs
+     at 2% to 4% of the positions. Thus the oracle is `f32`, and the engine's sums are `f32`.
+   - The self checks: 48 runs in order at 3 cycles, and the cache of the reference gives the logits of no cache to
+     3.6e-5. The two models share every file but `config.json`, so one family library serves both.
 2. **Spec and ABI.** `docs/engine-abi.md`, "Inkling 2": the parts of a state, the cycles, the taps, the weight
    formats. The ontology gets "Cycle". Each rule that the docs leave open is **Proposed**.
 3. **The family library.** The tiktoken tokenizer and the template through `nagaya-jinja`. The reply parser with the
