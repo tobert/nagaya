@@ -294,7 +294,10 @@ impl Inkling2Family {
 }
 
 impl Family for Inkling2Family {
-    fn render(&self, context: &Context, _generation_prompt: bool) -> Result<Rendering, FamilyError> {
+    /// The generation prompt is `<|message_model|>`. The template has none, and the model writes this token first: the
+    /// reference gives it a probability of 1 - 6e-12 after the prompt "chat". The council needs a generation prompt for
+    /// the first logit row (spec 11.18). An open message takes its place.
+    fn render(&self, context: &Context, generation_prompt: bool) -> Result<Rendering, FamilyError> {
         context.check()?;
         let tools = messages::tools_json(&context.tools);
         let msgs = messages::messages_json(&context.messages)?;
@@ -339,8 +342,12 @@ impl Family for Inkling2Family {
                     .collect::<Vec<_>>()
             })
             .collect();
+        let mut tokens = base.tokens;
+        if generation_prompt && open.is_none() {
+            tokens.push(self.marks.message_model);
+        }
         Ok(Rendering {
-            tokens: base.tokens,
+            tokens,
             end,
             boundaries,
             control_text,

@@ -4999,6 +4999,10 @@ research model (milestone 35, engine-abi "Inkling 2"). Each rule below is **Prop
   `INKLING2_MODEL_DIR`. Thus an engine on demand, which has no family table (3.3a), still gets its family.
 - The registry compares the tokenizer hash of the family with the identity, as for each family (11.3). The engine
   takes the hash from the same library, so the two agree.
+- **The generation prompt.** The template of Inkling 2 has none: the model writes `<|message_model|>` first. The
+  council needs a generation prompt for the first logit row, so the family gives that token. After the prompt "chat",
+  the reference writes it with a probability of 1 - 6e-12 (`inkling2-mini.decode.safetensors`). The reply parser
+  then starts in the header of the message, so the name of a tool call is not content.
 - **On demand.** The factory describes an engine with no load (11.1): the identity and the limits come from the
   folder, sysfs and the Level Zero driver. The checkpoint digest reads every tensor, so the description of each start
   reads about 20 GB. An open that reports another identity than its description is an error.
