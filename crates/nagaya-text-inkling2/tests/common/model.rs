@@ -89,3 +89,37 @@ pub fn varloop_dir() -> PathBuf {
     );
     path
 }
+
+pub const GOLDEN_VARIABLE: &str = "INKLING2_GOLDEN_DIR";
+
+/// The folder of the oracle files: `INKLING2_GOLDEN_DIR`, or `target/inkling2-golden` of the workspace.
+pub fn golden_dir() -> PathBuf {
+    std::env::var_os(GOLDEN_VARIABLE)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/inkling2-golden"))
+}
+
+/// The path of the oracle file `file`, or `None` when it is absent and the test must return. It prints one line to
+/// stderr. `NAGAYA_REQUIRE_MODELS=1` makes an absent file fail the test.
+pub fn golden_path(file: &str) -> Option<PathBuf> {
+    let path = golden_dir().join(file);
+    match std::fs::metadata(&path) {
+        Ok(m) if m.is_file() => Some(path),
+        Ok(_) => panic!("the oracle path {} is not a file", path.display()),
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            if required() {
+                panic!(
+                    "the oracle file {} does not exist, and {REQUIRE_VARIABLE} is set. Write it with \
+                     tools/inkling2_golden.sh, or set {GOLDEN_VARIABLE}.",
+                    path.display()
+                );
+            }
+            eprintln!(
+                "skipped: the oracle file {} does not exist; set {GOLDEN_VARIABLE}",
+                path.display()
+            );
+            None
+        }
+        Err(e) => panic!("cannot read the oracle file {}: {e}", path.display()),
+    }
+}

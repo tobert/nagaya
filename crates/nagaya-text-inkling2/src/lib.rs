@@ -14,9 +14,10 @@
 pub mod chat;
 pub mod council;
 mod error;
+pub mod media;
 pub mod tokenizer;
 
 pub use chat::{Chat, Effort, Options, Rendered};
-pub use council::{Files, Inkling2Family};
+pub use council::{Files, ImagePart, Inkling2Family, Objects};
 pub use error::Error;
 pub use tokenizer::Tokenizer;
