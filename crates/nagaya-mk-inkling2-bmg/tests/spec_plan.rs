@@ -21,8 +21,9 @@ fn the_folders_give_their_model_and_the_bytes_of_the_weights() {
         }
         let dir = folder(which);
         assert_eq!(Model::read(&dir), Ok(model));
-        // 15,670,464,512 bytes of expert slabs and 3,209,991,168 bytes of the other tensors.
-        assert_eq!(spec::weights_bytes(&dir), Ok(18_880_455_680));
+        // 15,670,464,512 bytes of expert slabs and 3,210,903,552 bytes of the other tensors, with the rows of zeros of
+        // the head and of the sink projections.
+        assert_eq!(spec::weights_bytes(&dir), Ok(18_881_368_064));
         let config = Config {
             model_dir: dir,
             slots: vec![32_768; 3],
@@ -32,7 +33,7 @@ fn the_folders_give_their_model_and_the_bytes_of_the_weights() {
         let limits = spec::plan(&config).unwrap();
         limits.check().unwrap();
         let weights = limits.memory.mandatory.iter().find(|t| t.name == "weights").unwrap();
-        assert_eq!(weights.bytes, 18_880_455_680);
+        assert_eq!(weights.bytes, 18_881_368_064);
         let bad = Config {
             extra_runs: 12,
             ..config
@@ -49,7 +50,7 @@ fn a_header_with_another_tensor_is_refused() {
     }
     let map = MappedSafeTensors::open(&common::model_weights(Which::Mini)).unwrap();
     let tensors = map.view().unwrap().tensors;
-    assert_eq!(spec::weights_bytes_of(&tensors), Ok(18_880_455_680));
+    assert_eq!(spec::weights_bytes_of(&tensors), Ok(18_881_368_064));
     let amax = "model.llm.layers.3.mlp.experts.w2_weight_amax";
     let mut missing = tensors.clone();
     missing.remove(amax).unwrap();
@@ -74,5 +75,22 @@ fn a_header_with_another_tensor_is_refused() {
     // The tower of images is not loaded yet, so its tensors add no bytes.
     let mut visual = tensors.clone();
     visual.retain(|name, _| !name.starts_with("model.visual."));
-    assert_eq!(spec::weights_bytes_of(&visual), Ok(18_880_455_680));
+    assert_eq!(spec::weights_bytes_of(&visual), Ok(18_881_368_064));
+}
+
+/// The load of the weights into a count gives the bytes of the plan, so the open of a card finds the plan's bytes.
+#[test]
+fn the_load_counts_the_bytes_of_the_plan() {
+    if common::model_absent(Which::Mini) {
+        return;
+    }
+    let map = MappedSafeTensors::open(&common::model_weights(Which::Mini)).unwrap();
+    let view = map.view().unwrap();
+    let mut count = nagaya_mk_inkling2_bmg::weights::Count::default();
+    let w = nagaya_mk_inkling2_bmg::weights::load(&mut count, &view).unwrap();
+    assert_eq!(count.bytes as u64, spec::weights_bytes_of(&view.tensors).unwrap());
+    assert_eq!(count.bytes, 18_881_368_064);
+    assert_eq!(w.layers.len(), 24);
+    assert!(w.layers[20].mxfp8 && !w.layers[19].mxfp8);
+    assert!(w.layers[6].gates.iter().all(|g| *g == 0), "a count gives no addresses");
 }

@@ -81,6 +81,13 @@ pub const CONV_ROW: usize = 2 * KV_HEADS * HEAD_DIM + 2 * HIDDEN;
 /// The rows of a conv part: the 3 last inputs, oldest first.
 pub const CONV_ROWS: usize = CONV_TAPS - 1;
 
+/// The rows of the head on the card: the 200,058 logits and 6 rows of zeros. `OP_MATMUL` reads whole tiles of 16 rows
+/// (engine-abi "The ring builder", "The head and the sinks").
+pub const HEAD_ROWS: usize = LOGITS.next_multiple_of(16);
+
+/// The rows of the sink projection on the card: its 24 rows and 8 rows of zeros.
+pub const SINK_ROWS: usize = HEADS.next_multiple_of(16);
+
 /// The bytes of a staging buffer of the host, as for LFM3.
 pub const STAGING_BYTES: usize = 64 << 20;
 
@@ -223,6 +230,14 @@ impl Model {
         }
     }
 
+    /// The name of the model in the identity, as the oracle files name it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Model::Mini => "inkling2-mini",
+            Model::Research => "inkling2-varloop",
+        }
+    }
+
     /// Read the model from `config.json` of the folder `dir`.
     pub fn read(dir: &Path) -> Result<Model, String> {
         let path = dir.join("config.json");
@@ -295,9 +310,15 @@ pub fn ringed(seq: usize, s: usize) -> bool {
     !is_full(state_layer(s)) && ring_of(seq) > 0
 }
 
-/// The rows of each key plane and each value plane of state `s` in a slot of `seq` positions.
+/// The rows of each key plane and each value plane of state `s` in a slot of `seq` positions. A sliding state holds a
+/// ring on the card in a slot of any size, because the attention applies the window only to a ring. In a slot of
+/// `RING_ROWS` positions or fewer the ring does not wrap, so the state still holds every position (`ringed`).
 pub fn plane_rows(seq: usize, s: usize) -> usize {
-    if ringed(seq, s) { RING_ROWS + RING_SPILL } else { seq }
+    if is_full(state_layer(s)) {
+        seq
+    } else {
+        RING_ROWS + RING_SPILL
+    }
 }
 
 /// The `f32` values of one key row or one value row: 8 heads of 128.
@@ -455,39 +476,43 @@ pub fn slot_limits(slots: &[usize], extra: usize) -> Vec<SlotLimit> {
     classes
 }
 
-/// The `f32` buffers of a block of `n` tokens, with their counts of values. Each follows a name of "The ring of one
-/// run" in engine-abi. The ring builder of milestone 35 step 5 changes this list, and the list is its record.
+/// The buffers of a block of `n` tokens, with their counts of 4-byte values, in the order of `model::Bufs`. Each
+/// follows a name of "The ring of one run" in engine-abi, and `model::Bufs::new` checks the names.
 pub fn block_buffers(n: usize) -> Vec<(&'static str, usize)> {
     let q = HEADS * HEAD_DIM;
+    let decision = std::mem::size_of::<nagaya_mk_bmg::protocol::MoERouteDecision>() / 4;
     vec![
         ("ids", n),
+        ("sink ids", 3 * n),
         ("x", n * HIDDEN),
-        ("B", n * 4 * HIDDEN),
-        ("P", n * 4 * HIDDEN),
+        ("B", 4 * n * HIDDEN),
+        ("P", n * HIDDEN),
         ("y", n * HIDDEN),
         ("x after layer 5", n * HIDDEN),
-        ("B after layer 5", n * 4 * HIDDEN),
-        ("a_q, a_k, a_v", n * 3 * HIDDEN),
-        ("m", n * 4 * HIDDEN),
-        ("h_q, h_k, h_v", n * 3 * HIDDEN),
+        ("a_q, a_k, a_v", 3 * n * HIDDEN),
+        ("m", 4 * n * HIDDEN),
+        ("h_q, h_k, h_v", 3 * n * HIDDEN),
         ("query", n * q),
         ("bias states", n * HEADS * D_REL),
+        ("sinks of the matmul", n * SINK_ROWS),
         ("sinks", n * HEADS),
         ("output gate", n * q),
-        ("key, value", n * 2 * KV_ROW),
-        ("conv taps", n * 2 * KV_HEADS * CONV_TAPS),
+        ("key input", n * (KV_ROW + KV_HEADS * CONV_TAPS)),
+        ("value input", n * (KV_ROW + KV_HEADS * CONV_TAPS)),
+        ("key", n * KV_ROW),
+        ("value", n * KV_ROW),
         ("attention", n * q),
         ("o", n * HIDDEN),
-        ("r", n * HIDDEN),
         ("e", n * HIDDEN),
         ("norm of e", n * HIDDEN),
         ("router", n * EXPERTS),
-        ("picks", n * TOP_K * 2),
-        ("gate and up rows", n * TOP_K * 2 * INTERMEDIATE),
+        ("decisions", n * decision),
+        ("plan", nagaya_mk_bmg::protocol::MOE_PLAN_BYTES.div_ceil(4)),
+        ("gathered rows", n * TOP_K * HIDDEN),
         ("activations", n * TOP_K * INTERMEDIATE),
         ("down rows", n * TOP_K * HIDDEN),
         ("f", n * HIDDEN),
-        ("logits", MAX_LOGIT_ROWS * LOGITS),
+        ("logits", MAX_LOGIT_ROWS * HEAD_ROWS),
     ]
 }
 
@@ -499,11 +524,10 @@ pub fn bufs_bytes(max_block: usize) -> u64 {
         .sum()
 }
 
-/// The floats of the scratch of the attention for slots of up to `max_seq` positions. It follows `OP_ATTN_STREAM`
-/// with 24 heads, until the attention with a bias and a sink names its own.
+/// The floats of the scratch of the ring for slots of up to `max_seq` positions: the scratch of `OP_INKLING2_ATTN` for
+/// a block of `MAX_BLOCK` positions.
 pub fn scratch_floats(max_seq: usize) -> usize {
-    tasks::attn_stream_scratch_floats(MAX_BLOCK, HEADS, HEAD_DIM, max_seq)
-        .max(tasks::attn_pv_scratch_floats(MAX_BLOCK, HEADS, HEAD_DIM))
+    tasks::inkling2_attn_scratch_floats(MAX_BLOCK, max_seq)
 }
 
 /// The device bytes of the ring of one card: the scoreboard, the scratch, the wake buffer and the device copy of the
@@ -609,7 +633,8 @@ fn tensor<'a>(
 }
 
 /// The device bytes of the weights from the table of tensors of the checkpoint. Each expert matrix is one slab, the
-/// embedding and the head keep their first `LOGITS` rows, and each other tensor of `model.llm.` keeps its bytes. The
+/// embedding keeps its first `LOGITS` rows, the head holds `HEAD_ROWS` rows, each sink projection `SINK_ROWS` rows, and
+/// each other tensor of `model.llm.` keeps its bytes. The
 /// tensors of `model.visual.` wait for images (milestone 35 step 9). Any other tensor is refused.
 pub fn weights_bytes_of(tensors: &HashMap<String, TensorMeta>) -> Result<u64, String> {
     use safetensors::Dtype::{BF16, F8E4M3, F32, U8};
@@ -638,9 +663,22 @@ pub fn weights_bytes_of(tensors: &HashMap<String, TensorMeta>) -> Result<u64, St
             total += rounded(expert_slab_bytes(EXPERTS, rows, cols, mx));
         }
     }
-    for name in ["model.llm.embed.weight", "model.llm.unembed.weight"] {
+    // The embedding holds its first LOGITS rows, and the head holds HEAD_ROWS rows.
+    for (name, rows) in [
+        ("model.llm.embed.weight", LOGITS),
+        ("model.llm.unembed.weight", HEAD_ROWS),
+    ] {
         need(name.to_owned(), BF16, &[VOCAB, HIDDEN])?;
-        total += rounded(LOGITS * HIDDEN * 2);
+        total += rounded(rows * HIDDEN * 2);
+    }
+    // Each sink projection holds SINK_ROWS rows.
+    for l in 0..LAYERS {
+        need(
+            format!("model.llm.layers.{l}.attn.attn_sink_proj.weight"),
+            BF16,
+            &[HEADS, HIDDEN],
+        )?;
+        total += rounded(SINK_ROWS * HIDDEN * 2);
     }
     let mut names: Vec<&String> = tensors.keys().collect();
     names.sort();

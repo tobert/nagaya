@@ -18,6 +18,10 @@ fn at_mut<'a>(root: &'a mut serde_json::Value, path: &str) -> &'a mut serde_json
 
 #[test]
 fn the_config_of_mini_and_of_the_research_model_parse() {
+    assert_eq!(
+        (Model::Mini.name(), Model::Research.name()),
+        ("inkling2-mini", "inkling2-varloop")
+    );
     assert_eq!(Model::parse(MINI_CONFIG), Ok(Model::Mini));
     let research = edited(MINI_CONFIG, |c| {
         c["text_config"]["loop_config"]["is_varloop"] = true.into();
@@ -147,9 +151,15 @@ fn a_slot_counts_its_planes_and_its_conv_parts() {
         32_768 * 12 * 2 * 4096 + 60 * 2 * 3072 * 4096 + 72 * 79_872
     );
     assert_eq!(slot_bytes(32_768, 48), 4_736_925_696);
-    // A slot of 2,048 positions or fewer keeps every position in each run.
-    assert_eq!(slot_bytes(2048, 24), 48 * 2 * 2048 * 4096 + convs);
+    // A slot of 2,048 positions or fewer keeps every position, but its sliding runs still hold rings on the card,
+    // because the attention applies the window only to a ring (engine-abi "The host spec", "Slot sizes").
+    assert_eq!(slot_bytes(2048, 24), 8 * 2 * 2048 * 4096 + rings + convs);
+    assert_eq!(slot_bytes(2048, 24), 1_144_684_544);
     assert_eq!((ring_of(2048), ring_of(2049)), (0, 2048));
+    assert_eq!(
+        (plane_rows(2048, 5), plane_rows(2048, 4), plane_rows(8, 4)),
+        (2048, 3072, 3072)
+    );
     assert_eq!((plane_rows(4096, 5), plane_rows(4096, 4)), (4096, 3072));
     assert_eq!((plane_rows(4096, 24 + 5), plane_rows(4096, 24 + 4)), (4096, 3072));
     assert_eq!((CONV_BYTES, ROW_BYTES), (79_872, 4096));
@@ -246,14 +256,23 @@ fn the_limits_hold_the_terms_and_declare_no_loop_no_control_and_no_tap() {
     for name in ["weights", "kv", "work"] {
         assert_eq!(term(&l, name).tier, Tier::Device(0), "{name}");
     }
-    // The work is the buffers of a block, with 16 logit rows of 200,058 values, and the ring. Only the scratch of the
-    // ring reads the slot size.
+    // The work is the buffers of a block, with 16 logit rows of the 200,064 rows of the head, and the ring. Only the
+    // scratch of the ring reads the slot size. It is the scratch of the attention of Inkling 2.
     let short = limits(&config(vec![32_768]), 1);
     assert_eq!(
         term(&l, "work").bytes - term(&short, "work").bytes,
         4 * (scratch_floats(262_144) - scratch_floats(32_768)) as u64
     );
-    assert!(bufs_bytes(512) > (16 * 200_058 * 4) as u64);
+    assert!(bufs_bytes(512) > (16 * HEAD_ROWS * 4) as u64);
+    assert_eq!(
+        scratch_floats(32_768),
+        nagaya_mk_bmg::tasks::inkling2_attn_scratch_floats(512, 32_768)
+    );
+    let logits = block_buffers(1)
+        .into_iter()
+        .find(|(name, _)| *name == "logits")
+        .unwrap();
+    assert_eq!(logits.1, 16 * 200_064);
     let small = limits(
         &Config {
             max_block: 1,
