@@ -386,11 +386,24 @@ Do the steps in this order. Each step ends with the checks green.
    - Past the end of a ring, at 2,200 positions, the logits are within 1.5e-5 of the host form. A prefill of 512
      tokens takes 799 ms, and a decode step about 70 ms.
 6. **Council and deploy.** The factory, the registries, an example profile, and the gogi suite on the card.
+   - Done on 2026-11-21 (`crates/nagaya/src/inkling2.rs`, spec 11.18). The B70 example has `inkling2-mini` on
+     demand on card 0.
+   - The gogi suite through a process on card 0 (`xe_inkling2.rs`, a reserve of 48 runs): Mini gave 446 ok, 0 FAIL
+     and 22 skip. The research model gave 443 ok, 0 FAIL and 23 skip. Each gave 27 of 28 checks of cycles. The
+     other check needs `layer_loops`.
+   - The first run found a defect of the family: a generation was a 500, because the template has no generation
+     prompt. The family now gives `<|message_model|>` (spec 11.18).
+   - With `thinking: false`, both models still write a thinking block, so the suite holds no head after such a reply.
    - The place on b70host: Inkling 2 is the resident engine of card 0, and `lfm3` goes on demand. Card 1 keeps
      its pinned engines and `lfm3-omni`. Amy, 2026-11-21: "card 0 can load inkling 2, if it lives up to the hype
      it will likely be there a while".
 7. **Cycles in a call.** The context member `cycles` chooses 1 to 5 cycles. Card gate: the research model against
    the reference at each count. Mini takes the same counts, out of the range of its training.
+   - The engine is done (`xe_cycles.rs`, 2026-11-21). With a reserve of 48 runs, it runs 1 to 5 cycles. A pass of 4
+     or 5 cycles runs as 2 launches.
+   - The card gate compares "plain" and "chat" at 1 to 5 cycles with the `f32` oracle. The top-64 logits are within
+     2.5e-5 on Mini and 2.4e-5 on the research model. The logsumexp is within 7.7e-6.
+   - The count 3 by name gives the bits of no count. The same split at 5 cycles gives the same bits twice.
 8. **The lab.** The taps: the row after each run, the block outputs, the messages, the gates and the routes. Control
    vectors, latent steps, and `ensemble` over counts of cycles.
 9. **Images.** The ViT, the placeholders of an image and its sizes. Card gate against the reference.

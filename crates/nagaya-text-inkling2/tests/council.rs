@@ -62,7 +62,15 @@ fn council_render_decisions_and_raw_read_work() {
     }))
     .unwrap();
     let rendering = fam.render(&ctx, true).unwrap();
-    assert_eq!(rendering.end, rendering.tokens.len());
+    // The generation prompt is `<|message_model|>`, the token that the reference writes first with a probability of
+    // 1 - 6e-12 after "chat" (spec 11.18). The council needs a generation prompt for the first logit row.
+    let message_model = fam.tokenizer().token_id("<|message_model|>").unwrap();
+    assert_eq!(rendering.end + 1, rendering.tokens.len());
+    assert_eq!(rendering.tokens.last(), Some(&message_model));
+    let built = fam.render(&ctx, false).unwrap();
+    assert_eq!(built.tokens, rendering.tokens[..rendering.end]);
+    assert_eq!(built.end, built.tokens.len());
+    assert_eq!(built.boundaries, rendering.boundaries);
     assert!(!rendering.boundaries.is_empty());
     assert_eq!(rendering.control_text.len(), 1);
     assert_eq!(rendering.control_text[0].token, "<|end_message|>");

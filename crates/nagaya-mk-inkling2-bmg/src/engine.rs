@@ -36,8 +36,8 @@ pub struct Inkling2Engine {
     bufs: Bufs,
     slots: Vec<SlotMemory>,
     held: Held,
-    /// The runs of a pass at the default count of cycles.
-    runs: Vec<Run>,
+    /// The runs of a pass at each count of cycles, from 1. A probe of the oracle runs the default.
+    runs: Vec<Vec<Run>>,
     /// The most tasks of one launch. A test sets fewer to cut a pass at each run.
     launch_tasks: usize,
     /// The launches of the last ring.
@@ -146,12 +146,79 @@ fn canonical_json(value: &serde_json::Value) -> String {
     }
 }
 
-/// The PCI revision of the device at `address`, from sysfs.
-fn pci_revision(address: &str) -> Result<u32, String> {
-    let path = format!("/sys/bus/pci/devices/{address}/revision");
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {path}: {e}"))?;
-    let text = text.trim();
-    u32::from_str_radix(text.trim_start_matches("0x"), 16).map_err(|e| format!("{path} holds `{text}`: {e}"))
+/// The PCI vendor id, device id and revision of the device at `address`, from sysfs. The plan table names them, and
+/// a description reads them with no card (spec 11.1).
+fn pci_ids(address: &str) -> Result<(u32, u32, u32), String> {
+    let read = |name: &str| -> Result<u32, String> {
+        let path = format!("/sys/bus/pci/devices/{address}/{name}");
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {path}: {e}"))?;
+        let text = text.trim();
+        u32::from_str_radix(text.trim_start_matches("0x"), 16).map_err(|e| format!("{path} holds `{text}`: {e}"))
+    };
+    Ok((read("vendor")?, read("device")?, read("revision")?))
+}
+
+/// The identity of an engine of `config` on the card at `pci` with this Level Zero driver (spec 12.1). The open and
+/// the description both build it here, so the two give the same identity.
+fn identity_of(
+    model: Model,
+    checkpoint_digest: String,
+    facts: spec::TextFacts,
+    config: &Config,
+    pci: &str,
+    driver: u32,
+) -> Result<Identity, String> {
+    let (vendor, device, revision) = pci_ids(pci)?;
+    let mut numbers = BTreeMap::new();
+    numbers.insert(
+        "kernel.megakernel_inkling2_bmg.bin".to_owned(),
+        format!("blake3:{}", blake3::hash(INKLING2_KERNEL).to_hex()),
+    );
+    numbers.insert("ocloc".to_owned(), OCLOC_VERSION.to_owned());
+    numbers.insert("igc".to_owned(), IGC_REVISION.to_owned());
+    numbers.insert("driver".to_owned(), driver.to_string());
+    numbers.insert("max_block".to_owned(), config.max_block.to_string());
+    numbers.insert("ring_rows".to_owned(), RING_ROWS.to_string());
+    numbers.insert("cycles".to_owned(), spec::DEFAULT_CYCLES.to_string());
+    numbers.insert("canary".to_owned(), "not run".to_owned());
+    Ok(Identity {
+        model: model.name().to_owned(),
+        checkpoint_digest,
+        family: FAMILY.to_owned(),
+        tokenizer_hash: facts.tokenizer_hash,
+        template: facts.template,
+        numbers,
+        plan_table: format!(
+            "ocloc {OCLOC_VERSION} igc {IGC_REVISION} bmg-g31; level-zero driver {driver}; devices \
+             {vendor:04x}:{device:04x}:{revision:02x}"
+        ),
+        // D11 rule 3: the block is a bit setting that defines the reference bits.
+        bit_settings: vec![BitSetting {
+            name: "feed.block".to_owned(),
+            value: config.max_block.to_string(),
+            class: BitClass::ReferenceDefining,
+        }],
+        canary_hash: String::new(),
+        build: BTreeMap::new(),
+    })
+}
+
+/// The identity and the limits that an open of `config` on the card at `pci` gives, with no load (spec 11.1). It
+/// reads the model folder, every tensor for the digest, sysfs and the version of the Level Zero driver. It opens no
+/// card.
+pub fn describe(config: &Config, pci: &str) -> Result<(Identity, Limits), String> {
+    config.check()?;
+    let dir = &config.model_dir;
+    let model = Model::read(dir)?;
+    let config_text = String::from_utf8(read_file(dir, "config.json")?)
+        .map_err(|e| format!("config.json of {} is not UTF-8: {e}", dir.display()))?;
+    let facts = spec::text_facts(dir)?;
+    let map = MappedSafeTensors::open(&dir.join(spec::WEIGHTS_FILE))?;
+    let view = map.view()?;
+    let limits = spec::limits(config, spec::weights_bytes_of(&view.tensors)?);
+    let digest = checkpoint_digest(&config_text, &view)?;
+    let driver = nagaya_mk_bmg::level_zero::first_driver_version();
+    Ok((identity_of(model, digest, facts, config, pci, driver)?, limits))
 }
 
 /// The bytes of a file of the model folder.
@@ -171,11 +238,9 @@ impl Inkling2Engine {
         let model = Model::read(&dir)?;
         let config_text = String::from_utf8(read_file(&dir, "config.json")?)
             .map_err(|e| format!("config.json of {} is not UTF-8: {e}", dir.display()))?;
-        // Until the family library comes (milestone 35 step 6), the identity takes the tokenizer and the template from
-        // the folder (engine-abi "The ring builder").
-        let tokenizer_hash = format!("blake3:{}", blake3::hash(&read_file(&dir, "tokenizer.json")?).to_hex());
-        let template = String::from_utf8(read_file(&dir, "chat_template.jinja")?)
-            .map_err(|e| format!("chat_template.jinja of {} is not UTF-8: {e}", dir.display()))?;
+        // The family library gives the tokenizer hash and the template, so the registry's check at the start compares
+        // like with like (spec 11.3).
+        let facts = spec::text_facts(&dir)?;
         let map = MappedSafeTensors::open(&dir.join(spec::WEIGHTS_FILE))?;
         let view = map.view()?;
         let planned_weights = spec::weights_bytes_of(&view.tensors)?;
@@ -229,40 +294,8 @@ impl Inkling2Engine {
         }
         let ring = Ring::new(card, spec::scratch_floats(config.max_seq()));
 
-        let revision = pci_revision(pci)?;
-        let mut numbers = BTreeMap::new();
-        numbers.insert(
-            "kernel.megakernel_inkling2_bmg.bin".to_owned(),
-            format!("blake3:{}", blake3::hash(INKLING2_KERNEL).to_hex()),
-        );
-        numbers.insert("ocloc".to_owned(), OCLOC_VERSION.to_owned());
-        numbers.insert("igc".to_owned(), IGC_REVISION.to_owned());
-        numbers.insert("driver".to_owned(), driver.to_string());
-        numbers.insert("max_block".to_owned(), config.max_block.to_string());
-        numbers.insert("ring_rows".to_owned(), RING_ROWS.to_string());
-        numbers.insert("cycles".to_owned(), spec::DEFAULT_CYCLES.to_string());
-        numbers.insert("canary".to_owned(), "not run".to_owned());
-        let identity = Identity {
-            model: model.name().to_owned(),
-            checkpoint_digest,
-            family: FAMILY.to_owned(),
-            tokenizer_hash,
-            template,
-            numbers,
-            plan_table: format!(
-                "ocloc {OCLOC_VERSION} igc {IGC_REVISION} bmg-g31; level-zero driver {driver}; devices \
-                 {:04x}:{:04x}:{revision:02x}",
-                card.vendor_id, card.device_id
-            ),
-            // D11 rule 3: the block is a bit setting that defines the reference bits.
-            bit_settings: vec![BitSetting {
-                name: "feed.block".to_owned(),
-                value: config.max_block.to_string(),
-                class: BitClass::ReferenceDefining,
-            }],
-            canary_hash: String::new(),
-            build: BTreeMap::new(),
-        };
+        let identity = identity_of(model, checkpoint_digest, facts, &config, pci, driver)?;
+        let runs = (1..=usize::from(limits_cycles_max(&limits))).map(spec::runs).collect();
         let held = Held::new(&config.seqs(), config.extra_runs);
         Ok(Self {
             model,
@@ -277,7 +310,7 @@ impl Inkling2Engine {
             bufs,
             slots,
             held,
-            runs: spec::runs(spec::DEFAULT_CYCLES),
+            runs,
             launch_tasks: LAUNCH_TASKS,
             last_launches: 0,
         })
@@ -321,9 +354,21 @@ impl Inkling2Engine {
         }
     }
 
-    /// Run a block from position `pos0` of `slot` up to the end of `upto` runs, with the logit rows when given. The
-    /// caller checked the block.
-    fn forward(&mut self, slot: usize, pos0: usize, tokens: &[u32], upto: usize, logit_rows: Option<&[usize]>) {
+    /// The runs of a pass of `cycles` cycles.
+    fn runs_of(&self, cycles: usize) -> &[Run] {
+        &self.runs[cycles - 1]
+    }
+
+    /// Run a block of `cycles` cycles from position `pos0` of `slot` up to the end of `upto` runs, with the logit rows
+    /// when given. The caller checked the block.
+    fn forward(
+        &mut self,
+        slot: usize,
+        pos0: usize,
+        tokens: &[u32],
+        (cycles, upto): (usize, usize),
+        logit_rows: Option<&[usize]>,
+    ) {
         let pass = model::pass(
             &self.weights,
             &self.bufs,
@@ -331,7 +376,7 @@ impl Inkling2Engine {
                 slot: &self.slots[slot],
                 pos0,
                 n: tokens.len(),
-                runs: &self.runs,
+                runs: self.runs_of(cycles),
                 upto,
                 logit_rows,
             },
@@ -350,13 +395,14 @@ impl Inkling2Engine {
     /// The residual after `upto` runs of `ids` from position 0 of `slot`, `[n][2304]`, or the final norm after all
     /// runs with `norm`. The probe of the oracle (8.3) uses it. It empties the slot.
     pub fn residual(&mut self, slot: usize, ids: &[u32], upto: usize, norm: bool) -> Result<Vec<f32>, String> {
-        if upto > self.runs.len() || norm && upto != self.runs.len() {
+        let all = self.runs_of(spec::DEFAULT_CYCLES).len();
+        if upto > all || norm && upto != all {
             return Err(format!("a probe of {upto} runs with the norm {norm} does not exist"));
         }
         let segment = probe_segment(slot, ids);
         self.held.clear(slot);
         let block = self.held.check_pass(&[segment], self.config.max_block)?;
-        self.forward(slot, 0, &block.tokens, upto, norm.then_some(&[][..]));
+        self.forward(slot, 0, &block.tokens, (block.cycles, upto), norm.then_some(&[][..]));
         let at = if norm { self.bufs.e_norm } else { self.bufs.x };
         let out = self.read_f32(at, ids.len() * HIDDEN);
         self.held.clear(slot);
@@ -404,6 +450,11 @@ impl Inkling2Engine {
     }
 }
 
+/// The most cycles of the limits.
+fn limits_cycles_max(limits: &Limits) -> u8 {
+    limits.cycles.expect("the engine declares `cycles`").max
+}
+
 /// The `f32` values of little-endian bytes.
 fn weights_f32(bytes: &[u8]) -> Vec<f32> {
     bytes
@@ -446,8 +497,14 @@ impl Engine for Inkling2Engine {
         if block.zero_conv() {
             self.zero_conv(block.slot);
         }
-        let upto = self.runs.len();
-        self.forward(block.slot, block.pos0, &block.tokens, upto, Some(&block.logit_rows));
+        let upto = self.runs_of(block.cycles).len();
+        self.forward(
+            block.slot,
+            block.pos0,
+            &block.tokens,
+            (block.cycles, upto),
+            Some(&block.logit_rows),
+        );
         let outputs: Vec<Output> = (0..block.logit_rows.len())
             .map(|i| Output {
                 name: "logits".to_owned(),

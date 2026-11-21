@@ -6,7 +6,7 @@ This doc tells how to build the nagaya and install it as a systemd user unit. Th
 - `deploy/strix-halo/`: an AMD Strix Halo machine, with one gfx1151 GPU and 128 GB of unified memory. Qwen-Image 2.1
   is resident, and the Qwen3.8 engine is on demand.
 - `deploy/b70-pair/`: a machine with two Intel Arc Pro B70 cards and an iGPU that drives the display. LFM3, LFM3-Omni,
-  SDXL and EmbeddingGemma 2 are resident. Gemma 4 is on demand on both cards.
+  SDXL and EmbeddingGemma 2 are resident. Gemma 4 is on demand on both cards, and Inkling 2 Mini on card 0.
 
 The two examples form one cluster: each names the gossip address of the other as its seed peer. The addresses are of
 RFC 5737, and the paths under `/srv` are examples. Change them for your machine.
@@ -64,8 +64,8 @@ nice -n 10 cargo build --release -p nagaya --features xe,video
 
 - The feature `hip` registers the kinds `mk-qwen38-gfx1151` and `qwenimage21`. The build compiles the HIP code of
   the Qwen3.8 engine with ROCm's `clang++` and links it statically. It needs ROCm at `/opt/rocm`.
-- The feature `xe` registers the kinds `mk-gemma4-bmg`, `qwen3tts-bmg`, `mk-sdxl-bmg`, `mk-embeddinggemma2-bmg` and
-  `mk-lfm3-bmg`. `build.rs` compiles the kernels with `ocloc`.
+- The feature `xe` registers the kinds `mk-gemma4-bmg`, `qwen3tts-bmg`, `mk-sdxl-bmg`, `mk-embeddinggemma2-bmg`,
+  `mk-lfm3-bmg` and `mk-inkling2-bmg`. `build.rs` compiles the kernels with `ocloc`.
 - The feature `video` lets `lfm3-omni` read video parts with ffmpeg's libraries (spec 11.11). The machine needs
   ffmpeg and libclang.
 - A build without an engine feature has no engine. It exits 3 with the message "this build has no engine".
@@ -299,7 +299,8 @@ The Qwen3.8 engine exports no arena, so the Strix Halo unit sets no fd store. Ea
 - `lfm3` has eight slots of 32,768 positions, so a batched decode pass holds eight contexts. `lfm3-omni` has four.
 - The entry of `lfm3` names its J-Lens in `[engines.lab]`, as an absolute path (`docs/lab.md`, "The rules of the
   J-Lens"). `tools/lfm3_jlens_fit.py` fits it on the CPU. The lab reads it at its first use, outside the ledger.
-- The unit gives the checkpoint folders of Gemma 4, Qwen3-TTS, SDXL and EmbeddingGemma 2 in its environment.
+- The unit gives the checkpoint folders of Gemma 4, Qwen3-TTS, SDXL and EmbeddingGemma 2 in its environment. It
+  also gives a folder of Inkling 2 for the family of an Inkling 2 engine on demand (spec 11.18).
 - Each card has 32 GiB (34,359,738,368 bytes), and the budget of a card is all of it. The host budget is 96 GiB. The
   store takes 64 GiB of it and 300 GiB of NVMe.
 
@@ -316,6 +317,19 @@ The way back is a load of `lfm3` with `{"unload": ["gemma"]}`, then a load of ea
 not fit is refused, and the refusal names each engine in the way. A swap waits for the jobs that run on its engines.
 No request starts a load, and no engine swaps back by itself (spec 3.3, "Explicit loads", and 3.3a, "Explicit
 layout").
+
+`inkling2-mini` of kind `mk-inkling2-bmg` serves Inkling 2 Mini on device 0 (spec 11.18). It has two slots of 32,768
+positions and the reserve of 3 cycles, so it takes 25,543,784,132 bytes of its card. It is on demand, and it does not
+fit beside `lfm3`:
+
+```
+curl -s -X POST http://<address>:8091/nagaya/v1/engines/inkling2-mini/load -d '{"unload": ["lfm3"]}'
+```
+
+The way back is a load of `lfm3` with `{"unload": ["inkling2-mini"]}`. The start describes the engine with no load, so
+the council serves it as `unloaded` (spec 3.3a). The description reads each tensor of the checkpoint for its digest,
+about 20 GB at each start. The research model is a second engine of the same kind, with its own folder. A reserve of
+48 runs (`extra_runs = 48`) lets a context run 1 to 5 cycles, and it adds 1,578,975,232 bytes to each slot.
 
 ## A card test beside the service
 
