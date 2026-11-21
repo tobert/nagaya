@@ -1653,8 +1653,12 @@ Opus 5.5, 2026-11-21).
 - **The runs.** Until `cycles` comes in step 7, each pass runs 3 cycles, and the engine declares no `cycles` limit.
   State `l` of a slot holds the run of layer `l` outside the cycles, or in cycle 1. Cycle `c` of 2 or more uses
   entries `12 * (c - 2)` to `12 * (c - 2) + 11` of the reserve.
-- **Slot sizes.** A slot of 2,048 positions or fewer holds every position in each sliding run. A longer slot holds
-  a ring of 2,048 rows and a spill of 1,024 in each sliding run.
+- **Slot sizes.** Each sliding run holds a ring of 2,048 rows and a spill of 1,024, in a slot of any size. In a
+  slot of 2,048 positions or fewer, the ring does not wrap, so the run still holds every position.
+  - **Proposed** (Claude Opus 5.5, 2026-11-21): the ring in a short slot. Reason: `OP_INKLING2_ATTN` applies the
+    window only to a ring, and it finds the value plane at 3,072 rows after the key plane. A short slot of cells
+    would attend to keys past the window.
+  - A slot of 2,048 positions takes 1,144,684,544 bytes with a reserve of 24.
   - A slot of 32,768 positions takes 3,157,950,464 bytes with a reserve of 24, and 4,736,925,696 with 48.
   - A slot of 262,144 positions takes 18,190,336,000 bytes with a reserve of 24.
 - **A restore of a ring part** must hold the last 1,024 positions, the window of a sliding layer.
@@ -1663,18 +1667,50 @@ Opus 5.5, 2026-11-21).
 - **The term `weights`.** The plan counts the bytes of the header, and it reads no weight bytes (spec 2.4).
   - Each expert matrix is one slab of `repack::expert_slab`: the codes, the scales, and one `f32` factor of each
     expert for NVFP4. The tensors `amax` and `outer_scale_denominator` go into the factors.
-  - The embedding and the head hold their first 200,058 rows. Each other tensor of `model.llm.` keeps its bytes.
-  - Each allocation rounds up to 64 bytes. Mini gives 18,880,455,680 bytes.
+  - The embedding holds its first 200,058 rows. The head holds 200,064 rows: the first 200,058 rows of
+    `unembed`, then 6 rows of zeros.
+  - The sink projection holds 32 rows: its 24 rows, then 8 rows of zeros.
+  - Each other tensor of `model.llm.` keeps its bytes. Some tensors share one allocation ("The weights on the
+    card").
+  - Each allocation rounds up to 64 bytes. Mini gives 18,881,368,064 bytes.
   - The tensors of `model.visual.` wait for images (step 9). Another tensor is refused, and so is a missing one.
 - **The term `work`.** It is the buffers of a block (`spec::block_buffers`), the logits and the ring of the card.
-  The list of buffers follows "The ring of one run", and the ring builder of step 5 changes it. The scratch of the
-  attention follows `OP_ATTN_STREAM` with 24 heads, until the new op names its own.
+  The list of buffers is the list of `model::Bufs`, and the ring builder names its use. The scratch is the scratch of
+  `OP_INKLING2_ATTN` for a block of 512 (`tasks::inkling2_attn_scratch_floats`).
 - **The other terms.** `kv` is the sum of the slots, on `device(0)`. `pinned` is host memory: the tasks, the
   statistics and a staging buffer of 64 MiB, as for LFM3.
 - **The limits.** One segment in each pass, and 16 logit rows. `max_quantum_ms` is 2,000, a budget that a card
   test measures later. The capabilities are `parts`, `slots`, `coverage` and `close`.
 - **Not declared yet.** `control`, `layer_loops` and the tap `residual`. The tap comes with the plan of its buffer
   in step 8. A pass with a control list, a layer loop, rows or `meta` is refused.
+
+**The ring builder.** `src/model.rs` builds the tasks of a pass, and `src/weights.rs` puts the weights on the card.
+Each rule is **Proposed** (Claude Opus 5.5, 2026-11-21).
+
+- **The weights on the card.** Some tensors go into one allocation, so that one op reads them:
+  - On a full layer, `wk_dv` and `k_sconv.weight_proj` are one matrix of 1,056 rows. Thus one matmul writes the
+    input row of the dynamic convolution: 1,024 values, then the 32 taps. The value is the same.
+  - The three matrices of a message gate are one buffer: `down_weight`, `forget_weight`, then `gain_weight`.
+  - The message queries are one `f32` buffer `[12][4][2304]`, in the order query, key, value, expert input.
+- **The head and the sinks.** `OP_MATMUL` reads whole tiles of 16 rows, except a matmul of one row with at most
+  65,536 rows. Thus the head holds 200,064 rows, and the sink projection holds 32.
+  - A logit row is its own matmul of one row, with `FLAG_SOFTCAP_30`. Thus its bits do not depend on the other logit
+    rows of the pass. The engine reads the first 200,058 values of each row.
+  - `OP_EMBED` with an `f32` table copies the 24 sinks of each position out of its row of 32. A table of ids on
+    the card names rows of 8 values. The copy is exact.
+- **The input of layer 0.** Layer 0 has no attention residual: its query, key and value read the embedding row.
+- **The norms of a sliding layer.** Outside the cycles, a sliding layer takes one norm. In a cycle after the first,
+  the three gates give three rows, and each row takes the same norm.
+- **The buffers of a cycle.** The block outputs `B` keep their first two rows in each cycle: the embedding and the
+  row after layer 5. Each cycle after the first starts with three copies: `B` row 2 into `P`, `x` into `y`, and
+  the row after layer 5 into `x`.
+- **Launches.** The ring of a pass is a list of runs. A launch holds whole runs, at most 2,046 tasks, and the tasks
+  before the first run and after the last. A pass of 3 cycles takes 2 launches.
+- **The bits of a decode step.** `OP_MATMUL` sums one token in another order than a block of 9 or more. Thus a
+  decode step does not give the bits of its position in a block. The card test counts the values that differ.
+- **The identity, until the family library.** The engine names `inkling2-mini` or `inkling2-varloop`. The tokenizer
+  hash is the BLAKE3 of `tokenizer.json`, and the template is `chat_template.jinja`. Step 6 takes them from
+  `nagaya-text-inkling2`.
 
 ## Not covered yet
 
