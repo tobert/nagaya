@@ -23,11 +23,11 @@ fn span(start: u32, end: u32, count: u32) -> Option<LayerLoop> {
 fn no_loop_keeps_the_root_of_a_plain_context_and_of_a_control_list() {
     let digest = [7u8; 32];
     assert_eq!(
-        root_recipe_with_lab(&digest, b"g", &[], None),
+        root_recipe_with_lab(&digest, b"g", &[], None, None),
         root_recipe(&digest, b"g")
     );
     assert_eq!(
-        root_recipe_with_lab(&digest, b"", &[entry()], None),
+        root_recipe_with_lab(&digest, b"", &[entry()], None, None),
         root_recipe_with_control(&digest, b"", &[entry()])
     );
     assert!(loop_recipe_bytes(None).is_empty());
@@ -44,7 +44,7 @@ fn the_bytes_of_a_loop_are_the_marker_then_start_end_and_count_after_the_list() 
     let mut lab = recipe_bytes(&[entry()]);
     lab.extend(&want);
     assert_eq!(
-        root_recipe_with_lab(&digest, b"", &[entry()], span(10, 14, 2)),
+        root_recipe_with_lab(&digest, b"", &[entry()], span(10, 14, 2), None),
         recipe_root(&digest, b"", &[], &lab)
     );
 }
@@ -52,7 +52,7 @@ fn the_bytes_of_a_loop_are_the_marker_then_start_end_and_count_after_the_list() 
 #[test]
 fn each_loop_has_its_own_root_and_count_1_is_not_plain() {
     let digest = [3u8; 32];
-    let root = |lp| root_recipe_with_lab(&digest, b"", &[], lp);
+    let root = |lp| root_recipe_with_lab(&digest, b"", &[], lp, None);
     let base = root(span(10, 14, 2));
     assert_eq!(base, root(span(10, 14, 2)));
     for other in [
@@ -69,7 +69,7 @@ fn each_loop_has_its_own_root_and_count_1_is_not_plain() {
         "count 1 has its own recipe (gogi)"
     );
     assert_ne!(
-        root_recipe_with_lab(&digest, b"", &[entry()], span(10, 14, 2)),
+        root_recipe_with_lab(&digest, b"", &[entry()], span(10, 14, 2), None),
         base,
         "the list still counts"
     );

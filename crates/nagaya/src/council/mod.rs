@@ -625,7 +625,7 @@ impl Service {
         let layer_loop = self.layer_loop(context);
         if context.control.is_empty() {
             return Ok(Steer {
-                root: root_recipe_with_lab(&self.shared.identity, b"", &[], layer_loop),
+                root: root_recipe_with_lab(&self.shared.identity, b"", &[], layer_loop, None),
                 control: None,
                 layer_loop,
             });
@@ -647,7 +647,7 @@ impl Service {
             limit,
         };
         let checked = control::check(&context.control, at, &fit, &mut lookup)?;
-        let root = root_recipe_with_lab(&self.shared.identity, b"", &checked.entries, layer_loop);
+        let root = root_recipe_with_lab(&self.shared.identity, b"", &checked.entries, layer_loop, None);
         let vectors: Vec<ContentId> = checked.vectors.iter().map(|(id, _)| *id).collect();
         let claim = ControlTable::claim(table, &vectors);
         Ok(Steer {
