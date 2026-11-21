@@ -52,6 +52,19 @@ pub struct FeedFactory {
     pub sizes: Arc<Mutex<Vec<usize>>>,
     /// The profile's `devices` list of the engine. `None` gives `0` to `stages - 1`.
     pub devices: Option<Vec<u32>>,
+    /// The most segments that the engine declares in a pass, or `None` for the fake's own limit. The bits of the fake
+    /// depend on the token count of a pass, so with more than one segment a decode row gives other bits when it
+    /// shares a pass. With 1, as the Gemma 4 engine declares, no decode quantum joins, and the replies of a
+    /// generation do not depend on the jobs in flight beside it.
+    pub max_segments: Option<u32>,
+}
+
+/// The limits of the fake, with the segment count of `factory`.
+fn limited(factory: &FeedFactory, mut limits: Limits) -> Limits {
+    if let Some(segments) = factory.max_segments {
+        limits.max_segments = segments;
+    }
+    limits
 }
 
 /// The stage and the thread name of each call of a stage handle.
@@ -82,6 +95,7 @@ impl FeedFactory {
             threads: Arc::default(),
             sizes: Arc::default(),
             devices: None,
+            max_segments: None,
         }
     }
 }
@@ -89,6 +103,7 @@ impl FeedFactory {
 /// The fake, with a delay and a log on each stage quantum.
 pub struct Traced {
     inner: FakeFeed,
+    max_segments: Option<u32>,
     delay_ms: Arc<AtomicU64>,
     log: StageLog,
     panic_stage: Arc<AtomicUsize>,
@@ -104,7 +119,11 @@ impl Engine for Traced {
     }
 
     fn limits(&self) -> Limits {
-        self.inner.limits()
+        let mut limits = self.inner.limits();
+        if let Some(segments) = self.max_segments {
+            limits.max_segments = segments;
+        }
+        limits
     }
 
     fn pass(&mut self, segments: &[nagaya_abi::Segment], taps: &[nagaya_abi::Tap]) -> Result<PassOut, PassError> {
@@ -248,13 +267,14 @@ impl Factory for FeedFactory {
                 ),
             });
         }
-        Ok(engine(self.stages).limits())
+        Ok(limited(self, engine(self.stages).limits()))
     }
 
     fn open(&self, _config: &toml::Table, devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
         self.opened_on.lock().unwrap().push(devices.to_vec());
         Ok(Box::new(Traced {
             inner: engine(self.stages),
+            max_segments: self.max_segments,
             delay_ms: Arc::clone(&self.delay_ms),
             log: Arc::clone(&self.log),
             panic_stage: Arc::clone(&self.panic_stage),

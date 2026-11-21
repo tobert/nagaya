@@ -5,8 +5,9 @@
 mod feed_support;
 
 use std::sync::Arc;
+use std::time::Duration;
 
-use feed_support::FeedFixture;
+use feed_support::{FeedFactory, FeedFixture};
 use gogi_conformance::{Opts, Status, run};
 use nagaya::council::{Service, ServiceConfig};
 use nagaya::http::{Council, Served, Server};
@@ -27,7 +28,16 @@ fn gogi_conformance_passes_on_an_engine_with_a_feed_rule() {
         process,
         directory,
         ..
-    } = FeedFixture::new(1);
+    } = FeedFixture::with(
+        FeedFactory {
+            // The Gemma 4 engine takes one segment in a pass. The bits of the fake depend on the token count of a
+            // pass, so a joined decode row would give a fork other bits than the same request gives alone. That
+            // depends on the timing of the jobs, and the suite would fail on a loaded machine.
+            max_segments: Some(1),
+            ..FeedFactory::new(1)
+        },
+        Duration::from_secs(10),
+    );
     // The clock of the fixture steps one minute at each read, so a pin of the suite would end at once. The suite runs
     // on a service with the clock of the system.
     drop(service);
