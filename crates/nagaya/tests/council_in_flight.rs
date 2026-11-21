@@ -4,7 +4,9 @@
 
 mod council_support;
 
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use council_support::{Fixture, TermFactory};
 use gogi_proto::context::Context;
@@ -18,9 +20,15 @@ fn context(messages: Vec<Value>) -> Context {
 /// A nagaya whose engine takes 20 ms for each pass, with a slot for each request of a test. With a pass that takes
 /// no time, the first request ends before the next one starts, and no two are in flight together.
 fn slow() -> Fixture {
+    slow_counting(&Arc::default())
+}
+
+/// [`slow`], with `starts` counting the passes that began.
+fn slow_counting(starts: &Arc<AtomicU64>) -> Fixture {
     let factory = TermFactory {
         delay: Duration::from_millis(20),
         slots: council_support::roomy_slots(4),
+        starts: Arc::clone(starts),
         ..TermFactory::toy()
     };
     Fixture::with_factory(
@@ -124,19 +132,29 @@ fn long_generation(context: &Context) -> gogi_proto::generation::GenerationReque
     .unwrap()
 }
 
-/// Start a long generation of `first`. After 5 ms, build `second`: the generation has its claim then, and its first
-/// pass, which takes 20 ms, has not ended. Give the build, the time of the build, and the
-/// time of the generation.
-fn build_beside_a_generation(f: &Fixture, first: &Context, second: &Context) -> (Built, Duration, Duration) {
+/// Start a long generation of `first`. When its first pass begins, build `second`: the generation holds its claim
+/// then. The wait is for the pass itself, so a slow machine cannot start the build first. `starts` is the count of
+/// passes of the engine of `f`, and a pass of an earlier request does not count. Give the build, the time of the build, and the time of the generation.
+fn build_beside_a_generation(
+    f: &Fixture,
+    starts: &AtomicU64,
+    first: &Context,
+    second: &Context,
+) -> (Built, Duration, Duration) {
     let service = &f.service;
+    let before = starts.load(Ordering::SeqCst);
     std::thread::scope(|scope| {
         let generation = scope.spawn(move || {
             let start = std::time::Instant::now();
             service.generate(&long_generation(first), None).unwrap();
             start.elapsed()
         });
-        std::thread::sleep(Duration::from_millis(5));
-        let start = std::time::Instant::now();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while starts.load(Ordering::SeqCst) == before {
+            assert!(Instant::now() < deadline, "the generation began no pass in 10 s");
+            std::thread::yield_now();
+        }
+        let start = Instant::now();
         let built = service.build(second, false, Default::default()).unwrap();
         let build = start.elapsed();
         (built, build, generation.join().unwrap())
@@ -145,12 +163,13 @@ fn build_beside_a_generation(f: &Fixture, first: &Context, second: &Context) -> 
 
 #[test]
 fn a_build_starts_from_the_prompt_of_a_generation_in_flight_and_does_not_wait_for_its_reply() {
-    let f = slow();
+    let starts = Arc::<AtomicU64>::default();
+    let f = slow_counting(&starts);
     let one = context(vec![
         head(),
         json!({"role": "user", "content": "Write a plan.", "snap": true}),
     ]);
-    let (built, build, generation) = build_beside_a_generation(&f, &one, &one);
+    let (built, build, generation) = build_beside_a_generation(&f, &starts, &one, &one);
     // The generation claims the boundaries of its prompt, so the build feeds nothing.
     assert_eq!(built.usage.fed, 0, "the build keeps the prompt of the generation");
     // The boundary is held when the prompt is fed. The build goes on then, long before the reply ends.
@@ -166,14 +185,15 @@ fn a_build_starts_from_the_prompt_of_a_generation_in_flight_and_does_not_wait_fo
 
 #[test]
 fn a_request_does_not_wait_for_a_boundary_that_the_store_holds() {
-    let f = slow();
+    let starts = Arc::<AtomicU64>::default();
+    let f = slow_counting(&starts);
     // The store holds the head before the two requests start.
     f.service
         .build(&context(vec![head()]), false, Default::default())
         .unwrap();
     let first = context(vec![head(), json!({"role": "user", "content": "Focus on the fit."})]);
     let second = context(vec![head(), json!({"role": "user", "content": "Focus on the gaps."})]);
-    let (built, build, generation) = build_beside_a_generation(&f, &first, &second);
+    let (built, build, generation) = build_beside_a_generation(&f, &starts, &first, &second);
     assert!(built.usage.kept > 0, "the build keeps the head");
     assert!(
         generation >= Duration::from_millis(600),
