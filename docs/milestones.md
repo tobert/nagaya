@@ -361,6 +361,8 @@ Do the steps in this order. Each step ends with the checks green.
    member `cycles` and its suite checks.
 3. **The family library.** The tiktoken tokenizer and the template through `nagaya-jinja`. The reply parser with the
    thinking block and the tool calls, the escapes and the council rendering. Fixtures of the reference.
+   **Proposed (Gemini 4 Hydrogen):** `vocab_size()` returns `unpadded_vocab_size` (200,058), not `vocab_size` (201,024).
+   Reason: `lm_head` and the logit rows have width 200,058, and the tokenizer holds 200,058 entries.
 4. **Weights.** The safetensors reader for NVFP4, MXFP8 and `f32`. A host op expands each format, and it is the
    oracle of the device op. The card gate is equal bits.
    - The host ops are done (`24ab9dc`): the bits of the reference on 8 real slices and on edge cases. A scan of the
