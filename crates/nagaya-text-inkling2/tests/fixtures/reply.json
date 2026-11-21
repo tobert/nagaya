@@ -1,0 +1,580 @@
+{
+ "header": {
+  "tool": "tools/inkling2_family_fixture.py",
+  "models": {
+   "mini": {
+    "revision": "ed40e7da625f594fc9c4990f5f66be24873c22d7",
+    "files": {
+     "tokenizer.json": "7f332727f9a3f093dd452a39cc978e6757627e5dad1b0673aa4e75174f236dd6",
+     "tokenizer_config.json": "bf09342d285139fd37ce10c70878af1d52cb390e9901e10248654293a80ee636",
+     "special_tokens_map.json": "c16f44b3594563d82743ddb0417a2be1bfe3e2000dfad2da4b8f32554593e1a0",
+     "chat_template.jinja": "53a9035f3255945704b5857657cfb00c1165090c0641c4f782a0cbf268cc16dc",
+     "generation_config.json": "a08737c07a65a8fdf69f7cf086576210e5aad4b241437090b26d7b0c4f7905f7",
+     "config.json": "a7a349601f0984c4abf999c480ef775d8567d21f5f84b4e8a3e035b44f288dc2"
+    }
+   },
+   "varloop": {
+    "revision": "657b53ba5da7baefe9ff15dca5cd25f5bd3dbaa2",
+    "files": {
+     "tokenizer.json": "7f332727f9a3f093dd452a39cc978e6757627e5dad1b0673aa4e75174f236dd6",
+     "tokenizer_config.json": "bf09342d285139fd37ce10c70878af1d52cb390e9901e10248654293a80ee636",
+     "special_tokens_map.json": "c16f44b3594563d82743ddb0417a2be1bfe3e2000dfad2da4b8f32554593e1a0",
+     "chat_template.jinja": "53a9035f3255945704b5857657cfb00c1165090c0641c4f782a0cbf268cc16dc",
+     "generation_config.json": "a08737c07a65a8fdf69f7cf086576210e5aad4b241437090b26d7b0c4f7905f7",
+     "config.json": "89650f69a824ff354a3d70476c6eb6e09162ed0f5515d9f6e5f5953a44e87ed7"
+    }
+   }
+  },
+  "jinja2": "3.1.6",
+  "tokenizers": "0.23.3",
+  "transformers": "5.24.0.dev0",
+  "transformers_commit": "046bdb8cc2"
+ },
+ "cases": [
+  {
+   "name": "plain",
+   "tools": null,
+   "text": "<|message_model|><|content_text|>Hello, world.<|end_message|>",
+   "ending": "stop",
+   "ids": [
+    200001,
+    200004,
+    32269,
+    11,
+    150770,
+    13,
+    200010,
+    200006
+   ],
+   "parsed": {
+    "content": "Hello, world.",
+    "reasoning": "",
+    "tool_calls": []
+   }
+  },
+  {
+   "name": "plain padded",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "shell",
+      "description": "Run a shell command.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string",
+         "description": "the command"
+        },
+        "timeout": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     }
+    }
+   ],
+   "text": "<|message_model|><|content_text|>\n\n  hi there \n<|end_message|>",
+   "ending": "stop",
+   "ids": [
+    200001,
+    200004,
+    68014,
+    220,
+    151003,
+    150102,
+    197045,
+    200010,
+    200006
+   ],
+   "parsed": {
+    "content": "\n\n  hi there \n",
+    "reasoning": "",
+    "tool_calls": []
+   }
+  },
+  {
+   "name": "empty",
+   "tools": null,
+   "text": "<|message_model|><|content_text|><|end_message|>",
+   "ending": "stop",
+   "ids": [
+    200001,
+    200004,
+    200010,
+    200006
+   ],
+   "parsed": {
+    "content": "",
+    "reasoning": "",
+    "tool_calls": []
+   }
+  },
+  {
+   "name": "thinking and text",
+   "tools": null,
+   "text": "<|message_model|><|content_thinking|>Let me think.\nOK.<|end_message|><|content_text|>The answer is 4.<|end_message|>",
+   "ending": "stop",
+   "ids": [
+    200001,
+    200008,
+    2918,
+    149991,
+    150634,
+    13,
+    198,
+    146056,
+    13,
+    200010,
+    200004,
+    371,
+    150893,
+    149884,
+    220,
+    19,
+    13,
+    200010,
+    200006
+   ],
+   "parsed": {
+    "content": "The answer is 4.",
+    "reasoning": "Let me think.\nOK.",
+    "tool_calls": []
+   }
+  },
+  {
+   "name": "thinking only cut",
+   "tools": null,
+   "text": "<|message_model|><|content_thinking|>still thinking about",
+   "ending": "length",
+   "ids": [
+    200001,
+    200008,
+    2200,
+    154762,
+    150081
+   ],
+   "parsed": {
+    "content": "",
+    "reasoning": "still thinking about",
+    "tool_calls": []
+   }
+  },
+  {
+   "name": "one call",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "shell",
+      "description": "Run a shell command.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string",
+         "description": "the command"
+        },
+        "timeout": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     }
+    }
+   ],
+   "text": "<|message_model|>shell<|content_invoke_tool_json|>{\"name\":\"shell\",\"args\":{\"command\":\"ls -la\",\"timeout\":5}}<|end_message|>",
+   "ending": "stop",
+   "ids": [
+    200001,
+    4198,
+    200049,
+    90,
+    1,
+    930,
+    1,
+    25,
+    1,
+    4198,
+    1,
+    11,
+    1,
+    70747,
+    1,
+    25,
+    90,
+    1,
+    31704,
+    1,
+    25,
+    1,
+    31354,
+    196973,
+    891,
+    1,
+    11,
+    1,
+    78734,
+    1,
+    25,
+    20,
+    92,
+    92,
+    200010,
+    200006
+   ],
+   "parsed": {
+    "content": "",
+    "reasoning": "",
+    "tool_calls": [
+     {
+      "name": "shell",
+      "arguments": {
+       "command": "ls -la",
+       "timeout": 5
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "thinking and a call",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "shell",
+      "description": "Run a shell command.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string",
+         "description": "the command"
+        },
+        "timeout": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     }
+    }
+   ],
+   "text": "<|message_model|><|content_thinking|>I need the list.<|end_message|><|message_model|>shell<|content_invoke_tool_json|>{\"name\":\"shell\",\"args\":{\"command\":\"ls\"}}<|end_message|>",
+   "ending": "stop",
+   "ids": [
+    200001,
+    200008,
+    40,
+    150261,
+    149876,
+    150299,
+    13,
+    200010,
+    200001,
+    4198,
+    200049,
+    90,
+    1,
+    930,
+    1,
+    25,
+    1,
+    4198,
+    1,
+    11,
+    1,
+    70747,
+    1,
+    25,
+    90,
+    1,
+    31704,
+    1,
+    25,
+    1,
+    31354,
+    1,
+    92,
+    92,
+    200010,
+    200006
+   ],
+   "parsed": {
+    "content": "",
+    "reasoning": "I need the list.",
+    "tool_calls": [
+     {
+      "name": "shell",
+      "arguments": {
+       "command": "ls"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "two calls",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "shell",
+      "description": "Run a shell command.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string",
+         "description": "the command"
+        },
+        "timeout": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     }
+    }
+   ],
+   "text": "<|message_model|>shell<|content_invoke_tool_json|>{\"name\":\"shell\",\"args\":{\"command\":\"ls\"}}<|end_message|><|message_model|>shell<|content_invoke_tool_json|>{\"name\":\"shell\",\"args\":{\"command\":\"pwd\"}}<|end_message|>",
+   "ending": "stop",
+   "ids": [
+    200001,
+    4198,
+    200049,
+    90,
+    1,
+    930,
+    1,
+    25,
+    1,
+    4198,
+    1,
+    11,
+    1,
+    70747,
+    1,
+    25,
+    90,
+    1,
+    31704,
+    1,
+    25,
+    1,
+    31354,
+    1,
+    92,
+    92,
+    200010,
+    200001,
+    4198,
+    200049,
+    90,
+    1,
+    930,
+    1,
+    25,
+    1,
+    4198,
+    1,
+    11,
+    1,
+    70747,
+    1,
+    25,
+    90,
+    1,
+    31704,
+    1,
+    25,
+    1,
+    39905,
+    1,
+    92,
+    92,
+    200010,
+    200006
+   ],
+   "parsed": {
+    "content": "",
+    "reasoning": "",
+    "tool_calls": [
+     {
+      "name": "shell",
+      "arguments": {
+       "command": "ls"
+      }
+     },
+     {
+      "name": "shell",
+      "arguments": {
+       "command": "pwd"
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "repeated text blocks",
+   "tools": null,
+   "text": "<|message_model|><|content_text|>Part 1. <|end_message|><|content_text|>Part 2.<|end_message|>",
+   "ending": "stop",
+   "ids": [
+    200001,
+    200004,
+    2211,
+    220,
+    16,
+    13,
+    220,
+    200010,
+    200004,
+    2211,
+    220,
+    17,
+    13,
+    200010,
+    200006
+   ],
+   "parsed": {
+    "content": "Part 1. Part 2.",
+    "reasoning": "",
+    "tool_calls": []
+   }
+  },
+  {
+   "name": "malformed json call",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "shell",
+      "description": "Run a shell command.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string",
+         "description": "the command"
+        },
+        "timeout": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     }
+    }
+   ],
+   "text": "<|message_model|>shell<|content_invoke_tool_json|>{not json<|end_message|>",
+   "ending": "stop",
+   "ids": [
+    200001,
+    4198,
+    200049,
+    90,
+    799,
+    152811,
+    200010,
+    200006
+   ],
+   "error": "ValueError: json parser could not parse region as JSON.\nContent: '{not json'\nError: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)"
+  },
+  {
+   "name": "unclosed call",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "shell",
+      "description": "Run a shell command.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string",
+         "description": "the command"
+        },
+        "timeout": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "command"
+       ]
+      }
+     }
+    }
+   ],
+   "text": "<|message_model|>shell<|content_invoke_tool_json|>{\"name\":\"shell\",\"args\":{\"command\":\"ls\"",
+   "ending": "length",
+   "ids": [
+    200001,
+    4198,
+    200049,
+    90,
+    1,
+    930,
+    1,
+    25,
+    1,
+    4198,
+    1,
+    11,
+    1,
+    70747,
+    1,
+    25,
+    90,
+    1,
+    31704,
+    1,
+    25,
+    1,
+    31354,
+    1
+   ],
+   "error": "ValueError: json parser could not parse region as JSON.\nContent: '{\"name\":\"shell\",\"args\":{\"command\":\"ls\"'\nError: Expecting ',' delimiter: line 1 column 39 (char 38)"
+  },
+  {
+   "name": "unicode",
+   "tools": null,
+   "text": "<|message_model|><|content_text|>日本語 🦀 naïve café<|end_message|>",
+   "ending": "stop",
+   "ids": [
+    200001,
+    200004,
+    90626,
+    22912,
+    220,
+    117292,
+    149946,
+    5169,
+    290,
+    162389,
+    200010,
+    200006
+   ],
+   "parsed": {
+    "content": "日本語 🦀 naïve café",
+    "reasoning": "",
+    "tool_calls": []
+   }
+  }
+ ]
+}
