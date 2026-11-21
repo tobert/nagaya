@@ -16,6 +16,8 @@ pub enum Dtype {
     BF16,
     I8,
     U8,
+    /// An OCP E4M3 float of one byte: the experts of Inkling 2 hold their values and scales in it.
+    F8E4M3,
     /// The `position_ids` of a CLIP encoder in a checkpoint of diffusers. No op reads it.
     I64,
 }
@@ -28,6 +30,7 @@ impl Dtype {
             "BF16" => Some(Dtype::BF16),
             "I8" => Some(Dtype::I8),
             "U8" => Some(Dtype::U8),
+            "F8_E4M3" => Some(Dtype::F8E4M3),
             "I64" => Some(Dtype::I64),
             _ => None,
         }
@@ -37,7 +40,7 @@ impl Dtype {
         match self {
             Dtype::F32 => 4,
             Dtype::F16 | Dtype::BF16 => 2,
-            Dtype::I8 | Dtype::U8 => 1,
+            Dtype::I8 | Dtype::U8 | Dtype::F8E4M3 => 1,
             Dtype::I64 => 8,
         }
     }
@@ -298,10 +301,22 @@ mod tests {
         assert!(SafeTensorsView::parse(&short).is_err());
     }
 
+    /// The experts of Inkling 2 hold E4M3 values and scales, one byte each.
+    #[test]
+    fn parses_an_f8_e4m3_tensor() {
+        let w = [0u8; 2 * 4];
+        let buf = SafeTensorsView::build_synthetic_safetensors(&[("s", "F8_E4M3", &[2, 4], &w)]);
+        let v = SafeTensorsView::parse(&buf).unwrap();
+        assert_eq!(v.tensors["s"].dtype, Dtype::F8E4M3);
+        assert_eq!(v.tensor_bytes("s").unwrap().len(), 8);
+        let short = SafeTensorsView::build_synthetic_safetensors(&[("s", "F8_E4M3", &[2, 4], &w[..7])]);
+        assert!(SafeTensorsView::parse(&short).is_err());
+    }
+
     #[test]
     fn rejects_unknown_dtype_and_length_mismatch() {
         let w = [0u8; 8];
-        let buf = SafeTensorsView::build_synthetic_safetensors(&[("w", "F8_E4M3", &[8], &w)]);
+        let buf = SafeTensorsView::build_synthetic_safetensors(&[("w", "F8_E5M2", &[8], &w)]);
         assert!(
             SafeTensorsView::parse(&buf)
                 .err()

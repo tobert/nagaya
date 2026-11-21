@@ -1323,6 +1323,7 @@ name = "nagaya-mk-inkling2-bmg"
 version = "0.1.0"
 dependencies = [
  "nagaya-mk-bmg",
+ "rayon",
  "serde_json",
 ]
 
