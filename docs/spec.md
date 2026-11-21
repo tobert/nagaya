@@ -4968,7 +4968,8 @@ The notes below fill the choices that gogi leaves to the server. Each note is **
   member of its parent counts.
 - **The count that runs.** The council resolves the count: the context's `cycles`, or the `default` of the engine.
   Each segment of the job carries that count in `segment.cycles`. A segment of an engine with no `cycles` carries
-  none.
+  none. A context with a `loop` carries none too, because a segment names a loop or cycles, and not both (engine-abi
+  "Inkling 2"). Such a context runs the default of an engine that declares both.
 - **The recipe.** A count other than `default` goes into the root recipe as the lab state, tag 4 (6.2), after the
   bytes of the control list. Its bytes are these, little-endian: the `u64` value `0xFFFF_FFFF_FFFF_FFFE`, then the
   count as a `u32`. The first value is never the count of a control list, and it is not the marker of a loop.
