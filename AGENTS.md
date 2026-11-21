@@ -373,6 +373,7 @@ Fable 5.2, 2026-11-11):
 3. Milestone 31 steps 1 and 2 for the other engines, on b70host. Then steps 3 to 7: the docs, the machines,
    the build, the license and the review.
 4. Milestone 31 step 8, the publication, when Amy says so.
+5. Milestone 35, Inkling 2, on b70host: planned on 2026-11-21. Amy decides how much of it to do.
 
 Milestone 32, context records, starts in gogi and runs beside these. It changes the contract, so it must be done
 before the publication.
@@ -640,6 +641,108 @@ Small things that are open, in no order:
 - The memory check before a swap is built for the Qwen3.8 engine only.
 - The profile of each machine must not name `pin_identity`. b70host must copy its new profile into its store
   directory at its next deploy, or its unit does not start.
+
+Each stop and start of `nagaya.service` goes into `signoff.md`.
+
+### Milestone 35: Inkling 2
+
+Thinking Machines released Inkling 2 Mini and a research model on 2026-11-20. Amy started this milestone on
+2026-11-21: "Let's plan it all, we'll decide how much to do later. We will be exploring this model thoroughly so I
+want to design for its features." The engine runs on one B70 card of b70host. Its place in the profile waits for
+the deploy. The plan is by Claude Opus 5.5, 2026-11-21.
+
+The models are `thinkingmachines/Inkling-2-Mini` and `thinkingmachines/TML-d24-varloop-research` on Hugging Face,
+under Apache 2.0. The reference is the transformers model `inkling2_loop`, added in commit `046bdb8cc2`. The facts
+below come from its `config.json` and `modeling_inkling2_loop.py`.
+
+- **Layers.** 24 layers of width 2,304, with 24 query heads and 8 key-value heads of 128. Layers 5, 11, 17 and 23
+  attend to all positions. The other 20 layers attend to a window of 1,024 positions.
+- **Cycles.** Layers 6 to 17 run 3 times for each position. Each cycle after the first starts again from the
+  residual after layer 5. It reads a message from the cycle before it, through learned gates of rank 64.
+- **The state of a cycle.** Each cycle has its own keys, values and convolution states. Mini is post-trained at 3
+  cycles. The research model is trained at 1 to 5, and the reference reads the count from its config at load.
+- **Positions.** There is no rotary embedding. Each layer adds a relative bias that the hidden row selects, over
+  the distances 0 to 1,023. The full layers also scale the query by the log of the position.
+- **Attention details.** Each head has a learned sink logit for each token. Queries and keys are clipped by their
+  L2 norm. Values get an RMS norm with no weight.
+- **Residuals.** The residuals are attention residuals over blocks of 6 layers. Each layer input is a softmax over
+  the stacked outputs of the blocks before it, in `f32`.
+- **Convolutions.** Each layer has four short convolutions of kernel 4. In the full layers, the taps of the key and
+  value convolutions change with each token. A context holds the convolution states, as an LFM3 context does.
+- **Experts.** 128 experts, 8 for each token, with sigmoid routing and a bias. The SwiGLU has a softcap of 4 on the
+  gate and 25 on the up row. The logits have a softcap of 30.
+- **Weights.** One file of about 20 GB. The experts of layers 0 to 19 are NVFP4, and those of layers 20 to 23 are
+  MXFP8. The rest is `bf16` and `f32`. The B70 has no FP4 unit, so the kernels expand the values.
+- **Other parts.** A ViT of 23 layers for images of 40 to 4,096 px. An MTP head of 3 layers that drafts blocks of
+  8 tokens. A tiktoken vocabulary of 201,024 entries. A template with `reasoning_effort` from 0.0 to 0.99.
+
+The cost of a slot, from the config: 8 runs of the full layers hold 32,768 bytes for each position. The 40 runs of
+the sliding layers hold rings of 1,024 positions, about 160 MiB. Thus a slot of 32,768 positions costs about 1.2 GiB,
+and a card of 32 GiB holds the weights and about 8 such slots.
+
+The names are `nagaya-mk-inkling2-bmg` and `nagaya-text-inkling2`. The family is `inkling2`. Each model is an engine
+of its own with an identity of its own.
+
+The ontology defines "Pass" as one run of an engine. Thus this plan writes "cycle" for one walk through layers 6
+to 17. The reference uses the same word (`middle_cycle_cross_pass_queries`).
+
+Amy decides these questions before the step that needs each one:
+
+1. **Cycles and layer loops.** A layer loop of LFM3 runs a span again on its own output. A cycle of Inkling 2 starts
+   again from layer 6 and reads a message. Proposed: the engine declares one span, 6 to 18, and the `count` of a
+   loop is the count of cycles. A context with no loop runs 3 cycles. Spec 11.16 then needs a mode for each form.
+2. **Activations of the experts.** The quant config asks for NVFP4 activations before each expert. The reference
+   expands each expert to `bf16` at load, and its activations stay `bf16` (`Inkling2LoopDequantizeExperts` in
+   transformers). It also interleaves the gate and up rows of `w13`. Proposed: the engine does the same.
+3. **Drafts of the MTP head.** The nagaya has no speculative decode. It needs a rule in the spec and in gogi first.
+4. **The effort.** `reasoning_effort` needs a member of a council request, or a rule that maps an existing member.
+   gogi writes it first.
+
+Do the steps in this order. Each step ends with the checks green.
+
+1. **Spikes and the oracle.** Make a CPU venv with transformers at `046bdb8cc2`. Measure the time and the memory of
+   one prompt on the CPU.
+   `tools/inkling2_golden.sh` writes the rows after each run and the block outputs, messages and gates of each cycle.
+2. **Spec and ABI.** `docs/engine-abi.md`, "Inkling 2": the parts of a state, the cycles, the taps, the weight
+   formats. The ontology gets "Cycle". Each rule that the docs leave open is **Proposed**.
+3. **The family library.** The tiktoken tokenizer and the template through `nagaya-jinja`. The reply parser with the
+   thinking block and the tool calls, the escapes and the council rendering. Fixtures of the reference.
+4. **Weights.** The safetensors reader for NVFP4, MXFP8 and `f32`. A host op expands each format, and it is the
+   oracle of the device op. The card gate is equal bits.
+5. **The text engine, 3 cycles.** The ops: the relative bias, the sinks, the clips, the log scale, the convolutions,
+   the attention residuals, the gates, the routing and the experts. Prefill, decode and snapshots. Card gates
+   against the oracle, and two plans with equal bits.
+6. **Council and deploy.** The factory, the registries, an example profile, and the gogi suite on the card.
+7. **Cycles in a call.** The `count` of a loop chooses 1 to 5 cycles. Card gate: the research model against the
+   reference at each count. Mini takes the same counts, out of the range of its training.
+8. **The lab.** The taps: the row after each run, the block outputs, the messages, the gates and the routes. Control
+   vectors, latent steps, and `ensemble` over counts of cycles.
+9. **Images.** The ViT, the placeholders of an image and its sizes. Card gate against the reference.
+10. **Drafts.** The MTP head drafts tokens, and a pass checks them. This step waits for question 3.
+11. **Long contexts.** The model reads up to 1,048,576 positions. Measure the ledger cost and the speed at 256K.
+12. **Trial and review.** A trial with Amy, and a kaibo review round with a cast of another model family.
+
+**Lanes.** Amy, 2026-11-21: "our plan should use subagents to drive a lot of the work efficiently in passes,
+identifying where things can go in parallell. we may also farm some out to other agents via text files". The work
+goes in waves. Each lane has its own worktree and target directory (`~/src/wt/nagaya-inkling2-<lane>`).
+
+- **Wave 1, after step 2.** Three lanes share no file: the oracle (step 1), the family library (step 3) and
+  the weight formats (step 4). One more lane writes a host op of each layer part, in Rust, against
+  the rows of the oracle. These ops are the oracles of the device ops of step 5.
+- **Wave 2, step 5.** Each device op is a lane with its host op as its gate. One session owns the task rings and
+  the card, because card tests run one at a time on a released card.
+- **Wave 3, after step 6.** Cycles in a call (step 7), the lab (step 8) and images (step 9) share only the
+  engine's `spec.rs`. Merge them in that order.
+- **One owner of the card.** A subagent does not open a card. The lead session releases card 0, runs the card
+  gates, and reclaims it (spec "The release of a device").
+- **Briefs for another agent.** A lane that needs no card and no model run can go to an agent of another family.
+  Write its brief as `BRIEF.md` in the worktree, and do not commit it. The brief names the files, the fixture, the
+  test that must pass, and the rules of `AGENTS.md` that apply.
+- **The return of a brief.** The agent commits on the branch of its worktree. The lead session reviews each commit
+  and runs the mutations again before the merge.
+
+These lanes fit a brief: the tokenizer, the reply parser, the host expansion of NVFP4 and MXFP8, and the host
+ops of the layer parts. The card work, the task rings and the spec stay with the lead session.
 
 Each stop and start of `nagaya.service` goes into `signoff.md`.
 
