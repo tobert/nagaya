@@ -8,7 +8,7 @@ use nagaya_mk_bmg::protocol::{
 use nagaya_mk_bmg::tasks;
 
 #[test]
-fn the_embed_task_names_its_rows_its_table_its_class_row_and_its_grid() {
+fn the_embed_task_names_its_rows_its_table_its_taps_and_its_grid() {
     let t = tasks::inkling2_vision_embed(0x1000, 0x2000, 0x3000, 0x10_0000, 3, 6, 1024);
     assert_eq!(t.opcode, OP_INKLING2_VISION_EMBED);
     assert_eq!((t.a, t.b, t.x, t.c), (0x1000, 0x2000, 0x3000, 0x10_0000));

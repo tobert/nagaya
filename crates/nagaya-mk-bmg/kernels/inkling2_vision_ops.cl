@@ -8,39 +8,38 @@
 // and row-major, 1,024 values in a row.
 
         else if (op == OP_INKLING2_VISION_EMBED) {
-            // The class row and the position embedding of one image (host `Vision::tower`, the rows before ln_pre):
-            // c[0] = x, and c[1 + p] = a[p] + the bilinear sum of 4 rows of the table b for patch p. The fields:
-            // a = the patch embedding [n][k] f32; b = the table [32 * 32][k] bf16; x = the class row [k] f32, the sum
-            // of class_embedding and cls_position_embedding; c = [n + 1][k]; n = 4T patches; k = the width;
-            // p0 = the rows | the columns << 16 of the image, in image tokens. A lane takes one value. The 4 taps
-            // sum in the order of the host, from 0, with no fused multiply-add.
+            // The position embedding of one image (host `Vision::tower`, the rows before ln_pre): c[1 + p] = a[p] +
+            // the bilinear sum of 4 rows of the table b for patch p. Row 0 of c, the class row, is an OP_COPY before
+            // this op. The fields: a = the patch embedding [n][k] f32; b = the table [32 * 32][k] bf16; x = the taps
+            // of the image, from the host (`vision::axes`): for each patch line, then for each patch column, the two
+            // taps as uint and their two weights as f32 bits; c = [n + 1][k]; n = 4T patches; k = the width;
+            // p0 = the rows | the columns << 16 of the image, in image tokens. A lane takes one value. The weights
+            // are the host's, and the 4 taps sum in the order of the host from 0, with no fused multiply-add. Thus
+            // the op gives the bits of the host form.
 #pragma OPENCL FP_CONTRACT OFF
             __global const float*  A = (__global const float*)task.a;
             __global const ushort* T = (__global const ushort*)task.b;
-            __global const float*  X = (__global const float*)task.x;
+            __global const uint4*  AX = (__global const uint4*)task.x;
             __global float*        C = (__global float*)task.c;
             uint K = task.k, rows = task.p0 & 0xFFFFu, columns = task.p0 >> 16;
-            ulong total = (ulong)(task.n + 1) * K;
+            ulong total = (ulong)task.n * K;
             for (ulong i = (ulong)gsg * 16u + lane; i < total; i += (ulong)n_gsg * 16u) {
-                uint r = (uint)(i / K), j = (uint)(i % K);
-                if (r == 0) {
-                    C[i] = X[j];
-                    continue;
-                }
-                uint2 at = inkling2_patch_position(r - 1u, columns);
+                uint p = (uint)(i / K), j = (uint)(i % K);
+                uint2 at = inkling2_patch_position(p, columns);
+                uint4 h = AX[at.x], w = AX[2u * rows + at.y];
                 float pos = 0.0f;
                 for (uint hy = 0; hy < 2u; hy++) {
-                    uint ht;
-                    float hw = inkling2_axis_tap(at.x, 2u * rows, hy, &ht);
+                    uint ht = hy ? h.y : h.x;
+                    float hw = as_float(hy ? h.w : h.z);
                     for (uint wx = 0; wx < 2u; wx++) {
-                        uint wt;
-                        float ww = inkling2_axis_tap(at.y, 2u * columns, wx, &wt);
+                        uint wt = wx ? w.y : w.x;
+                        float ww = as_float(wx ? w.w : w.z);
                         float weight = hw * ww;
                         float v = bf16_to_f32(T[(ulong)(ht * INKLING2_VISION_GRID + wt) * K + j]);
                         pos = pos + v * weight;
                     }
                 }
-                C[i] = A[(ulong)(r - 1u) * K + j] + pos;
+                C[i + K] = A[i] + pos;
             }
         }
         else if (op == OP_INKLING2_VISION_ROPE) {

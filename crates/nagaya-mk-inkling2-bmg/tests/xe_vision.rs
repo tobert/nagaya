@@ -30,9 +30,6 @@ use nagaya_mk_inkling2_bmg::vision::{self as tower, Bufs, Mark, Stage};
 
 const ORACLE: &str = "inkling2-mini.vision.safetensors";
 
-/// The position embedding: the card takes each bilinear weight through one division, which OpenCL C bounds by 2.5
-/// ulp. A weight then moves by a few ulp (2.4e-7 for 4 ulp), and the sum of 4 taps and the patch row by as much.
-const TOL_EMBED: f64 = 1e-6;
 /// The first stages against the host form. The patch embedding is `OP_MATMUL`: its XMX sums take `x` in three
 /// `bf16` parts, about 24 bits, and they sum 1,200 terms in another order. That is about sqrt(1200) * 6e-8 = 2e-6
 /// of a row. The LayerNorm adds its `f32` mean and variance, where the host takes `f64`: a few ulp more.
@@ -67,6 +64,17 @@ impl Card {
     fn zeros(&mut self, bytes: usize) -> u64 {
         let card = &self.cluster.cards[0];
         self.device.zeros(card, bytes)
+    }
+
+    fn put_bytes(&mut self, bytes: &[u8]) -> u64 {
+        let at = self.zeros(bytes.len());
+        self.device.write(self.card(), at, bytes);
+        at
+    }
+
+    /// The taps and the weights of the position embedding of `g`, as the pass writes them with the rows.
+    fn axes(&mut self, g: Grid) -> u64 {
+        self.put_bytes(&tower::axes(g))
     }
 
     fn put(&mut self, values: &[f32]) -> u64 {
@@ -196,15 +204,11 @@ fn the_class_row_and_the_position_embedding_match_the_host_form() {
         let p = g.patches();
         let patches = values(5, p * WIDTH, 2.0);
         let (a, y) = (c.put(&patches), c.zeros((p + 1) * WIDTH * 4));
-        c.run(&[tasks::inkling2_vision_embed(
-            a,
-            table,
-            class_at,
-            y,
-            g.rows as u32,
-            g.columns as u32,
-            WIDTH as u32,
-        )]);
+        let axes = c.axes(g);
+        c.run(&[
+            tasks::copy(class_at, y, WIDTH as u32),
+            tasks::inkling2_vision_embed(a, table, axes, y, g.rows as u32, g.columns as u32, WIDTH as u32),
+        ]);
         let got = c.read(y, (p + 1) * WIDTH);
         assert_eq!(bits_differ(&got[..WIDTH], &class), 0, "{g:?}: the class row is row 0");
         let mut want = Vec::with_capacity(p * WIDTH);
@@ -228,7 +232,11 @@ fn the_class_row_and_the_position_embedding_match_the_host_form() {
             "embed {g:?}: worst row {gap:.3e}, {differ} of {} values differ in bits",
             p * WIDTH
         );
-        assert!(gap < TOL_EMBED, "embed {g:?}: the rows differ by {gap:.3e}");
+        // The weights are the host's, and the sum has the order of the host with no fused multiply-add.
+        assert_eq!(
+            differ, 0,
+            "embed {g:?}: the rows differ from the host form by {gap:.3e}"
+        );
     }
 }
 
@@ -279,8 +287,8 @@ impl Tower {
     }
 
     /// Run the first `count` tasks of the tower of `g` with its rows at `rows`, and read the rows of `mark`.
-    fn stage(&mut self, g: Grid, rows: u64, out: u64, mark: &Mark) -> Vec<f32> {
-        let run = tower::tower(&self.weights, &self.bufs, g, rows, out);
+    fn stage(&mut self, g: Grid, rows: u64, axes: u64, out: u64, mark: &Mark) -> Vec<f32> {
+        let run = tower::tower(&self.weights, &self.bufs, g, rows, axes, out);
         self.card.run(&run.tasks[..mark.tasks]);
         self.card.read(mark.at, mark.rows * mark.width)
     }
@@ -296,11 +304,12 @@ fn each_stage_of_the_tower_of_image_0_matches_the_oracle_and_the_host_form() {
     let mut trace = VisionTrace::default();
     let host_out = t.host.image_rows(&rows, g, Some(&mut trace));
     let rows_at = t.card.put(&rows);
+    let axes = t.card.axes(g);
     let out = t.card.zeros(tower::out_bytes(g.tokens()));
-    let marks = tower::tower(&t.weights, &t.bufs, g, rows_at, out).marks;
+    let marks = tower::tower(&t.weights, &t.bufs, g, rows_at, axes, out).marks;
     let mut failures = Vec::new();
     for mark in &marks {
-        let got = t.stage(g, rows_at, out, mark);
+        let got = t.stage(g, rows_at, axes, out, mark);
         let (name, host, oracle, tol) = match mark.stage {
             Stage::PatchEmbed => (
                 "patch_embed".to_owned(),
@@ -349,8 +358,9 @@ fn the_projector_rows_of_image_1_match_the_oracle_and_the_host_form() {
     let (g, rows) = t.prepared(1);
     let host = t.host.image_rows(&rows, g, None);
     let rows_at = t.card.put(&rows);
+    let axes = t.card.axes(g);
     let out = t.card.zeros(tower::out_bytes(g.tokens()));
-    let run = tower::tower(&t.weights, &t.bufs, g, rows_at, out);
+    let run = tower::tower(&t.weights, &t.bufs, g, rows_at, axes, out);
     let started = std::time::Instant::now();
     t.card.run(&run.tasks);
     eprintln!(
@@ -380,6 +390,7 @@ fn an_image_alone_and_two_images_in_one_ring_give_the_same_bits() {
     let mut t = Tower::open();
     let images = [t.prepared(0), t.prepared(1)];
     let rows: Vec<u64> = images.iter().map(|(_, r)| t.card.put(r)).collect();
+    let axes: Vec<u64> = images.iter().map(|(g, _)| t.card.axes(*g)).collect();
     let outs = |t: &mut Tower| -> Vec<u64> {
         images
             .iter()
@@ -388,12 +399,12 @@ fn an_image_alone_and_two_images_in_one_ring_give_the_same_bits() {
     };
     let (alone, joined) = (outs(&mut t), outs(&mut t));
     for (i, (g, _)) in images.iter().enumerate() {
-        let run = tower::tower(&t.weights, &t.bufs, *g, rows[i], alone[i]);
+        let run = tower::tower(&t.weights, &t.bufs, *g, rows[i], axes[i], alone[i]);
         t.card.run(&run.tasks);
     }
     let mut both = Vec::new();
     for (i, (g, _)) in images.iter().enumerate() {
-        both.extend(tower::tower(&t.weights, &t.bufs, *g, rows[i], joined[i]).tasks);
+        both.extend(tower::tower(&t.weights, &t.bufs, *g, rows[i], axes[i], joined[i]).tasks);
     }
     t.card.run(&both);
     for (i, (g, _)) in images.iter().enumerate() {

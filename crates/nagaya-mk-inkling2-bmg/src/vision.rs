@@ -11,8 +11,8 @@ use nagaya_mk_bmg::tasks;
 
 use crate::host::ops::HIDDEN;
 use crate::host::vision::{
-    GRID, Grid, HEAD_DIM, HEADS, LAYERS, LN_EPS, MAX_TOKENS, MERGE, MLP, PATCH_VALUES, PROJ_HIDDEN, ROPE_POSITIONS,
-    WIDTH, rope_angle,
+    GRID, Grid, HEAD_DIM, HEADS, LAYERS, LN_EPS, MAX_PATCH_SIDE, MAX_TOKENS, MERGE, MLP, PATCH_VALUES, PROJ_HIDDEN,
+    ROPE_POSITIONS, WIDTH, axis_taps, rope_angle,
 };
 use crate::weights::Upload;
 
@@ -21,8 +21,8 @@ pub const ROPE_FREQS: usize = HEAD_DIM / 4;
 /// The bytes of the weights of the tower on the card, with the rotary table: the term `vision`
 /// (`tests/vision_weights.rs` counts them).
 pub const WEIGHTS_BYTES: usize = 636_825_472;
-/// The tasks of one tower run: 3 before the layers, 19 in each layer, and 3 of the projector.
-pub const TOWER_TASKS: usize = 3 + 19 * LAYERS + 3;
+/// The tasks of one tower run: 4 before the layers, 19 in each layer, and 3 of the projector.
+pub const TOWER_TASKS: usize = 4 + 19 * LAYERS + 3;
 
 /// A LayerNorm on the card: `f32` weight and bias.
 #[derive(Clone, Copy, Debug, Default)]
@@ -185,6 +185,26 @@ pub fn load(sink: &mut dyn Upload, view: &SafeTensorsView<'_>) -> Result<Weights
     })
 }
 
+/// The taps and the weights of the position embedding of an image, which `OP_INKLING2_VISION_EMBED` reads: for each
+/// patch line, then for each patch column, the two taps as `u32` and their two weights as `f32`, little-endian. The
+/// rules are those of the host form (`host::vision::axis_taps`), so the op gives the bits of the host form.
+pub fn axes(g: Grid) -> Vec<u8> {
+    let (lines, columns) = (MERGE * g.rows, MERGE * g.columns);
+    let mut out = Vec::with_capacity(16 * (lines + columns));
+    for (size, count) in [(lines, lines), (columns, columns)] {
+        for index in 0..count {
+            let [(t0, w0), (t1, w1)] = axis_taps(index, size);
+            for word in [t0 as u32, t1 as u32, w0.to_bits(), w1.to_bits()] {
+                out.extend(word.to_le_bytes());
+            }
+        }
+    }
+    out
+}
+
+/// The bytes of [`axes`] for the largest image of the size rule.
+pub const AXES_BYTES: usize = 16 * 2 * MAX_PATCH_SIDE;
+
 /// The rows of the tower of an image of `tokens` image tokens: the class row and 4 patches for each token.
 pub fn tower_rows(tokens: usize) -> usize {
     MERGE * MERGE * tokens + 1
@@ -282,8 +302,9 @@ pub struct Tower {
 }
 
 /// The tasks of the tower and the projector for one image of grid `g`: the patch rows at `rows` give the projector
-/// rows at `out`. The tasks write only `b` and `out`.
-pub fn tower(w: &Weights, b: &Bufs, g: Grid, rows: u64, out: u64) -> Tower {
+/// rows at `out`. `axes` holds [`axes`] of `g`, which the caller writes with the rows. The tasks write only `b` and
+/// `out`.
+pub fn tower(w: &Weights, b: &Bufs, g: Grid, rows: u64, axes: u64, out: u64) -> Tower {
     let t = g.tokens();
     assert!(
         (1..=b.max_tokens).contains(&t),
@@ -310,10 +331,11 @@ pub fn tower(w: &Weights, b: &Bufs, g: Grid, rows: u64, out: u64) -> Tower {
     // The patch embedding into q, then the class row and the positions into x, then ln_pre in place.
     tk.push(tasks::matmul(rows, w.patch, b.q, p, wd, PATCH_VALUES as u32, false));
     mark(&tk, Stage::PatchEmbed, b.q, p, WIDTH);
+    tk.push(tasks::copy(w.class_row, b.x, wd));
     tk.push(tasks::inkling2_vision_embed(
         b.q,
         w.position,
-        w.class_row,
+        axes,
         b.x,
         g.rows as u32,
         g.columns as u32,

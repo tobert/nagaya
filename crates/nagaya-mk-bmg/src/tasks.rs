@@ -1857,14 +1857,20 @@ fn vision_grid(op: &str, rows: u32, columns: u32) {
     );
 }
 
-/// The class row and the position embedding of one image of `rows x columns` image tokens: `y[0] = class_row`, and
-/// `y[1 + p] = patches[p] + the bilinear sum of 4 rows of the bf16 table`, for `4 * rows * columns` patches of `k`
-/// values (`OP_INKLING2_VISION_EMBED`).
+/// The bytes of the taps of `OP_INKLING2_VISION_EMBED` for an image of `rows x columns` image tokens: 16 for each
+/// patch line, then 16 for each patch column.
+pub fn inkling2_vision_axes_bytes(rows: u32, columns: u32) -> usize {
+    16 * 2 * (rows + columns) as usize
+}
+
+/// The position embedding of one image of `rows x columns` image tokens: `y[1 + p] = patches[p] + the bilinear sum
+/// of 4 rows of the bf16 table`, for `4 * rows * columns` patches of `k` values, with the taps and weights `axes`
+/// of the host (`OP_INKLING2_VISION_EMBED`). Row 0 of `y` is the class row, which the op does not write.
 #[allow(clippy::too_many_arguments)]
 pub fn inkling2_vision_embed(
     patches: u64,
     table: u64,
-    class_row: u64,
+    axes: u64,
     y: u64,
     rows: u32,
     columns: u32,
@@ -1882,7 +1888,7 @@ pub fn inkling2_vision_embed(
     MkTaskDescriptor {
         a: patches,
         b: table,
-        x: class_row,
+        x: axes,
         c: y,
         n,
         k,

@@ -1661,9 +1661,11 @@ family library. It is the oracle of the family and of the device ops.
 - **The rotary table.** At its open, the engine computes the cosine and the sine of each angle on the host, with the
   rules of the host form. The table holds 207 positions by 16 frequencies. Reason: the op then gives the bits of
   the host form. 207 is the class row and the 206 patch lines of a side of 4,096 px.
-- **The position embedding.** The device op computes the bilinear taps of each patch from the grid. Its weights
-  differ from those of the host form by the rounding of a division on the card. Reason: the pass then needs no table
-  for each grid.
+- **The position embedding.** For each patch line and each patch column, the host computes two taps and their two
+  bilinear weights. It uses the rules of the host form (`vision::axes`) at the plan of a span. The op reads them, so
+  it gives the bits of the host form. Reason: the division of the card is not correctly rounded. With weights of its
+  own, the op moved 38,990 of 73,728 values of a grid of 3 by 6 tokens (2026-11-21).
+  - The taps of the largest image take 6,592 bytes. The class row is an `OP_COPY` before the op.
 - **The attention** is `OP_VISION_ATTN` of LFM3 under a new opcode, with 16 heads of 64 values and the scale 1/8.
 - **One image at a time.** The tower runs over each image of the pass alone, in the order of the spans, on one set
   of buffers. Thus a call with two images gives each image the bits of a call with that image alone.

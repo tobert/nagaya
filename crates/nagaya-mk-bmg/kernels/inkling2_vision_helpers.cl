@@ -18,16 +18,3 @@ inline uint2 inkling2_patch_position(uint n, uint columns) {
     uint token = n / 4u, inner = n % 4u;
     return (uint2)(2u * (token / columns) + inner / 2u, 2u * (token % columns) + inner % 2u);
 }
-
-// The tap of `offset` (0 or 1) into the table, and its bilinear weight, for `index` on an axis of `size` patches
-// (host `axis_taps`): F.interpolate with align_corners=False and a clamp at the border. The division of the card
-// can differ from the host by its rounding, so the weight can differ by a few ulp.
-inline float inkling2_axis_tap(uint index, uint size, uint offset, uint* tap) {
-#pragma OPENCL FP_CONTRACT OFF
-    float src = ((float)index + 0.5f) * (float)INKLING2_VISION_GRID / (float)size - 0.5f;
-    float fl = floor(src);
-    int raw = (int)fl + (int)offset;
-    *tap = (uint)clamp(raw, 0, INKLING2_VISION_GRID - 1);
-    float distance = fabs(src - fl - (float)offset);
-    return fmax(1.0f - distance, 0.0f);
-}

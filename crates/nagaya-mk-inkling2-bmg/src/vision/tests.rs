@@ -4,7 +4,7 @@ use super::*;
 use crate::host::vision::{MAX_PATCH_SIDE, patch_position};
 use crate::weights::Count;
 use nagaya_mk_bmg::protocol::{
-    MAX_TASKS_PER_CARD, OP_INKLING2_VISION_ATTN, OP_INKLING2_VISION_EMBED, OP_INKLING2_VISION_ROPE, OP_MATMUL,
+    MAX_TASKS_PER_CARD, OP_COPY, OP_INKLING2_VISION_ATTN, OP_INKLING2_VISION_EMBED, OP_INKLING2_VISION_ROPE, OP_MATMUL,
 };
 
 /// Weights and buffers at fixed fake addresses, so that a test can name each pointer of a task.
@@ -91,9 +91,10 @@ fn the_tasks_of_one_image_follow_the_host_form_and_write_only_the_buffers_and_th
     let (w, b) = fake();
     let g = Grid { rows: 3, columns: 6 };
     let (rows, out) = (0x10_0000_0000u64, 0x20_0000_0000u64);
-    let run = tower(&w, &b, g, rows, out);
+    let axes_at = 0x30_0000_0000u64;
+    let run = tower(&w, &b, g, rows, axes_at, out);
     assert_eq!(run.tasks.len(), TOWER_TASKS);
-    assert_eq!(TOWER_TASKS, 443);
+    assert_eq!(TOWER_TASKS, 444);
     // Two images of one call fit one ring.
     const { assert!(2 * TOWER_TASKS < MAX_TASKS_PER_CARD) };
     let stages: Vec<Stage> = run.marks.iter().map(|m| m.stage).collect();
@@ -127,11 +128,16 @@ fn the_tasks_of_one_image_follow_the_host_form_and_write_only_the_buffers_and_th
         (first.opcode, first.a, first.n, first.m, first.k),
         (OP_MATMUL, rows, 72, 1024, 1200)
     );
-    let embed = &run.tasks[1];
+    let class = &run.tasks[1];
+    assert_eq!(
+        (class.opcode, class.a, class.c, class.n),
+        (OP_COPY, w.class_row, b.x, 1024)
+    );
+    let embed = &run.tasks[2];
     assert_eq!(embed.opcode, OP_INKLING2_VISION_EMBED);
     assert_eq!(
         (embed.a, embed.b, embed.x, embed.c, embed.p0),
-        (b.q, w.position, w.class_row, b.x, 3 | 6 << 16)
+        (b.q, w.position, axes_at, b.x, 3 | 6 << 16)
     );
     let attn: Vec<_> = run
         .tasks
@@ -173,5 +179,35 @@ fn the_buffers_hold_the_largest_image_of_the_size_rule() {
 #[should_panic(expected = "hold 18 image tokens, and the image has 19")]
 fn an_image_larger_than_the_buffers_is_a_defect_of_the_caller() {
     let (w, b) = fake();
-    tower(&w, &b, Grid { rows: 1, columns: 19 }, 0, 0);
+    tower(&w, &b, Grid { rows: 1, columns: 19 }, 0, 0, 0);
+}
+
+#[test]
+fn the_axes_hold_the_taps_and_the_weights_of_the_host_form_for_each_line_and_column() {
+    let g = Grid { rows: 3, columns: 6 };
+    let a = axes(g);
+    assert_eq!(a.len(), 16 * (6 + 12));
+    assert_eq!(a.len(), nagaya_mk_bmg::tasks::inkling2_vision_axes_bytes(3, 6));
+    let word = |i: usize| u32::from_le_bytes(a[4 * i..4 * i + 4].try_into().unwrap());
+    for (base, size) in [(0usize, 6usize), (6, 12)] {
+        for index in 0..size {
+            let [(t0, w0), (t1, w1)] = axis_taps(index, size);
+            let e = 4 * (base + index);
+            assert_eq!(
+                [word(e), word(e + 1)],
+                [t0 as u32, t1 as u32],
+                "the taps of {index} of {size}"
+            );
+            assert_eq!(
+                [word(e + 2), word(e + 3)],
+                [w0.to_bits(), w1.to_bits()],
+                "the weights of {index} of {size}"
+            );
+        }
+    }
+    let largest = Grid {
+        rows: 103,
+        columns: 103,
+    };
+    assert_eq!(axes(largest).len(), AXES_BYTES);
 }
