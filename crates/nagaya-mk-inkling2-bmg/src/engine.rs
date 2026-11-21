@@ -146,12 +146,79 @@ fn canonical_json(value: &serde_json::Value) -> String {
     }
 }
 
-/// The PCI revision of the device at `address`, from sysfs.
-fn pci_revision(address: &str) -> Result<u32, String> {
-    let path = format!("/sys/bus/pci/devices/{address}/revision");
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {path}: {e}"))?;
-    let text = text.trim();
-    u32::from_str_radix(text.trim_start_matches("0x"), 16).map_err(|e| format!("{path} holds `{text}`: {e}"))
+/// The PCI vendor id, device id and revision of the device at `address`, from sysfs. The plan table names them, and
+/// a description reads them with no card (spec 11.1).
+fn pci_ids(address: &str) -> Result<(u32, u32, u32), String> {
+    let read = |name: &str| -> Result<u32, String> {
+        let path = format!("/sys/bus/pci/devices/{address}/{name}");
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {path}: {e}"))?;
+        let text = text.trim();
+        u32::from_str_radix(text.trim_start_matches("0x"), 16).map_err(|e| format!("{path} holds `{text}`: {e}"))
+    };
+    Ok((read("vendor")?, read("device")?, read("revision")?))
+}
+
+/// The identity of an engine of `config` on the card at `pci` with this Level Zero driver (spec 12.1). The open and
+/// the description both build it here, so the two give the same identity.
+fn identity_of(
+    model: Model,
+    checkpoint_digest: String,
+    facts: spec::TextFacts,
+    config: &Config,
+    pci: &str,
+    driver: u32,
+) -> Result<Identity, String> {
+    let (vendor, device, revision) = pci_ids(pci)?;
+    let mut numbers = BTreeMap::new();
+    numbers.insert(
+        "kernel.megakernel_inkling2_bmg.bin".to_owned(),
+        format!("blake3:{}", blake3::hash(INKLING2_KERNEL).to_hex()),
+    );
+    numbers.insert("ocloc".to_owned(), OCLOC_VERSION.to_owned());
+    numbers.insert("igc".to_owned(), IGC_REVISION.to_owned());
+    numbers.insert("driver".to_owned(), driver.to_string());
+    numbers.insert("max_block".to_owned(), config.max_block.to_string());
+    numbers.insert("ring_rows".to_owned(), RING_ROWS.to_string());
+    numbers.insert("cycles".to_owned(), spec::DEFAULT_CYCLES.to_string());
+    numbers.insert("canary".to_owned(), "not run".to_owned());
+    Ok(Identity {
+        model: model.name().to_owned(),
+        checkpoint_digest,
+        family: FAMILY.to_owned(),
+        tokenizer_hash: facts.tokenizer_hash,
+        template: facts.template,
+        numbers,
+        plan_table: format!(
+            "ocloc {OCLOC_VERSION} igc {IGC_REVISION} bmg-g31; level-zero driver {driver}; devices \
+             {vendor:04x}:{device:04x}:{revision:02x}"
+        ),
+        // D11 rule 3: the block is a bit setting that defines the reference bits.
+        bit_settings: vec![BitSetting {
+            name: "feed.block".to_owned(),
+            value: config.max_block.to_string(),
+            class: BitClass::ReferenceDefining,
+        }],
+        canary_hash: String::new(),
+        build: BTreeMap::new(),
+    })
+}
+
+/// The identity and the limits that an open of `config` on the card at `pci` gives, with no load (spec 11.1). It
+/// reads the model folder, every tensor for the digest, sysfs and the version of the Level Zero driver. It opens no
+/// card.
+pub fn describe(config: &Config, pci: &str) -> Result<(Identity, Limits), String> {
+    config.check()?;
+    let dir = &config.model_dir;
+    let model = Model::read(dir)?;
+    let config_text = String::from_utf8(read_file(dir, "config.json")?)
+        .map_err(|e| format!("config.json of {} is not UTF-8: {e}", dir.display()))?;
+    let facts = spec::text_facts(dir)?;
+    let map = MappedSafeTensors::open(&dir.join(spec::WEIGHTS_FILE))?;
+    let view = map.view()?;
+    let limits = spec::limits(config, spec::weights_bytes_of(&view.tensors)?);
+    let digest = checkpoint_digest(&config_text, &view)?;
+    let driver = nagaya_mk_bmg::level_zero::first_driver_version();
+    Ok((identity_of(model, digest, facts, config, pci, driver)?, limits))
 }
 
 /// The bytes of a file of the model folder.
@@ -173,10 +240,7 @@ impl Inkling2Engine {
             .map_err(|e| format!("config.json of {} is not UTF-8: {e}", dir.display()))?;
         // The family library gives the tokenizer hash and the template, so the registry's check at the start compares
         // like with like (spec 11.3).
-        let spec::TextFacts {
-            tokenizer_hash,
-            template,
-        } = spec::text_facts(&dir)?;
+        let facts = spec::text_facts(&dir)?;
         let map = MappedSafeTensors::open(&dir.join(spec::WEIGHTS_FILE))?;
         let view = map.view()?;
         let planned_weights = spec::weights_bytes_of(&view.tensors)?;
@@ -230,40 +294,7 @@ impl Inkling2Engine {
         }
         let ring = Ring::new(card, spec::scratch_floats(config.max_seq()));
 
-        let revision = pci_revision(pci)?;
-        let mut numbers = BTreeMap::new();
-        numbers.insert(
-            "kernel.megakernel_inkling2_bmg.bin".to_owned(),
-            format!("blake3:{}", blake3::hash(INKLING2_KERNEL).to_hex()),
-        );
-        numbers.insert("ocloc".to_owned(), OCLOC_VERSION.to_owned());
-        numbers.insert("igc".to_owned(), IGC_REVISION.to_owned());
-        numbers.insert("driver".to_owned(), driver.to_string());
-        numbers.insert("max_block".to_owned(), config.max_block.to_string());
-        numbers.insert("ring_rows".to_owned(), RING_ROWS.to_string());
-        numbers.insert("cycles".to_owned(), spec::DEFAULT_CYCLES.to_string());
-        numbers.insert("canary".to_owned(), "not run".to_owned());
-        let identity = Identity {
-            model: model.name().to_owned(),
-            checkpoint_digest,
-            family: FAMILY.to_owned(),
-            tokenizer_hash,
-            template,
-            numbers,
-            plan_table: format!(
-                "ocloc {OCLOC_VERSION} igc {IGC_REVISION} bmg-g31; level-zero driver {driver}; devices \
-                 {:04x}:{:04x}:{revision:02x}",
-                card.vendor_id, card.device_id
-            ),
-            // D11 rule 3: the block is a bit setting that defines the reference bits.
-            bit_settings: vec![BitSetting {
-                name: "feed.block".to_owned(),
-                value: config.max_block.to_string(),
-                class: BitClass::ReferenceDefining,
-            }],
-            canary_hash: String::new(),
-            build: BTreeMap::new(),
-        };
+        let identity = identity_of(model, checkpoint_digest, facts, &config, pci, driver)?;
         let held = Held::new(&config.seqs(), config.extra_runs);
         Ok(Self {
             model,

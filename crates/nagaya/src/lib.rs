@@ -15,6 +15,7 @@ pub mod gemma4;
 pub mod gossip;
 pub mod http;
 pub mod image;
+pub mod inkling2;
 pub mod inventory;
 pub mod jobs;
 pub mod lfm3;

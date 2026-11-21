@@ -38,6 +38,9 @@ Environment=SDXL_MODEL_DIR=%h/.cache/huggingface/hub/models--stabilityai--stable
 # The EmbeddingGemma 2 checkpoint in the Hugging Face cache. The engine and its family read it, because
 # the profile names no `model_dir`.
 Environment=EMBEDDINGGEMMA2_MODEL_DIR=%h/.cache/huggingface/hub/models--google--embeddinggemma-2/snapshots/f9972ac22e696a105c482202646979e33e4b5a1e
+# A folder of Inkling 2 in the Hugging Face cache. The family of an Inkling 2 engine on demand reads it, because such
+# an engine has no family table. Both models share the files of the family.
+Environment=INKLING2_MODEL_DIR=%h/.cache/huggingface/hub/models--thinkingmachines--Inkling-2-Mini/snapshots/ed40e7da625f594fc9c4990f5f66be24873c22d7
 # No Level Zero variable. ZE_AFFINITY_MASK would hide a card, and the engine finds its two cards by PCI address
 # (engine-abi "The factory gets its devices"). The process sets its own CPU sets for each card (spec 3.2b), so the
 # unit sets no CPUAffinity.
