@@ -108,3 +108,4 @@
         }
 #include "inkling2_attn_ops.cl"
 #include "inkling2_vision_ops.cl"
+#include "inkling2_lab_ops.cl"

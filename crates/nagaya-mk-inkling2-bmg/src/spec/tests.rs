@@ -211,7 +211,7 @@ fn a_config_outside_the_sizes_is_refused() {
 }
 
 #[test]
-fn the_limits_hold_the_terms_and_declare_no_loop_no_control_and_no_tap() {
+fn the_limits_hold_the_terms_the_taps_and_the_control_table_and_declare_no_loop() {
     let c = config(vec![32_768, 32_768, 262_144]);
     let l = limits(&c, 18_880_455_680);
     l.check().unwrap();
@@ -222,10 +222,18 @@ fn the_limits_hold_the_terms_and_declare_no_loop_no_control_and_no_tap() {
             Capability::Slots,
             Capability::Coverage,
             Capability::Close,
-            Capability::Cycles
+            Capability::Cycles,
+            Capability::Control
         ]
     );
-    assert_eq!((l.layer_loops.clone(), l.control), (None, None));
+    // A vector holds 24 layers of 2,304 values (engine-abi "The lab of Inkling 2").
+    let table = ControlLimit {
+        tables: 8,
+        layers: 24,
+        width: 2304,
+    };
+    assert_eq!((l.layer_loops.clone(), l.control), (None, Some(table)));
+    assert_eq!(table.table_bytes(), 1_769_472);
     // The reserve of 24 runs holds cycles 2 and 3. Layers 6 to 17 make a cycle (engine-abi "Inkling 2").
     assert_eq!(
         l.cycles,
@@ -237,7 +245,9 @@ fn the_limits_hold_the_terms_and_declare_no_loop_no_control_and_no_tap() {
             end: 18
         })
     );
-    assert!(l.taps.is_empty());
+    let names: Vec<&str> = l.taps.iter().map(|t| t.name.as_str()).collect();
+    assert_eq!(names, ["residual", "fold", "blocks", "messages", "gates", "routes"]);
+    assert!(l.taps.iter().all(|t| t.conditions.is_empty()));
     // Both models hold the tower, so both take the rows of images (engine-abi "The choices of the pass").
     assert_eq!(l.inputs, Inputs::TokensAndRows);
     assert_eq!((l.max_segments, l.max_pass_inputs, l.max_logit_rows), (1, 512, 16));
@@ -261,13 +271,14 @@ fn the_limits_hold_the_terms_and_declare_no_loop_no_control_and_no_tap() {
         ]
     );
     let term = |l: &Limits, name: &str| l.memory.mandatory.iter().find(|t| t.name == name).unwrap().clone();
-    assert_eq!(l.memory.mandatory.len(), 5);
+    assert_eq!(l.memory.mandatory.len(), 6);
+    assert_eq!(term(&l, "control").bytes, 1_769_472);
     assert_eq!(term(&l, "weights").bytes, 18_880_455_680);
     assert_eq!(term(&l, "vision").bytes, 636_825_472);
     assert_eq!(term(&l, "kv").bytes, 2 * 3_157_950_464 + 18_190_336_000);
     assert_eq!(term(&l, "pinned").bytes, pinned_bytes());
     assert_eq!(term(&l, "pinned").tier, Tier::Host);
-    for name in ["weights", "vision", "kv", "work"] {
+    for name in ["weights", "vision", "kv", "work", "control"] {
         assert_eq!(term(&l, name).tier, Tier::Device(0), "{name}");
     }
     // The work is the buffers of a block, with 16 logit rows of the 200,064 rows of the head, and the ring. Only the
@@ -301,8 +312,11 @@ fn the_limits_hold_the_terms_and_declare_no_loop_no_control_and_no_tap() {
     );
     assert_eq!(
         term(&short, "work").bytes,
-        bufs_bytes(512) + crate::vision::PassBufs::bytes(512) + ring_device_bytes(32_768)
+        bufs_bytes(512) + crate::vision::PassBufs::bytes(512) + ring_device_bytes(32_768) + tap_bytes(24)
     );
+    // The buffers of the taps hold 16 logit rows at the most cycles of the reserve (engine-abi "The lab of Inkling
+    // 2", "The buffers").
+    assert_eq!((tap_bytes(24), tap_bytes(48)), (36_372_480, 68_567_040));
     // A reserve of 48 adds its parts and its bytes.
     let five = limits(
         &Config {
@@ -316,6 +330,33 @@ fn the_limits_hold_the_terms_and_declare_no_loop_no_control_and_no_tap() {
     assert_eq!(cycles_limit(36).max, 4);
     assert_eq!(five.parts.len(), 3 * 72);
     assert_eq!(five.slots[0].bytes, 4_736_925_696);
+    assert_eq!(
+        term(&five, "work").bytes - term(&short, "work").bytes,
+        tap_bytes(48) - tap_bytes(24)
+    );
+}
+
+/// A pass names each tap of the limits, in any order, and the outputs follow the order of `TAPS`. Another name is
+/// refused, and the message names the taps.
+#[test]
+fn a_pass_names_the_taps_of_the_limits() {
+    let tap = |name: &str| nagaya_abi::Tap { name: name.to_owned() };
+    assert_eq!(Taps::of(&[]).unwrap(), Taps::default());
+    assert!(!Taps::default().any());
+    let all: Vec<nagaya_abi::Tap> = TAPS.iter().rev().map(|n| tap(n)).collect();
+    let named = Taps::of(&all).unwrap();
+    assert!(named.residual && named.fold && named.blocks && named.messages && named.gates && named.routes);
+    let one = Taps::of(&[tap("messages")]).unwrap();
+    assert_eq!(
+        one,
+        Taps {
+            messages: true,
+            ..Taps::default()
+        }
+    );
+    assert!(one.any());
+    let e = Taps::of(&[tap("lens")]).unwrap_err();
+    assert!(e.contains("no tap `lens`") && e.contains("residual, fold"), "{e}");
 }
 
 /// The plan counts a slab of each expert matrix with the bytes that `repack::expert_slab` gives.
@@ -398,6 +439,20 @@ fn a_pass_runs_on_from_the_token_count_and_never_goes_back() {
         strength: 1.0,
         layers: None,
     }];
+    let mut outside = segment(0, 3, &[1], &[]);
+    outside.control = vec![ControlItem {
+        index: 8,
+        op: ControlOp::Add,
+        strength: 1.0,
+        layers: None,
+    }];
+    let mut endless = segment(0, 3, &[1], &[]);
+    endless.control = vec![ControlItem {
+        index: 0,
+        op: ControlOp::Clamp,
+        strength: f32::INFINITY,
+        layers: None,
+    }];
     let mut looped = segment(0, 3, &[1], &[]);
     looped.layer_loop = Some(LayerLoop {
         start: 6,
@@ -435,7 +490,9 @@ fn a_pass_runs_on_from_the_token_count_and_never_goes_back() {
             "17 logit rows",
         ),
         (vec![segment(0, 3, &[1; 16], &(3..19).collect::<Vec<_>>())], ""),
-        (vec![control], "control"),
+        (vec![control], ""),
+        (vec![outside], "names table entry 8; the table has 8 entries"),
+        (vec![endless], "strength inf"),
         (vec![looped], "layer_loops"),
         (vec![cycled], ""),
         (vec![many], "runs 4 cycles; the engine runs 1 to 3"),
@@ -726,4 +783,20 @@ fn a_pass_takes_the_rows_and_the_records_of_its_images() {
     bad.meta[0] = 2;
     let error = held.check_pass(&[bad], 512).unwrap_err();
     assert!(error.contains("the kind 2"), "{error}");
+}
+
+/// A vector fits one entry of the table: 24 rows of 2,304 finite `f32` values.
+#[test]
+fn the_table_takes_a_vector_of_its_size_into_an_entry_that_it_has() {
+    let limit = control_limit();
+    let good = vec![0u8; 24 * 2304 * 4];
+    assert_eq!(check_control_write(&limit, 7, &good), Ok(()));
+    let e = check_control_write(&limit, 8, &good).unwrap_err();
+    assert!(e.contains("8 entries, not entry 8"), "{e}");
+    let e = check_control_write(&limit, 0, &good[4..]).unwrap_err();
+    assert!(e.contains("221184 bytes, not 221180"), "{e}");
+    let mut nan = good.clone();
+    nan[40..44].copy_from_slice(&f32::NAN.to_le_bytes());
+    let e = check_control_write(&limit, 0, &nan).unwrap_err();
+    assert!(e.contains("value 10 of the vector is not finite"), "{e}");
 }

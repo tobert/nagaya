@@ -143,6 +143,8 @@
 #define OP_INKLING2_VISION_EMBED 180
 #define OP_INKLING2_VISION_ROPE  181
 #define OP_INKLING2_VISION_ATTN  182
+// The lab ops of Inkling 2 (kernels/inkling2_lab_ops.cl): opcodes 190 to 199.
+#define OP_INKLING2_CONTROL      190
 #endif
 #define NUM_EXPERTS         128
 #define TOP_K               8

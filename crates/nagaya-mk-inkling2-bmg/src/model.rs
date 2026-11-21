@@ -9,13 +9,14 @@
 //! The ring is a list of runs, so that a pass whose tasks do not fit one launch runs as several, cut between two runs
 //! (engine-abi "A pass in several launches"). The state of the block stays in the buffers between two launches.
 
-use nagaya_mk_bmg::protocol::{FLAG_SOFTCAP_30, MAX_TASKS_PER_CARD, MkTaskDescriptor};
+use nagaya_mk_bmg::protocol::{ControlOp, FLAG_SOFTCAP_30, MAX_TASKS_PER_CARD, MkTaskDescriptor};
 use nagaya_mk_bmg::tasks::{self, ConvTaps, HeadClip, Inkling2Attention};
 
 use crate::host::ops::{D_REL, EPS, EXPERTS, HEAD_DIM, HEADS, HIDDEN, INTERMEDIATE, KV_HEADS, QK_CLIP, REL_CLIP};
-use crate::host::weights::{BLOCK, CYCLE_START, LAYERS, is_full};
+use crate::host::weights::{BLOCK, CYCLE_END, CYCLE_START, LAYERS, is_full};
 use crate::spec::{
-    self, CONV_ROW, HEAD_ROWS, KV_ROW, MAX_LOGIT_ROWS, RING_ROWS, Run, SINK_ROWS, plane_rows, state_layer,
+    self, CONV_ROW, HEAD_ROWS, KV_ROW, MAX_LOGIT_ROWS, RING_ROWS, ROUTE_WORDS, Run, SINK_ROWS, Taps, plane_rows,
+    state_layer,
 };
 use crate::weights::{Layer, Weights};
 
@@ -153,6 +154,101 @@ impl Bufs {
     }
 }
 
+/// The buffers of the taps (engine-abi "The lab of Inkling 2"), for 16 logit rows at the most cycles of a reserve of
+/// `extra` runs. Logit row `i` starts at row `i` of each buffer's rows of a logit row.
+#[derive(Clone, Copy, Debug)]
+pub struct TapBufs {
+    /// The runs and the cycles that the buffers hold for each logit row.
+    pub runs: usize,
+    pub cycles: usize,
+    /// `[16][runs][2304]`: the row after each run.
+    pub residual: u64,
+    /// `[16][cycles + 3][2304]`: the block outputs.
+    pub blocks: u64,
+    /// `[16][12 (cycles - 1)][4][2304]`: the messages, and the outputs of the gates.
+    pub messages: u64,
+    pub gates: u64,
+    /// `[16][runs][32]` words: the decision of each run.
+    pub routes: u64,
+}
+
+impl TapBufs {
+    /// The buffers, each from `z`, in the order of `spec::tap_buffers`.
+    pub fn new(z: &mut dyn FnMut(usize) -> u64, extra: usize) -> Self {
+        let mut list = spec::tap_buffers(extra).into_iter();
+        let mut next = |name: &str| {
+            let (have, floats) = list.next().expect("spec::tap_buffers names each buffer");
+            assert_eq!(
+                have, name,
+                "spec::tap_buffers names the buffers in the order of TapBufs"
+            );
+            z(floats * 4)
+        };
+        Self {
+            runs: LAYERS + extra,
+            cycles: spec::most_cycles(extra),
+            residual: next(spec::RESIDUAL_TAP),
+            blocks: next(spec::BLOCKS_TAP),
+            messages: next(spec::MESSAGES_TAP),
+            gates: next(spec::GATES_TAP),
+            routes: next(spec::ROUTES_TAP),
+        }
+    }
+
+    /// The rows of the cycles after the first that the buffers of messages and gates hold for each logit row.
+    pub fn message_rows(&self) -> usize {
+        (self.cycles - 1) * spec::CYCLE_LAYERS
+    }
+
+    /// The address of row `r` of the run rows of logit row `i`.
+    pub fn residual_row(&self, i: usize, r: usize) -> u64 {
+        self.residual + ((i * self.runs + r) * HIDDEN * 4) as u64
+    }
+
+    /// The address of block output `b` of logit row `i`.
+    pub fn block_row(&self, i: usize, b: usize) -> u64 {
+        self.blocks + ((i * (self.cycles + 3) + b) * HIDDEN * 4) as u64
+    }
+
+    /// The address of message `k` of cycle row `g` of logit row `i`, in `at`: the messages or the gates.
+    pub fn message_row(&self, at: u64, i: usize, g: usize, k: usize) -> u64 {
+        at + ((((i * self.message_rows()) + g) * 4 + k) * HIDDEN * 4) as u64
+    }
+
+    /// The address of the decision of run `r` of logit row `i`.
+    pub fn route_row(&self, i: usize, r: usize) -> u64 {
+        self.routes + ((i * self.runs + r) * ROUTE_WORDS * 4) as u64
+    }
+}
+
+/// One control item of a pass (engine-abi "Control vectors"): the address of layer 0 of its vector in the table, the
+/// op and the strength. Layer `l` of the vector follows at `l * 2304` values.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Control {
+    pub vector: u64,
+    pub op: ControlOp,
+    pub strength: f32,
+    /// The layers that the item acts on, each with its own strength. `None`: each layer at `strength` (spec 11.12).
+    pub layers: Option<Vec<(u32, f32)>>,
+}
+
+impl Control {
+    /// The strength at layer `l`, or `None` when the item leaves `l` untouched.
+    pub fn strength_at(&self, l: usize) -> Option<f32> {
+        match &self.layers {
+            None => Some(self.strength),
+            Some(layers) => layers.iter().find(|(layer, _)| *layer as usize == l).map(|(_, s)| *s),
+        }
+    }
+}
+
+/// The taps of a ring and their buffers.
+#[derive(Clone, Copy, Debug)]
+pub struct TapRing<'a> {
+    pub named: Taps,
+    pub bufs: &'a TapBufs,
+}
+
 /// The device memory of one slot: the planes and the conv part of each state. A key plane comes first, and its value
 /// plane follows it.
 #[derive(Clone, Debug)]
@@ -234,6 +330,10 @@ pub struct TaskRing<'a> {
     /// The tasks after the norm of the embedding and before the first run: the copies of the image rows over the rows
     /// of their placeholders (engine-abi "The choices of the pass").
     pub after_embed: &'a [MkTaskDescriptor],
+    /// The control items, in order. Each one changes every row of the block after each run of its layers.
+    pub control: &'a [Control],
+    /// The taps of the pass, which read the logit rows. `None` with no tap.
+    pub taps: Option<TapRing<'a>>,
 }
 
 /// The tasks of a pass: the tasks before the first run, the tasks of each run, and the tasks after the last run.
@@ -289,11 +389,26 @@ pub fn pass(w: &Weights, bufs: &Bufs, ring: TaskRing<'_>) -> Pass {
         upto,
         logit_rows,
         after_embed,
+        control,
+        taps,
     } = ring;
     assert!(
         upto <= runs.len() && (upto == runs.len() || logit_rows.is_none()),
         "a ring gives logits only after every run"
     );
+    assert!(
+        taps.is_none() || logit_rows.is_some(),
+        "the taps read the logit rows, so a ring with a tap gives logits"
+    );
+    let tapped: Option<(TapRing<'_>, &[usize])> = taps.map(|t| (t, logit_rows.expect("checked above")));
+    if let Some((t, _)) = tapped {
+        assert!(
+            runs.len() <= t.bufs.runs,
+            "the taps hold {} runs, and the pass has {}",
+            t.bufs.runs,
+            runs.len()
+        );
+    }
     assert!(
         n >= 1 && n <= bufs.max_block && pos0 + n <= slot.seq,
         "positions {pos0} to {} do not fit a block of {} in a slot of {}; the engine checks the pass first",
@@ -312,8 +427,13 @@ pub fn pass(w: &Weights, bufs: &Bufs, ring: TaskRing<'_>) -> Pass {
         head: embed,
         ..Pass::default()
     };
-    for run in runs.iter().take(upto) {
-        pass.runs.push(run_tasks(w, bufs, slot, pos0, n, *run, cycles));
+    for (r, run) in runs.iter().take(upto).enumerate() {
+        let lab = Lab {
+            control,
+            taps: tapped,
+            index: r,
+        };
+        pass.runs.push(run_tasks(w, bufs, slot, pos0, n, *run, cycles, lab));
     }
     if let Some(rows) = logit_rows {
         assert!(
@@ -349,11 +469,45 @@ pub fn pass(w: &Weights, bufs: &Bufs, ring: TaskRing<'_>) -> Pass {
             head.flags |= FLAG_SOFTCAP_30;
             t.push(head);
         }
+        // The block outputs that the output residual read: the normed embedding, the row after layer 5, and the row
+        // after layer 17 of the last cycle. The run of layer 17 of each cycle copied the row after its layer 11.
+        if let Some((tap, rows)) = tapped
+            && tap.named.blocks
+        {
+            for (i, row) in rows.iter().enumerate() {
+                let from = |p: usize| bufs.plane(bufs.blocks, p, HIDDEN) + (row * HIDDEN * 4) as u64;
+                for (p, b) in [(0, 0), (1, 1), (3, cycles + 2)] {
+                    t.push(tasks::copy(from(p), tap.bufs.block_row(i, b), h32));
+                }
+            }
+        }
     }
     pass
 }
 
+/// What a run adds for the lab: the control items and the taps, and the index of the run in the pass.
+#[derive(Clone, Copy, Debug)]
+struct Lab<'a> {
+    control: &'a [Control],
+    taps: Option<(TapRing<'a>, &'a [usize])>,
+    index: usize,
+}
+
+/// The copies of row `row` of each buffer `from(i)` of the tap rows, one for each logit row: `to(i)` gets `words`.
+fn tap_copies(
+    t: &mut Vec<MkTaskDescriptor>,
+    rows: &[usize],
+    from: impl Fn(usize) -> u64,
+    width: usize,
+    to: impl Fn(usize) -> u64,
+) {
+    for (i, row) in rows.iter().enumerate() {
+        t.push(tasks::copy(from(0) + (row * width * 4) as u64, to(i), width as u32));
+    }
+}
+
 /// The tasks of one run of one layer (engine-abi "The ring of one run").
+#[allow(clippy::too_many_arguments)]
 fn run_tasks(
     w: &Weights,
     bufs: &Bufs,
@@ -362,6 +516,7 @@ fn run_tasks(
     n: usize,
     run: Run,
     cycles: usize,
+    lab: Lab<'_>,
 ) -> Vec<MkTaskDescriptor> {
     let Run {
         layer: l,
@@ -426,6 +581,20 @@ fn run_tasks(
             h32,
             mb,
         ));
+        let g = (cycle.expect("a run with messages is in a cycle") - 2) * spec::CYCLE_LAYERS + li;
+        if let Some((tap, rows)) = lab.taps
+            && tap.named.messages
+        {
+            for k in 0..4 {
+                tap_copies(
+                    &mut t,
+                    rows,
+                    |_| hidden_plane(bufs.m, k),
+                    HIDDEN,
+                    |i| tap.bufs.message_row(tap.bufs.messages, i, g, k),
+                );
+            }
+        }
         let a = [0, 1, 2].map(|p| hidden_plane(bufs.a, p));
         let m = |i: usize| hidden_plane(bufs.m, i);
         if full {
@@ -437,6 +606,20 @@ fn run_tasks(
             t.push(tasks::message_gate(a[0], m(1), lw.gates[1], a[1], n32, h32));
             t.push(tasks::message_gate(a[0], m(2), lw.gates[2], a[2], n32, h32));
             t.push(tasks::message_gate(a[0], m(0), lw.gates[0], a[0], n32, h32));
+        }
+        // The outputs of the gates of the query, the key and the value.
+        if let Some((tap, rows)) = lab.taps
+            && tap.named.gates
+        {
+            for (k, plane) in a.iter().enumerate() {
+                tap_copies(
+                    &mut t,
+                    rows,
+                    |_| *plane,
+                    HIDDEN,
+                    |i| tap.bufs.message_row(tap.bufs.gates, i, g, k),
+                );
+            }
         }
         inputs = a;
     }
@@ -631,6 +814,18 @@ fn run_tasks(
             n32,
             h32,
         ));
+        if let Some((tap, rows)) = lab.taps
+            && tap.named.gates
+        {
+            let g = (cycle.expect("a run with messages is in a cycle") - 2) * spec::CYCLE_LAYERS + l - CYCLE_START;
+            tap_copies(
+                &mut t,
+                rows,
+                |_| bufs.e,
+                HIDDEN,
+                |i| tap.bufs.message_row(tap.bufs.gates, i, g, 3),
+            );
+        }
     }
     t.push(tasks::rmsnorm(bufs.e, lw.mlp_norm, bufs.e_norm, n32, h32, EPS, false));
     t.push(tasks::matmul(
@@ -649,6 +844,17 @@ fn run_tasks(
         n32,
         l as u32,
     ));
+    if let Some((tap, rows)) = lab.taps
+        && tap.named.routes
+    {
+        tap_copies(
+            &mut t,
+            rows,
+            |_| bufs.decisions,
+            ROUTE_WORDS,
+            |i| tap.bufs.route_row(i, lab.index),
+        );
+    }
     t.push(tasks::moe_plan(bufs.decisions, bufs.plan, n32));
     t.push(tasks::moe_gather(bufs.e_norm, bufs.gathered, bufs.plan, n32, h32));
     let i32_ = INTERMEDIATE as u32;
@@ -677,6 +883,49 @@ fn run_tasks(
         pos0 as u32,
         true,
     ));
+    // The control items change the row before a later run or a copy reads it. An add or an ablate of strength 0
+    // changes no bit, so it gets no task (engine-abi "Control vectors").
+    let layer_vector = (l * HIDDEN * 4) as u64;
+    for item in lab.control {
+        let Some(strength) = item.strength_at(l) else {
+            continue;
+        };
+        if strength == 0.0 && item.op != ControlOp::Clamp {
+            continue;
+        }
+        t.push(tasks::inkling2_control(
+            bufs.x,
+            item.vector + layer_vector,
+            n32,
+            h32,
+            item.op,
+            strength,
+        ));
+    }
+    if let Some((tap, rows)) = lab.taps {
+        if tap.named.residual {
+            tap_copies(
+                &mut t,
+                rows,
+                |_| bufs.x,
+                HIDDEN,
+                |i| tap.bufs.residual_row(i, lab.index),
+            );
+        }
+        // The run of layer 17 ends its cycle: block output 2 holds the row after layer 11 of the cycle.
+        if tap.named.blocks
+            && l == CYCLE_END - 1
+            && let Some(c) = cycle
+        {
+            tap_copies(
+                &mut t,
+                rows,
+                |_| hidden_plane(bufs.blocks, 2),
+                HIDDEN,
+                |i| tap.bufs.block_row(i, 1 + c),
+            );
+        }
+    }
     // Each cycle starts again from the row after layer 5.
     if l == CYCLE_START - 1 && cycles > 1 {
         t.push(tasks::copy(bufs.x, bufs.start, words(n, HIDDEN)));

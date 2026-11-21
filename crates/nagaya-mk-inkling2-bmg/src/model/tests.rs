@@ -1,5 +1,8 @@
 use super::*;
-use nagaya_mk_bmg::protocol::{OP_ATTN_RESIDUAL, OP_COPY, OP_EMBED, OP_INKLING2_ATTN, OP_MATMUL, OP_MESSAGE_GATE};
+use nagaya_mk_bmg::protocol::{
+    OP_ATTN_RESIDUAL, OP_COPY, OP_EMBED, OP_INKLING2_ATTN, OP_INKLING2_CONTROL, OP_MATMUL, OP_MESSAGE_GATE,
+    OP_RESIDUAL_CONV, OP_SIGMOID_ROUTER,
+};
 
 use crate::host::weights::CYCLE_END;
 use crate::spec::{DEFAULT_EXTRA_RUNS, MAX_BLOCK, runs};
@@ -67,6 +70,7 @@ struct Fixture {
     bufs: Bufs,
     slot: SlotMemory,
     runs: Vec<Run>,
+    taps: TapBufs,
 }
 
 fn fixture(seq: usize) -> Fixture {
@@ -76,11 +80,17 @@ fn fixture(seq: usize) -> Fixture {
         bufs: Bufs::new(&mut z, MAX_BLOCK),
         slot: SlotMemory::new(&mut z, seq, DEFAULT_EXTRA_RUNS),
         runs: runs(3),
+        taps: TapBufs::new(&mut z, DEFAULT_EXTRA_RUNS),
     }
 }
 
 impl Fixture {
     fn pass(&self, pos0: usize, n: usize, logit_rows: Option<&[usize]>) -> Pass {
+        self.lab(pos0, n, logit_rows, &[], Taps::default())
+    }
+
+    /// A pass with control items and taps.
+    fn lab(&self, pos0: usize, n: usize, logit_rows: Option<&[usize]>, control: &[Control], named: Taps) -> Pass {
         pass(
             &self.w,
             &self.bufs,
@@ -92,10 +102,31 @@ impl Fixture {
                 upto: self.runs.len(),
                 logit_rows,
                 after_embed: &[],
+                control,
+                taps: named.any().then_some(TapRing {
+                    named,
+                    bufs: &self.taps,
+                }),
             },
         )
     }
+
+    /// True when a task writes into the buffers of the taps.
+    fn writes_taps(&self, task: &MkTaskDescriptor) -> bool {
+        let start = self.taps.residual;
+        let end = self.taps.routes + (16 * self.taps.runs * ROUTE_WORDS * 4) as u64;
+        (start..end).contains(&task.c)
+    }
 }
+
+const ALL: Taps = Taps {
+    residual: true,
+    fold: true,
+    blocks: true,
+    messages: true,
+    gates: true,
+    routes: true,
+};
 
 fn plane(bufs: &Bufs, at: u64, p: usize) -> u64 {
     bufs.plane(at, p, HIDDEN)
@@ -349,6 +380,8 @@ fn the_tasks_after_the_embedding_follow_its_norm_before_the_first_run() {
             upto: f.runs.len(),
             logit_rows: Some(&[4]),
             after_embed: &places,
+            control: &[],
+            taps: None,
         },
     );
     let head: Vec<(u16, u64, u64)> = p.head.iter().map(|t| (t.opcode, t.a, t.c)).collect();
@@ -362,4 +395,266 @@ fn the_tasks_after_the_embedding_follow_its_norm_before_the_first_run() {
         ]
     );
     assert_eq!(p.len(), f.pass(0, 5, Some(&[4])).len() + 2);
+}
+
+/// The buffers of the taps take the bytes of the plan, in its order.
+#[test]
+fn the_buffers_of_the_taps_take_the_bytes_of_the_plan() {
+    for extra in [24, 36, 48] {
+        let mut total = 0u64;
+        let t = TapBufs::new(
+            &mut |bytes| {
+                total += spec::rounded(bytes) as u64;
+                total
+            },
+            extra,
+        );
+        assert_eq!(total, spec::tap_bytes(extra), "a reserve of {extra}");
+        assert_eq!(
+            (t.runs, t.cycles, t.message_rows()),
+            (24 + extra, 1 + extra / 12, extra)
+        );
+    }
+}
+
+/// A tap only adds copies into its own buffers: with them taken out, a tapped pass is the plain pass, task for task
+/// (engine-abi "The lab of Inkling 2", "Bits").
+#[test]
+fn a_pass_with_every_tap_is_the_plain_pass_and_copies_into_the_taps() {
+    let f = fixture(32_768);
+    let rows = [4usize, 1];
+    let plain = f.pass(0, 5, Some(&rows));
+    let tapped = f.lab(0, 5, Some(&rows), &[], ALL);
+    let all = |p: &Pass| -> Vec<MkTaskDescriptor> {
+        let mut out = p.head.clone();
+        p.runs.iter().for_each(|r| out.extend_from_slice(r));
+        out.extend_from_slice(&p.tail);
+        out
+    };
+    let (plain, tapped) = (all(&plain), all(&tapped));
+    let (copies, rest): (Vec<_>, Vec<_>) = tapped.iter().partition(|t| f.writes_taps(t));
+    assert!(plain.iter().all(|t| !f.writes_taps(t)), "a plain pass writes no tap");
+    let rest: Vec<MkTaskDescriptor> = rest.into_iter().copied().collect();
+    let debug = |list: &[MkTaskDescriptor]| list.iter().map(|t| format!("{t:?}")).collect::<Vec<_>>();
+    assert_eq!(debug(&rest), debug(&plain), "the tapped pass with its copies taken out");
+    assert!(copies.iter().all(|t| t.opcode == OP_COPY));
+    // For each of 2 logit rows: 48 rows of the residual and 48 routes, 6 block outputs, and 24 layers of 4 messages
+    // and 4 gates.
+    assert_eq!(copies.len(), 2 * (48 + 48 + 6 + 24 * 4 + 24 * 4));
+}
+
+/// The copies of each tap read the logit row of the buffer that holds what the tap gives, at the place of the run.
+#[test]
+fn each_tap_copies_its_row_after_the_task_that_writes_it() {
+    let f = fixture(32_768);
+    let rows = [4usize, 1];
+    let one = |named: Taps| f.lab(0, 5, Some(&rows), &[], named);
+    let row = |at: u64, r: usize| at + (r * HIDDEN * 4) as u64;
+    let residual = one(Taps {
+        residual: true,
+        ..Taps::default()
+    });
+    for (r, run) in residual.runs.iter().enumerate() {
+        let n = run.len();
+        // The row after the run: after its last task that writes `x`, which is the convolution after the experts,
+        // or the copy of a cycle start of layer 5.
+        let last_x = run
+            .iter()
+            .rposition(|t| t.c == f.bufs.x && t.opcode == OP_RESIDUAL_CONV)
+            .unwrap();
+        let copies: Vec<(u64, u64, u32)> = run[last_x + 1..]
+            .iter()
+            .filter(|t| f.writes_taps(t))
+            .map(|t| (t.a, t.c, t.n))
+            .collect();
+        assert_eq!(
+            copies,
+            [
+                (row(f.bufs.x, 4), f.taps.residual_row(0, r), HIDDEN as u32),
+                (row(f.bufs.x, 1), f.taps.residual_row(1, r), HIDDEN as u32)
+            ],
+            "run {r} of {n} tasks"
+        );
+    }
+    let routes = one(Taps {
+        routes: true,
+        ..Taps::default()
+    });
+    for (r, run) in routes.runs.iter().enumerate() {
+        let at = run.iter().position(|t| t.opcode == OP_SIGMOID_ROUTER).unwrap();
+        let words = (ROUTE_WORDS * 4) as u64;
+        assert_eq!(
+            (run[at + 1].a, run[at + 1].c, run[at + 1].n),
+            (f.bufs.decisions + 4 * words, f.taps.route_row(0, r), ROUTE_WORDS as u32),
+            "run {r}"
+        );
+    }
+    let messages = one(Taps {
+        messages: true,
+        ..Taps::default()
+    });
+    // Run 18 is layer 6 of cycle 2, the first run with messages; run 47 is layer 23 and has none.
+    for (r, g) in [(18usize, 0usize), (29, 11), (30, 12), (41, 23)] {
+        let run = &messages.runs[r];
+        let at = run
+            .iter()
+            .position(|t| t.opcode == OP_ATTN_RESIDUAL && t.a == f.bufs.previous)
+            .unwrap();
+        let copies: Vec<(u64, u64)> = run[at + 1..at + 9].iter().map(|t| (t.a, t.c)).collect();
+        let want: Vec<(u64, u64)> = (0..4)
+            .flat_map(|k| {
+                let src = plane(&f.bufs, f.bufs.m, k);
+                [
+                    (row(src, 4), f.taps.message_row(f.taps.messages, 0, g, k)),
+                    (row(src, 1), f.taps.message_row(f.taps.messages, 1, g, k)),
+                ]
+            })
+            .collect();
+        assert_eq!(copies, want, "run {r}");
+    }
+    assert!(
+        messages.runs[..18]
+            .iter()
+            .chain(&messages.runs[42..])
+            .flatten()
+            .all(|t| !f.writes_taps(t))
+    );
+    let gates = one(Taps {
+        gates: true,
+        ..Taps::default()
+    });
+    for (r, g) in [(18usize, 0usize), (23, 5), (41, 23)] {
+        let run = &gates.runs[r];
+        let taps: Vec<(u64, u64)> = run.iter().filter(|t| f.writes_taps(t)).map(|t| (t.a, t.c)).collect();
+        let mut want = Vec::new();
+        for k in 0..3 {
+            let src = plane(&f.bufs, f.bufs.a, k);
+            want.push((row(src, 4), f.taps.message_row(f.taps.gates, 0, g, k)));
+            want.push((row(src, 1), f.taps.message_row(f.taps.gates, 1, g, k)));
+        }
+        want.push((row(f.bufs.e, 4), f.taps.message_row(f.taps.gates, 0, g, 3)));
+        want.push((row(f.bufs.e, 1), f.taps.message_row(f.taps.gates, 1, g, 3)));
+        assert_eq!(taps, want, "run {r}");
+        // The gates of the query, the key and the value come after the last message gate before the norms, and the
+        // gate of the expert input after its own message gate.
+        let last_gate = run
+            .iter()
+            .position(|t| t.opcode == OP_MESSAGE_GATE && t.c == f.bufs.e)
+            .unwrap();
+        assert_eq!(run[last_gate + 1].c, f.taps.message_row(f.taps.gates, 0, g, 3));
+    }
+    let blocks = one(Taps {
+        blocks: true,
+        ..Taps::default()
+    });
+    // Runs 17, 29 and 41 end cycles 1, 2 and 3, and the tail copies the other three block outputs.
+    for (r, b) in [(17usize, 2usize), (29, 3), (41, 4)] {
+        let taps: Vec<(u64, u64)> = blocks.runs[r]
+            .iter()
+            .filter(|t| f.writes_taps(t))
+            .map(|t| (t.a, t.c))
+            .collect();
+        let src = plane(&f.bufs, f.bufs.blocks, 2);
+        assert_eq!(
+            taps,
+            [
+                (row(src, 4), f.taps.block_row(0, b)),
+                (row(src, 1), f.taps.block_row(1, b))
+            ],
+            "run {r}"
+        );
+    }
+    let tail: Vec<(u64, u64)> = blocks
+        .tail
+        .iter()
+        .filter(|t| f.writes_taps(t))
+        .map(|t| (t.a, t.c))
+        .collect();
+    let mut want = Vec::new();
+    for (i, r) in rows.iter().enumerate() {
+        for (p, b) in [(0, 0), (1, 1), (3, 5)] {
+            want.push((row(plane(&f.bufs, f.bufs.blocks, p), *r), f.taps.block_row(i, b)));
+        }
+    }
+    assert_eq!(tail, want);
+}
+
+/// Each control item acts after each run of each layer that it holds, before the taps read the row and before a
+/// cycle starts from it. An add of strength 0 gets no task, and a clamp of strength 0 does (engine-abi "Control
+/// vectors").
+#[test]
+fn a_control_item_acts_after_each_run_of_its_layers() {
+    let f = fixture(32_768);
+    let item = |op, strength, layers: Option<Vec<(u32, f32)>>| Control {
+        vector: 7 << 36,
+        op,
+        strength,
+        layers,
+    };
+    let count = |p: &Pass| {
+        p.runs
+            .iter()
+            .flatten()
+            .filter(|t| t.opcode == OP_INKLING2_CONTROL)
+            .count()
+    };
+    let tapped = Taps {
+        residual: true,
+        ..Taps::default()
+    };
+    let add = f.lab(0, 5, Some(&[4]), &[item(ControlOp::Add, 2.0, None)], tapped);
+    assert_eq!(count(&add), 48);
+    for (r, (run, spec)) in add.runs.iter().zip(&f.runs).enumerate() {
+        let at = run.iter().position(|t| t.opcode == OP_INKLING2_CONTROL).unwrap();
+        let t = &run[at];
+        assert_eq!(
+            (t.a, t.b, t.n, t.k, t.p0, f32::from_bits(t.m)),
+            (
+                f.bufs.x,
+                (7 << 36) + (spec.layer * HIDDEN * 4) as u64,
+                5,
+                HIDDEN as u32,
+                ControlOp::Add as u32,
+                2.0
+            ),
+            "run {r}"
+        );
+        // After the convolution of the experts, before the tap and the copy of a cycle start.
+        assert_eq!(run[at - 1].opcode, OP_RESIDUAL_CONV, "run {r}");
+        assert!(f.writes_taps(&run[at + 1]), "run {r}");
+        if r == 5 {
+            assert_eq!((run[at + 2].a, run[at + 2].c), (f.bufs.x, f.bufs.start));
+        }
+    }
+    let plain = f.pass(0, 5, Some(&[4]));
+    for zero in [ControlOp::Add, ControlOp::Ablate] {
+        let runs = |p: &Pass| format!("{:?}", p.runs);
+        assert_eq!(
+            runs(&f.lab(0, 5, Some(&[4]), &[item(zero, 0.0, None)], Taps::default())),
+            runs(&plain)
+        );
+    }
+    assert_eq!(
+        count(&f.lab(0, 5, Some(&[4]), &[item(ControlOp::Clamp, 0.0, None)], Taps::default())),
+        48
+    );
+    // Layer 8 runs in each of the 3 cycles; layer 20 once. Layer 2 at strength 0 adds nothing.
+    let layered = f.lab(
+        0,
+        5,
+        Some(&[4]),
+        &[item(ControlOp::Ablate, 1.0, Some(vec![(2, 0.0), (8, 3.0), (20, -1.0)]))],
+        Taps::default(),
+    );
+    let acts: Vec<(usize, f32)> = layered
+        .runs
+        .iter()
+        .zip(&f.runs)
+        .flat_map(|(run, spec)| {
+            run.iter()
+                .filter(|t| t.opcode == OP_INKLING2_CONTROL)
+                .map(move |t| (spec.layer, f32::from_bits(t.m)))
+        })
+        .collect();
+    assert_eq!(acts, [(8, 3.0), (8, 3.0), (8, 3.0), (20, -1.0)]);
 }

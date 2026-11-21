@@ -1030,6 +1030,15 @@ pub fn control(h: u64, v: u64, n: u32, k: u32, op: ControlOp, strength: f32) -> 
     }
 }
 
+/// One control item of the Inkling 2 binary (`OP_INKLING2_CONTROL`): the task of [`control`] under the opcode of that
+/// binary, which does not hold `OP_CONTROL`.
+pub fn inkling2_control(h: u64, v: u64, n: u32, k: u32, op: ControlOp, strength: f32) -> MkTaskDescriptor {
+    MkTaskDescriptor {
+        opcode: OP_INKLING2_CONTROL,
+        ..control(h, v, n, k, op, strength)
+    }
+}
+
 /// The sigmoid gate of each head: `y[t, h, j] = a[t, h, j] * sigmoid(gates[t * stride + h])` for `n` positions of
 /// `heads` heads of `d` values. `a` may be `y`.
 pub fn head_gate(a: u64, gates: u64, y: u64, n: u32, heads: u32, d: u32, stride: u32) -> MkTaskDescriptor {

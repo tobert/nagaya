@@ -10,8 +10,9 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use nagaya_abi::{
-    Capability, ChainLimits, CoverageSpan, CyclesLimit, Determinism, Dtype, FeedRule, Inputs, Kind, Lifetime, Limits,
-    MandatoryTerm, MemoryLimits, PartId, PartKind, PartLimits, Segment, SegmentInputs, SlotLimit, State, Tier,
+    CONTROL_TERM, Capability, ChainLimits, ControlItem, ControlLimit, CoverageSpan, CyclesLimit, Determinism, Dtype,
+    FeedRule, Inputs, Kind, Lifetime, Limits, MandatoryTerm, MemoryLimits, PartId, PartKind, PartLimits, Segment,
+    SegmentInputs, SlotLimit, State, Tap, TapLimit, Tier,
 };
 use nagaya_mk_bmg::protocol::{MAX_TASKS_PER_CARD, NUM_SCOREBOARD_EVENTS};
 use nagaya_mk_bmg::safetensors::{self, MappedSafeTensors, TensorMeta};
@@ -100,6 +101,138 @@ const _: () = assert!(
         && CONV_ROW == 6656
         && DEFAULT_EXTRA_RUNS == 24
 );
+
+/// The tap of the row after each run (engine-abi "The lab of Inkling 2").
+pub const RESIDUAL_TAP: &str = "residual";
+/// The tap of the input row of the head: the output residual through the final norm.
+pub const FOLD_TAP: &str = "fold";
+/// The tap of the block outputs that the attention residuals read.
+pub const BLOCKS_TAP: &str = "blocks";
+/// The tap of the four messages of each layer of each cycle after the first.
+pub const MESSAGES_TAP: &str = "messages";
+/// The tap of the output of each message gate.
+pub const GATES_TAP: &str = "gates";
+/// The tap of the 8 picks of each run. Its second output, `ROUTE_WEIGHTS`, holds their weights.
+pub const ROUTES_TAP: &str = "routes";
+pub const ROUTE_WEIGHTS: &str = "routes.weights";
+/// The taps of the engine, in the order of the outputs of a pass.
+pub const TAPS: [&str; 6] = [RESIDUAL_TAP, FOLD_TAP, BLOCKS_TAP, MESSAGES_TAP, GATES_TAP, ROUTES_TAP];
+
+/// The `u32` words of one route in the buffer of the tap `routes`: a whole `MoERouteDecision`, whose first 8 words
+/// are the picks and whose next 8 are their weights.
+pub const ROUTE_WORDS: usize = std::mem::size_of::<nagaya_mk_bmg::protocol::MoERouteDecision>() / 4;
+
+/// The vectors of the control table. A vector of 24 layers of 2,304 values is 221,184 bytes, so the table is
+/// 1,769,472 bytes.
+pub const CONTROL_TABLES: u32 = 8;
+
+/// The taps that a pass names (spec 13.1).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Taps {
+    pub residual: bool,
+    pub fold: bool,
+    pub blocks: bool,
+    pub messages: bool,
+    pub gates: bool,
+    pub routes: bool,
+}
+
+impl Taps {
+    /// The taps of a pass. A name that the engine does not declare is an error that names the taps.
+    pub fn of(taps: &[Tap]) -> Result<Taps, String> {
+        let mut named = Taps::default();
+        for tap in taps {
+            let flag = match tap.name.as_str() {
+                RESIDUAL_TAP => &mut named.residual,
+                FOLD_TAP => &mut named.fold,
+                BLOCKS_TAP => &mut named.blocks,
+                MESSAGES_TAP => &mut named.messages,
+                GATES_TAP => &mut named.gates,
+                ROUTES_TAP => &mut named.routes,
+                other => {
+                    return Err(format!(
+                        "the engine has no tap `{other}`; its taps are {}",
+                        TAPS.join(", ")
+                    ));
+                }
+            };
+            *flag = true;
+        }
+        Ok(named)
+    }
+
+    /// True when the pass names a tap.
+    pub fn any(&self) -> bool {
+        self.residual || self.fold || self.blocks || self.messages || self.gates || self.routes
+    }
+}
+
+/// The most cycles of a reserve of `extra` runs.
+pub fn most_cycles(extra: usize) -> usize {
+    1 + extra / CYCLE_LAYERS
+}
+
+/// The buffers of the taps for a reserve of `extra` runs, with their counts of 4-byte values, in the order of
+/// `model::TapBufs`. Each holds 16 logit rows at the most cycles of the reserve. `fold` needs no buffer: the engine
+/// reads the final norm of each logit row.
+pub fn tap_buffers(extra: usize) -> Vec<(&'static str, usize)> {
+    let (rows, runs) = (MAX_LOGIT_ROWS, LAYERS + extra);
+    vec![
+        (RESIDUAL_TAP, rows * runs * HIDDEN),
+        (BLOCKS_TAP, rows * (most_cycles(extra) + 3) * HIDDEN),
+        (MESSAGES_TAP, rows * extra * 4 * HIDDEN),
+        (GATES_TAP, rows * extra * 4 * HIDDEN),
+        (ROUTES_TAP, rows * runs * ROUTE_WORDS),
+    ]
+}
+
+/// The device bytes of the buffers of the taps for a reserve of `extra` runs.
+pub fn tap_bytes(extra: usize) -> u64 {
+    tap_buffers(extra)
+        .iter()
+        .map(|(_, floats)| rounded(floats * 4) as u64)
+        .sum()
+}
+
+/// The control table: 8 vectors of one row for each layer (engine-abi "The lab of Inkling 2").
+pub fn control_limit() -> ControlLimit {
+    ControlLimit {
+        tables: CONTROL_TABLES,
+        layers: LAYERS as u32,
+        width: HIDDEN as u32,
+    }
+}
+
+/// Check a write of `bytes` into entry `index` of the control table of `limit`. A wrong index, a wrong size or a
+/// value that is not finite is an error that names it.
+pub fn check_control_write(limit: &ControlLimit, index: u32, bytes: &[u8]) -> Result<(), String> {
+    if index >= limit.tables {
+        return Err(format!(
+            "the control table has {} entries, not entry {index}",
+            limit.tables
+        ));
+    }
+    if bytes.len() as u64 != limit.entry_bytes() {
+        return Err(format!(
+            "a vector is {} layers of {} f32 values, {} bytes, not {} bytes",
+            limit.layers,
+            limit.width,
+            limit.entry_bytes(),
+            bytes.len()
+        ));
+    }
+    match bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .position(|b| !f32::from_le_bytes(*b).is_finite())
+    {
+        Some(at) => Err(format!(
+            "value {at} of the vector is not finite; the op needs finite values"
+        )),
+        None => Ok(()),
+    }
+}
 
 /// The two models of the kind. They share every file but `config.json` (milestone 35 step 1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -567,8 +700,11 @@ fn term(name: &str, tier: Tier, bytes: u64) -> MandatoryTerm {
 /// The limits for a config, with the device bytes of the weights of the text model. The tower of images adds its
 /// weights as the term `vision`, and its buffers to `work` (engine-abi "The choices of the pass").
 pub fn limits(config: &Config, weights: u64) -> Limits {
-    let work =
-        bufs_bytes(config.max_block) + vision::PassBufs::bytes(config.max_block) + ring_device_bytes(config.max_seq());
+    let work = bufs_bytes(config.max_block)
+        + vision::PassBufs::bytes(config.max_block)
+        + ring_device_bytes(config.max_seq())
+        + tap_bytes(config.extra_runs);
+    let control = control_limit();
     Limits {
         // A drop frees the weights, the slots, the buffers and the context of the card.
         capabilities: vec![
@@ -577,6 +713,7 @@ pub fn limits(config: &Config, weights: u64) -> Limits {
             Capability::Coverage,
             Capability::Close,
             Capability::Cycles,
+            Capability::Control,
         ],
         parts: parts(config.extra_runs),
         // Both models hold the tower, so both take the rows of images.
@@ -595,6 +732,7 @@ pub fn limits(config: &Config, weights: u64) -> Limits {
                 term("kv", Tier::Device(0), config.slots_bytes()),
                 term("work", Tier::Device(0), work),
                 term("pinned", Tier::Host, pinned_bytes()),
+                term(CONTROL_TERM, Tier::Device(0), control.table_bytes()),
             ],
             elastic: Vec::new(),
         },
@@ -606,11 +744,16 @@ pub fn limits(config: &Config, weights: u64) -> Limits {
         segments_exact: false,
         determinism: Determinism::Always,
         bit_dependence: Vec::new(),
-        // The tap `residual` waits for the plan of its buffer (milestone 35 step 8).
-        taps: Vec::new(),
+        taps: TAPS
+            .iter()
+            .map(|name| TapLimit {
+                name: (*name).to_owned(),
+                conditions: Vec::new(),
+            })
+            .collect(),
         checkpoint_grain: None,
         residual_row_bytes: 0,
-        control: None,
+        control: Some(control),
         feed: Some(FeedRule {
             block: config.max_block as u64,
         }),
@@ -761,6 +904,8 @@ pub struct Block {
     pub cycles: usize,
     /// The image spans that the block reads, in the order of their rows.
     pub spans: Vec<SpanUse>,
+    /// The control items of the segment, which the table limit passed.
+    pub control: Vec<ControlItem>,
 }
 
 impl Block {
@@ -844,7 +989,7 @@ impl Held {
     ///
     /// - A pass has one segment of 1 to `max_block` tokens below `LOGITS`. A segment of tokens and rows has the `meta`
     ///   of its image spans (`media::check_spans`), and a segment of tokens alone has no `meta`.
-    /// - The segment names no control item and no layer loop: the engine declares neither.
+    /// - The control items fit the table (`ControlLimit::check`), and the segment names no layer loop.
     /// - The count of cycles fits the limit. A slot that holds positions runs the count that fed them.
     /// - The positions run on from the token count of the slot. A slot does not go back.
     /// - `logit_rows` names at most `MAX_LOGIT_ROWS` positions of the block.
@@ -881,12 +1026,7 @@ impl Held {
             }
             _ => {}
         }
-        if !segment.control.is_empty() {
-            return Err(format!(
-                "the segment has {} control items; the Inkling 2 engine does not declare `control` yet",
-                segment.control.len()
-            ));
-        }
+        control_limit().check(&segment.control)?;
         if segment.layer_loop.is_some() {
             return Err(
                 "the segment names a layer loop; the Inkling 2 engine runs cycles, and it does not declare \
@@ -962,6 +1102,7 @@ impl Held {
             logit_rows,
             cycles,
             spans,
+            control: segment.control.clone(),
         })
     }
 

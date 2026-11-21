@@ -393,6 +393,29 @@ pub fn route(logits: &[f32], bias: &[f32]) -> [(usize, f32); TOP_K] {
     chosen.map(|e| (e, scores[e] / total * ROUTE_SCALE))
 }
 
+/// One control item on one residual row `h`, in place: the host form of `OP_INKLING2_CONTROL` (engine-abi "Control
+/// vectors"). `add` gives `h + s v`, `ablate` gives `h - s (h . u) u`, and `clamp` gives `h + (s - h . u) u`, with `u =
+/// v / |v|`. The dot products sum in `f64`. A vector of zeros has no direction, so it keeps the row.
+pub fn control(h: &mut [f32], v: &[f32], op: nagaya_abi::ControlOp, s: f32) {
+    assert_eq!(h.len(), v.len(), "control: a row and a vector of other widths");
+    let hv: f64 = h.iter().zip(v).map(|(a, b)| f64::from(*a) * f64::from(*b)).sum();
+    let vv: f64 = v.iter().map(|b| f64::from(*b) * f64::from(*b)).sum();
+    if vv == 0.0 {
+        return;
+    }
+    let norm = vv.sqrt();
+    let along = hv / norm;
+    let s = f64::from(s);
+    let coef = match op {
+        nagaya_abi::ControlOp::Add => s,
+        nagaya_abi::ControlOp::Ablate => -s * along / norm,
+        nagaya_abi::ControlOp::Clamp => (s - along) / norm,
+    } as f32;
+    for (x, b) in h.iter_mut().zip(v) {
+        *x = coef.mul_add(*b, *x);
+    }
+}
+
 /// One expert on one position: `down (swiglu(gate_up x))`. `gate_up` holds the gate rows, then the up rows, each of
 /// `HIDDEN` values (`Inkling2LoopExperts`, lines 802 and 803). `down` is `HIDDEN x INTERMEDIATE`.
 pub fn expert(x: &[f32], gate_up: &[f32], down: &[f32], out: &mut [f32]) {
@@ -407,6 +430,39 @@ pub fn expert(x: &[f32], gate_up: &[f32], down: &[f32], out: &mut [f32]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The host form of a control item keeps the definition of each op: an ablate of 1 leaves no part along the
+    /// vector, a clamp sets that part to its strength, an add moves it by the strength times |v|, and a vector of zeros
+    /// keeps the row.
+    #[test]
+    fn the_control_form_keeps_the_definition_of_each_operation() {
+        use nagaya_abi::ControlOp;
+        let v: Vec<f32> = (0..HIDDEN).map(|i| ((i * 7 % 13) as f32 - 6.0) / 5.0).collect();
+        let h: Vec<f32> = (0..HIDDEN).map(|i| ((i * 5 % 11) as f32 - 4.0) / 3.0 + v[i]).collect();
+        let norm = v.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>().sqrt();
+        let along = |h: &[f32]| {
+            h.iter()
+                .zip(&v)
+                .map(|(a, b)| f64::from(*a) * f64::from(*b))
+                .sum::<f64>()
+                / norm
+        };
+        let before = along(&h);
+        assert!(before.abs() > 1.0, "the row has a part along v: {before}");
+        for (op, s, want) in [
+            (ControlOp::Add, 2.0f32, before + 2.0 * norm),
+            (ControlOp::Ablate, 1.0, 0.0),
+            (ControlOp::Ablate, 0.5, before / 2.0),
+            (ControlOp::Clamp, 8.0, 8.0),
+        ] {
+            let mut x = h.clone();
+            control(&mut x, &v, op, s);
+            assert!((along(&x) - want).abs() < 1e-3, "{op:?} {s}: {} not {want}", along(&x));
+        }
+        let mut x = h.clone();
+        control(&mut x, &vec![0.0; HIDDEN], ControlOp::Clamp, 8.0);
+        assert_eq!(x, h, "a vector of zeros keeps the row");
+    }
 
     fn close(a: f32, b: f32, tol: f32) -> bool {
         (a - b).abs() <= tol * (1.0 + b.abs())
