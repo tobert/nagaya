@@ -221,6 +221,37 @@ fn a_family_of_another_template_is_refused() {
     assert!(error.contains("the chat template of the family"), "{error}");
 }
 
+/// The opener compares the template text before it builds the family. Thus a folder whose template refuses the
+/// test image gives the error of another template, not the error of a test render (spec 11.3, 8.5).
+#[test]
+fn a_family_of_another_template_is_refused_before_its_renders() {
+    let Some(mini) = folder(VARIABLES[0]) else {
+        return;
+    };
+    let identity = opened("inkling2-mini", &mini).identity;
+    let dir = tempfile::tempdir().unwrap();
+    for entry in std::fs::read_dir(&mini).unwrap() {
+        let entry = entry.unwrap();
+        std::os::unix::fs::symlink(entry.path(), dir.path().join(entry.file_name())).unwrap();
+    }
+    let image = "{{- rtok ~ \"<|content_image|><|unused_200054|><|end_message|>\" -}}";
+    assert!(identity.template.contains(image));
+    let template = dir.path().join("chat_template.jinja");
+    std::fs::remove_file(&template).unwrap();
+    std::fs::write(
+        &template,
+        identity
+            .template
+            .replace(image, "{{- raise_exception(\"no images\") -}}"),
+    )
+    .unwrap();
+    let family_table = table(&format!("model_dir = \"{}\"", dir.path().display()));
+    let Err(error) = open_family(&identity, &family_table) else {
+        panic!("a family with another template serves the engine");
+    };
+    assert!(error.contains("the chat template of the family"), "{error}");
+}
+
 /// With no key `model_dir`, the family reads `INKLING2_MODEL_DIR`, as an engine on demand needs (spec 11.18). A key
 /// that names no directory is refused by name.
 #[test]

@@ -6,6 +6,7 @@ use nagaya_council::family::{Advance, Asked, DecisionInput, Family, ReadPlan};
 use serde_json::{Value, json};
 
 use super::Inkling2Family;
+use crate::Error;
 
 fn context(v: Value) -> Context {
     serde_json::from_value(v).expect("the test context is valid")
@@ -43,13 +44,20 @@ fn queue_context() -> Context {
     )
 }
 
-fn plan_tokens(context: &[u32], plan: &mut dyn ReadPlan) -> Vec<u32> {
+/// A failure of a test render: the template or the library cannot render a fixture of the council hash.
+fn failed(what: &str, e: impl std::fmt::Display) -> Error {
+    Error::Model(format!(
+        "the chat template fails the test render of {what}, which the template id covers: {e}"
+    ))
+}
+
+fn plan_tokens(context: &[u32], plan: &mut dyn ReadPlan) -> Result<Vec<u32>, Error> {
     let mut tokens = context.to_vec();
     tokens.extend(plan.prefix());
     let mut last: Option<Vec<f64>> = None;
     loop {
-        match plan.advance(last.as_deref()).expect("the test plan runs") {
-            Advance::Done(_) => return tokens,
+        match plan.advance(last.as_deref()).map_err(|e| failed("a decision", e))? {
+            Advance::Done(_) => return Ok(tokens),
             Advance::Step(step) => {
                 tokens.extend(&step.feed);
                 tokens.extend(&step.letters);
@@ -59,12 +67,14 @@ fn plan_tokens(context: &[u32], plan: &mut dyn ReadPlan) -> Vec<u32> {
     }
 }
 
-pub(crate) fn renders(family: &Inkling2Family) -> Vec<Vec<u32>> {
+/// The test renders of `family`. A render that the template refuses is an error, so the build of a family with such a
+/// template fails and does not panic.
+pub(crate) fn renders(family: &Inkling2Family) -> Result<Vec<Vec<u32>>, Error> {
     let mut out = Vec::new();
     let all = contexts();
     for c in &all {
         for prompt in [false, true] {
-            out.push(family.render(c, prompt).expect("the test context renders").tokens);
+            out.push(family.render(c, prompt).map_err(|e| failed("a context", e))?.tokens);
         }
     }
     // An image part with a fixed grid of 2 by 3 tokens: the council hash covers its placeholders, with no object.
@@ -75,7 +85,7 @@ pub(crate) fn renders(family: &Inkling2Family) -> Vec<Vec<u32>> {
     for prompt in [false, true] {
         let rendering = family
             .render_with(&image, prompt, &grid)
-            .expect("the test image context renders");
+            .map_err(|e| failed("an image", e))?;
         out.push(rendering.tokens);
     }
     let spec = parse_spec(
@@ -99,18 +109,20 @@ pub(crate) fn renders(family: &Inkling2Family) -> Vec<Vec<u32>> {
     ];
     let queue = queue_context();
     for c in [None, Some(&all[1]), Some(&queue)] {
-        let rendering = c.map(|c| family.render(c, false).expect("the test context renders"));
+        let rendering = c
+            .map(|c| family.render(c, false).map_err(|e| failed("a context", e)))
+            .transpose()?;
         let input = DecisionInput {
             context: c.zip(rendering.as_ref()),
             spec: &spec,
             case: "a case",
             asked: &asked,
         };
-        let mut plan = family.decision_read(&input).expect("the test decision plans");
+        let mut plan = family.decision_read(&input).map_err(|e| failed("a decision", e))?;
         out.push(plan_tokens(
             rendering.as_ref().map_or(&[], |r| &r.tokens[..r.end]),
             plan.as_mut(),
-        ));
+        )?);
     }
     let own = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     let raw = family
@@ -121,8 +133,8 @@ pub(crate) fn renders(family: &Inkling2Family) -> Vec<Vec<u32>> {
                 "<|end_message|><|message_model|>next<|content_invoke_tool_json|>",
             ]),
         )
-        .expect("the test raw read tokenizes");
+        .map_err(|e| failed("a raw read", e))?;
     out.push(raw.letters);
     out.extend(raw.suffixes);
-    out
+    Ok(out)
 }

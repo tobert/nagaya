@@ -218,7 +218,7 @@ impl Inkling2Family {
             template_id: String::new(),
             objects: None,
         };
-        let c_hash = council_hash(&test_set::renders(&family));
+        let c_hash = council_hash(&test_set::renders(&family)?);
         let t_hash = hash16(files.template.as_bytes());
         family.template_id = template_id(&c_hash, FAMILY, &t_hash);
         Ok(family)
