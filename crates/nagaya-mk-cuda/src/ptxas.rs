@@ -2,12 +2,13 @@
 //! a write of local memory in the hot loop of the interpreter.
 //!
 //! Every op is inline in the interpreter, so the registers of the interpreter are the registers of its most hungry op,
-//! and the state that the interpreter keeps across an op takes from the budget of each op. Thus the interpreter keeps
-//! almost nothing in registers across an op: the totals and the timestamps of the profile are in shared memory, and
-//! the descriptor is read through a reference. A function that is not inline (an op that someone declares
-//! `__noinline__`) has its own line in the report, and the same rule holds for it. The interpreter has no stack
-//! frame: a frame there is a local copy of a descriptor or a local array of an op, and it is local memory in the hot
-//! loop.
+//! and a value that the interpreter keeps in a register across an op takes from the budget of each op. A call inside an
+//! op (the slow path of a division, a quantizer) makes ptxas save each live register of the interpreter to the stack,
+//! and ptxas reports that save as a spill. Thus the interpreter keeps almost nothing in registers across an op: the
+//! kernel parameters are read again from the parameter bank at each use, the totals and the timestamps of the profile
+//! are in shared memory, and the loop keeps only its item. A function that is not inline has its own line in the
+//! report, and the same rule holds for it. The interpreter has no stack frame: a frame there is a local copy of a
+//! descriptor or a local array of an op, and it is local memory in the hot loop.
 
 /// Return an error that names the function and the bytes, if `report` shows a spill in any function, or a stack frame
 /// in an entry function. Return an error too if the report has no spill line, because then the check has not looked

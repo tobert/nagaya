@@ -19,7 +19,7 @@
 
 use crate::protocol::{
     EXPERT_K_GROUP, EXPERT_MXFP8_RECORD_BYTES, EXPERT_NVFP4_RECORD_BYTES, EXPERT_PAIR_HEADER_BYTES, EXPERT_TILE_ROWS,
-    ExpertPair, ExpertPairHeader,
+    ExpertPair, ExpertPairHeader, TOP_K, expert_pair_bound,
 };
 
 /// The bytes of a pair list for the device: the header with the live count `pairs.len()`, the live pairs, and zero pairs
@@ -56,6 +56,59 @@ pub fn pair_list_bytes(pairs: &[ExpertPair], capacity: usize) -> Result<Vec<u8>,
         EXPERT_PAIR_HEADER_BYTES + capacity * std::mem::size_of::<ExpertPair>()
     );
     Ok(out)
+}
+
+/// The slot of the pointer to the bias of the router (`f32`, 128 of them) in the task table of `OP_ROUTE`. The slots of
+/// the table are the same in `kernels/ops_moe.cuh`.
+pub const ROUTE_TABLE_BIAS: usize = 0;
+
+/// The slot of the norm weight (`f32`, 2,304 of them) in the table of `OP_ROUTE` with `FLAG_NORM`.
+pub const ROUTE_TABLE_NORM_WEIGHT: usize = 1;
+
+/// The slot of the row factors (`f32`, one for each row) in the table of `OP_ROUTE` with `FLAG_NORM`.
+pub const ROUTE_TABLE_ROW_FACTOR: usize = 2;
+
+/// The slot of the pointer to the buffer of quantized activation rows in the table of an up op (`FLAG_UP`). The slots of
+/// the table are the same in `kernels/experts.cuh`. The slot 0 is `EXPERT_TABLE_AMAX`.
+pub const EXPERT_TABLE_QACT: usize = 1;
+
+/// The slots of the table of a down op (`FLAG_DOWN`): the residual, the weights of `mlp_conv`, the state of the
+/// convolution, and the output.
+pub const EXPERT_TABLE_RESIDUAL: usize = 2;
+pub const EXPERT_TABLE_CONV_WEIGHT: usize = 3;
+pub const EXPERT_TABLE_CONV_STATE: usize = 4;
+pub const EXPERT_TABLE_OUT: usize = 5;
+
+/// The rows that one row tile of `OP_ROUTE` takes.
+pub const ROUTE_ROW_TILE: usize = 16;
+
+/// The items of one row tile of `OP_ROUTE`: 8 column tiles of 16 experts, and 3 K slices of 768 values.
+pub const ROUTE_ITEMS_PER_ROW_TILE: usize = 24;
+
+/// The most rows that one `OP_ROUTE` takes (`MAX_PLAN_TOKENS`).
+pub const ROUTE_MAX_ROWS: usize = 1024;
+
+/// The count of items of `OP_ROUTE` for `rows` rows.
+pub fn route_items(rows: usize) -> usize {
+    rows.div_ceil(ROUTE_ROW_TILE) * ROUTE_ITEMS_PER_ROW_TILE
+}
+
+/// The words of the scratch (`f`) of `OP_ROUTE` for `rows` rows: the counters (a counter for each row tile and column
+/// tile, one for each row tile, and one for the plan, rounded to 4 words), then the logits (128 for each row), then the
+/// partials (256 for each item). The counters start at 0 and stay 0.
+pub fn route_scratch_words(rows: usize) -> usize {
+    let tiles = rows.div_ceil(ROUTE_ROW_TILE);
+    (tiles * 9 + 1).next_multiple_of(4) + rows * 128 + route_items(rows) * ROUTE_ROW_TILE * 16
+}
+
+/// The bytes of the pair list of `OP_ROUTE` for `rows` rows: the header and room for the bound of pairs.
+pub fn route_pair_list_bytes(rows: usize) -> usize {
+    EXPERT_PAIR_HEADER_BYTES + expert_pair_bound(rows) * std::mem::size_of::<ExpertPair>()
+}
+
+/// The bytes of the picks of `OP_ROUTE` (`c`): `rows * 8` expert ids, then `rows * 8` route weights.
+pub fn route_picks_bytes(rows: usize) -> usize {
+    rows * TOP_K * 8
 }
 
 /// The two formats of the experts of Inkling 2.
@@ -212,6 +265,38 @@ pub fn repack_expert(format: ExpertFormat, n: usize, k: usize, codes: &[u8], sca
         });
     }
     Ok(out)
+}
+
+/// The checkpoint row of the row `p` of the up matrix after [`repack_expert_up`]. The checkpoint interleaves: row `2 i` is
+/// the gate `i` and row `2 i + 1` is the up `i` (`gate_up_source_row` of the B70 crate). A tile of 16 rows of the MMA
+/// holds 8 activation columns: its row `g` is the gate and its row `g + 8` is the up of one column, so that one lane holds
+/// both values.
+pub fn up_source_row(p: usize) -> usize {
+    let (tile, row) = (p / 16, p % 16);
+    2 * (8 * tile + row % 8) + row / 8
+}
+
+/// Repack the up matrix `w13` of one expert for `FLAG_UP`: [`repack_expert`] of the rows in the order of [`up_source_row`].
+/// `n` is twice the count of activation columns. The repack changes no value, and the engine identity includes it.
+pub fn repack_expert_up(
+    format: ExpertFormat,
+    n: usize,
+    k: usize,
+    codes: &[u8],
+    scales: &[u8],
+) -> Result<Vec<u8>, String> {
+    check_shape(n, k)?;
+    check_len("the codes", codes.len(), n * format.code_bytes(k))?;
+    check_len("the scales", scales.len(), n * format.scale_bytes(k))?;
+    let (code_row, scale_row) = (format.code_bytes(k), format.scale_bytes(k));
+    let mut moved_codes = Vec::with_capacity(codes.len());
+    let mut moved_scales = Vec::with_capacity(scales.len());
+    for p in 0..n {
+        let from = up_source_row(p);
+        moved_codes.extend_from_slice(&codes[from * code_row..(from + 1) * code_row]);
+        moved_scales.extend_from_slice(&scales[from * scale_row..(from + 1) * scale_row]);
+    }
+    repack_expert(format, n, k, &moved_codes, &moved_scales)
 }
 
 /// The inverse of [`repack_expert`]: the codes and the scales in the order of the checkpoint.
@@ -409,6 +494,44 @@ mod tests {
                     &record[at..at + spb],
                     &scales[row * scale_row + g * spb..row * scale_row + (g + 1) * spb],
                     "{format:?}: the scales of the row {gl} + 8 * {u}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_up_repack_puts_the_gate_and_the_up_of_a_column_in_rows_g_and_g_plus_8() {
+        // Each checkpoint row is used once.
+        let mut seen = vec![false; 2304];
+        for p in 0..2304 {
+            let from = up_source_row(p);
+            assert!(!seen[from], "the row {from} is used twice");
+            seen[from] = true;
+        }
+        // The first tile: the rows 0 to 7 are the gates 0 to 7 (checkpoint rows 0, 2, ..., 14), the rows 8 to 15 the ups.
+        for g in 0..8 {
+            assert_eq!(up_source_row(g), 2 * g);
+            assert_eq!(up_source_row(g + 8), 2 * g + 1);
+        }
+        // The second tile starts at the activation column 8, and the second item at the column 32.
+        assert_eq!(up_source_row(16), 16);
+        assert_eq!(up_source_row(64), 64);
+        // The bytes: the repack of the permuted rows equals the unpack of the result with the permutation undone.
+        for format in [ExpertFormat::Nvfp4, ExpertFormat::Mxfp8] {
+            let (n, k) = (128, 256);
+            let (codes, scales) = make(format, n, k);
+            let packed = repack_expert_up(format, n, k, &codes, &scales).unwrap();
+            let (moved_codes, moved_scales) = unpack_expert(format, n, k, &packed).unwrap();
+            let (code_row, scale_row) = (format.code_bytes(k), format.scale_bytes(k));
+            for p in 0..n {
+                let from = up_source_row(p);
+                assert_eq!(
+                    &moved_codes[p * code_row..(p + 1) * code_row],
+                    &codes[from * code_row..(from + 1) * code_row]
+                );
+                assert_eq!(
+                    &moved_scales[p * scale_row..(p + 1) * scale_row],
+                    &scales[from * scale_row..(from + 1) * scale_row]
                 );
             }
         }
