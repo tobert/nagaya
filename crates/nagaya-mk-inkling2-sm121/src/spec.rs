@@ -115,7 +115,9 @@ pub fn slot_bytes(seq: usize, extra: usize) -> u64 {
         .sum()
 }
 
-/// Attention scratch floats for a block of `max_block` tokens over `max_seq` keys (3,120 bytes/position at 512).
+/// Attention scratch bytes for `max_seq` keys, at 3,120 bytes for each position.
+///
+/// Provisional: this is the B70 bound until wave C designs the GB10 attention. It has no basis on the GB10 yet.
 pub fn attn_scratch_bytes(max_seq: usize) -> u64 {
     (max_seq as u64).saturating_mul(3_120)
 }
@@ -564,25 +566,95 @@ mod tests {
         assert!(Config { extra_runs: 48, ..base }.check().is_ok());
     }
 
+    /// The bytes of the conv part of one state: 3 rows of 6,656 `f32` values.
+    const CONV_BYTES: u64 = 3 * 6_656 * 4;
+    /// The bytes of the two planes of a sliding state: 3,072 rows of 1,024 `f32` values, for the keys and the values.
+    const SLIDING_BYTES: u64 = 2 * 3_072 * 1_024 * 4;
+
     #[test]
-    fn long_context_slot_sizing_matches_abi_estimates() {
-        // 32K slot at 3 cycles (extra_runs = 24): ~3.16 GB.
-        let s32k = slot_bytes(32_768, 24);
-        assert_eq!(s32k, 3_157_950_464);
-
-        // 400K slot (409,600) + attn scratch: ~28.1 GB.
-        let total_400k = slot_bytes(409_600, 24) + attn_scratch_bytes(409_600);
-        assert!(
-            (27_500_000_000..=30_000_000_000).contains(&total_400k),
-            "400K={total_400k}"
+    fn the_state_plan_holds_eight_full_and_forty_sliding_states() {
+        // 24 layers and 24 extra runs: 48 states. Layers 5 and 23 are full once. Layers 11 and 17 are full in each
+        // of 3 cycles: once in the layers, and twice in the extra runs.
+        let full: Vec<usize> = (0..LAYERS + 24).filter(|&s| is_full(state_layer(s))).collect();
+        assert_eq!(full, vec![5, 11, 17, 23, 29, 35, 41, 47]);
+        let layers: Vec<usize> = full.iter().map(|&s| state_layer(s)).collect();
+        assert_eq!(layers, vec![5, 11, 17, 23, 11, 17, 11, 17]);
+        assert_eq!((LAYERS + 24) - full.len(), 40);
+        // The local layers are the 20 that the config lists.
+        let local: Vec<usize> = (0..LAYERS).filter(|&l| !is_full(l)).collect();
+        assert_eq!(
+            local,
+            vec![0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 18, 19, 20, 21, 22]
         );
+        // One row of a key plane holds 8 heads of 128 `f32` values.
+        assert_eq!(KV_ROW, 1_024);
+        assert_eq!(plane_rows(409_600, 5), 409_600);
+        assert_eq!(plane_rows(409_600, 0), 3_072);
+        assert_eq!(plane_rows(409_600, 24), 3_072, "state 24 is layer 6, a sliding layer");
+        assert_eq!(plane_rows(409_600, 29), 409_600, "state 29 is layer 11, a full layer");
+    }
 
-        // 512K slot (524,288) + attn scratch: ~36.0 GB.
-        let total_512k = slot_bytes(524_288, 24) + attn_scratch_bytes(524_288);
-        assert!(
-            (35_000_000_000..=38_000_000_000).contains(&total_512k),
-            "512K={total_512k}"
+    #[test]
+    fn slot_bytes_are_exact_for_each_length() {
+        // Each full state holds two planes of `seq` rows of 1,024 `f32` values. Rows are 64-byte multiples.
+        let formula = |seq: u64| 8 * (2 * seq * 1_024 * 4) + 40 * SLIDING_BYTES + 48 * CONV_BYTES;
+        assert_eq!(SLIDING_BYTES, 25_165_824);
+        assert_eq!(CONV_BYTES, 79_872);
+        assert_eq!(slot_bytes(32_768, 24), 3_157_950_464);
+        assert_eq!(slot_bytes(409_600, 24), 27_854_012_416);
+        assert_eq!(slot_bytes(524_288, 24), 35_370_205_184);
+        for seq in [32_768u64, 409_600, 524_288] {
+            assert_eq!(slot_bytes(seq as usize, 24), formula(seq));
+        }
+        // More cycles add states: 36 extra runs are 12 more states, 2 of them full, and 10 sliding.
+        assert_eq!(
+            slot_bytes(409_600, 36) - slot_bytes(409_600, 24),
+            2 * (2 * 409_600 * 1_024 * 4) + 10 * SLIDING_BYTES + 12 * CONV_BYTES
         );
+    }
+
+    #[test]
+    fn attention_scratch_is_provisional_and_linear() {
+        assert_eq!(attn_scratch_bytes(0), 0);
+        assert_eq!(attn_scratch_bytes(1), 3_120);
+        assert_eq!(attn_scratch_bytes(409_600), 1_277_952_000);
+        assert_eq!(attn_scratch_bytes(524_288), 1_635_778_560);
+        assert_eq!(attn_scratch_bytes(usize::MAX), u64::MAX, "the product saturates");
+    }
+
+    #[test]
+    fn parts_follow_the_state_plan() {
+        let list = parts(24);
+        assert_eq!(list.len(), 48 * 3 + 1);
+        let count = |kind: PartKind| list.iter().filter(|p| p.kind == kind).count();
+        assert_eq!(
+            count(PartKind::Cells),
+            16,
+            "8 full states, a key part and a value part each"
+        );
+        assert_eq!(count(PartKind::Ring), 80, "40 sliding states");
+        assert_eq!(
+            count(PartKind::Fixed),
+            48 + 1,
+            "a conv part for each state, and `cycles`"
+        );
+        let find = |name: &str| {
+            list.iter()
+                .find(|p| p.name == name)
+                .unwrap_or_else(|| panic!("no part {name}"))
+        };
+        assert_eq!(find("k.04").kind, PartKind::Ring);
+        assert_eq!(find("k.05").kind, PartKind::Cells);
+        assert_eq!(find("v.x05").kind, PartKind::Cells, "extra entry 5 is layer 11");
+        assert_eq!(find("k.x06").kind, PartKind::Ring, "extra entry 6 is layer 12");
+        assert_eq!(find("k.05").shape, vec![8, 128]);
+        assert_eq!(find("conv.x23").shape, vec![3, 6_656]);
+        let last = list.last().unwrap();
+        assert_eq!(
+            (last.name.as_str(), last.dtype, last.kind),
+            ("cycles", Dtype::U32, PartKind::Fixed)
+        );
+        assert_eq!(parts(0).len(), 24 * 3 + 1);
     }
 
     #[test]
@@ -593,10 +665,25 @@ mod tests {
             max_block: 512,
             extra_runs: 24,
         };
-        let lim = limits(&cfg, 18_881_368_064, 636_825_472);
+        // The sums of the Inkling 2 Mini header, with each tensor rounded up to 64 bytes.
+        let lim = limits(&cfg, 18_889_360_896, 636_512_256);
         lim.check().unwrap();
-        let nums = identity_numbers(&cfg);
-        assert_eq!(nums["quant"], QUANT_MODE);
-        assert_eq!(nums["state"], "2");
+        let bytes = |name: &str| lim.memory.mandatory.iter().find(|t| t.name == name).unwrap().bytes;
+        assert_eq!(bytes("weights"), 18_889_360_896);
+        assert_eq!(bytes("vision"), 636_512_256);
+        assert_eq!(bytes("kv"), 35_370_205_184);
+        // The work: 512 rows of 65,536 `f32` values, the scratch, the ring, and the vision tower.
+        assert_eq!(
+            bytes("work"),
+            134_217_728 + 1_635_778_560 + (2_049 * 4 + 131_072) + 1_870_588_096
+        );
+        assert_eq!(bytes("pinned"), 131_072 + 6_144 + 67_108_864);
+        assert_eq!(lim.slots.len(), 1);
+        assert_eq!(
+            (lim.slots[0].count, lim.slots[0].tokens, lim.slots[0].bytes),
+            (1, 524_288, 35_370_205_184)
+        );
+        let cycles = lim.cycles.unwrap();
+        assert_eq!((cycles.min, cycles.max, cycles.default), (1, 3, 3));
     }
 }

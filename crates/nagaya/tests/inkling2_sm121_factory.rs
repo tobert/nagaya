@@ -19,7 +19,7 @@ fn device(id: u32, pci_address: &str) -> GroupDevice {
 }
 
 fn one_device() -> Vec<GroupDevice> {
-    vec![device(0, "000f:01:00.0")]
+    vec![device(0, "0000:0a:00.0")]
 }
 
 #[test]
@@ -38,7 +38,7 @@ fn config_refuses_unknown_key_missing_keys_and_two_devices() {
     table.remove("bogus");
     assert!(inkling2_sm121::config(&table).is_ok());
 
-    let two = vec![device(0, "000f:01:00.0"), device(1, "000f:02:00.0")];
+    let two = vec![device(0, "0000:0a:00.0"), device(1, "0000:0b:00.0")];
     let dev_err = inkling2_sm121::plan(&table, &two).unwrap_err().message;
     assert!(dev_err.contains("one GPU"), "{dev_err}");
 
@@ -125,4 +125,8 @@ fn real_model_plans_512k_slot_through_factory() {
     );
     let lim = inkling2_sm121::plan(&table, &one_device()).unwrap();
     lim.check().unwrap();
+    let kv = lim.memory.mandatory.iter().find(|t| t.name == "kv").unwrap().bytes;
+    assert_eq!(kv, 35_370_205_184);
+    assert_eq!(lim.slots.len(), 1);
+    assert_eq!((lim.slots[0].tokens, lim.slots[0].bytes), (524_288, 35_370_205_184));
 }
