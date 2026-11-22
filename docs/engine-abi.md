@@ -1827,6 +1827,10 @@ Opus 5.5, 2026-11-21).
   - A slot of 32,768 positions takes 3,157,950,464 bytes with a reserve of 24, and 4,736,925,696 with 48.
   - A slot of 262,144 positions takes 18,190,336,000 bytes with a reserve of 24.
 - **A restore of a ring part** must hold the last 1,024 positions, the window of a sliding layer.
+- **The probe of the oracle** (8.3) runs from position 0 of a slot that it empties. Its check comes first, so a probe
+  that the check refuses changes nothing (`Held::check_probe`).
+- **`last_error`** gives the failure of the last call. Each call that can fail clears it first, so a call that does
+  not fail leaves `None`.
 - **Tokens.** A token id of 200,058 or more is refused. Reason: the rows past the unpadded vocabulary are padding
   of the head and the embedding.
 - **The term `weights`.** The plan counts the bytes of the header, and it reads no weight bytes (spec 2.4).

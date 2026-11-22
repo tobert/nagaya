@@ -507,9 +507,9 @@ impl Inkling2Engine {
         if upto > all || norm && upto != all {
             return Err(format!("a probe of {upto} runs with the norm {norm} does not exist"));
         }
-        let segment = probe_segment(slot, ids);
+        // The check comes before the clear, so a refused probe changes nothing.
+        let block = self.held.check_probe(slot, ids, self.config.max_block)?;
         self.held.clear(slot);
-        let block = self.held.check_pass(&[segment], self.config.max_block)?;
         self.forward(
             slot,
             0,
@@ -661,20 +661,6 @@ fn weights_f32(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
-/// The segment of a probe: `ids` from position 0 of `slot`, with no logit row.
-fn probe_segment(slot: usize, ids: &[u32]) -> Segment {
-    Segment {
-        control: Vec::new(),
-        state: State::Slot(slot as u32),
-        inputs: nagaya_abi::SegmentInputs::Tokens(ids.to_vec()),
-        positions: (0..ids.len() as u64).collect(),
-        meta: Vec::new(),
-        outputs: Default::default(),
-        layer_loop: None,
-        cycles: None,
-    }
-}
-
 impl Engine for Inkling2Engine {
     fn identity(&self) -> Identity {
         self.identity.clone()
@@ -685,6 +671,7 @@ impl Engine for Inkling2Engine {
     }
 
     fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
+        self.last_error = None;
         let (block, named) = match self.check_block(segments, taps) {
             Ok(found) => found,
             Err(error) => return Err(self.fail(error)),
@@ -723,6 +710,7 @@ impl Engine for Inkling2Engine {
         })
     }
 
+    /// Why the last call failed, or `None` when it did not fail. Each call that can fail clears it first.
     fn last_error(&self) -> Option<String> {
         self.last_error.clone()
     }
@@ -748,6 +736,7 @@ impl Control for Inkling2Engine {
     /// Write one vector into its entry of the table. A wrong index, a wrong size or a value that is not finite is
     /// refused, and nothing changes.
     fn control_write(&mut self, index: u32, bytes: &[u8]) -> Result<(), String> {
+        self.last_error = None;
         let (table, limit) = self.control;
         if let Err(message) = spec::check_control_write(&limit, index, bytes) {
             self.last_error = Some(message.clone());
@@ -763,6 +752,7 @@ impl Parts for Inkling2Engine {
     /// Read a fixed part whole, or the rows of a row part from its base: as many as `out` holds. A run that the count
     /// of the slot does not reach reads as zeros, and the part `cycles` reads the count (engine-abi "Inkling 2").
     fn part_read(&mut self, state: State, part: PartId, out: &mut [u8]) -> Result<(), PartError> {
+        self.last_error = None;
         let (slot, which, from, source) = match self.held.check_part_read(state, part, out.len()) {
             Ok(found) => found,
             Err(message) => return Err(self.refuse_read(message)),
@@ -781,6 +771,7 @@ impl Parts for Inkling2Engine {
 
     /// Write a fixed part whole: a conv part, or the count of cycles. The slot holds no token until `set_n`.
     fn part_write(&mut self, state: State, part: PartId, bytes: &[u8]) -> WriteResult {
+        self.last_error = None;
         let (slot, which) = match self.held.check_part_write(state, part, bytes) {
             Ok(found) => found,
             Err(message) => return self.refuse(message),
@@ -797,6 +788,7 @@ impl Parts for Inkling2Engine {
     }
 
     fn cells_read(&mut self, state: State, part: PartId, from: u64, n: u64, out: &mut [u8]) -> Result<(), PartError> {
+        self.last_error = None;
         let (slot, which, source) = match self.held.check_read(state, part, from, n, out.len()) {
             Ok(found) => found,
             Err(message) => return Err(self.refuse_read(message)),
@@ -811,6 +803,7 @@ impl Parts for Inkling2Engine {
     /// Write the rows of positions `from` to `from + n`. A ring keeps the last of them. The slot holds no token until
     /// `set_n`, so a pass cannot read rows of two states.
     fn cells_write(&mut self, state: State, part: PartId, from: u64, n: u64, bytes: &[u8]) -> WriteResult {
+        self.last_error = None;
         let (slot, which, kept) = match self.held.check_cells_write(state, part, from, n, bytes.len()) {
             Ok(found) => found,
             Err(message) => return self.refuse(message),
@@ -828,6 +821,7 @@ impl Parts for Inkling2Engine {
     }
 
     fn set_n(&mut self, state: State, n: u64) -> WriteResult {
+        self.last_error = None;
         match self.held.check_set_n(state, n) {
             Ok(slot) => {
                 if n == 0 {
@@ -847,6 +841,7 @@ impl Slots for Inkling2Engine {
     }
 
     fn slot_clear(&mut self, slot: SlotId) -> WriteResult {
+        self.last_error = None;
         if slot as usize >= self.held.n.len() {
             return self.refuse(format!("the engine has no slot {slot}"));
         }

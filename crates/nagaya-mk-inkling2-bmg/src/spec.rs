@@ -1288,6 +1288,16 @@ impl Held {
         })
     }
 
+    /// Check a probe of the oracle (8.3): `ids` from position 0 of `slot` at the default count, as if the slot were
+    /// empty. It changes nothing, so the caller empties the slot only after the check passes.
+    pub fn check_probe(&self, slot: usize, ids: &[u32], max_block: usize) -> Result<Block, String> {
+        let mut empty = self.clone();
+        if slot < empty.n.len() {
+            empty.clear(slot);
+        }
+        empty.check_pass(&[probe_segment(slot, ids)], max_block)
+    }
+
     /// Take a pass that ran: the slot holds the block's positions, and the writes before it are gone.
     pub fn ran(&mut self, block: &Block) {
         self.n[block.slot] = (block.pos0 + block.tokens.len()) as u64;
@@ -1609,6 +1619,20 @@ impl Held {
             ));
         }
         Ok(())
+    }
+}
+
+/// The segment of a probe: `ids` from position 0 of `slot`, with no logit row.
+pub fn probe_segment(slot: usize, ids: &[u32]) -> Segment {
+    Segment {
+        control: Vec::new(),
+        state: State::Slot(slot as u32),
+        inputs: SegmentInputs::Tokens(ids.to_vec()),
+        positions: (0..ids.len() as u64).collect(),
+        meta: Vec::new(),
+        outputs: Default::default(),
+        layer_loop: None,
+        cycles: None,
     }
 }
 

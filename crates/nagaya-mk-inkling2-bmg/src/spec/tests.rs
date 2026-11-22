@@ -1045,3 +1045,19 @@ fn a_restore_keeps_the_count_and_needs_zeros_in_the_inactive_parts() {
     rings.set_n(0, 1500);
     assert_eq!((rings.base(0, 4), rings.base(0, 24)), (476, 0));
 }
+
+/// A probe of the oracle runs from position 0 of a slot that it empties. Its check comes first, so a probe that the
+/// check refuses changes nothing (spec 8.3).
+#[test]
+fn a_probe_is_checked_before_it_empties_its_slot() {
+    let mut held = Held::new(&[4096], DEFAULT_EXTRA_RUNS);
+    feed(&mut held, 0, 600, 1);
+    let block = held.check_probe(0, &[1, 2, 3], 512).unwrap();
+    assert_eq!((block.pos0, block.cycles), (0, DEFAULT_CYCLES));
+    assert_eq!((held.n[0], held.cycles[0]), (600, Some(1)), "a check changes nothing");
+    let e = held.check_probe(0, &[LOGITS as u32], 512).unwrap_err();
+    assert!(e.contains("outside the vocabulary"), "{e}");
+    let e = held.check_probe(1, &[1], 512).unwrap_err();
+    assert!(e.contains("the engine has 1 slots"), "{e}");
+    assert!(held.check_probe(0, &vec![1; 513], 512).is_err());
+}

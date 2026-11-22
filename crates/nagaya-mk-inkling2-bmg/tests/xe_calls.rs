@@ -1,9 +1,11 @@
 //! The gates of the calls around a pass on a B70 card (milestone 35 step 12, engine-abi "Inkling 2"): a snapshot of
-//! the parts and its restore.
+//! the parts, its restore, the probe of the oracle and `last_error`.
 //!
 //! - The parts of a run that the count does not reach read as zeros. Thus a slot that held another count before gives
 //!   the bytes of a fresh slot, and one recipe gets one content id.
 //! - The part `cycles` holds the count. A restore keeps it, so the next pass runs at the count of the snapshot.
+//! - A probe that its check refuses changes nothing. `last_error` names the last failure and clears on a call that
+//!   does not fail.
 //!
 //! A test skips when the model is absent. Release the card first, and run alone: `NAGAYA_TEST_CARDS=<pci> cargo test
 //! --release -p nagaya-mk-inkling2-bmg --features xe --test xe_calls -- --test-threads=1 --nocapture`.
@@ -15,6 +17,7 @@ use common::Which;
 use common::card;
 use nagaya_abi::{Engine, PartKind, Segment, State, WriteResult};
 use nagaya_mk_inkling2_bmg::Inkling2Engine;
+use nagaya_mk_inkling2_bmg::host::weights::LOGITS;
 
 /// `n` token ids from a seeded generator, below 150,000.
 fn ids(n: usize, seed: u64) -> Vec<u32> {
@@ -145,4 +148,27 @@ fn a_snapshot_at_one_cycle_is_the_snapshot_of_a_fresh_slot_and_keeps_its_count()
         restored == fed,
         "the restored slot gives the bits of the slot that was fed"
     );
+}
+
+/// A probe that its check refuses leaves the slot as it was. `last_error` names a refusal and clears on the next call
+/// that does not fail.
+#[test]
+fn a_refused_probe_changes_nothing_and_last_error_clears() {
+    if common::model_absent(Which::Mini) {
+        return;
+    }
+    let mut engine = card::open(Which::Mini, vec![4096], 512);
+    feed(&mut engine, 0, 0, &ids(100, 5), Some(1));
+    let e = engine.residual(0, &[LOGITS as u32], 1, false).unwrap_err();
+    assert!(e.contains("outside the vocabulary"), "{e}");
+    assert_eq!(
+        engine.slots().unwrap().slot_high(0),
+        100,
+        "a refused probe keeps the slot"
+    );
+    assert_eq!(engine.last_error(), None);
+    let refused = engine.pass(&[card::segment(0, 0, &[1], &[])], &[]).unwrap_err();
+    assert_eq!(engine.last_error(), Some(refused.message));
+    feed(&mut engine, 0, 100, &[1, 2], Some(1));
+    assert_eq!(engine.last_error(), None, "a pass that runs clears the last error");
 }
