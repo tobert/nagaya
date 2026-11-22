@@ -138,9 +138,9 @@ define_u16_table! {
 /// The task descriptor of `docs/engine-abi.md` "The CUDA interpreter". It is 128 bytes, inline in the ring, and it
 /// is shared with `kernels/megakernel.cu`.
 ///
-/// A task waits on up to two pairs of an event and a target before its first work item. It signals the event
-/// `signal` once for each item that it finishes. The pointers `a` to `f`, the words `n` to `layer` and the
-/// parameters `p0` to `p3` have one meaning for each op. The probe and test ops use `n`, `k`, `kt` and
+/// A task waits on up to two pairs of an event and a target before its first work item. Each block signals the event
+/// `signal` one time, after its last item of the task. It adds the count of its items. The pointers `a` to `f`, the
+/// words `n` to `layer` and the parameters `p0` to `p3` have one meaning for each op. The probe and test ops use `n`, `k`, `kt` and
 /// `group_items` as their four integer parameters.
 #[repr(C, align(128))]
 #[derive(Clone, Copy, Debug, PartialEq)]

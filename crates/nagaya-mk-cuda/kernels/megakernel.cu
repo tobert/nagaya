@@ -2,8 +2,8 @@
 //
 // Launched with one thread block per SM (or a configured grid width). Every block walks the same
 // task ring in order. Before its first item of a task, thread 0 waits until each of the two events of the task
-// reaches its target, with GPU-scope acquire loads. After each item, thread 0 adds 1 to the event `signal` with a
-// GPU-scope release atomic. Block b runs the items b, b + gridDim.x and so on.
+// reaches its target, with GPU-scope acquire loads. Block b runs the items b, b + gridDim.x and so on. After the last
+// of its items, the block adds the count of its items to the event `signal`, one time, with a GPU-scope release.
 
 #include <stddef.h>
 #include <stdint.h>
@@ -106,15 +106,10 @@ __device__ __forceinline__ uint32_t ld_acquire_gpu_u32(const uint32_t* ptr) {
     return val;
 }
 
-// A fence of release and acquire order at GPU scope. It costs less than __threadfence, which is sequentially consistent.
-__device__ __forceinline__ void fence_acq_rel_gpu() {
-    asm volatile("fence.acq_rel.gpu;" ::: "memory");
-}
-
-__device__ __forceinline__ uint32_t atom_release_gpu_add_u32(uint32_t* ptr, uint32_t val) {
-    uint32_t old;
-    asm volatile("atom.release.gpu.add.u32 %0, [%1], %2;" : "=r"(old) : "l"(ptr), "r"(val));
-    return old;
+// A release add at GPU scope. A release is cumulative: it publishes each write that the thread has seen, and the
+// __syncthreads before it makes the writes of the other threads of the block seen. Thus no separate fence is needed.
+__device__ __forceinline__ void red_release_gpu_add_u32(uint32_t* ptr, uint32_t val) {
+    asm volatile("red.release.gpu.global.add.u32 [%0], %1;" ::"l"(ptr), "r"(val) : "memory");
 }
 
 // The dynamic shared memory of the block. The launch gives its size. Only the probe ops use it for now.
@@ -284,17 +279,20 @@ extern "C" __global__ void mk_persistent_interpreter(
             break;
         }
 
-        // Block b runs the items b, b + G, b + 2G and so on. After each item it adds 1 to the event of the task.
+        // Block b runs the items b, b + G, b + 2G and so on.
+        uint32_t ran = 0;
         for (uint32_t item = bid; item < count; item += grid) {
             if (task.items != 0) {
                 run_op(task, item);
             }
             __syncthreads();
-            if (threadIdx.x == 0 && task.signal != NO_EVENT) {
-                // The fence and the release make the writes of the block visible to a block that reads the event.
-                fence_acq_rel_gpu();
-                atom_release_gpu_add_u32(scoreboard + (base_event + task.signal), 1u);
-            }
+            ran += 1;
+        }
+        // One release add for the whole task. It carries the count of items of this block, so the event reaches the
+        // item count of the task. A block with no item adds nothing. The __syncthreads above orders the writes of
+        // every thread of the block before the add of thread 0.
+        if (threadIdx.x == 0 && ran != 0 && task.signal != NO_EVENT) {
+            red_release_gpu_add_u32(scoreboard + (base_event + task.signal), ran);
         }
 
         if (threadIdx.x == 0) {

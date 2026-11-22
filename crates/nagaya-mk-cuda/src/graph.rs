@@ -5,8 +5,9 @@
 //! for two waits, so the builder puts a JOIN task before a task that keeps more. A wait always points backward in
 //! the ring: a grid that walks the ring in order cannot deadlock then, because every block is resident.
 //!
-//! A task signals its own event, the one that has the index of the task in the ring. A block adds 1 to it after each
-//! work item. A wait names the event of the producer and a target: the number of items of the producer.
+//! A task signals its own event, the one that has the index of the task in the ring. A block adds the count of its items to it,
+//! one time, after the last of them. A wait names the event of the producer and a target: the number of items of the
+//! producer.
 
 /// A range of device bytes, from `start` up to but not including `end`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
