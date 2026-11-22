@@ -4,41 +4,46 @@
 // built yet. The lane replaces the body of its own stubs and changes no other file of the interpreter. `run_op` in
 // megakernel.cu calls each op.
 //
-// This header needs `mk_protocol.h`, `MkTaskDescriptor` and the worker functions of megakernel.cu.
+// This header needs `mk_protocol.h`, `MkTaskDescriptor`, `MkTaskTable` and the worker functions of megakernel.cu.
 
 #pragma once
 
 // Reserved for wave B lane R (rows).
-__device__ __forceinline__ void op_embed(const MkTaskDescriptor& task, uint32_t item) {
+__device__ __forceinline__ void op_embed(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
     (void)task;
+    (void)table;
     (void)item;
     __trap();
 }
 
 // Reserved for wave B lane R (rows).
-__device__ __forceinline__ void op_mix(const MkTaskDescriptor& task, uint32_t item) {
+__device__ __forceinline__ void op_mix(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
     (void)task;
+    (void)table;
     (void)item;
     __trap();
 }
 
 // Reserved for wave B lane R (rows).
-__device__ __forceinline__ void op_gate_down(const MkTaskDescriptor& task, uint32_t item) {
+__device__ __forceinline__ void op_gate_down(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
     (void)task;
+    (void)table;
     (void)item;
     __trap();
 }
 
 // Reserved for wave B lane R (rows).
-__device__ __forceinline__ void op_gate_up(const MkTaskDescriptor& task, uint32_t item) {
+__device__ __forceinline__ void op_gate_up(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
     (void)task;
+    (void)table;
     (void)item;
     __trap();
 }
 
 // Reserved for wave B lane R (rows).
-__device__ __forceinline__ void op_mix_out(const MkTaskDescriptor& task, uint32_t item) {
+__device__ __forceinline__ void op_mix_out(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
     (void)task;
+    (void)table;
     (void)item;
     __trap();
 }

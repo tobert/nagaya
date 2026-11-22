@@ -7,7 +7,8 @@
 //   b      the bank of repacked weights: the item `(expert, tile)` is at `b + (expert * (n / 64) + tile) * item_bytes`,
 //          and an item holds the 64 weight rows of a column tile (`src/experts.rs` writes the layout).
 //   c      the output, f32: `y_row` of a pair is a row of `n` floats.
-//   d      NVFP4 only: the amax of each expert (`f32`, 128 of them).
+//   d      the task table. NVFP4 needs it: the slot MK_EXPERT_TABLE_AMAX holds the pointer to the amax of each expert
+//          (`f32`, 128 of them).
 //   f      the list of pairs (`ExpertPair`, in protocol.rs). Item `i` takes the pair `i / (n / 64)`.
 //   n      the rows of the weight: a multiple of 64.
 //   k      the values of a row: a multiple of 128.
@@ -210,7 +211,7 @@ __device__ __forceinline__ void sum_groups(
 }
 
 template <typename F, uint32_t NB>
-__device__ __forceinline__ void expert_item_nb(const MkTaskDescriptor& task, uint32_t item, const PairRef pair) {
+__device__ __forceinline__ void expert_item_nb(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item, const PairRef pair) {
     const uint32_t n = task.n;
     const uint32_t k = task.k;
     const uint32_t tiles = n / MK_EXPERT_TILE_ROWS;
@@ -273,7 +274,7 @@ __device__ __forceinline__ void expert_item_nb(const MkTaskDescriptor& task, uin
         float w_amax = 0.0f;
         float inverse_row_scale = 0.0f;
         if constexpr (F::STEPS == 2) {
-            w_amax = reinterpret_cast<const float*>(task.d)[pair.expert()];
+            w_amax = reinterpret_cast<const float*>(table->ptr[MK_EXPERT_TABLE_AMAX])[pair.expert()];
             inverse_row_scale = 1.0f / (1536.0f * task.p1);
         }
 #pragma unroll
@@ -322,9 +323,10 @@ __device__ __forceinline__ void experts_prefetch_next(const MkTaskDescriptor& ta
 }
 
 template <typename F>
-__device__ __forceinline__ void op_expert(const MkTaskDescriptor& task, uint32_t item) {
+__device__ __forceinline__ void op_expert(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
     if (worker_count() != MK_CONSUMER_THREADS || (task.n % MK_EXPERT_TILE_ROWS) != 0 || (task.k % MK_EXPERT_K_GROUP) != 0 ||
-        dynamic_smem_bytes() < MK_EXPERT_SMEM_BYTES || task.item_bytes != 0) {
+        dynamic_smem_bytes() < MK_EXPERT_SMEM_BYTES || task.item_bytes != 0 ||
+        (F::STEPS == 2 && table == nullptr)) {
         __trap();  // The cut needs 8 warps, whole tiles and groups, and the shared memory of the partial sums.
     }
     const uint32_t tiles = task.n / MK_EXPERT_TILE_ROWS;
@@ -334,12 +336,16 @@ __device__ __forceinline__ void op_expert(const MkTaskDescriptor& task, uint32_t
     }
     experts_prefetch_next<F>(task, item);
     if (pair.count() <= 8) {
-        expert_item_nb<F, 1>(task, item, pair);
+        expert_item_nb<F, 1>(task, table, item, pair);
     } else {
-        expert_item_nb<F, 2>(task, item, pair);
+        expert_item_nb<F, 2>(task, table, item, pair);
     }
 }
 
-__device__ __forceinline__ void op_expert_nvfp4(const MkTaskDescriptor& task, uint32_t item) { op_expert<ExpertNvfp4>(task, item); }
+__device__ __forceinline__ void op_expert_nvfp4(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
+    op_expert<ExpertNvfp4>(task, table, item);
+}
 
-__device__ __forceinline__ void op_expert_mxfp8(const MkTaskDescriptor& task, uint32_t item) { op_expert<ExpertMxfp8>(task, item); }
+__device__ __forceinline__ void op_expert_mxfp8(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
+    op_expert<ExpertMxfp8>(task, table, item);
+}

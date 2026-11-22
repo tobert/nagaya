@@ -399,7 +399,7 @@ __device__ __forceinline__ void mma_tile(float (&d)[4], const MmaFragment& f) {
     }
 }
 
-// Warp 0 of block 0 runs one tile from zero. a, b = the operands, d = the scales, c = 128 `f32` words: the tile
+// Warp 0 of block 0 runs one tile from zero. a, b = the operands, e = the scales, c = 128 `f32` words: the tile
 // of results in row-major order (16 rows of 8). k = the kind (`PROBE_MMA_*`).
 __device__ __forceinline__ void op_probe_mma_tile(const MkTaskDescriptor& task) {
     if (blockIdx.x != 0 || worker_id() >= 32) {
@@ -407,7 +407,7 @@ __device__ __forceinline__ void op_probe_mma_tile(const MkTaskDescriptor& task) 
     }
     const MmaFragment f = mma_load_fragment(
         task.k, reinterpret_cast<const uint8_t*>(task.a), reinterpret_cast<const uint8_t*>(task.b),
-        reinterpret_cast<const uint8_t*>(task.d));
+        reinterpret_cast<const uint8_t*>(task.e));
     float d[4] = {0.f, 0.f, 0.f, 0.f};
     switch (task.k) {
         case PROBE_MMA_BF16:
@@ -431,14 +431,14 @@ __device__ __forceinline__ void op_probe_mma_tile(const MkTaskDescriptor& task) 
     out[(g + 8) * 8 + 2 * t + 1] = d[3];
 }
 
-// Every warp of every block loads the tile (a, b, scales in d) and runs `n` MMAs in each of `MK_PROBE_MMA_CHAINS`
+// Every warp of every block loads the tile (a, b, scales in e) and runs `n` MMAs in each of `MK_PROBE_MMA_CHAINS`
 // chains. A chain adds each result to its own accumulator, so the chains are independent and keep the tensor
 // cores busy. c = the four accumulators of each chain for each thread, in the order of block, thread, chain, word.
 template <uint32_t KIND>
 __device__ __forceinline__ void probe_mma_rate(const MkTaskDescriptor& task) {
     const MmaFragment f = mma_load_fragment(
         KIND, reinterpret_cast<const uint8_t*>(task.a), reinterpret_cast<const uint8_t*>(task.b),
-        reinterpret_cast<const uint8_t*>(task.d));
+        reinterpret_cast<const uint8_t*>(task.e));
     float acc[MK_PROBE_MMA_CHAINS][4] = {};
     for (uint32_t i = 0; i < task.n; ++i) {
 #pragma unroll

@@ -195,7 +195,7 @@ fn scoreboard_tasks(data: u64, out1: u64, out2: u64, slow_a: u32, slow_b: u32, b
         Task::per_block(MkTaskDescriptor {
             opcode: OP_SELFTEST_CHECK,
             a: data,
-            d: out,
+            e: out,
             n: WORDS_PER_BLOCK as u32,
             group_items: seed,
             ..Default::default()

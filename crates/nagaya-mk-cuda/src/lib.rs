@@ -68,7 +68,7 @@ mod tests {
     use std::mem::{align_of, offset_of, size_of};
 
     use super::*;
-    use crate::protocol::{self, BlockStats, MkTaskDescriptor};
+    use crate::protocol::{self, BlockStats, MkTaskDescriptor, MkTaskTable};
     use crate::safetensors::SafeTensorsHeader;
 
     #[test]
@@ -112,6 +112,25 @@ mod tests {
         assert_eq!(offset_of!(BlockStats, pad), 4);
         assert_eq!(offset_of!(BlockStats, wait_ns), 8);
         assert_eq!(offset_of!(BlockStats, exec_ns), 16);
+    }
+
+    #[test]
+    fn the_task_table_is_128_bytes_of_16_pointers_and_the_header_says_so() {
+        assert_eq!(size_of::<MkTaskTable>(), 128);
+        assert_eq!(align_of::<MkTaskTable>(), 128);
+        assert_eq!(offset_of!(MkTaskTable, ptr), 0);
+        assert_eq!(size_of::<[u64; protocol::TABLE_POINTERS]>(), 128);
+        const { assert!(protocol::EXPERT_TABLE_AMAX < protocol::TABLE_POINTERS) };
+        let header = include_str!(concat!(env!("OUT_DIR"), "/mk_protocol.h"));
+        for line in [
+            "#define MK_TABLE_BYTES 128\n",
+            "#define MK_TABLE_ALIGN 128\n",
+            "#define MK_TABLE_POINTERS 16\n",
+            "#define MK_TABLE_OFF_ptr 0\n",
+            "#define MK_EXPERT_TABLE_AMAX 0\n",
+        ] {
+            assert!(header.contains(line), "{line:?} is not in the header");
+        }
     }
 
     #[test]

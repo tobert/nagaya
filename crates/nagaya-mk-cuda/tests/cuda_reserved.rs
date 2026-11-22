@@ -15,6 +15,7 @@ use nagaya_mk_cuda::INKLING2_CUBIN;
 use nagaya_mk_cuda::driver::CudaDevice;
 use nagaya_mk_cuda::protocol::{
     MkTaskDescriptor, OP_ATTN, OP_EMBED, OP_GATE_DOWN, OP_GATE_UP, OP_MIX, OP_MIX_OUT, OP_OUT_MIX, OP_PROJ, OP_ROUTE,
+    OP_SELFTEST_TABLE,
 };
 use nagaya_mk_cuda::ring::{Ring, Task};
 use nagaya_mk_cuda::test_cards;
@@ -22,9 +23,9 @@ use nagaya_mk_cuda::test_cards;
 const VARIABLE: &str = "NAGAYA_RESERVED_OPCODE";
 const TEST: &str = "each_reserved_opcode_traps_until_its_lane_builds_it";
 
-/// The opcodes that wave B reserves, then two numbers in the range of a lane that no constant names, and one number
-/// that the table of the B70 used and the GB10 does not.
-const TRAPPING: [(&str, u16); 12] = [
+/// The opcodes that wave B reserves, then two numbers in the range of a lane that no constant names, one number
+/// that the table of the B70 used and the GB10 does not, and a test op that needs a task table and has none.
+const TRAPPING: [(&str, u16); 13] = [
     ("OP_PROJ", OP_PROJ),
     ("OP_OUT_MIX", OP_OUT_MIX),
     ("OP_ROUTE", OP_ROUTE),
@@ -37,6 +38,7 @@ const TRAPPING: [(&str, u16); 12] = [
     ("a free number of lane D", 46),
     ("a free number of lane M", 60),
     ("an old number of the B70 table", 142),
+    ("OP_SELFTEST_TABLE with no task table", OP_SELFTEST_TABLE),
 ];
 
 /// The child: launch one task with `opcode`, and expect an error of the launch.

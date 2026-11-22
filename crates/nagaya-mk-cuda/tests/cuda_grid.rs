@@ -114,7 +114,7 @@ fn the_bits_of_a_ring_do_not_depend_on_the_grid_and_each_event_counts_its_items(
         Task::per_block(MkTaskDescriptor {
             opcode: OP_SELFTEST_CHECK,
             a: fill_buf,
-            d: wrong,
+            e: wrong,
             n: words_per_block as u32,
             group_items: 3,
             ..Default::default()

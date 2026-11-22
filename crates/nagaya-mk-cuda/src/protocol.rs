@@ -117,9 +117,11 @@ define_u16_table! {
     // Test opcodes. They gate the scoreboard in `tests/cuda_smoke.rs`. An engine does not use them.
     // `OP_SELFTEST_FILL`: block `n` writes `n` words at `a + n * n` words, after a delay of `k` ns in block `kt`.
     // `OP_SELFTEST_CHECK`: each block reads the words of all blocks and writes its count of wrong words to `d[block]`.
-    // Both use the seed `group_items` for the value of each word.
+    // Both use the seed `group_items` for the value of each word. `OP_SELFTEST_CHECK` writes its counts to `e`.
+    // `OP_SELFTEST_TABLE`: item `i` writes the `TABLE_POINTERS` words of its task table to `c + i * TABLE_POINTERS` words.
     OP_SELFTEST_FILL = 250;
     OP_SELFTEST_CHECK = 251;
+    OP_SELFTEST_TABLE = 252;
 }
 
 define_u16_table! {
@@ -189,6 +191,27 @@ pub struct ExpertPair {
     pub y_row: [u16; EXPERT_MAX_ROWS],
 }
 
+/// Pointers in a task table.
+pub const TABLE_POINTERS: usize = 16;
+
+/// The task table of a task: 16 device pointers that stay the same for a slot and a run. The descriptor has room for
+/// the pointers `a` to `f` only, and a fused op of wave B needs more: planes of the residual, norm weights, the weight
+/// and the state of a convolution, biases, and an output for each segment. The host writes the table into device
+/// memory at the load. `d` of the descriptor holds its address, or 0 when the task has no table. The address is
+/// 128-byte aligned. The producer warp copies the table to shared memory with the descriptor, one task ahead.
+///
+/// An op gives each slot a meaning, and names the slot in its own kernel file and in this file (for example
+/// [`EXPERT_TABLE_AMAX`]). A slot that an op does not use stays 0. Words that are not pointers are allowed too: the
+/// kernel reads a slot as a `u64`.
+#[repr(C, align(128))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MkTaskTable {
+    pub ptr: [u64; TABLE_POINTERS],
+}
+
+/// The slot of the pointer to the amax of each expert (`f32`, 128 of them) in the table of `OP_EXPERT_NVFP4`.
+pub const EXPERT_TABLE_AMAX: usize = 0;
+
 define_u16_table! {
     FLAGS;
     // Each flag is one bit, and no two flags share a bit. An op reads the flags that it knows, and it traps on a flag
@@ -231,6 +254,7 @@ pub struct MkTaskDescriptor {
     pub a: u64,
     pub b: u64,
     pub c: u64,
+    /// The address of the task table (`MkTaskTable`), or 0 for a task with no table.
     pub d: u64,
     pub e: u64,
     pub f: u64,

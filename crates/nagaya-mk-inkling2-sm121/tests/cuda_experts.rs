@@ -26,8 +26,8 @@ use common::gpu::{GRIDS, download, open, open_profile, run_with_watchdog, upload
 use nagaya_mk_cuda::driver::{CUdeviceptr, CudaDevice};
 use nagaya_mk_cuda::experts::{ExpertFormat, QuantRowsLayout, repack_expert};
 use nagaya_mk_cuda::protocol::{
-    EXPERT_MAX_ROWS, ExpertPair, MkTaskDescriptor, OP_EXPERT_MXFP8, OP_EXPERT_NVFP4, OP_PROBE_READ, OP_QUANT_MXFP8,
-    OP_QUANT_NVFP4, PROBE_ITEM_BYTES, PROBE_READ_NC, PROFILE_WORDS,
+    EXPERT_MAX_ROWS, EXPERT_TABLE_AMAX, ExpertPair, MkTaskDescriptor, MkTaskTable, OP_EXPERT_MXFP8, OP_EXPERT_NVFP4,
+    OP_PROBE_READ, OP_QUANT_MXFP8, OP_QUANT_NVFP4, PROBE_ITEM_BYTES, PROBE_READ_NC, PROFILE_WORDS,
 };
 use nagaya_mk_cuda::ring::{DEFAULT_BLOCK_THREADS, Ring, Task};
 use nagaya_mk_cuda::safetensors::SafeTensorsHeader;
@@ -241,6 +241,8 @@ fn pair(expert: usize, x_rows: &[usize], first_slot: usize) -> ExpertPair {
 struct Bank {
     ptr: CUdeviceptr,
     amax: CUdeviceptr,
+    /// The task table of the op: the slot `EXPERT_TABLE_AMAX` holds `amax`.
+    table: CUdeviceptr,
     bytes: usize,
 }
 
@@ -254,9 +256,12 @@ fn upload_bank(dev: &CudaDevice, m: &Matrix) -> Bank {
     } else {
         0
     };
+    let mut table = MkTaskTable::default();
+    table.ptr[EXPERT_TABLE_AMAX] = amax;
     Bank {
         ptr: upload(dev, &bytes),
         amax,
+        table: upload(dev, &[table]),
         bytes: bytes.len(),
     }
 }
@@ -283,7 +288,7 @@ fn expert_task(
         a: x,
         b: bank.ptr,
         c: y,
-        d: bank.amax,
+        d: bank.table,
         f: pairs,
         n: N as u32,
         k: m.k as u32,
@@ -748,7 +753,7 @@ fn speed_of_8_experts_with_1_row() {
             );
         }
         ring.free().unwrap();
-        for ptr in [x, pair_ptr, y, bank.ptr, bank.amax] {
+        for ptr in [x, pair_ptr, y, bank.ptr, bank.amax, bank.table] {
             if ptr != 0 {
                 dev.free_device(ptr).unwrap();
             }

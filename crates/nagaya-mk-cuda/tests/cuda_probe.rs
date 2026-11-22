@@ -709,7 +709,7 @@ fn run_tile(dev: &CudaDevice, kind: u16, tile: &Tile) -> Vec<f32> {
         a,
         b,
         c: out,
-        d: s,
+        e: s,
         k: u32::from(kind),
         ..Default::default()
     }]));
@@ -815,7 +815,7 @@ fn probe_mma_rate() {
                     a,
                     b,
                     c: out + (t * words * 4) as u64,
-                    d: s,
+                    e: s,
                     n: REPS,
                     k: u32::from(kind),
                     ..Default::default()

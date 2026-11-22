@@ -93,7 +93,7 @@ fn compile_cubin(nvcc: &Path, source: &Path, kernels: &Path, out: &Path, name: &
 /// Write `mk_protocol.h`: the opcodes, the flags, the sizes and the offset of each field, all from `src/protocol.rs`.
 /// The kernel checks its own structs against these numbers with `static_assert`.
 fn protocol_header() -> String {
-    use protocol::{BlockStats, MkTaskDescriptor};
+    use protocol::{BlockStats, MkTaskDescriptor, MkTaskTable};
     use std::fmt::Write as _;
     use std::mem::{align_of, offset_of, size_of};
 
@@ -150,6 +150,11 @@ fn protocol_header() -> String {
     writeln!(h, "#define MK_DESC_BYTES {}", size_of::<MkTaskDescriptor>()).unwrap();
     writeln!(h, "#define MK_DESC_ALIGN {}", align_of::<MkTaskDescriptor>()).unwrap();
     offsets!(h, "MK_DESC_OFF_", MkTaskDescriptor: opcode, flags, items, wait0_event, wait0_target, wait1_event, wait1_target, signal, rows, a, b, c, d, e, f, n, k, kt, group_items, item_bytes, scale_bytes, pos0, layer, p0, p1, p2, p3);
+    writeln!(h, "#define MK_TABLE_BYTES {}", size_of::<MkTaskTable>()).unwrap();
+    writeln!(h, "#define MK_TABLE_ALIGN {}", align_of::<MkTaskTable>()).unwrap();
+    writeln!(h, "#define MK_TABLE_POINTERS {}", protocol::TABLE_POINTERS).unwrap();
+    offsets!(h, "MK_TABLE_OFF_", MkTaskTable: ptr);
+    writeln!(h, "#define MK_EXPERT_TABLE_AMAX {}", protocol::EXPERT_TABLE_AMAX).unwrap();
     writeln!(h, "#define MK_STATS_BYTES {}", size_of::<BlockStats>()).unwrap();
     offsets!(h, "MK_STATS_OFF_", BlockStats: tasks_run, pad, wait_ns, exec_ns);
     h
