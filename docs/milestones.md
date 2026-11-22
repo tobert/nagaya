@@ -773,8 +773,10 @@ with each weight in its checkpoint format:
 | the head (`bf16`, 200,064 rows) | 0.93 GB |
 | sum | 5.56 GB |
 
-- NVIDIA gives the GB10 273 GB/s of memory bandwidth. At that rate, the floor of a decode step is about 20 ms, or
-  about 49 tokens each second. Step 7 measures the real peak.
+- NVIDIA gives the GB10 273 GB/s of memory bandwidth. The probe measured a read peak of about 252 GB/s, 92 to 94% of
+  that figure (`crates/nagaya-mk-cuda/tests/cuda_probe.rs`, step 7 substep 1). At the measured peak, the floor of a
+  decode step is about 22 ms (5.56 GB at 252 GB/s). That is about 45 tokens each second at batch 1. The figure of
+  273 GB/s would give about 20 ms and about 49 tokens each second.
 - The dense weights take half of the bytes. Thus a matmul of one row is as important as an expert op.
 - A weight in memory stays in its checkpoint format. An expansion to `f32` in memory doubles the dense bytes.
 - The keys and values of a full run take 8 KB of each position in `f32`. Full runs are layers 5 and 23 once, and
@@ -878,10 +880,11 @@ Do the steps in this order. Each step ends with the checks green.
    - Its split constants enter the engine identity (rule 8).
 
    Migrate in six substeps. Each ends with the checks green and its GPU gate:
-   1. **Probes** on the current interpreter. Read 1 GB in items of 32 KB, with direct loads and with bulk copies
-      into shared memory, each with and without L2 prefetch. Re-read 1 to 64 MB to find the knee of L2. Time the
-      tiles of `bf16` `m16n8k16`, `mxf4nvf4` and `mxf8f6f4`. Gate: the numbers go in the binding, and each probe
-      tile equals its host value.
+   1. **Probes** on the current interpreter. Done: `2aef3a64`, merged in `213cf10d`. The facts are in the binding.
+
+      Read 1 GB in items of 32 KB, with direct loads and with bulk copies into shared memory, each with and
+      without L2 prefetch. Re-read 1 to 64 MB to find the knee of L2. Time the tiles of `bf16` `m16n8k16`,
+      `mxf4nvf4` and `mxf8f6f4`. Gate: the numbers go in the binding, and each probe tile equals its host value.
    2. **The 128-byte descriptor.** A Rust layout test and a `static_assert` compare the layouts. Gate: `OP_COPY`
       gives the same bits.
    3. **Counters and the host builder** of the graph of dependencies. Host tests: a reduction is right, the
