@@ -169,7 +169,7 @@ __device__ __forceinline__ void op_matmul_bf16(const MkTaskDescriptor& task, uin
     // The item that arrives last in its group merges. The release of the add publishes the partials of this block,
     // and the acquire shows the partials of the others.
     if (worker_id() == 0) {
-        *merge_flag = atom_acq_rel_gpu_add_u32(counters + tile, 1u) == slices - 1 ? 1u : 0u;
+        *merge_flag = merge_arrive(counters + tile, slices) ? 1u : 0u;
     }
     worker_sync();
     if (*merge_flag != 0) {
@@ -181,9 +181,6 @@ __device__ __forceinline__ void op_matmul_bf16(const MkTaskDescriptor& task, uin
             }
             reinterpret_cast<float*>(task.c)[static_cast<uint64_t>(i / MM_TILE) * task.n + tile * MM_TILE + (i % MM_TILE)] =
                 sum;
-        }
-        if (worker_id() == 0) {
-            counters[tile] = 0;
         }
     }
 }

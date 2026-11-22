@@ -481,7 +481,8 @@ __device__ __forceinline__ void op_probe_mma_rate(const MkTaskDescriptor& task) 
 // a partial, to its own slot. Then it adds 1 to the counter of its group. The item that reads `slices - 1` is the last
 // in the group: it sums the partials in index order and writes the result. The order of each sum is a function of
 // the shape only, so the bits do not depend on the grid or on which block merges.
-// a = vectors (const float*), c = sums (float*), f = partials, then counters (zero at the start),
+// a = vectors (const float*), c = sums (float*), f = partials, then counters (zero at the start, and back at 0 after
+// the merge: see `merge_arrive`),
 // n = floats in a vector, kt = floats in a slice, group_items = slices in a vector.
 __device__ __forceinline__ void op_reduce_probe(const MkTaskDescriptor& task, uint32_t item) {
     __shared__ float lanes[MK_WORKERS];
@@ -513,7 +514,7 @@ __device__ __forceinline__ void op_reduce_probe(const MkTaskDescriptor& task, ui
         float* partials = reinterpret_cast<float*>(task.f);
         uint32_t* counters = reinterpret_cast<uint32_t*>(partials + task.items);
         partials[item] = lanes[0];
-        if (atom_acq_rel_gpu_add_u32(counters + group, 1u) == slices - 1) {
+        if (merge_arrive(counters + group, slices)) {
             const float* mine = partials + static_cast<uint64_t>(group) * slices;
             float sum = mine[0];
             for (uint32_t s = 1; s < slices; ++s) {

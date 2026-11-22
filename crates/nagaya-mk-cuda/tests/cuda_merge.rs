@@ -198,3 +198,63 @@ fn the_merge_of_k_slices_gives_the_bits_of_the_fixed_order_at_each_grid() {
         }
     }
 }
+
+/// The rule of the merge counters: the item that merges resets the counter of its group. Then a ring needs a host
+/// zero only once, at the open, and the next launch finds every counter at 0.
+#[test]
+fn a_ring_runs_again_with_no_host_zero_in_between() {
+    let dev = CudaDevice::open_by_pci(&test_cards::card(), INKLING2_CUBIN).expect("open the GPU");
+    let shape = &SHAPES[0];
+    let items = shape.groups * shape.slices();
+    let input: Vec<f32> = (0..(shape.groups * shape.n) as u64).map(value).collect();
+    let want: Vec<f32> = (0..shape.groups).map(|g| host_sum(shape, g, &input)).collect();
+    let input_bytes = input.len() * 4;
+    let src = dev.alloc_device(input_bytes).unwrap();
+    unsafe { dev.copy_htod(src, input.as_ptr().cast::<c_void>(), input_bytes) }.unwrap();
+    let out = dev.alloc_device(shape.groups * 4).unwrap();
+    let mut ring = Ring::new(&dev, items + shape.groups, false).unwrap();
+    ring.set(&[Task::with_items(MkTaskDescriptor {
+        opcode: OP_REDUCE_PROBE,
+        items: items as u32,
+        a: src,
+        c: out,
+        f: ring.scratch(),
+        n: shape.n as u32,
+        kt: shape.kt as u32,
+        group_items: shape.slices() as u32,
+        ..Default::default()
+    })
+    .reads(src, input_bytes)
+    .writes(out, shape.groups * 4)]);
+    // The only zero of the counters.
+    ring.zero_device().unwrap();
+    for (run, grid) in [48u32, 24, 7, 1, 48, 24, 7, 1, 48, 5].into_iter().enumerate() {
+        dev.memset_zero(out, shape.groups * 4).unwrap();
+        run_with_watchdog(
+            &ring,
+            grid,
+            DEFAULT_BLOCK_THREADS,
+            dev.max_dynamic_shared_bytes().unwrap(),
+        );
+        let got = download_f32(&dev, out, shape.groups);
+        for (g, (got, want)) in got.iter().zip(&want).enumerate() {
+            assert_eq!(
+                got.to_bits(),
+                want.to_bits(),
+                "group {g} at grid {grid}, run {run}: got {got:e}, wanted {want:e}"
+            );
+        }
+        // The scratch holds a float for each item, then a counter for each group. Each counter is back at 0.
+        let mut scratch = vec![0u32; items + shape.groups];
+        unsafe { dev.copy_dtoh(scratch.as_mut_ptr().cast::<c_void>(), ring.scratch(), scratch.len() * 4) }.unwrap();
+        assert_eq!(
+            &scratch[items..],
+            vec![0u32; shape.groups],
+            "the counters after run {run} at grid {grid}"
+        );
+    }
+    ring.free().unwrap();
+    for ptr in [src, out] {
+        dev.free_device(ptr).unwrap();
+    }
+}

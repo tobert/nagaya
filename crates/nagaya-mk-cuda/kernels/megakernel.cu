@@ -137,6 +137,21 @@ __device__ __forceinline__ uint32_t atom_acq_rel_gpu_add_u32(uint32_t* ptr, uint
     return old;
 }
 
+// The merge rule. The items of one merge group (the K slices of a tile, or the tiles of a row) each write a partial and
+// then call this function with the counter of the group. The item that gets the last count returns true, and it merges
+// the partials. That item also sets the counter back to 0 before it merges, because every other item of the group has
+// added its count already. So a counter needs a host zero only when the ring opens, and after a launch that failed. A
+// new merge group or finisher must call this function and must not reset its counter in another way. The merging
+// thread signals the task after the reset, and a later task that reuses the counter waits on that signal, so the reset
+// is seen. Only one thread of the item calls this function.
+__device__ __forceinline__ bool merge_arrive(uint32_t* counter, uint32_t group_items) {
+    if (atom_acq_rel_gpu_add_u32(counter, 1u) != group_items - 1) {
+        return false;
+    }
+    asm volatile("st.relaxed.gpu.global.u32 [%0], %1;" ::"l"(counter), "r"(0u) : "memory");
+    return true;
+}
+
 // The threads that do the work of an item. A sum that an op cuts over the workers has this many lanes, whatever the
 // grid is, so the bits of a sum do not depend on the launch.
 constexpr uint32_t MK_WORKERS = 256;
