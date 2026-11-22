@@ -71,10 +71,11 @@ __device__ __forceinline__ void op_copy(const MkTaskDescriptor& task) {
     // a = dst (float*), b = src (const float*), p0 = count of floats.
     float* dst = reinterpret_cast<float*>(task.a);
     const float* src = reinterpret_cast<const float*>(task.b);
-    uint32_t n = task.p0;
-    uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-    uint32_t stride = gridDim.x * blockDim.x;
-    for (uint32_t i = tid; i < n; i += stride) {
+    // The index is 64 bits: with a 32-bit index, `i += stride` wraps for a count near 2^32 and the loop never ends.
+    const uint64_t n = task.p0;
+    const uint64_t tid = static_cast<uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const uint64_t stride = static_cast<uint64_t>(gridDim.x) * blockDim.x;
+    for (uint64_t i = tid; i < n; i += stride) {
         dst[i] = src[i];
     }
 }
