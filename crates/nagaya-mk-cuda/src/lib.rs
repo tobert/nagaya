@@ -24,6 +24,12 @@ pub const INKLING2_CUBIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mega
 pub const INKLING2_PROFILE_CUBIN: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_inkling2_profile_sm121.cubin"));
 
+/// Test cubin with a spin limit of 65,536 polls (`MK_SPIN_LIMIT`). A wait that never ends traps in about 10 ms.
+/// A production engine must not load it.
+#[cfg(feature = "cuda")]
+pub const INKLING2_SPIN_TEST_CUBIN: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_inkling2_spin_test_sm121.cubin"));
+
 /// Version string reported by `nvcc --version` at build time, for engine identity (spec 12.1).
 #[cfg(feature = "cuda")]
 pub const NVCC_VERSION: &str = env!("CUDA_NVCC_VERSION");

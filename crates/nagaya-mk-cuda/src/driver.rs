@@ -21,6 +21,7 @@ pub type CUdeviceptr = u64;
 
 const CUDA_SUCCESS: CUresult = 0;
 const CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT: c_int = 16;
+const CU_DEVICE_ATTRIBUTE_COOPERATIVE_LAUNCH: c_int = 95;
 
 unsafe extern "C" {
     fn cuInit(flags: c_uint) -> CUresult;
@@ -52,7 +53,13 @@ unsafe extern "C" {
     fn cuMemcpyDtoH(dst_host: *mut c_void, src_device: CUdeviceptr, byte_count: usize) -> CUresult;
     #[link_name = "cuMemsetD8_v2"]
     fn cuMemsetD8(dst_device: CUdeviceptr, uc: u8, n: usize) -> CUresult;
-    fn cuLaunchKernel(
+    fn cuOccupancyMaxActiveBlocksPerMultiprocessor(
+        num_blocks: *mut c_int,
+        func: CUfunction,
+        block_size: c_int,
+        dynamic_smem_size: usize,
+    ) -> CUresult;
+    fn cuLaunchCooperativeKernel(
         f: CUfunction,
         grid_dim_x: c_uint,
         grid_dim_y: c_uint,
@@ -63,7 +70,6 @@ unsafe extern "C" {
         shared_mem_bytes: c_uint,
         hstream: CUstream,
         kernel_params: *mut *mut c_void,
-        extra: *mut *mut c_void,
     ) -> CUresult;
 }
 
@@ -87,6 +93,7 @@ fn driver_text(
 fn advice(code: CUresult) -> &'static str {
     match code {
         2 => "Free GPU memory, or ask for fewer bytes.",
+        720 => "The grid is larger than the GPU can hold at once. Use fewer blocks.",
         3 | 100 | 101 => "Check that the driver is loaded: run `nvidia-smi`.",
         201 | 202 | 219 | 400 => "The context of the device is gone or destroyed. Open the device again.",
         209 | 222 | 300 | 301 => "The cubin does not fit this GPU. Build it for `sm_121a` with the same CUDA toolkit.",
@@ -98,6 +105,32 @@ fn advice(code: CUresult) -> &'static str {
         }
         _ => "Check that no other process holds the GPU, and that the driver matches the CUDA toolkit.",
     }
+}
+
+/// Refuse a grid that the GPU cannot hold all at once. Every block waits on the others, so a block that is not
+/// resident would wait for ever.
+fn residency_problem(grid_blocks: u32, block_threads: u32, blocks_per_sm: u32, sm_count: u32) -> Result<(), String> {
+    if grid_blocks == 0 || block_threads == 0 {
+        return Err(format!(
+            "a launch of {grid_blocks} blocks with {block_threads} threads each has no work. \
+             Ask for at least one block and one thread"
+        ));
+    }
+    if blocks_per_sm == 0 {
+        return Err(format!(
+            "no block of {block_threads} threads fits on one multiprocessor, so the kernel cannot run. \
+             Use fewer threads in each block"
+        ));
+    }
+    let resident = blocks_per_sm * sm_count;
+    if grid_blocks > resident {
+        return Err(format!(
+            "the grid of {grid_blocks} blocks is larger than the {resident} blocks that the GPU holds at once \
+             ({blocks_per_sm} blocks on each of {sm_count} multiprocessors). Each block waits on the others, so the \
+             launch would hang. Use a grid of {resident} blocks or fewer"
+        ));
+    }
+    Ok(())
 }
 
 /// Build the message of one driver error: what failed, the driver's name and text, and what to do.
@@ -195,6 +228,17 @@ impl CudaDevice {
                 "cuDeviceGetAttribute(MULTIPROCESSOR_COUNT)",
             )?;
             let sm_count = sm_count_from(sm_count)?;
+            let mut cooperative: c_int = 0;
+            check(
+                cuDeviceGetAttribute(&mut cooperative, CU_DEVICE_ATTRIBUTE_COOPERATIVE_LAUNCH, device),
+                "cuDeviceGetAttribute(COOPERATIVE_LAUNCH)",
+            )?;
+            if cooperative == 0 {
+                return Err(format!(
+                    "the GPU at {matched_pci} cannot run a cooperative launch, so the driver cannot guarantee that \
+                     every block is resident. Use a GPU of compute capability 6.0 or newer with a current driver"
+                ));
+            }
             let mut ctx: CUcontext = ptr::null_mut();
             check(cuDevicePrimaryCtxRetain(&mut ctx, device), "cuDevicePrimaryCtxRetain")?;
             if let Err(err) = check(cuCtxSetCurrent(ctx), "cuCtxSetCurrent") {
@@ -327,7 +371,26 @@ impl CudaDevice {
         unsafe { check(cuCtxSynchronize(), "cuCtxSynchronize") }
     }
 
+    /// Blocks of `block_threads` threads that the GPU holds at once, from the occupancy of the loaded kernel.
+    pub fn max_resident_blocks(&self, block_threads: u32) -> Result<u32, String> {
+        self.set_current()?;
+        let threads = c_int::try_from(block_threads)
+            .map_err(|_| format!("{block_threads} threads in a block is more than the driver takes"))?;
+        let mut per_sm: c_int = 0;
+        unsafe {
+            check(
+                cuOccupancyMaxActiveBlocksPerMultiprocessor(&mut per_sm, self.kernel, threads, 0),
+                "cuOccupancyMaxActiveBlocksPerMultiprocessor",
+            )?;
+        }
+        let per_sm = u32::try_from(per_sm).unwrap_or(0);
+        Ok(per_sm * self.sm_count)
+    }
+
     /// Launch `mk_persistent_interpreter` with `grid_blocks` blocks of `block_threads` threads and synchronize.
+    ///
+    /// The launch is cooperative, so the driver guarantees that all blocks are resident. The call refuses a grid that
+    /// the GPU cannot hold, because a block that is not resident never gets its turn and the others wait for ever.
     ///
     /// # Safety
     /// All device pointers must be valid for the duration of the kernel and large enough for the ring.
@@ -345,6 +408,8 @@ impl CudaDevice {
         profile_dev: CUdeviceptr,
     ) -> Result<(), String> {
         self.set_current()?;
+        let resident = self.max_resident_blocks(block_threads)?;
+        residency_problem(grid_blocks, block_threads, resident / self.sm_count, self.sm_count)?;
         let mut p_tasks = tasks_dev;
         let mut p_num = num_tasks;
         let mut p_sb = scoreboard_dev;
@@ -363,7 +428,7 @@ impl CudaDevice {
         ];
         unsafe {
             check(
-                cuLaunchKernel(
+                cuLaunchCooperativeKernel(
                     self.kernel,
                     grid_blocks,
                     1,
@@ -374,9 +439,8 @@ impl CudaDevice {
                     0,
                     ptr::null_mut(),
                     params.as_mut_ptr(),
-                    ptr::null_mut(),
                 ),
-                "cuLaunchKernel(mk_persistent_interpreter)",
+                "cuLaunchCooperativeKernel(mk_persistent_interpreter)",
             )?;
         }
         self.sync()
@@ -407,6 +471,22 @@ mod tests {
         let unknown = check(123_456, "cuInit").unwrap_err();
         assert!(unknown.contains("123456"), "{unknown}");
         assert!(unknown.contains("Check that no other process"), "{unknown}");
+    }
+
+    #[test]
+    fn a_grid_that_is_not_resident_is_refused_with_the_cause() {
+        assert!(residency_problem(48, 256, 6, 48).is_ok());
+        assert!(residency_problem(288, 256, 6, 48).is_ok());
+        let big = residency_problem(289, 256, 6, 48).unwrap_err();
+        assert!(big.contains("289") && big.contains("288"), "{big}");
+        assert!(big.contains("hang") && big.contains("Use a grid of 288"), "{big}");
+        assert!(
+            residency_problem(1, 256, 0, 48)
+                .unwrap_err()
+                .contains("Use fewer threads")
+        );
+        assert!(residency_problem(0, 256, 6, 48).is_err());
+        assert!(residency_problem(1, 0, 6, 48).is_err());
     }
 
     #[test]

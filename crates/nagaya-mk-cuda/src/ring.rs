@@ -188,3 +188,12 @@ impl Drop for Ring<'_> {
         }
     }
 }
+
+impl std::fmt::Debug for Ring<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Ring")
+            .field("grid_blocks", &self.grid_blocks)
+            .field("len", &self.len)
+            .finish_non_exhaustive()
+    }
+}

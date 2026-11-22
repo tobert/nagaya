@@ -14,6 +14,13 @@
 
 #define NO_EVENT 0xFFFFFFFFu
 
+// A block that polls a scoreboard event this many times traps. A normal run never reaches the limit, so the bits do
+// not change. The limit turns a lost signal into an error of the launch, not a hang. At about 100 ns for each poll,
+// the default is about 7 minutes.
+#ifndef MK_SPIN_LIMIT
+#define MK_SPIN_LIMIT (1ull << 32)
+#endif
+
 struct alignas(64) MkTaskDescriptor {
     uint16_t opcode;
     uint16_t flags;
@@ -97,8 +104,12 @@ extern "C" __global__ void mk_persistent_interpreter(
             t_start = globaltimer_ns();
             if (task.wait_event != NO_EVENT) {
                 const uint32_t* ev = scoreboard + (base_event + task.wait_event);
+                uint64_t polls = 0;
                 while (ld_acquire_gpu_u32(ev) < grid) {
-                    // Spin on GPU-scope acquire load.
+                    // Spin on GPU-scope acquire load, up to the limit.
+                    if (++polls >= MK_SPIN_LIMIT) {
+                        __trap();
+                    }
                 }
             }
             t_after_wait = globaltimer_ns();

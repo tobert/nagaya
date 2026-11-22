@@ -135,14 +135,10 @@ fn a_device_moves_to_another_thread_and_works_there() {
 fn a_ring_that_fails_to_allocate_frees_what_it_holds() {
     let pci = test_cards::card();
     let dev = CudaDevice::open_by_pci(&pci, INKLING2_CUBIN).expect("open GB10");
-    let overflow = Ring::new(&dev, usize::MAX, false)
-        .err()
-        .expect("an overflowing scratch is an error");
+    let overflow = Ring::new(&dev, usize::MAX, false).expect_err("an overflowing scratch is an error");
     assert!(overflow.contains("overflows"), "{overflow}");
     // 2^50 floats are 4 PiB. The first four buffers succeed, and the scratch fails.
-    let too_big = Ring::new(&dev, 1 << 50, false)
-        .err()
-        .expect("4 PiB of scratch is an error");
+    let too_big = Ring::new(&dev, 1 << 50, false).expect_err("4 PiB of scratch is an error");
     assert!(too_big.contains("cuMemAlloc failed"), "{too_big}");
     assert!(too_big.contains("OUT_OF_MEMORY"), "{too_big}");
     assert_eq!(dev.live_buffers(), 0, "the failed rings leaked buffers");
@@ -153,4 +149,24 @@ fn a_ring_that_fails_to_allocate_frees_what_it_holds() {
     assert_eq!(dev.live_buffers(), 0, "free left buffers");
     drop(Ring::new(&dev, 1024, true).expect("a profile ring allocates"));
     assert_eq!(dev.live_buffers(), 0, "Drop left buffers");
+}
+
+#[test]
+fn a_grid_that_is_not_resident_is_refused_before_the_launch() {
+    let pci = test_cards::card();
+    let dev = CudaDevice::open_by_pci(&pci, INKLING2_CUBIN).expect("open GB10");
+    let resident = dev.max_resident_blocks(256).expect("occupancy");
+    assert!(
+        resident >= dev.sm_count(),
+        "resident={resident}, SMs={}",
+        dev.sm_count()
+    );
+    // No pointer is valid here. The call must refuse before the launch reads one.
+    let error = unsafe { dev.launch_megakernel(resident + 1, 256, 0, 1, 0, 0, 0, 0, 0) }
+        .expect_err("a grid that is not resident is an error");
+    assert!(error.contains("hang"), "{error}");
+    assert!(
+        error.contains(&format!("Use a grid of {resident} blocks or fewer")),
+        "{error}"
+    );
 }

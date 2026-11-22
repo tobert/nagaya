@@ -101,5 +101,14 @@ fn main() {
         "megakernel_inkling2_profile_sm121.cubin",
         &["MK_INKLING2", "MK_PROFILE"],
     );
+    // A cubin with a small spin limit, so that a test can prove that a wait that never ends traps.
+    compile_cubin(
+        &nvcc,
+        &source,
+        &kernels,
+        &out,
+        "megakernel_inkling2_spin_test_sm121.cubin",
+        &["MK_INKLING2", "MK_SPIN_LIMIT=65536ull"],
+    );
     println!("cargo:rustc-link-lib=cuda");
 }
