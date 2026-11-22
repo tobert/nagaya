@@ -1791,7 +1791,7 @@ choice open.
   media rows of a block, 2,304 `f32` values for each position. For a block of 512 that is 1,870,588,096 bytes more.
 - **The time of a large image.** The card gate `tests/xe_long.rs` measured an image of 4,096 by 4,096 px, 10,609
   tokens, on 2026-11-21. Its tower takes about 56,780 ms in the pass of its first block, and a later block takes
-  843 ms. The bound `max_quantum_ms` is 2,000 ms (D8), and the watchdog stops a group with no beat for 30 s (spec
+  843 ms. The bound `max_quantum_ms` is 5,000 ms (D8), and the watchdog stops a group with no beat for 30 s (spec
   7.4). Thus such a pass breaks the bound, and in the process it can stop the process. This is a known defect, not
   an exception to the bound.
 - **The tower in quanta of its own** (from ChatGPT through kaibo `gpt-plan`, 2026-11-21; accepted 2026-11-22 under
@@ -1927,8 +1927,9 @@ Opus 5.5, 2026-11-21).
   `OP_INKLING2_ATTN` for a block of 512 (`tasks::inkling2_attn_scratch_floats`).
 - **The other terms.** `kv` is the sum of the slots, on `device(0)`. `pinned` is host memory: the tasks, the
   statistics and a staging buffer of 64 MiB, as for LFM3.
-- **The limits.** One segment in each pass, and 16 logit rows. `max_quantum_ms` is 2,000. The slowest text pass of
-  the long gate took 1,768 ms, and the tower of a large image breaks the bound ("The time of a large image"). The
+- **The limits.** One segment in each pass, and 16 logit rows. `max_quantum_ms` is 5,000 (D8, 2026-11-22). The slowest
+  text pass of the long gate took 1,768 ms. A block at 164,352 positions takes about 2,020 ms, from a line through
+  the measured blocks. The tower of a large image breaks the bound ("The time of a large image"). The
   capabilities are `parts`, `slots`, `coverage`, `close` and `cycles`.
 - **Not declared.** `layer_loops`. A pass with a layer loop is refused. "The lab of Inkling 2" adds the taps,
   `control` and latent rows.

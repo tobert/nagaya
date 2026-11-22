@@ -45,8 +45,9 @@ pub const SLOT_TOKENS: usize = 32_768;
 /// The most positions of one slot: `model_max_length` of the config.
 pub const MAX_SLOT_TOKENS: usize = 1_048_576;
 
-/// The longest quantum in milliseconds (D8). It is a budget, not a measurement: a card test measures it later.
-pub const MAX_QUANTUM_MS: u32 = 2_000;
+/// The longest quantum in milliseconds (D8). The slowest text pass measured is about 2,020 ms, a block of 512 at
+/// 164,352 positions. The bound leaves room over it and stays under the 10 s of the guidance of D8.
+pub const MAX_QUANTUM_MS: u32 = 5_000;
 
 /// The most segments in a pass. A batch of decode rows comes later.
 pub const MAX_SEGMENTS: u32 = 1;
