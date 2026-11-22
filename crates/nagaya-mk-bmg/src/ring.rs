@@ -15,6 +15,7 @@ pub struct Ring {
     scoreboard: *mut u32,
     stats: *mut XeCoreStats,
     scratch: *mut f32,
+    scratch_floats: usize,
     len: usize,
 }
 
@@ -30,6 +31,7 @@ impl Ring {
             scoreboard: card.alloc_device_usm::<u32>(NUM_SCOREBOARD_EVENTS),
             stats: card.alloc_host_usm::<XeCoreStats>(32),
             scratch: card.alloc_device_usm::<f32>(scratch_floats.max(1)),
+            scratch_floats: scratch_floats.max(1),
             len: 0,
         }
     }
@@ -77,6 +79,13 @@ impl Ring {
                 self.scratch as *mut c_void,
             )
         };
+    }
+
+    /// Fill the device buffers of the ring with zeros. The driver can give a buffer its memory only at its first use,
+    /// so after this the memory of the process on the card holds the ring.
+    pub fn zero_device(&self, card: &B70Card) {
+        card.fill_zero_sync(self.scoreboard as *mut c_void, NUM_SCOREBOARD_EVENTS * 4);
+        card.fill_zero_sync(self.scratch as *mut c_void, self.scratch_floats * 4);
     }
 
     /// The scratch of the ring, for an op whose task names it.
