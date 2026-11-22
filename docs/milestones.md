@@ -463,6 +463,8 @@ Do the steps in this order. Each step ends with the checks green.
       |---|---|---|---|---|---|
       | Step | 69.1 ms | 71.7 ms | 73.9 ms | 82.6 ms | 97.9 ms |
 12. **Trial and review.** A trial with Amy, and a kaibo review round with a cast of another model family.
+    - The trial ran on 2026-11-22 with an image, on `2a3f433`. Amy: "It seems to be doing well on a test image
+      right now. 12 tok/s". That is about 83 ms for each token, near the decode step of step 5.
     - Round 1 ran on 2026-11-21 with DeepSeek, Gemini and ChatGPT (`gpt-plan`). The cast `gpt` had no credits.
     - Not taken: Gemini said the window reads 2,048 keys and the block outputs overflow. The window is 1,024
       (`inkling2_attn_helpers.cl:24`), `BLOCK` is 6 (`host/weights.rs:22`), and the card gates of the window and
@@ -562,6 +564,10 @@ contexts I think; we can focus on other perf gains first". Thus the items of the
 
 **The findings, first the gains of one row.**
 
+0. **A profile of a decode step, first.** A step of 65 ms over 1,635 tasks is about 40 microseconds for each task.
+   The task boundaries take about 1.6 ms and the reads of the experts about 3 ms. Thus about 60 ms is in the ops
+   themselves, and no measurement says which ops. Time each op kind of one step on the card. Then choose among the
+   items below by the measured time. Amy measured 12 tokens each second in the trial of milestone 35.
 1. **A decode path in the expert ops.** `OP_EXPERT_UP` and `OP_EXPERT_DOWN` always take the XMX path. With one
    token, 15 of the 16 rows of each dpas are idle. A path of SIMD dot products for one token can read the packed
    planes as fast with less work. The review of the binding by ChatGPT asked to measure both.
