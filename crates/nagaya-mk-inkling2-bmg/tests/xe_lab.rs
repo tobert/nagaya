@@ -324,6 +324,13 @@ fn vector(oracle: &HashMap<String, Tensor>, last: usize) -> Vec<f32> {
     v
 }
 
+/// The vector of the ablate: at layers 3, 8 and 20, the row of [`vector`] at the last position less the row at the
+/// position before it.
+fn difference(oracle: &HashMap<String, Tensor>, last: usize) -> Vec<f32> {
+    let (a, b) = (vector(oracle, last), vector(oracle, last - 1));
+    a.iter().zip(&b).map(|(x, y)| x - y).collect()
+}
+
 fn item(op: ControlOp, strength: f32) -> ControlItem {
     ControlItem {
         index: 3,
@@ -359,14 +366,20 @@ fn control_items_of_strength_0_keep_the_bits_and_each_op_follows_the_host_form()
             "{op:?} 0: the rows"
         );
     }
+    // An ablate along the row itself leaves only rounding, and the next norm makes that rounding large. So the
+    // vector of the ablate is the difference of the rows at the last two positions, and a part of each row stays.
+    let d = difference(&oracle, last);
+    let d_bytes: Vec<u8> = d.iter().flat_map(|x| x.to_le_bytes()).collect();
+    engine.control().unwrap().control_write(4, &d_bytes).unwrap();
     let host = host_model();
     let layers = forward::run_layers(3);
-    for (op, s) in [
-        (ControlOp::Add, 0.25f32),
-        (ControlOp::Ablate, 1.0),
-        (ControlOp::Clamp, 8.0),
+    for (op, s, index, v) in [
+        (ControlOp::Add, 0.25f32, 3, &v),
+        (ControlOp::Ablate, 1.0, 4, &d),
+        (ControlOp::Clamp, 8.0, 3, &v),
     ] {
-        let got = run(&mut engine, &ids, &rows, &[item(op, s)], &["residual"]);
+        let one = ControlItem { index, ..item(op, s) };
+        let got = run(&mut engine, &ids, &rows, &[one], &["residual"]);
         let mut ctx = Context::new(3);
         ctx.control = vec![forward::ControlItem {
             op,
@@ -573,13 +586,14 @@ fn a_latent_row_of_the_placeholder_embedding_gives_the_bits_of_the_placeholder()
         "the second row of a span in a later pass"
     );
     assert_eq!(split_plain.1, split_latent.1);
-    // Another row changes the logits.
+    // Another row changes the logits. Twice the row does not: the host form moves a logit by 8e-6 for it, because
+    // the norms remove the scale. So the other row is the normed embedding row of the last token of the prompt.
+    let other = engine.residual(0, &ids[ids.len() - 1..], 0, false).unwrap();
     card::clear(&mut engine, 0);
     block(&mut engine, 0, &ids, None);
-    let doubled: Vec<f32> = row.iter().map(|v| 2.0 * v).collect();
-    let moved = block(&mut engine, n, &[LATENT_TOKEN], Some((n, &doubled)));
+    let moved = block(&mut engine, n, &[LATENT_TOKEN], Some((n, &other)));
     card::clear(&mut engine, 0);
     let gap = common::max_abs(&moved.0, &step_plain.0);
-    eprintln!("latent: a row of the placeholder gives its bits; twice the row moves a logit by {gap:.3}");
+    eprintln!("latent: a row of the placeholder gives its bits; the row of another token moves a logit by {gap:.3}");
     assert!(gap > 1e-3);
 }
