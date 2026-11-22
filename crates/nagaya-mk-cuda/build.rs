@@ -151,6 +151,19 @@ fn protocol_header() -> String {
     writeln!(h, "#define MK_TABLE_POINTERS {}", protocol::TABLE_POINTERS).unwrap();
     offsets!(h, "MK_TABLE_OFF_", MkTaskTable: ptr);
     writeln!(h, "#define MK_EXPERT_TABLE_AMAX {}", protocol::EXPERT_TABLE_AMAX).unwrap();
+    writeln!(h, "#define MK_ATTN_CHUNK_KEYS {}", protocol::ATTN_CHUNK_KEYS).unwrap();
+    writeln!(h, "#define MK_ATTN_SPLIT_ROWS {}", protocol::ATTN_SPLIT_ROWS).unwrap();
+    writeln!(h, "#define MK_ATTN_SMEM_BYTES {}", protocol::ATTN_SMEM_BYTES).unwrap();
+    writeln!(
+        h,
+        "#define MK_ATTN_PARTIAL_ROW_FLOATS {}",
+        protocol::ATTN_PARTIAL_ROW_FLOATS
+    )
+    .unwrap();
+    writeln!(h, "#define MK_ATTN_TABLE_REL {}", protocol::ATTN_TABLE_REL).unwrap();
+    writeln!(h, "#define MK_ATTN_TABLE_SINKS {}", protocol::ATTN_TABLE_SINKS).unwrap();
+    writeln!(h, "#define MK_ATTN_TABLE_GATE {}", protocol::ATTN_TABLE_GATE).unwrap();
+    writeln!(h, "#define MK_ATTN_TABLE_PROJ {}", protocol::ATTN_TABLE_PROJ).unwrap();
     writeln!(h, "#define MK_STATS_BYTES {}", size_of::<BlockStats>()).unwrap();
     offsets!(h, "MK_STATS_OFF_", BlockStats: tasks_run, pad, wait_ns, exec_ns);
     h
