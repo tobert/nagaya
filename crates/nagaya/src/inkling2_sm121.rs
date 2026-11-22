@@ -145,7 +145,8 @@ mod factory {
             check_devices(devices).map_err(|e| err(e.message))?;
             let _config = config(table).map_err(|e| err(e.message))?;
             Err(err(format!(
-                "`{KIND}` device engine bring-up is in progress (milestone 37 step 8); `open` is not yet wired"
+                "`{KIND}` cannot open yet: the device ops are step 9 of milestone 37 and the engine is step 11. \
+                 Remove this engine from the profile until step 11 is done"
             )))
         }
     }

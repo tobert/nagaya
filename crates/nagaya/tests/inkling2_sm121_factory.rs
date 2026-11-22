@@ -50,6 +50,27 @@ fn config_refuses_unknown_key_missing_keys_and_two_devices() {
     assert!(inkling2_sm121::config(&no_dir).is_err());
 }
 
+#[cfg(feature = "cuda")]
+#[test]
+fn open_says_which_milestone_steps_are_missing() {
+    use nagaya::admission::Factory;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut table = toml::Table::new();
+    table.insert(
+        "model_dir".to_owned(),
+        toml::Value::String(dir.path().display().to_string()),
+    );
+    table.insert("slots".to_owned(), toml::Value::Integer(1));
+    let error = match inkling2_sm121::Inkling2Sm121Factory.open(&table, &one_device()) {
+        Ok(_) => panic!("open must refuse until the engine exists"),
+        Err(error) => error.message,
+    };
+    assert!(error.contains("step 9"), "{error}");
+    assert!(error.contains("step 11"), "{error}");
+    assert!(!error.contains("step 8"), "{error}");
+}
+
 #[test]
 fn served_names_and_compiled_in_registries_match_features() {
     let empty = toml::Table::new();
