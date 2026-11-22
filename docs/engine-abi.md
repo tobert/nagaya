@@ -2085,6 +2085,36 @@ the oracle have one layout.
 - **The family.** The council sends latent rows only when the family gives a latent record (spec 11.11). The family
   of Inkling 2 gives none yet, so the council refuses `latent` and `soft` for Inkling 2.
 
+### The GB10 Inkling 2 binding (`mk-inkling2-sm121`)
+
+The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop research model on one NVIDIA GB10
+(`sm_121`) GPU (milestone 37). It uses the shared persistent interpreter of `nagaya-mk-cuda`. Each rule below is
+**Proposed** (Gemini 4 Neon, 2026-11-22).
+
+- **Native NVFP4 activations (`fouroversix_mae`).** Experts in layers 0 to 19 quantize each activation row per token
+  into blocks of 16 values (`hf_quant_config.json`). A zero row gives zero codes, zero scales, and a global scale
+  of `0.0`. Otherwise the global scale is `row_amax / (6.0 * 448.0)`.
+  - For each block of 16 values, evaluate two target scales: `block_amax / (6.0 * global_scale)` and
+    `block_amax / (4.0 * global_scale)`. Round each candidate scale to `e4m3fn` nearest-to-even.
+  - Quantize the 16 values to E2M1 nearest-to-even under each candidate scale, and compute the mean absolute error
+    in `f32`. Select target 4 strictly when `mae4 < mae6`; otherwise select target 6.
+  - Pack even elements in the low nibble and odd elements in the high nibble.
+- **Native MXFP8 activations (`ue8m0`).** Experts in layers 20 to 23 quantize each activation row into blocks of 32
+  values. A zero block gives scale code `0` and zero codes. Otherwise the scale is `2^e` where `e` is the smallest
+  integer with `2^e >= block_amax / 448.0`, clamped to `[-127, 127]`. Divide each value by `2^e` and round to
+  `e4m3fn` nearest-to-even.
+- **Packed weights and MMA.** Expert weights stay packed in unified memory in their checkpoint formats (NVFP4 in
+  layers 0 to 19, MXFP8 in layers 20 to 23). The kernels run `sm_121a` block-scaled MMA with `f32` accumulation,
+  then apply the combined `f32` global scale and expert factor.
+- **Persistent CUDA interpreter.** `nagaya-mk-cuda` compiles `kernels/megakernel.cu` to `sm_121a` `.cubin` with
+  `nvcc --fmad=false`. `mk_persistent_interpreter` walks 64-byte `MkTaskDescriptor` entries using GPU-scope
+  acquire and release scoreboard atomics. The profile binary records `%globaltimer` timestamps in nanoseconds.
+- **Identity and oracle.** Because expert activations are quantized to NVFP4 and MXFP8, this engine has its own
+  quantized host oracle and engine identity. Its `numbers` hold `quant` (`nvfp4_fouroversix_mae+mxfp8_ue8m0`),
+  `max_block`, `extra_runs`, `state` (`2`), the `nvcc` version, and the BLAKE3 of the `.cubin`.
+- **Long-context sizing.** On a GB10 with 121 GB of unified memory, the weights take about 19.5 GB. At 3 cycles in
+  `f32`, 409,600 positions take about 28.1 GB. A slot of 524,288 positions takes about 36.0 GB.
+
 ## Not covered yet
 
 - Streams. They need a period, a deadline and a late policy, in `limits()` or per job. A pass blocks, so the

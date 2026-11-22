@@ -17,6 +17,7 @@ Fable 5.2, 2026-11-11):
 4. Milestone 31 step 8, the publication, when Amy says so.
 5. Milestone 35, Inkling 2, on b70host: planned on 2026-11-21. Amy decides how much of it to do.
 6. Milestone 36, the speed of Inkling 2: a list of findings, not started. An agent of kaijutsu may take an item.
+7. Milestone 37, Inkling 2 on GB10 (`sm_121`): started on 2026-11-22 on a DGX Spark.
 
 Milestone 32, context records, starts in gogi and runs beside these. It changes the contract, so it must be done
 before the publication.
@@ -695,3 +696,42 @@ The experts take 33.2 ms, 11 times their floor of about 3 ms. Two small ops run 
     expert bytes of a row alone. Most of the gain comes from the fixed costs that the rows share. They are the
     tasks, the weights of the attention and the idle rows of each dpas. Measure tokens each second at 1, 2, 4 and 8
     rows.
+
+## Milestone 37: Inkling 2 on GB10 (`sm_121`)
+
+The first NVIDIA engine of the nagaya runs Inkling 2 Mini on a GB10 (`sm_121`) with 121 GB of unified memory.
+The target context is 400K to 512K positions. This milestone started on 2026-11-22.
+
+The decisions of 2026-11-22:
+
+- **Crates and build.** `nagaya-mk-cuda` holds the shared CUDA persistent interpreter and Driver API wrapper.
+  `nagaya-mk-inkling2-sm121` holds the Inkling 2 engine. `build.rs` calls `nvcc` under the feature `cuda`.
+- **Expert numerics.** Use native NVFP4 (`fouroversix_mae`) and MXFP8 (`ue8m0`) activations from day one. This engine
+  has a quantized host oracle and an engine identity of its own.
+- **Kernels.** Write clean-room CUDA C++ kernels with PTX intrinsics, ported from our B70 Inkling 2 ops. Add no
+  external C++ dependency.
+- **Long context.** Target 400K to 512K positions (`model_max_length` 1,048,576). At 3 cycles in `f32`, 400K takes
+  about 28.1 GB and 512K takes about 36.0 GB. The weights take about 19.5 GB.
+
+Do the steps in this order. Each step ends with the checks green.
+
+1. **GB10 probe fix.** Capture the real `dgx-spark` sysfs and procfs tree, and map `Model: Unknown` with PCI id
+   `10de:2e12` to `NVIDIA GB10`. Done (`809d8514`).
+2. **Spec and ABI.** Write the GB10 Inkling 2 binding in `docs/engine-abi.md` with **Proposed** rules for
+   `fouroversix_mae` NVFP4, `ue8m0` MXFP8, and the CUDA interpreter. Update `AGENTS.md`.
+3. **The shared CUDA interpreter (`nagaya-mk-cuda`).** Build the 64-byte task protocol, safetensors reader, Driver
+   API wrapper (`libcuda`), persistent `megakernel.cu` compiled to `sm_121a` `.cubin` with `--fmad=false`,
+   `%globaltimer` profiling, and `tools/nvcc-stub`.
+4. **Quantized host oracle and spec (`nagaya-mk-inkling2-sm121`).** Implement `fouroversix_mae` NVFP4 and `ue8m0`
+   MXFP8 activation quantization and block-scaled dot products in Rust. Build the host spec, 512K slot planning, and
+   `nagaya` factory registration under `cuda`.
+5. **GPU smoke gate.** Verify `cuModuleLoadData` loads the `sm_121a` `.cubin` on the GB10 driver. Run `OP_NOP`,
+   `OP_COPY`, `OP_HALT`, and `%globaltimer` profiling on GPU 0.
+6. **Quantized reference oracle.** Generate the quantized Inkling 2 Mini oracle fixture and measure its logit gap
+   against the `f32` reference.
+7. **Device ops.** Port each op with a card gate against the host oracle. Include native `sm_121a` block-scaled NVFP4
+   (`m16n8k64`) and MXFP8 (`m16n8k32`) MoE expert ops and Flash-style Inkling 2 attention.
+8. **Text engine and long context.** Implement `Engine`, cycles 1 to 5, snapshots, conformance gates, and 400K to
+   512K latency and accuracy gates.
+9. **Vision, lab and batches.** Port the vision tower, taps, control vectors, and batched decode.
+10. **Deploy and review.** Add `deploy/dgx-spark/`, run `gogi-conformance`, and run kaibo review rounds.
