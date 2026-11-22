@@ -284,12 +284,12 @@ fn the_kind_and_the_family_exist_only_with_the_feature_xe() {
         handoff: None,
     };
     let planned = families.plan(&opened, &table("model_dir = \"/nonexistent\""));
-    if cfg!(feature = "xe") {
+    if cfg!(any(feature = "xe", feature = "cuda")) {
         assert!(planned.is_err(), "the opener of the build reads the table");
     } else {
         assert!(
             matches!(planned, Ok(None)),
-            "a build with no feature xe has no inkling2 library"
+            "a build with neither feature xe nor cuda has no inkling2 library"
         );
     }
 }

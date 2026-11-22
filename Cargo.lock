@@ -1196,6 +1196,7 @@ dependencies = [
  "nagaya-mk-embeddinggemma2-bmg",
  "nagaya-mk-gemma4-bmg",
  "nagaya-mk-inkling2-bmg",
+ "nagaya-mk-inkling2-sm121",
  "nagaya-mk-lfm3-bmg",
  "nagaya-mk-qwen38-gfx1151",
  "nagaya-mk-qwen3tts-bmg",

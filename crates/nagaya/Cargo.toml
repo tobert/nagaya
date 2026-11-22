@@ -24,6 +24,8 @@ xe = [
     "nagaya-mk-lfm3-bmg/xe",
     "nagaya-mk-inkling2-bmg/xe",
 ]
+# The GB10 CUDA engines (`sm_121`). The config parse and plan build with no feature.
+cuda = ["nagaya-mk-inkling2-sm121/cuda"]
 # The video parts of Omni (spec 11.11, "The video of a request"). It needs ffmpeg's libraries and libclang to build.
 video = ["nagaya-text-lfm3/video"]
 
@@ -53,6 +55,7 @@ nagaya-text-embeddinggemma2 = { version = "0.1.0", path = "../nagaya-text-embedd
 nagaya-mk-lfm3-bmg = { version = "0.1.0", path = "../nagaya-mk-lfm3-bmg" }
 nagaya-text-lfm3 = { version = "0.1.0", path = "../nagaya-text-lfm3" }
 nagaya-mk-inkling2-bmg = { version = "0.1.0", path = "../nagaya-mk-inkling2-bmg" }
+nagaya-mk-inkling2-sm121 = { version = "0.1.0", path = "../nagaya-mk-inkling2-sm121" }
 nagaya-text-inkling2 = { version = "0.1.0", path = "../nagaya-text-inkling2" }
 nagaya-mk-qwen38-gfx1151 = { version = "0.1.0", path = "../nagaya-mk-qwen38-gfx1151", optional = true }
 nagaya-text-qwen38 = { version = "0.1.0", path = "../nagaya-text-qwen38", optional = true }

@@ -16,6 +16,7 @@ pub mod gossip;
 pub mod http;
 pub mod image;
 pub mod inkling2;
+pub mod inkling2_sm121;
 pub mod inventory;
 pub mod jobs;
 pub mod lfm3;
