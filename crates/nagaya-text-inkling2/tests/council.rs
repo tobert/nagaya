@@ -45,6 +45,27 @@ fn template_id_survives_comment_edit_and_changes_on_token_change() {
     assert_ne!(council_a, council_c);
 }
 
+/// The test renders hold an image part, so the council hash covers the tokens around its placeholders (spec 11.3a).
+#[test]
+fn template_id_changes_when_the_tokens_of_an_image_change() {
+    if absent() {
+        return;
+    }
+    let base = Files::read(&mini_dir()).unwrap();
+    let image = "<|content_image|><|unused_200054|><|end_message|>";
+    assert!(base.template.contains(image));
+    let council = |files: Files| {
+        let family = Inkling2Family::from_files(files).unwrap();
+        family.template_id().split('+').next().unwrap().to_owned()
+    };
+    let mut edit = base.clone();
+    edit.template = edit.template.replace(
+        image,
+        "<|content_image|><|unused_200054|><|end_message|><|end_message|>",
+    );
+    assert_ne!(council(base), council(edit));
+}
+
 #[test]
 fn council_render_decisions_and_raw_read_work() {
     if absent() {
