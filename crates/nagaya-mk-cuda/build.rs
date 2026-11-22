@@ -166,6 +166,9 @@ fn protocol_header() -> String {
     writeln!(h, "#define MK_ATTN_TABLE_PROJ {}", protocol::ATTN_TABLE_PROJ).unwrap();
     writeln!(h, "#define MK_STATS_BYTES {}", size_of::<BlockStats>()).unwrap();
     offsets!(h, "MK_STATS_OFF_", BlockStats: tasks_run, pad, wait_ns, exec_ns);
+    for (name, value) in protocol::DENSE_CONSTANTS {
+        writeln!(h, "#define MK_{name} {value}").unwrap();
+    }
     h
 }
 

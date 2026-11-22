@@ -20,8 +20,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use nagaya_mk_cuda::driver::{CUdeviceptr, CudaDevice};
+use nagaya_mk_cuda::mma_model::dot_bits;
 use nagaya_mk_cuda::protocol::PROFILE_WORDS;
-use nagaya_mk_cuda::repack::{K_WARPS, MatmulShape, repack_bf16};
+use nagaya_mk_cuda::repack::{MatmulShape, repack_bf16};
 use nagaya_mk_cuda::ring::{DEFAULT_BLOCK_THREADS, Ring, Task};
 use nagaya_mk_cuda::safetensors::SafeTensorsHeader;
 use nagaya_mk_cuda::{INKLING2_CUBIN, INKLING2_PROFILE_CUBIN, test_cards};
@@ -41,7 +42,7 @@ const MATRICES: [(&str, &str, usize, usize); 4] = [
 const PEAK_GBPS: f64 = 252.0;
 
 /// The head at one row must read at this share of the peak.
-const HEAD_GATE: f64 = 0.80;
+const HEAD_GATE: f64 = 0.90;
 
 /// The bound of the accuracy, in units of `f32::EPSILON` times the sum of the absolute terms of the result. The
 /// largest error that the gate measured is printed by `the_matmul_is_accurate_against_an_f64_sum`.
@@ -225,15 +226,21 @@ struct Rig<'d> {
     y: CUdeviceptr,
     ring: Ring<'d>,
     shared: u32,
+    max_rows: usize,
 }
 
 impl<'d> Rig<'d> {
     fn new(dev: &'d CudaDevice, m: &Loaded, x: &[f32], copies: usize, profile: bool) -> Self {
+        Self::with_rows(dev, m, x, copies, profile, 16)
+    }
+
+    /// A rig for passes of up to `max_rows` rows. `x` holds at least that many rows.
+    fn with_rows(dev: &'d CudaDevice, m: &Loaded, x: &[f32], copies: usize, profile: bool, max_rows: usize) -> Self {
         let shape = m.shape;
         let weights = (0..copies).map(|_| upload(dev, &m.packed)).collect();
         let x = upload(dev, x);
-        let y = dev.alloc_device(16 * shape.n * 4).unwrap();
-        let ring = Ring::new(dev, shape.scratch_floats(16), profile).unwrap();
+        let y = dev.alloc_device(max_rows * shape.n * 4).unwrap();
+        let ring = Ring::new(dev, shape.scratch_floats(max_rows), profile).unwrap();
         // The counters of the merge groups start at 0, and the op leaves them there.
         ring.zero_device().unwrap();
         let shared = dev.max_dynamic_shared_bytes().unwrap();
@@ -245,6 +252,7 @@ impl<'d> Rig<'d> {
             y,
             ring,
             shared,
+            max_rows,
         }
     }
 
@@ -263,7 +271,7 @@ impl<'d> Rig<'d> {
 
     /// One launch of one task: the `rows` rows of `y`.
     fn run(&mut self, rows: usize, row0: usize, grid: u32) -> Vec<f32> {
-        self.dev.memset_zero(self.y, 16 * self.shape.n * 4).unwrap();
+        self.dev.memset_zero(self.y, self.max_rows * self.shape.n * 4).unwrap();
         let task = self.task(rows, row0, 0);
         self.ring.set(&[task]);
         run_with_watchdog(&self.ring, grid, self.shared, 120);
@@ -568,119 +576,14 @@ fn the_speed_of_each_shape_and_the_head_at_the_peak() {
 // The host model: the bits of the matmul.
 // ---------------------------------------------------------------------------------------------------------------
 //
-// The tensor core does not add in `f32`. The gate measured its rule on the GB10 (`bf16` `m16n8k16`, 25,600 results
-// of random tiles, and then the whole matmul on real weights; both match bit for bit): an MMA adds the 16 exact
-// products and the accumulator in one step.
-// - The reference exponent of a product is the sum of the exponent fields of its two factors, which is the exponent
-//   before the product is normalized. The reference exponent of the accumulator is its own. Let `top` be the largest.
-// - Each operand is cut, toward zero, to a multiple of `2^(top - 25)`. The cut operands add exactly.
-// - The sum is cut, toward zero, to the 24 bits of an `f32`.
-//
-// With this rule a host function gives the bits of each result, and a change of the order of the terms, of the tree
-// or of the merge changes the bits. The accuracy test above cannot see such a change, because it moves a result by
-// less than the bound.
-
-/// The fraction bits that an MMA keeps below the largest reference exponent.
-const MMA_KEPT_BITS: i32 = 25;
-
-/// `bf16(x)`: round to nearest even, as `cvt.rn.bf16.f32` does, and return it as an `f32`.
-fn bf16_rn(x: f32) -> f32 {
-    let b = x.to_bits();
-    f32::from_bits(b.wrapping_add(0x7FFF + ((b >> 16) & 1)) & 0xFFFF_0000)
-}
-
-/// The three terms of `x` in the order of the accumulation: lo, mid, hi.
-fn split3(x: f32) -> [f32; 3] {
-    let hi = bf16_rn(x);
-    let r1 = x - hi;
-    let mid = bf16_rn(r1);
-    let lo = bf16_rn(r1 - mid);
-    [lo, mid, hi]
-}
-
-/// `(negative, mantissa, exponent)`: the value of a finite `f32` is `mantissa * 2^exponent`.
-type Operand = (bool, u64, i32);
-
-fn operand(v: f32) -> Operand {
-    let b = v.to_bits();
-    let e = ((b >> 23) & 0xFF) as i32;
-    let f = u64::from(b & 0x7F_FFFF);
-    if e == 0 {
-        (b >> 31 != 0, f, -149)
-    } else {
-        (b >> 31 != 0, f | 0x80_0000, e - 150)
-    }
-}
-
-/// The exponent field of a normal `f32`, without the bias.
-fn exponent_field(v: f32) -> i32 {
-    ((v.to_bits() >> 23) & 0xFF) as i32 - 127
-}
-
-/// One `mma.sync.m16n8k16` for one result: `acc + sum a[i] * b[i]`, where each `a[i]` and `b[i]` is a `bf16` value.
-fn mma(acc: f32, a: &[f32], b: &[f32]) -> f32 {
-    let mut operands: Vec<Operand> = Vec::with_capacity(a.len() + 1);
-    let mut top: Option<i32> = None;
-    let mut see = |reference: i32| top = Some(top.map_or(reference, |t| t.max(reference)));
-    for (x, y) in a.iter().zip(b) {
-        if *x != 0.0 && *y != 0.0 {
-            see(exponent_field(*x) + exponent_field(*y));
-            let ((sa, ma, ea), (sb, mb, eb)) = (operand(*x), operand(*y));
-            operands.push((sa ^ sb, ma * mb, ea + eb));
-        }
-    }
-    if acc != 0.0 {
-        see(exponent_field(acc));
-        operands.push(operand(acc));
-    }
-    let Some(top) = top else { return 0.0 };
-    let unit = top - MMA_KEPT_BITS;
-    let mut sum: i128 = 0;
-    for (negative, mantissa, exponent) in operands {
-        let shift = exponent - unit;
-        let magnitude = match shift {
-            0.. => i128::from(mantissa) << shift,
-            -99..=-1 => i128::from(mantissa) >> -shift,
-            _ => 0,
-        };
-        sum += if negative { -magnitude } else { magnitude };
-    }
-    if sum == 0 {
-        return 0.0;
-    }
-    let magnitude = sum.unsigned_abs();
-    let bits = 128 - magnitude.leading_zeros() as i32;
-    let drop = (bits - 24).max(0);
-    let value = ((magnitude >> drop) as f64 * 2f64.powi(unit + drop)) as f32;
-    if sum < 0 { -value } else { value }
-}
+// The model of the bits is `nagaya_mk_cuda::mma_model` (the rule of the tensor core is in its header).
 
 /// The bits that the op gives for the result of row `row` of `x` and column `column` of `W`: the model of the
 /// order of the sums in `kernels/matmul_bf16.cuh`.
 fn host_matmul(m: &Loaded, x: &[f32], column: usize) -> f32 {
-    let (k, kt) = (m.shape.k, m.shape.kt);
-    let split: Vec<[f32; 3]> = x.iter().map(|v| split3(*v)).collect();
+    let k = m.shape.k;
     let w: Vec<f32> = (0..k).map(|i| bf16_to_f64(&m.w, column * k + i) as f32).collect();
-    let steps_per_warp = kt / 16 / K_WARPS;
-    let mut slices = Vec::new();
-    for slice in 0..m.shape.slices() {
-        // Each warp runs its steps in order, and in each step the terms lo, mid and hi.
-        let mut warps = [0f32; K_WARPS];
-        for (warp, acc) in warps.iter_mut().enumerate() {
-            for step in warp * steps_per_warp..(warp + 1) * steps_per_warp {
-                let k0 = slice * kt + step * 16;
-                for term in 0..3 {
-                    let b: Vec<f32> = split[k0..k0 + 16].iter().map(|t| t[term]).collect();
-                    *acc = mma(*acc, &w[k0..k0 + 16], &b);
-                }
-            }
-        }
-        // The tree of the warps in shared memory.
-        let pair = |i: usize| warps[i] + warps[i + 1];
-        slices.push((pair(0) + pair(2)) + (pair(4) + pair(6)));
-    }
-    // The merge group adds the slices in index order.
-    slices[1..].iter().fold(slices[0], |sum, p| sum + p)
+    dot_bits(&w, x, m.shape.kt)
 }
 
 #[test]
@@ -715,6 +618,160 @@ fn the_bits_equal_the_host_model_of_the_mma_and_the_order_of_the_sums() {
             "cuda_matmul model: {:<6} {} columns x 19 rows: the bits equal the host model",
             m.name,
             columns.len()
+        );
+        rig.free();
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Row tiles: a pass of up to 512 rows (wave B, lane D).
+// ---------------------------------------------------------------------------------------------------------------
+
+/// The counts of rows of the row tile gates: one row, a part of a tile, one tile, one tile and one row, a few tiles,
+/// and a block of a prefill.
+const BLOCK_ROWS: [usize; 6] = [1, 7, 16, 17, 100, 512];
+
+#[test]
+fn the_bits_of_a_row_do_not_depend_on_the_count_of_rows_up_to_a_block() {
+    let Some(matrices) = matrices() else { return };
+    let dev = open();
+    for m in matrices {
+        let n = m.shape.n;
+        let x = make_x(512, m.shape.k, 7);
+        let mut rig = Rig::with_rows(&dev, m, &x, 1, false, 512);
+        let full = rig.run(512, 0, 48);
+        assert_eq!(
+            bits(&full),
+            bits(&rig.run(512, 0, 48)),
+            "{}: two runs of 512 rows differ",
+            m.name
+        );
+        assert!(
+            rig.counters().iter().all(|c| *c == 0),
+            "{}: a merge counter is not 0",
+            m.name
+        );
+        for rows in BLOCK_ROWS {
+            let part = rig.run(rows, 0, 48);
+            assert_eq!(
+                bits(&part),
+                bits(&full[..rows * n]),
+                "{}: a pass of {rows} rows differs from the first {rows} rows of 512 rows",
+                m.name
+            );
+        }
+        // A short pass at the end of the block, and one that starts inside a tile: the place of a row in a pass does
+        // not change its bits.
+        for (rows, row0) in [(12, 500), (1, 511), (17, 33), (100, 250)] {
+            let part = rig.run(rows, row0, 48);
+            assert_eq!(
+                bits(&part),
+                bits(&full[row0 * n..(row0 + rows) * n]),
+                "{}: {rows} rows from row {row0} differ from the same rows of 512 rows",
+                m.name
+            );
+        }
+        eprintln!(
+            "cuda_matmul tiles: {:<6} the rows at counts {BLOCK_ROWS:?} and at other places equal the rows of 512, bit for bit",
+            m.name
+        );
+        rig.free();
+    }
+}
+
+#[test]
+fn the_bits_of_a_block_do_not_depend_on_the_grid() {
+    let Some(matrices) = matrices() else { return };
+    let dev = open();
+    for m in matrices {
+        // The head at one block would take long: it runs 100 rows at the narrow grids.
+        let rows = if m.name == "head" { 100 } else { 512 };
+        let x = make_x(rows, m.shape.k, 8);
+        let mut rig = Rig::with_rows(&dev, m, &x, 1, false, rows);
+        let first = rig.run(rows, 0, GRIDS[0]);
+        for &grid in &GRIDS[1..] {
+            let got = rig.run(rows, 0, grid);
+            assert_eq!(
+                bits(&got),
+                bits(&first),
+                "{}: {rows} rows at grid {grid} differ from grid 48",
+                m.name
+            );
+            assert!(
+                rig.counters().iter().all(|c| *c == 0),
+                "{}: a merge counter is not 0",
+                m.name
+            );
+        }
+        eprintln!(
+            "cuda_matmul tiles: {:<6} {rows} rows: the bits at grids {GRIDS:?} are equal",
+            m.name
+        );
+        rig.free();
+    }
+}
+
+#[test]
+fn the_bits_of_rows_over_16_equal_the_host_model() {
+    let Some(matrices) = matrices() else { return };
+    let dev = open();
+    for m in matrices {
+        let k = m.shape.k;
+        let x = make_x(512, k, 9);
+        let mut rig = Rig::with_rows(&dev, m, &x, 1, false, 512);
+        let tiles = m.shape.tiles();
+        let columns: Vec<usize> = (0..16).map(|i| (i * 977 % tiles) * 16 + (i % 16)).collect();
+        let y = rig.run(512, 0, 48);
+        // Rows of the first tile, of the second, of the middle and of the last tile, with the border rows.
+        for r in [0, 7, 15, 16, 17, 100, 255, 256, 495, 496, 504, 511] {
+            for &c in &columns {
+                let want = host_matmul(m, &x[r * k..(r + 1) * k], c);
+                let got = y[r * m.shape.n + c];
+                assert_eq!(
+                    got.to_bits(),
+                    want.to_bits(),
+                    "{}: row {r} column {c} of 512 rows: the GPU gives {got:e}, the host model gives {want:e}",
+                    m.name
+                );
+            }
+        }
+        eprintln!(
+            "cuda_matmul tiles: {:<6} 12 rows x {} columns of 512 rows equal the host model",
+            m.name,
+            columns.len()
+        );
+        rig.free();
+    }
+}
+
+#[test]
+fn the_speed_of_a_block_of_512_rows() {
+    let Some(matrices) = matrices() else { return };
+    let dev = CudaDevice::open_by_pci(&test_cards::card(), INKLING2_PROFILE_CUBIN).expect("open the GPU");
+    let blocks = dev.sm_count() as usize;
+    for m in matrices {
+        let bytes = m.shape.packed_bytes();
+        let x = make_x(512, m.shape.k, 10);
+        let mut rig = Rig::with_rows(&dev, m, &x, 1, true, 512);
+        let tasks = 5;
+        let list: Vec<Task> = (0..tasks).map(|_| rig.task(512, 0, 0)).collect();
+        rig.ring.set(&list);
+        run_with_watchdog(&rig.ring, blocks as u32, rig.shared, 120);
+        let profile = rig.ring.read_profile().unwrap();
+        let spans: Vec<u64> = (1..tasks)
+            .map(|t| task_ns(&profile, blocks, rig.ring.ring_index(t)))
+            .collect();
+        let typical = median(spans);
+        let flops = 2.0 * 512.0 * m.shape.n as f64 * m.shape.k as f64;
+        eprintln!(
+            "cuda_matmul tiles speed: {:<6} N {:>6} K {} 512 rows: {:>9.1} us, {:>5.1} TFLOP/s of f32-equivalent work ({:>5.1} of bf16 with the three terms; the peak is 127), W {:.1} GB/s",
+            m.name,
+            m.shape.n,
+            m.shape.k,
+            typical as f64 / 1e3,
+            flops / typical as f64 / 1e3,
+            3.0 * flops / typical as f64 / 1e3,
+            bytes as f64 / typical as f64
         );
         rig.free();
     }

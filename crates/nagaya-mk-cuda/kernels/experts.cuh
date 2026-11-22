@@ -32,6 +32,45 @@
 // The epilogue of NVFP4 (engine-abi "The expert epilogue of NVFP4"): `(total * expert_scale) * row_scale`, with
 // `row_scale = (x_amax * w_amax) * (1 / (1536 * w_denominator))`. The epilogue of MXFP8 is `total * expert_scale`.
 //
+//
+// The modes of the task (wave B). The flags `FLAG_UP` and `FLAG_DOWN` pick the mode. A task with neither flag is the plain
+// matmul above. The other fields are as above, and the additions are these.
+//
+// The cut of the items (all modes). `pos0` is the count of tiles of a pair that one item covers: 0 means 1. An item runs
+// its tiles one after the other. A decode step of 8 pairs with 36 tiles has 288 tiles, and with `pos0` 6 it has 48 items,
+// one for each block, so a block counts one arrival at a merge counter and not six. `n / 64` must be a multiple of
+// `pos0`, and `items` is the bound of pairs times `n / 64 / pos0`. The sums of a tile do not depend on `pos0`.
+//
+// FLAG_UP, the up matmul of a layer. `n` is 2,304: row `g` of an MMA tile is the gate `i` and row `g + 8` is the up
+// `i` of the activation column `i` (`repack_expert_up` in src/experts.rs makes this order from the interleaved rows
+// of the checkpoint). So a thread holds the gate and the up of one value. The epilogue gives
+// `swiglu(gate, up) * route_weight` (`ops::swiglu`; the route weight comes before the quantizer, as the binding says).
+//   kt           the count of tokens: the buffers hold `8 * kt` slots.
+//   group_items  the items of a pair, `n / 64 / pos0`: the last item of a pair quantizes its rows.
+//   c            the activation in `f32`: slot `y_row` is a row of `n / 2` floats.
+//   d            the table: the slot EXPERT_TABLE_QACT holds the buffer of quantized rows, `8 * kt` rows of `n / 2`
+//                values (the layout of quant.cuh), and the slot MK_EXPERT_TABLE_AMAX the amax of the weights.
+//   f            one `u32` counter for each pair of the bound. They start at 0 and the op leaves them at 0.
+// The finisher quantizes each row of the pair with the rules of `quant.rs`: NVFP4 for OP_EXPERT_NVFP4, MXFP8 for
+// OP_EXPERT_MXFP8. The row `y_row` of the pair goes to the row `y_row` of the buffer.
+//
+// FLAG_DOWN, the down matmul. It reads the quantized activation row of the slot `y_row` (not `x_row`), so one list of
+// pairs serves both matmuls. `rows` is `8 * kt`, the rows of the buffer `a`.
+//   kt           the count of tokens.
+//   c            the slot rows in `f32`: `8 * kt` rows of `n` floats. Slot `8 t + j` is the output of the expert `j` of
+//                the token `t`, with the experts in ascending order.
+//   d            the table: MK_EXPERT_TABLE_AMAX; EXPERT_TABLE_RESIDUAL (`kt` rows of `n` floats, the residual `r`);
+//                EXPERT_TABLE_CONV_WEIGHT (`n` rows of 4 floats, tap 3 weights the current row);
+//                EXPERT_TABLE_CONV_STATE (3 rows of `n` floats, the 3 last sums, oldest first); EXPERT_TABLE_OUT
+//                (`kt` rows of `n` floats, the output `x`; it may be the residual).
+//   f            one `u32` counter for each column tile, `n / 64` of them, at 0 and left at 0.
+// The last item of a column tile does the finisher of the tile. It waits for every live pair, so a pair with no rows
+// still counts. For each token in order it sums the 8 slots in slot order from 0, runs `ops::short_conv` with the state,
+// and writes `x = r + conv`. Then it pushes the last 3 sums into the state. A token has exactly 8 slots.
+//
+// The up mode needs a dynamic shared memory of MK_EXPERT_SMEM_BYTES + 16 bytes (4,112), and the down mode needs
+// MK_EXPERT_SMEM_BYTES + 16 + EX_DOWN_SMEM_BYTES bytes (21,264).
+//
 // This header needs `mk_protocol.h`, `MkTaskDescriptor`, quant.cuh and the worker functions of megakernel.cu.
 
 #pragma once
@@ -236,12 +275,177 @@ __device__ __forceinline__ void sum_groups(
     }
 }
 
-template <typename F, uint32_t NB>
-__device__ __forceinline__ void expert_item_nb(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item, const PairRef pair) {
+// The three modes of an expert op. EX_PLAIN is the matmul of wave A: `y = W x` for the rows of a pair. EX_UP is the up
+// matmul of the layer: the epilogue gives the activation of the experts, and a row finisher quantizes it. EX_DOWN is the
+// down matmul: the epilogue writes a slot row, and a column finisher sums the slots, runs the convolution and adds the
+// residual. The mode is a template argument, so a mode has only its own code.
+constexpr uint32_t EX_PLAIN = 0;
+constexpr uint32_t EX_UP = 1;
+constexpr uint32_t EX_DOWN = 2;
+
+// The slots of the task table of the modes UP and DOWN. The slot 0 is MK_EXPERT_TABLE_AMAX. The same numbers are in
+// src/experts.rs.
+constexpr uint32_t EXPERT_TABLE_QACT = 1;       // UP: the buffer of quantized activation rows, for `8 * kt` rows.
+constexpr uint32_t EXPERT_TABLE_RESIDUAL = 2;   // DOWN: the residual `r`, `kt` rows of `n` floats.
+constexpr uint32_t EXPERT_TABLE_CONV_WEIGHT = 3;  // DOWN: the weights of `mlp_conv`, `n` rows of 4 floats.
+constexpr uint32_t EXPERT_TABLE_CONV_STATE = 4;   // DOWN: the state of the convolution, 3 rows of `n` floats.
+constexpr uint32_t EXPERT_TABLE_OUT = 5;          // DOWN: the output `x`, `kt` rows of `n` floats.
+
+// The columns of the activation of one expert, and the values of K of the down matmul: the half of `n` of the up matmul.
+constexpr uint32_t EXPERT_UP_TILE_COLUMNS = MK_EXPERT_TILE_ROWS / 2;
+
+// The shared memory after the partial sums (MK_EXPERT_SMEM_BYTES) holds the flag of an arrival (16 bytes), and then the
+// sums of the down finisher.
+constexpr uint32_t EX_FINISH_OFFSET = MK_EXPERT_SMEM_BYTES + 16;
+
+// The division of this file and of ops_moe.cuh. A `/` or `__frcp_rn` can call the slow path of the division, and a call
+// makes the compiler save every live register, which the build reports as a spill (the kernel has 168 registers and no
+// room). So the sigmoid, the softcaps and the route weight use the fast division, which has no call and an error of 2
+// ulps. The device `expf` and `tanhf` already differ from the host by an ulp, so no gate of these values is a bit gate.
+__device__ __forceinline__ float ex_sigmoid(float x) { return __fdividef(1.0f, 1.0f + expf(-x)); }
+
+// `softcap(x, 4)` and `softcap(x, 25)` of `ops::softcap`. The factor 0.25 is exact, and 0.04 is the `f32` of 1 / 25.
+__device__ __forceinline__ float ex_softcap4(float x) { return tanhf(x * 0.25f) * 4.0f; }
+__device__ __forceinline__ float ex_softcap25(float x) { return tanhf(x * 0.04f) * 25.0f; }
+
+// The correctly rounded `1 / y` for a normal `y`, with no call to the slow path (see above). The approximation of the
+// hardware is within 1 ulp, and one fused step makes it correct (Markstein). `tests/cuda_experts.rs` checks the bits
+// of the NVFP4 epilogue with several denominators.
+__device__ __forceinline__ float ex_reciprocal(float y) {
+    float approx;
+    asm("rcp.approx.ftz.f32 %0, %1;" : "=f"(approx) : "f"(y));
+    return __fmaf_rn(__fmaf_rn(-approx, y, 1.0f), approx, approx);
+}
+
+// The quotient of `x` by the constant `d`, correctly rounded, with `r` the correctly rounded `1 / d` as a constant:
+// one fused step corrects `x * r` (Markstein). It has no call to the slow path. The fused multiply-add is explicit,
+// because the build turns the contraction of `a * b + c` off.
+__device__ __forceinline__ float ex_div_const(float x, float d, float r) {
+    const float q = x * r;
+    return __fmaf_rn(__fmaf_rn(-q, d, x), r, q);
+}
+
+// The softcapped SwiGLU of an expert (`ops::swiglu`): the sigmoid sees the raw gate.
+__device__ __forceinline__ float ex_swiglu(float gate, float up) {
+    return ex_softcap4(gate) * ex_sigmoid(gate) * ex_softcap25(up);
+}
+
+// The row of x of the column `token` of the pair. The down matmul reads the activation row of the slot that the up
+// matmul wrote, and that slot is `y_row`.
+template <uint32_t MODE>
+__device__ __forceinline__ uint32_t pair_x_row(const PairRef& pair, uint32_t token) {
+    return MODE == EX_DOWN ? pair.y_row(token) : pair.x_row(token);
+}
+
+// The finisher of the pair `pair_index` in the up op, in the last of its 36 tile items: every consumer quantizes the
+// rows of the pair, one after the other. The slot `y_row` of a row is its row in the activation and in the buffer.
+template <typename F>
+__device__ __forceinline__ void up_finish_rows(const MkTaskDescriptor& task, const MkTaskTable* table, const PairRef& pair) {
+    const uint32_t k = task.n / 2;
+    const uint32_t capacity = 8 * task.kt;
+    const float* act = reinterpret_cast<const float*>(task.c);
+    uint8_t* base = reinterpret_cast<uint8_t*>(table->ptr[EXPERT_TABLE_QACT]);
+    for (uint32_t i = 0; i < pair.count(); ++i) {
+        const uint64_t slot = pair.y_row(i);
+        const float* x = act + slot * k;
+        if constexpr (F::STEPS == 2) {
+            quant_nvfp4_row_short(x, k, base + slot * (k / 2), base + static_cast<uint64_t>(capacity) * (k / 2) + slot * (k / 16),
+                            reinterpret_cast<float*>(base + static_cast<uint64_t>(capacity) * (k / 2 + k / 16)) + slot);
+        } else {
+            quant_mxfp8_row(x, k, base + slot * k, base + static_cast<uint64_t>(capacity) * k + slot * (k / 32));
+        }
+    }
+}
+
+// The rows of the chunk of the finisher of the down op: tokens at a time. A chunk holds 3 rows of the tokens before it,
+// and the sums of its own tokens.
+constexpr uint32_t EX_DOWN_CHUNK = 64;
+constexpr uint32_t EX_DOWN_SMEM_BYTES = (EX_DOWN_CHUNK + 3) * MK_EXPERT_TILE_ROWS * 4;
+
+// The sum of the 8 slots of a token, in the order of the slots, for the column `column` (`ops::experts` sums the
+// experts in ascending order from 0).
+__device__ __forceinline__ float down_slot_sum(const float* slots, uint32_t token, uint32_t n, uint32_t column) {
+    float sum = 0.0f;
+#pragma unroll
+    for (uint32_t s = 0; s < 8; ++s) {
+        sum += __ldcg(slots + (static_cast<uint64_t>(token) * 8 + s) * n + column);
+    }
+    return sum;
+}
+
+// The finisher of the column tile `tile` of the down op, in the last of the live pairs that arrive at the tile. For the
+// tokens of the task in order it sums the slots, runs the short convolution `(w0 f[t-3] + w1 f[t-2] + w2 f[t-1] +
+// w3 f[t] + f[t]) / sqrt(5)` (`ops::short_conv`), and writes `x = r + conv`. Then it pushes the last 3 sums into the
+// state. The output of a token does not need the output of the token before it, only the sums, so a chunk of tokens
+// runs in parallel. A chunk reads the sums of the 3 tokens before it again, and the first chunk reads the state.
+__device__ __forceinline__ void down_finish_tile(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t tile) {
+    const uint32_t n = task.n;
+    const uint32_t tokens = task.kt;
+    const uint32_t tid = worker_id();
+    const uint32_t column = tid % MK_EXPERT_TILE_ROWS;
+    const uint32_t lane_row = tid / MK_EXPERT_TILE_ROWS;  // 0 to 3
+    const uint32_t col = tile * MK_EXPERT_TILE_ROWS + column;
+    const float* slots = reinterpret_cast<const float*>(task.c);
+    const float* residual = reinterpret_cast<const float*>(table->ptr[EXPERT_TABLE_RESIDUAL]);
+    const float* conv_weight = reinterpret_cast<const float*>(table->ptr[EXPERT_TABLE_CONV_WEIGHT]);
+    float* state = reinterpret_cast<float*>(table->ptr[EXPERT_TABLE_CONV_STATE]);
+    float* out = reinterpret_cast<float*>(table->ptr[EXPERT_TABLE_OUT]);
+    float* sums = reinterpret_cast<float*>(mk_smem + EX_FINISH_OFFSET);  // (3 + chunk) rows of 64 columns
+    const float w0 = conv_weight[static_cast<uint64_t>(col) * 4 + 0];
+    const float w1 = conv_weight[static_cast<uint64_t>(col) * 4 + 1];
+    const float w2 = conv_weight[static_cast<uint64_t>(col) * 4 + 2];
+    const float w3 = conv_weight[static_cast<uint64_t>(col) * 4 + 3];
+    const float divisor = 2.23606801f;  // (5 as f64).sqrt() as f32
+    const float inverse = __uint_as_float(0x3ee4f92eu);  // 1 / divisor, rounded to f32
+    for (uint32_t first = 0; first < tokens; first += EX_DOWN_CHUNK) {
+        const uint32_t count = tokens - first < EX_DOWN_CHUNK ? tokens - first : EX_DOWN_CHUNK;
+        // The row `j` of the buffer holds the token `first + j - 3`: a token before the first one is in the state.
+        for (uint32_t j = lane_row; j < count + 3; j += MK_CONSUMER_THREADS / MK_EXPERT_TILE_ROWS) {
+            const int64_t token = static_cast<int64_t>(first) + j - 3;
+            sums[j * MK_EXPERT_TILE_ROWS + column] =
+                token < 0 ? __ldcg(state + (3 + token) * n + col) : down_slot_sum(slots, static_cast<uint32_t>(token), n, col);
+        }
+        worker_sync();
+        for (uint32_t j = lane_row; j < count; j += MK_CONSUMER_THREADS / MK_EXPERT_TILE_ROWS) {
+            const float* f = sums + j * MK_EXPERT_TILE_ROWS + column;  // f[t-3] is f[0], and f[t] is f[3]
+            const float sum = w0 * f[0] + w1 * f[MK_EXPERT_TILE_ROWS] + w2 * f[2 * MK_EXPERT_TILE_ROWS] +
+                              w3 * f[3 * MK_EXPERT_TILE_ROWS];
+            const float conv = ex_div_const(sum + f[3 * MK_EXPERT_TILE_ROWS], divisor, inverse);
+            const uint64_t at = static_cast<uint64_t>(first + j) * n + col;
+            out[at] = __ldcg(residual + at) + conv;
+        }
+        worker_sync();
+    }
+    // The new state: the last 3 of the sums `state[0..3]`, `f[0..tokens]`. The values go to registers first, because
+    // the new rows overlap the old ones.
+    float next[3] = {0.0f, 0.0f, 0.0f};
+    if (tid < MK_EXPERT_TILE_ROWS) {
+#pragma unroll
+        for (uint32_t j = 0; j < 3; ++j) {
+            const int64_t token = static_cast<int64_t>(tokens) - 3 + j;
+            next[j] = token < 0 ? __ldcg(state + (3 + token) * n + col) : down_slot_sum(slots, static_cast<uint32_t>(token), n, col);
+        }
+    }
+    worker_sync();
+    if (tid < MK_EXPERT_TILE_ROWS) {
+#pragma unroll
+        for (uint32_t j = 0; j < 3; ++j) {
+            __stcg(state + static_cast<uint64_t>(j) * n + col, next[j]);
+        }
+    }
+}
+
+// One pass of an item: the 8 columns `token_base` to `token_base + 7` of the pair, which are one n8 tile of the MMA. A pair
+// of 9 to 16 rows takes two passes that read the weights twice (the second time from L2). The two-tile form of wave A
+// held 4 more registers for the second tile, and the kernel has no room for them (168 registers, and the build fails on a
+// spill). A column of the MMA is independent of the others, so the bits do not change.
+template <typename F, uint32_t MODE>
+__device__ __forceinline__ void expert_pass(
+    const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t tile, const PairRef pair, uint32_t token_base) {
+    constexpr uint32_t NB = 1;
     const uint32_t n = task.n;
     const uint32_t k = task.k;
     const uint32_t tiles = n / MK_EXPERT_TILE_ROWS;
-    const uint32_t tile = item % tiles;
     const uint32_t groups = k / MK_EXPERT_K_GROUP;
     const uint64_t item_bytes = static_cast<uint64_t>(4) * groups * F::RECORD_BYTES;
     const uint8_t* weights =
@@ -260,9 +464,9 @@ __device__ __forceinline__ void expert_item_nb(const MkTaskDescriptor& task, con
     l.lane = lane;
 #pragma unroll
     for (uint32_t nb = 0; nb < NB; ++nb) {
-        const uint32_t token = nb * 8 + (lane >> 2);
+        const uint32_t token = token_base + nb * 8 + (lane >> 2);
         l.valid[nb] = token < pair.count();
-        const uint32_t x_row = l.valid[nb] ? pair.x_row(token) : 0;
+        const uint32_t x_row = l.valid[nb] ? pair_x_row<MODE>(pair, token) : 0;
         if (x_row >= task.rows) {
             __trap();  // The pair names a row that the buffer of quantized rows does not hold.
         }
@@ -301,43 +505,96 @@ __device__ __forceinline__ void expert_item_nb(const MkTaskDescriptor& task, con
         float inverse_row_scale = 0.0f;
         if constexpr (F::STEPS == 2) {
             w_amax = reinterpret_cast<const float*>(table->ptr[MK_EXPERT_TABLE_AMAX])[pair.expert()];
-            inverse_row_scale = 1.0f / (1536.0f * task.p1);
+            inverse_row_scale = ex_reciprocal(1536.0f * task.p1);
         }
+        // The value of a result for the column `token`: the total, the expert scale, and for NVFP4 the row scale.
+        auto scaled = [&](float total, uint32_t token) {
+            float value = total * expert_scale;
+            if constexpr (F::STEPS == 2) {
+                const float x_amax = __ldcg(
+                    reinterpret_cast<const float*>(x_base + static_cast<uint64_t>(task.rows) * (F::code_bytes(k) + F::scale_bytes(k))) +
+                    pair_x_row<MODE>(pair, token));
+                value = value * ((x_amax * w_amax) * inverse_row_scale);
+            }
+            return value;
+        };
 #pragma unroll
         for (uint32_t nb = 0; nb < NB; ++nb) {
             const float4 second = *reinterpret_cast<const float4*>(part + ((mt * 2 + nb) * 32 + lane) * 4);
             const float total[4] = {acc[nb][0] + second.x, acc[nb][1] + second.y, acc[nb][2] + second.z, acc[nb][3] + second.w};
+            if constexpr (MODE == EX_UP) {
+                // The row g holds the gate `i` and the row g + 8 holds the up `i` of the activation column `i`. The
+                // activation is the SwiGLU times the route weight (the weight comes before the quantizer, as the binding
+                // says).
 #pragma unroll
-            for (uint32_t i = 0; i < 4; ++i) {
-                // d0, d1: the row g, the columns 2t and 2t + 1. d2, d3: the row g + 8.
-                const uint32_t token = nb * 8 + 2 * t + (i & 1);
-                if (token < pair.count()) {
-                    float value = total[i] * expert_scale;
-                    if constexpr (F::STEPS == 2) {
-                        const float x_amax = __ldcg(reinterpret_cast<const float*>(x_base + static_cast<uint64_t>(task.rows) * (F::code_bytes(k) + F::scale_bytes(k))) + pair.x_row(token));
-                        value = value * ((x_amax * w_amax) * inverse_row_scale);
+                for (uint32_t e = 0; e < 2; ++e) {
+                    const uint32_t token = token_base + nb * 8 + 2 * t + e;
+                    if (token < pair.count()) {
+                        const uint32_t slot = pair.y_row(token);
+                        if (slot >= 8 * task.kt) {
+                            __trap();
+                        }
+                        const float gate = scaled(total[e], token);
+                        const float up = scaled(total[2 + e], token);
+                        __stcg(y + static_cast<uint64_t>(slot) * (n / 2) + tile * EXPERT_UP_TILE_COLUMNS + mt * 8 + (lane >> 2),
+                               ex_swiglu(gate, up) * pair.weight(token));
                     }
-                    y[static_cast<uint64_t>(pair.y_row(token)) * n + col + (i >> 1) * 8] = value;
+                }
+            } else {
+#pragma unroll
+                for (uint32_t i = 0; i < 4; ++i) {
+                    // d0, d1: the row g, the columns 2t and 2t + 1. d2, d3: the row g + 8.
+                    const uint32_t token = token_base + nb * 8 + 2 * t + (i & 1);
+                    if (token < pair.count()) {
+                        const uint32_t slot = pair.y_row(token);
+                        if (MODE == EX_DOWN && slot >= 8 * task.kt) {
+                            __trap();
+                        }
+                        y[static_cast<uint64_t>(slot) * n + col + (i >> 1) * 8] = scaled(total[i], token);
+                    }
                 }
             }
         }
     }
 }
 
-// The warps ask L2 for the bytes that they read in the next item of this block, so the first loads of that item do not
-// wait for DRAM. One bulk prefetch for each stream of a warp. A bulk prefetch needs a multiple of 16 bytes.
+// Count the arrival of an item of a merge group, and tell the whole block if it is the last one. The caller has run a
+// barrier of the consumers after its last write.
+__device__ __forceinline__ bool expert_arrive(uint32_t* counter, uint32_t group_items) {
+    uint32_t* flag = reinterpret_cast<uint32_t*>(mk_smem + MK_EXPERT_SMEM_BYTES);
+    if (worker_id() == 0) {
+        *flag = merge_arrive(counter, group_items) ? 1u : 0u;
+    }
+    worker_sync();
+    // No barrier after the read: the next write of the flag is in a later item, after more barriers.
+    return *flag != 0;
+}
+
+// The warps ask L2 for the bytes that they read in the next tile of this block, so the first loads of that tile do not
+// wait for DRAM. The next tile is the tile after this one in the same item, or the first tile of the next item of this
+// block. One bulk prefetch for each stream of a warp. A bulk prefetch needs a multiple of 16 bytes.
 template <typename F>
-__device__ __forceinline__ void experts_prefetch_next(const MkTaskDescriptor& task, uint32_t item) {
-    const uint32_t next = item + gridDim.x;
+__device__ __forceinline__ void experts_prefetch_next(
+    const MkTaskDescriptor& task, uint32_t item, uint32_t item_tiles, uint32_t tpi, uint32_t in_item) {
     const uint32_t tiles = task.n / MK_EXPERT_TILE_ROWS;
-    if (next >= task.items || (worker_id() & 31) != 0) {
+    uint32_t next_pair = item / item_tiles;
+    uint32_t next_tile = (item % item_tiles) * tpi + in_item + 1;
+    if (in_item + 1 == tpi) {
+        const uint32_t next = item + gridDim.x;
+        if (next >= task.items) {
+            return;
+        }
+        next_pair = next / item_tiles;
+        next_tile = (next % item_tiles) * tpi;
+    }
+    if ((worker_id() & 31) != 0) {
         return;
     }
     // The next item may be past the live pairs, or it may hold an empty pair. Then there is nothing to prefetch.
-    if (next / tiles >= live_pairs(task)) {
+    if (next_pair >= live_pairs(task)) {
         return;
     }
-    const PairRef pair{pair_at(task, next / tiles)};
+    const PairRef pair{pair_at(task, next_pair)};
     if (pair.count() == 0 || pair.count() > MK_EXPERT_MAX_ROWS) {
         return;
     }
@@ -350,40 +607,99 @@ __device__ __forceinline__ void experts_prefetch_next(const MkTaskDescriptor& ta
     const uint32_t first = half == 0 ? 0 : split;
     const uint32_t last = half == 0 ? split : groups;
     const uint8_t* at = reinterpret_cast<const uint8_t*>(task.b) +
-                        (static_cast<uint64_t>(pair.expert()) * tiles + next % tiles) * item_bytes +
+                        (static_cast<uint64_t>(pair.expert()) * tiles + next_tile) * item_bytes +
                         (static_cast<uint64_t>(mt) * groups + first) * F::RECORD_BYTES;
     bulk_prefetch_l2(at, (last - first) * F::RECORD_BYTES);
 }
 
-template <typename F>
-__device__ __forceinline__ void op_expert(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
-    if (worker_count() != MK_CONSUMER_THREADS || (task.n % MK_EXPERT_TILE_ROWS) != 0 || (task.k % MK_EXPERT_K_GROUP) != 0 ||
-        dynamic_smem_bytes() < MK_EXPERT_SMEM_BYTES || task.item_bytes != 0 ||
-        (F::STEPS == 2 && table == nullptr)) {
-        __trap();  // The cut needs 8 warps, whole tiles and groups, and the shared memory of the partial sums.
-    }
+template <typename F, uint32_t MODE>
+__device__ __forceinline__ void op_expert_mode(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
     const uint32_t tiles = task.n / MK_EXPERT_TILE_ROWS;
-    // The count of items is the static bound of pairs times the tiles. The list has room for the bound.
-    if ((task.e & 15) != 0 || task.items % tiles != 0 || live_pairs(task) > task.items / tiles) {
+    // An item covers `tpi` tiles of a pair, one after the other (`pos0`, 0 means 1). Fewer items mean fewer arrivals at a
+    // merge counter, and each arrival costs about a microsecond. A tile has the same sums in any item.
+    const uint32_t tpi = task.pos0 == 0 ? 1 : task.pos0;
+    const uint32_t item_tiles = tiles / tpi;
+    const uint32_t live = live_pairs(task);
+    // The count of items is the static bound of pairs times the items of a pair. The list has room for the bound.
+    if ((task.e & 15) != 0 || tiles % tpi != 0 || task.items % item_tiles != 0 || live > task.items / item_tiles) {
         __trap();
     }
-    // An item of a pair that is not live, and an item of an empty pair, do nothing. All the consumers take the same
-    // way, and the item counts as done.
-    if (item / tiles >= live_pairs(task)) {
+    // An item of a pair that is not live does nothing, and the item counts as done. All the consumers take the same way.
+    if (item / item_tiles >= live) {
         return;
     }
-    const PairRef pair{pair_at(task, item / tiles)};
+    const PairRef pair{pair_at(task, item / item_tiles)};
     if (pair.count() > MK_EXPERT_MAX_ROWS) {
         __trap();
     }
+    const uint32_t first_tile = (item % item_tiles) * tpi;
     if (pair.count() == 0) {
+        // An empty pair does nothing. In the down op it still counts at each of its tiles, because the finisher of a tile
+        // waits for each live pair.
+        if constexpr (MODE == EX_DOWN) {
+            for (uint32_t j = 0; j < tpi; ++j) {
+                if (expert_arrive(reinterpret_cast<uint32_t*>(task.f) + first_tile + j, live)) {
+                    down_finish_tile(task, table, first_tile + j);
+                }
+            }
+        }
         return;
     }
-    experts_prefetch_next<F>(task, item);
-    if (pair.count() <= 8) {
-        expert_item_nb<F, 1>(task, table, item, pair);
+#pragma unroll 1
+    for (uint32_t j = 0; j < tpi; ++j) {
+        if (j > 0) {
+            worker_sync();  // The tile before has read the partial sums of shared memory.
+        }
+        experts_prefetch_next<F>(task, item, item_tiles, tpi, j);
+        expert_pass<F, MODE>(task, table, first_tile + j, pair, 0);
+        if (pair.count() > 8) {
+            worker_sync();  // The first pass has read the partial sums of shared memory.
+            expert_pass<F, MODE>(task, table, first_tile + j, pair, 8);
+        }
+        if constexpr (MODE == EX_DOWN) {
+            // The finisher reads the task again, and it does not keep `pair` or `live` across the MMAs: the registers of
+            // the main loop are all in use (168), and a build with a spill fails.
+            worker_sync();
+            if (expert_arrive(reinterpret_cast<uint32_t*>(task.f) + first_tile + j, live_pairs(task))) {
+                down_finish_tile(task, table, first_tile + j);
+            }
+        }
+    }
+    if constexpr (MODE == EX_UP) {
+        worker_sync();
+        const uint32_t pair_index = item / item_tiles;
+        if (expert_arrive(reinterpret_cast<uint32_t*>(task.f) + pair_index, item_tiles)) {
+            up_finish_rows<F>(task, table, PairRef{pair_at(task, pair_index)});
+        }
+    }
+}
+
+template <typename F>
+__device__ __forceinline__ void op_expert(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
+    const uint32_t mode_flags = task.flags & (FLAG_UP | FLAG_DOWN);
+    if (worker_count() != MK_CONSUMER_THREADS || (task.n % MK_EXPERT_TILE_ROWS) != 0 || (task.k % MK_EXPERT_K_GROUP) != 0 ||
+        dynamic_smem_bytes() < MK_EXPERT_SMEM_BYTES || task.item_bytes != 0 || (F::STEPS == 2 && table == nullptr) ||
+        (task.flags & ~(FLAG_PAIRS | FLAG_UP | FLAG_DOWN)) != 0 || mode_flags == (FLAG_UP | FLAG_DOWN)) {
+        __trap();  // The cut needs 8 warps, whole tiles and groups, and the shared memory of the partial sums.
+    }
+    if (mode_flags == FLAG_UP) {
+        // The up matmul: `n` rows are the gate and up of `n / 2` activation columns. The quantized rows have `k = n / 2`.
+        if (table == nullptr || table->ptr[EXPERT_TABLE_QACT] == 0 || ((task.n / 2) % MK_EXPERT_K_GROUP) != 0 || task.kt == 0 ||
+            task.group_items != (task.n / MK_EXPERT_TILE_ROWS) / (task.pos0 == 0 ? 1 : task.pos0) || (task.f & 3) != 0 || (table->ptr[EXPERT_TABLE_QACT] & 15) != 0 ||
+            (task.c & 15) != 0 || dynamic_smem_bytes() < EX_FINISH_OFFSET) {
+            __trap();
+        }
+        op_expert_mode<F, EX_UP>(task, table, item);
+    } else if (mode_flags == FLAG_DOWN) {
+        if (table == nullptr || table->ptr[EXPERT_TABLE_RESIDUAL] == 0 || table->ptr[EXPERT_TABLE_CONV_WEIGHT] == 0 ||
+            table->ptr[EXPERT_TABLE_CONV_STATE] == 0 || table->ptr[EXPERT_TABLE_OUT] == 0 || task.kt == 0 ||
+            task.rows != 8 * task.kt || (task.f & 3) != 0 ||
+            dynamic_smem_bytes() < EX_FINISH_OFFSET + EX_DOWN_SMEM_BYTES) {
+            __trap();
+        }
+        op_expert_mode<F, EX_DOWN>(task, table, item);
     } else {
-        expert_item_nb<F, 2>(task, table, item, pair);
+        op_expert_mode<F, EX_PLAIN>(task, table, item);
     }
 }
 

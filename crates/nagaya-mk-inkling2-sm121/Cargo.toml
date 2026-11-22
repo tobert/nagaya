@@ -15,5 +15,6 @@ nagaya-mk-cuda = { version = "0.1.0", path = "../nagaya-mk-cuda" }
 serde_json = { version = "1.0.154", features = ["float_roundtrip", "preserve_order"] }
 
 [dev-dependencies]
-# The host forms of the attention (`host::ops`) are the oracle of the attention op. The crate needs no card with no feature.
+# The host forms of the B70 crate (`host::ops`) are the oracle of the GB10 ops. With no feature it builds with no Level
+# Zero and needs no card.
 nagaya-mk-inkling2-bmg = { version = "0.1.0", path = "../nagaya-mk-inkling2-bmg" }

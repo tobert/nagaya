@@ -9,11 +9,14 @@ pub mod attn;
 pub mod driver;
 pub mod experts;
 pub mod graph;
+pub mod mma_model;
+pub mod proj;
 pub mod protocol;
 pub mod ptxas;
 pub mod repack;
 #[cfg(feature = "cuda")]
 pub mod ring;
+pub mod rows;
 pub mod safetensors;
 pub mod test_cards;
 

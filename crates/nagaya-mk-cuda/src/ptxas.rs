@@ -1,26 +1,56 @@
 //! The report of `ptxas -v`. `build.rs` reads it, and it refuses a kernel that spills registers: a spill is a read and
 //! a write of local memory in the hot loop of the interpreter.
+//!
+//! Every op is inline in the interpreter, so the registers of the interpreter are the registers of its most hungry op,
+//! and a value that the interpreter keeps in a register across an op takes from the budget of each op. A call inside an
+//! op (the slow path of a division, a quantizer) makes ptxas save each live register of the interpreter to the stack,
+//! and ptxas reports that save as a spill. Thus the interpreter keeps almost nothing in registers across an op: the
+//! kernel parameters are read again from the parameter bank at each use, the totals and the timestamps of the profile
+//! are in shared memory, and the loop keeps only its item. A function that is not inline has its own line in the
+//! report, and the same rule holds for it. The interpreter has no stack frame: a frame there is a local copy of a
+//! descriptor or a local array of an op, and it is local memory in the hot loop.
 
-/// Return an error that names the function and the bytes, if `report` shows a spill. Return an error too if the
-/// report has no spill line, because then the check has not looked at anything.
+/// Return an error that names the function and the bytes, if `report` shows a spill in any function, or a stack frame
+/// in an entry function. Return an error too if the report has no spill line, because then the check has not looked
+/// at anything.
 pub fn spill_problem(report: &str) -> Result<(), String> {
     let mut seen = false;
     let mut function = "an unnamed function";
+    let mut entries: Vec<&str> = Vec::new();
     for line in report.lines() {
+        if let Some(name) = line
+            .split("Compiling entry function '")
+            .nth(1)
+            .and_then(|rest| rest.split('\'').next())
+        {
+            entries.push(name);
+        }
         if let Some(name) = line.split("Function properties for ").nth(1) {
             function = name.trim();
         }
-        let (Some(stores), Some(loads)) = (
+        let (Some(frame), Some(stores), Some(loads)) = (
+            bytes_before(line, "bytes stack frame"),
             bytes_before(line, "bytes spill stores"),
             bytes_before(line, "bytes spill loads"),
         ) else {
             continue;
         };
         seen = true;
+        let name = readable(function);
         if stores != 0 || loads != 0 {
             return Err(format!(
-                "ptxas reports a spill in {function}: {stores} bytes of spill stores and {loads} bytes of spill \
-                 loads. Lower the registers that the kernel holds, or split the code that holds them"
+                "ptxas reports a spill in {name}: {stores} bytes of spill stores and {loads} bytes of spill \
+                 loads. The ops share the registers of the interpreter, so the op that grew is the one that holds \
+                 most registers. Find it, lower the registers that it holds, or split its code. Do not keep a value \
+                 of the interpreter in a register across an op: put it in shared memory"
+            ));
+        }
+        if frame != 0 && entries.contains(&function) {
+            return Err(format!(
+                "ptxas reports a stack frame of {frame} bytes in the entry function {name}. The interpreter must \
+                 have none. A local copy of a descriptor makes such a frame, and so does a local array of an op. \
+                 Use a reference to the shared or global copy, and keep the arrays of an op in registers or in \
+                 shared memory"
             ));
         }
     }
@@ -31,6 +61,18 @@ pub fn spill_problem(report: &str) -> Result<(), String> {
             "the ptxas report has no line about spills. Pass `-Xptxas -v` to nvcc, so that the build can check them"
                 .to_owned(),
         )
+    }
+}
+
+/// The name of a function as a reader writes it: `_Z7op_attnRK...` becomes `op_attn`. Another name stays as it is.
+fn readable(function: &str) -> String {
+    let Some(rest) = function.strip_prefix("_Z") else {
+        return function.to_owned();
+    };
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    match digits.parse::<usize>() {
+        Ok(length) if rest[digits.len()..].len() >= length => rest[digits.len()..digits.len() + length].to_owned(),
+        _ => function.to_owned(),
     }
 }
 
@@ -66,6 +108,30 @@ mod tests {
             assert!(error.contains(&format!("{stores} bytes of spill stores")), "{error}");
             assert!(error.contains(&format!("{loads} bytes of spill loads")), "{error}");
         }
+    }
+
+    #[test]
+    fn a_stack_frame_in_the_entry_function_fails_and_in_an_op_does_not() {
+        let framed = CLEAN.replace("0 bytes stack frame", "128 bytes stack frame");
+        let error = spill_problem(&framed).unwrap_err();
+        assert!(
+            error.contains("128 bytes") && error.contains("mk_persistent_interpreter"),
+            "{error}"
+        );
+        let op = "ptxas info    : Function properties for _Z7op_attnRK16MkTaskDescriptorPK11MkTaskTablej\n    \
+                  64 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads\n";
+        assert_eq!(spill_problem(&format!("{CLEAN}{op}")), Ok(()));
+    }
+
+    #[test]
+    fn a_spill_in_a_called_op_names_the_op_as_a_reader_writes_it() {
+        let op = "ptxas info    : Function properties for _Z7op_attnRK16MkTaskDescriptorPK11MkTaskTablej\n    \
+                  0 bytes stack frame, 8 bytes spill stores, 4 bytes spill loads\n";
+        let error = spill_problem(&format!("{CLEAN}{op}")).unwrap_err();
+        assert!(
+            error.contains("in op_attn:") && error.contains("8 bytes of spill stores"),
+            "{error}"
+        );
     }
 
     #[test]
