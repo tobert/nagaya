@@ -56,6 +56,13 @@ pub const LFM3_KERNEL: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/megaker
 #[cfg(feature = "xe")]
 pub const INKLING2_KERNEL: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_inkling2_bmg.bin"));
 
+/// The profile binary of the Inkling 2 engine: the source of [`INKLING2_KERNEL`] with `MK_PROFILE`. Each work-group
+/// writes the clocks of each task to the buffer of [`level_zero::B70Card::set_profile`] (`protocol::PROFILE_WORDS`).
+/// The ops are those of the Inkling 2 binary, so a profiled pass gives its bits.
+#[cfg(feature = "xe")]
+pub const INKLING2_PROFILE_KERNEL: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_inkling2_profile_bmg.bin"));
+
 /// The name of the entry point of each kernel binary.
 pub const KERNEL_ENTRY: &str = "mk_persistent_interpreter";
 
@@ -118,6 +125,16 @@ mod tests {
         assert_ne!(
             INKLING2_KERNEL, QWEN3TTS_KERNEL,
             "the binary holds the ops of MK_INKLING2"
+        );
+    }
+
+    /// The profile binary is a native module, and its bytes are not those of the Inkling 2 binary.
+    #[test]
+    fn the_profile_binary_is_an_elf_module_of_its_own() {
+        assert_eq!(&INKLING2_PROFILE_KERNEL[..4], b"\x7fELF");
+        assert_ne!(
+            INKLING2_PROFILE_KERNEL, INKLING2_KERNEL,
+            "the profile binary holds the clocks of MK_PROFILE"
         );
     }
 }

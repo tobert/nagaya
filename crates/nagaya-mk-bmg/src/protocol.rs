@@ -12,6 +12,12 @@ pub const NUM_SCOREBOARD_EVENTS: usize = MAX_TASKS_PER_CARD + 1;
 pub const WAKE_BYTES: usize = 128;
 /// The device bytes of the device copy of the task ring of a card, which the kernel reads.
 pub const RING_DEV_BYTES: usize = MAX_TASKS_PER_CARD * 64;
+/// The words of `u64` that a profile binary writes for each task of each work-group, at
+/// `(task * work_groups + group) * PROFILE_WORDS`: the clock at the start of the task, after its wait, and at its end,
+/// before its signal. The clock is `clock_read_device`, which counts at the clock of the card (`B70Card::clock_mhz`).
+pub const PROFILE_WORDS: usize = 3;
+/// The bytes of the profile buffer of a ring of `MAX_TASKS_PER_CARD` tasks on 32 work-groups.
+pub const PROFILE_BYTES: usize = MAX_TASKS_PER_CARD * 32 * PROFILE_WORDS * 8;
 
 pub const OP_NOP: u16 = 0;
 pub const OP_RMSNORM: u16 = 1;

@@ -650,6 +650,22 @@ impl B70Card {
         }
     }
 
+    /// Give a profile binary its buffer of clocks: kernel argument 7, which the binary of an engine does not have. The
+    /// argument stays for each later launch. Set it before the first launch of the card.
+    ///
+    /// # Safety
+    ///
+    /// The card must hold a binary compiled with `MK_PROFILE`, such as `INKLING2_PROFILE_KERNEL`. `profile` must be
+    /// device memory of this card of at least `protocol::PROFILE_BYTES` bytes.
+    pub unsafe fn set_profile(&self, profile: *mut c_void) {
+        unsafe {
+            check_ze(
+                zeKernelSetArgumentValue(self.kernel, 7, 8, &profile as *const _ as *const c_void),
+                "arg 7 (profile)",
+            );
+        }
+    }
+
     pub unsafe fn launch_megakernel(
         &self,
         task_ring: *const c_void,

@@ -20,6 +20,7 @@ pub mod host;
 pub mod lab;
 pub mod media;
 pub mod model;
+pub mod profile;
 pub mod repack;
 pub mod spec;
 pub mod vision;

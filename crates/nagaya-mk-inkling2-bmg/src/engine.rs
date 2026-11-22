@@ -10,17 +10,19 @@ use nagaya_abi::{
     Output, PartError, PartId, Parts, PassError, PassErrorKind, PassOut, PassStatus, Segment, SlotId, Slots, State,
     Tap, WriteResult,
 };
+use nagaya_mk_bmg::level_zero::MEGAKERNEL_GROUPS;
 use nagaya_mk_bmg::level_zero::{B70Card, L0Cluster};
-use nagaya_mk_bmg::protocol::MkTaskDescriptor;
+use nagaya_mk_bmg::protocol::{MkTaskDescriptor, PROFILE_BYTES, PROFILE_WORDS};
 use nagaya_mk_bmg::ring::Ring;
 use nagaya_mk_bmg::safetensors::{MappedSafeTensors, SafeTensorsView};
-use nagaya_mk_bmg::{IGC_REVISION, INKLING2_KERNEL, KERNEL_ENTRY, OCLOC_VERSION};
+use nagaya_mk_bmg::{IGC_REVISION, INKLING2_KERNEL, INKLING2_PROFILE_KERNEL, KERNEL_ENTRY, OCLOC_VERSION};
 
 use crate::device::{Device, OnCard};
 use crate::host::ops::HIDDEN;
 use crate::host::weights::LOGITS;
 use crate::media::HeldRows;
 use crate::model::{self, Bufs, LAUNCH_TASKS, SlotMemory, TapBufs, TapRing, TaskRing};
+use crate::profile::Launch;
 use crate::spec::{self, Block, Config, FAMILY, HEAD_ROWS, Held, Model, Part, ROUTE_WORDS, Run, Source, Taps};
 use crate::vision::{self, PassBufs};
 use crate::weights::{self, Count, Weights};
@@ -55,7 +57,20 @@ pub struct Inkling2Engine {
     launch_tasks: usize,
     /// The launches of the last ring.
     last_launches: usize,
+    /// The buffer of clocks and the launches since the last take, for an open of the profile binary.
+    profile: Option<Profile>,
 }
+
+/// The clocks of a profiled open: the device buffer of the profile binary, and the launches that it recorded.
+struct Profile {
+    clocks: *mut u64,
+    launches: Vec<Launch>,
+}
+
+/// The binary of an open: its name in the identity, and its bytes.
+type Kernel = (&'static str, &'static [u8]);
+const ENGINE_KERNEL: Kernel = ("megakernel_inkling2_bmg.bin", INKLING2_KERNEL);
+const PROFILE_KERNEL: Kernel = ("megakernel_inkling2_profile_bmg.bin", INKLING2_PROFILE_KERNEL);
 
 // The engine holds USM pointers of its card, and one thread at a time calls it.
 unsafe impl Send for Inkling2Engine {}
@@ -67,6 +82,9 @@ impl Drop for Inkling2Engine {
         let card = &self.cluster.cards[0];
         self.ring.free(card);
         self.device.free_all(card);
+        if let Some(profile) = &self.profile {
+            card.free(profile.clocks as *mut std::ffi::c_void);
+        }
     }
 }
 
@@ -180,12 +198,13 @@ fn identity_of(
     config: &Config,
     pci: &str,
     driver: u32,
+    (kernel, bytes): Kernel,
 ) -> Result<Identity, String> {
     let (vendor, device, revision) = pci_ids(pci)?;
     let mut numbers = spec::identity_numbers(config);
     numbers.insert(
-        "kernel.megakernel_inkling2_bmg.bin".to_owned(),
-        format!("blake3:{}", blake3::hash(INKLING2_KERNEL).to_hex()),
+        format!("kernel.{kernel}"),
+        format!("blake3:{}", blake3::hash(bytes).to_hex()),
     );
     numbers.insert("ocloc".to_owned(), OCLOC_VERSION.to_owned());
     numbers.insert("igc".to_owned(), IGC_REVISION.to_owned());
@@ -229,7 +248,10 @@ pub fn describe(config: &Config, pci: &str) -> Result<(Identity, Limits), String
     let limits = spec::limits(config, spec::weights_bytes_of(&view.tensors)?);
     let digest = checkpoint_digest(&config_text, &view)?;
     let driver = nagaya_mk_bmg::level_zero::first_driver_version();
-    Ok((identity_of(model, digest, facts, config, pci, driver)?, limits))
+    Ok((
+        identity_of(model, digest, facts, config, pci, driver, ENGINE_KERNEL)?,
+        limits,
+    ))
 }
 
 /// The bytes of a file of the model folder.
@@ -245,6 +267,17 @@ impl Inkling2Engine {
     /// The open checks the config, `config.json` and every tensor before it opens the card. Its device bytes must
     /// equal the plan.
     pub fn open(config: Config, pci: &str) -> Result<Self, String> {
+        Self::open_with(config, pci, ENGINE_KERNEL)
+    }
+
+    /// Open as [`Inkling2Engine::open`] does, with the profile binary (milestone 36 item 0). Each launch then records
+    /// the clocks of each task, and [`Inkling2Engine::take_profile`] gives them. The ops are those of the engine
+    /// binary, so each pass gives the same bits. The identity names the profile binary. Only a profile test opens it.
+    pub fn open_profiled(config: Config, pci: &str) -> Result<Self, String> {
+        Self::open_with(config, pci, PROFILE_KERNEL)
+    }
+
+    fn open_with(config: Config, pci: &str, kernel: Kernel) -> Result<Self, String> {
         config.check()?;
         let dir = config.model_dir.clone();
         let model = Model::read(&dir)?;
@@ -280,8 +313,19 @@ impl Inkling2Engine {
         // The memory of this process on the card before the open, so the check after it sees what the open placed.
         let before = nagaya_mk_bmg::vram::card_memory(pci)?;
         // Only the engine's card gets a context, so the open does not stall the work of another card.
-        let cluster = L0Cluster::init_at(INKLING2_KERNEL, KERNEL_ENTRY, &[pci.to_owned()])?;
+        let cluster = L0Cluster::init_at(kernel.1, KERNEL_ENTRY, &[pci.to_owned()])?;
         let card = &cluster.cards[0];
+        // The profile binary reads its buffer of clocks from argument 7 at each launch, the first at this open too.
+        let profile = (kernel.0 == PROFILE_KERNEL.0).then(|| {
+            let clocks = card.alloc_device_usm::<u64>(PROFILE_BYTES / 8);
+            card.fill_zero_sync(clocks as *mut std::ffi::c_void, PROFILE_BYTES);
+            // SAFETY: the card holds the profile binary, and the buffer holds PROFILE_BYTES bytes of this card.
+            unsafe { card.set_profile(clocks as *mut std::ffi::c_void) };
+            Profile {
+                clocks,
+                launches: Vec::new(),
+            }
+        });
         let driver = cluster.driver_version();
         let mut device = Device::new(card);
         let weights = weights::load(
@@ -360,10 +404,13 @@ impl Inkling2Engine {
         if let Err(message) = fits {
             ring.free(card);
             device.free_all(card);
+            if let Some(profile) = &profile {
+                card.free(profile.clocks as *mut std::ffi::c_void);
+            }
             return Err(message);
         }
 
-        let identity = identity_of(model, checkpoint_digest, facts, &config, pci, driver)?;
+        let identity = identity_of(model, checkpoint_digest, facts, &config, pci, driver, kernel)?;
         let runs = (1..=usize::from(limits_cycles_max(&limits))).map(spec::runs).collect();
         let held = Held::new(&config.seqs(), config.extra_runs);
         Ok(Self {
@@ -387,6 +434,7 @@ impl Inkling2Engine {
             runs,
             launch_tasks: LAUNCH_TASKS,
             last_launches: 0,
+            profile,
         })
     }
 
@@ -416,9 +464,42 @@ impl Inkling2Engine {
     fn run(&mut self, launches: &[Vec<MkTaskDescriptor>]) {
         for tasks in launches {
             self.ring.set(tasks);
-            // SAFETY: each task points at the weights, the buffers or the slots of this engine, sized for the config.
-            unsafe { self.ring.run(&self.cluster.cards[0]) };
+            let card = &self.cluster.cards[0];
+            let Some(profile) = &mut self.profile else {
+                // SAFETY: each task points at the weights, the buffers or the slots of this engine, sized for the
+                // config.
+                unsafe { self.ring.run(card) };
+                continue;
+            };
+            let started = Instant::now();
+            // SAFETY: as above.
+            unsafe { self.ring.run(card) };
+            let host_ns = started.elapsed().as_nanos() as u64;
+            let groups = MEGAKERNEL_GROUPS as usize;
+            let words = tasks.len() * groups * PROFILE_WORDS;
+            let bytes = self.device.read(card, profile.clocks as u64, words * 8);
+            profile.launches.push(Launch {
+                tasks: tasks.clone(),
+                clocks: bytes
+                    .as_chunks::<8>()
+                    .0
+                    .iter()
+                    .map(|b| u64::from_le_bytes(*b))
+                    .collect(),
+                groups,
+                ticks_per_ns: f64::from(card.clock_mhz) / 1e3,
+                host_ns,
+            });
         }
+    }
+
+    /// The launches since the last take, with the clocks of each task. It is empty for an engine that
+    /// [`Inkling2Engine::open`] opened.
+    pub fn take_profile(&mut self) -> Vec<Launch> {
+        self.profile
+            .as_mut()
+            .map(|p| std::mem::take(&mut p.launches))
+            .unwrap_or_default()
     }
 
     /// Zero each conv part of `slot`: the state before position 0.
