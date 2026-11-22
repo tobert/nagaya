@@ -112,6 +112,18 @@ __device__ __forceinline__ void red_release_gpu_add_u32(uint32_t* ptr, uint32_t 
     asm volatile("red.release.gpu.global.add.u32 [%0], %1;" ::"l"(ptr), "r"(val) : "memory");
 }
 
+// An add at GPU scope that releases the writes before it and acquires the writes of the adds before it. The thread
+// that gets the last value of a merge counter sees the partials that every other item wrote.
+__device__ __forceinline__ uint32_t atom_acq_rel_gpu_add_u32(uint32_t* ptr, uint32_t val) {
+    uint32_t old;
+    asm volatile("atom.acq_rel.gpu.global.add.u32 %0, [%1], %2;" : "=r"(old) : "l"(ptr), "r"(val) : "memory");
+    return old;
+}
+
+// The threads that do the work of an item. A sum that an op cuts over the workers has this many lanes, whatever the
+// grid is, so the bits of a sum do not depend on the launch.
+constexpr uint32_t MK_WORKERS = 256;
+
 // The dynamic shared memory of the block. The launch gives its size. Only the probe ops use it for now.
 extern __shared__ __align__(128) uint8_t mk_smem[];
 
@@ -211,6 +223,9 @@ __device__ __forceinline__ void run_op(const MkTaskDescriptor& task, uint32_t it
             break;
         case OP_PROBE_MMA_RATE:
             op_probe_mma_rate(task);
+            break;
+        case OP_REDUCE_PROBE:
+            op_reduce_probe(task, item);
             break;
         default:
             // Unknown opcode: trap rather than silently corrupt state (spec 8.5).

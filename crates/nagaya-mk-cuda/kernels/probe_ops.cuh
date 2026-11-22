@@ -471,3 +471,54 @@ __device__ __forceinline__ void op_probe_mma_rate(const MkTaskDescriptor& task) 
             __trap();
     }
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// A merge group.
+// ---------------------------------------------------------------------------------------------------------------
+
+// Item `item` sums `kt` floats of the vector of its group: MK_WORKERS lanes, then a tree of halves. It writes the sum,
+// a partial, to its own slot. Then it adds 1 to the counter of its group. The item that reads `slices - 1` is the last
+// in the group: it sums the partials in index order and writes the result. The order of each sum is a function of
+// the shape only, so the bits do not depend on the grid or on which block merges.
+// a = vectors (const float*), c = sums (float*), f = partials, then counters (zero at the start),
+// n = floats in a vector, kt = floats in a slice, group_items = slices in a vector.
+__device__ __forceinline__ void op_reduce_probe(const MkTaskDescriptor& task, uint32_t item) {
+    __shared__ float lanes[MK_WORKERS];
+    const uint32_t slices = task.group_items;
+    // A block of another width has another tree, and a shape that does not cover the vector drops floats.
+    if (blockDim.x != MK_WORKERS || slices == 0 || static_cast<uint64_t>(slices) * task.kt < task.n) {
+        __trap();
+    }
+    const uint32_t group = item / slices;
+    const uint32_t slice = item % slices;
+    const float* x = reinterpret_cast<const float*>(task.a) + static_cast<uint64_t>(group) * task.n;
+    const uint64_t begin = static_cast<uint64_t>(slice) * task.kt;
+    const uint64_t end = begin + task.kt < task.n ? begin + task.kt : task.n;
+
+    float acc = 0.0f;
+    for (uint64_t i = begin + threadIdx.x; i < end; i += MK_WORKERS) {
+        acc += x[i];
+    }
+    lanes[threadIdx.x] = acc;
+    __syncthreads();
+    for (uint32_t half = MK_WORKERS / 2; half > 0; half >>= 1) {
+        if (threadIdx.x < half) {
+            lanes[threadIdx.x] += lanes[threadIdx.x + half];
+        }
+        __syncthreads();
+    }
+
+    if (threadIdx.x == 0) {
+        float* partials = reinterpret_cast<float*>(task.f);
+        uint32_t* counters = reinterpret_cast<uint32_t*>(partials + task.items);
+        partials[item] = lanes[0];
+        if (atom_acq_rel_gpu_add_u32(counters + group, 1u) == slices - 1) {
+            const float* mine = partials + static_cast<uint64_t>(group) * slices;
+            float sum = mine[0];
+            for (uint32_t s = 1; s < slices; ++s) {
+                sum += mine[s];
+            }
+            reinterpret_cast<float*>(task.c)[group] = sum;
+        }
+    }
+}

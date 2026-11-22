@@ -83,6 +83,12 @@ define_u16_table! {
     OP_PROBE_TIMER = 232;
     OP_PROBE_MMA_TILE = 233;
     OP_PROBE_MMA_RATE = 234;
+    // `OP_REDUCE_PROBE`: K-split sums. It tests the merge groups of `tests/cuda_merge.rs`. The vector of group `g` has
+    // `n` floats at `a + g * n` floats. An item sums `kt` floats of it, and `group_items` items make a group. The
+    // item writes its partial to `f`, and the item that arrives last in its group sums the partials in index order
+    // and writes the sum to `c[g]`. `f` holds one float for each item, then one `u32` counter for each group. The
+    // counters start at 0.
+    OP_REDUCE_PROBE = 235;
 
     // Test opcodes. They gate the scoreboard in `tests/cuda_smoke.rs`. An engine does not use them.
     // `OP_SELFTEST_FILL`: block `n` writes `n` words at `a + n * n` words, after a delay of `k` ns in block `kt`.
