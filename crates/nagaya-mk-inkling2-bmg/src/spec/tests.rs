@@ -830,11 +830,13 @@ fn the_identity_numbers_name_the_reserve_and_the_block() {
     }
 }
 
-/// A header of the tensors of `text_tensors`, with no bytes: each tensor takes the bytes of its dtype and shape.
+/// A header of the tensors of `text_tensors` and `vision::tensors`, with no bytes: each tensor takes the bytes of its
+/// dtype and shape.
 fn table_header() -> HashMap<String, TensorMeta> {
     let mut at = 0;
     text_tensors()
         .into_iter()
+        .chain(crate::vision::tensors())
         .map(|(name, dtype, shape)| {
             let bytes = shape.iter().product::<usize>() * dtype.size_bytes();
             let meta = TensorMeta {
@@ -881,6 +883,41 @@ fn the_plan_checks_each_tensor_of_the_text_model() {
         let e = weights_bytes_of(&other).unwrap_err();
         assert!(e.contains(&format!("the tensor {name} is")), "{e}");
     }
+}
+
+/// The plan checks each tensor of the tower too, so the open of the tower never meets a missing tensor. The tensors
+/// of the tower add no bytes to the term `weights`, and an unknown tensor of `model.visual.` is refused.
+#[test]
+fn the_plan_checks_each_tensor_of_the_tower() {
+    let header = table_header();
+    assert_eq!(crate::vision::tensors().len(), 422);
+    let names = [
+        "model.visual.backbone.embeddings.class_embedding",
+        "model.visual.backbone.embeddings.position_embedding",
+        "model.visual.backbone.ln_pre.bias",
+        "model.visual.backbone.layers.22.mlp.c_proj.weight",
+        "model.visual.backbone.layers.0.ls_2.gamma",
+        "model.visual.proj_out.weight",
+    ];
+    for name in names {
+        let mut missing = header.clone();
+        missing.remove(name).unwrap();
+        let e = weights_bytes_of(&missing).unwrap_err();
+        assert!(e.contains(&format!("holds no tensor {name}")), "{e}");
+        let mut other = header.clone();
+        other.get_mut(name).unwrap().dtype = safetensors::Dtype::F32;
+        let e = weights_bytes_of(&other).unwrap_err();
+        assert!(e.contains(&format!("the tensor {name} is F32")), "{e}");
+    }
+    let mut extra = header.clone();
+    let mut meta = header["model.visual.backbone.ln_pre.bias"].clone();
+    meta.name = "model.visual.backbone.ln_post.bias".to_owned();
+    extra.insert(meta.name.clone(), meta);
+    let e = weights_bytes_of(&extra).unwrap_err();
+    assert!(
+        e.contains("model.visual.backbone.ln_post.bias, which the Inkling 2 engine does not know"),
+        "{e}"
+    );
 }
 
 /// The part `cycles`: the last part of a state, `u32 [1]`.

@@ -854,7 +854,7 @@ pub fn expert_slab_bytes(experts: usize, rows: usize, cols: usize, mx: bool) -> 
 }
 
 /// The tensor `name` of the header, which must have `dtype` and `shape`.
-fn tensor<'a>(
+pub(crate) fn tensor<'a>(
     tensors: &'a HashMap<String, TensorMeta>,
     name: &str,
     dtype: safetensors::Dtype,
@@ -966,10 +966,12 @@ pub fn text_tensors() -> Vec<(String, safetensors::Dtype, Vec<usize>)> {
 /// The device bytes of the weights from the table of tensors of the checkpoint. Each tensor of `text_tensors` must be
 /// there with its dtype and shape. Each expert matrix is one slab, the embedding keeps its first `LOGITS` rows, the
 /// head holds `HEAD_ROWS` rows, each sink projection `SINK_ROWS` rows, and each other tensor keeps its bytes. The
-/// tensors of `model.visual.` are the term `vision`, which `vision::load` checks. Any other tensor is refused.
+/// tensors of `vision::tensors` are the term `vision`: the plan checks them as `vision::load` does, and they add no
+/// bytes here. Any other tensor is refused.
 pub fn weights_bytes_of(tensors: &HashMap<String, TensorMeta>) -> Result<u64, String> {
     let mut total = 0usize;
-    let mut read: HashSet<String> = HashSet::new();
+    vision::check_tensors(tensors)?;
+    let mut read: HashSet<String> = vision::tensors().into_iter().map(|(name, _, _)| name).collect();
     for (name, dtype, shape) in text_tensors() {
         let meta = tensor(tensors, &name, dtype, &shape)?;
         total += if let Some(rest) = name.strip_suffix("_weight")
@@ -1002,10 +1004,7 @@ pub fn weights_bytes_of(tensors: &HashMap<String, TensorMeta>) -> Result<u64, St
     }
     let mut names: Vec<&String> = tensors.keys().collect();
     names.sort();
-    if let Some(name) = names
-        .into_iter()
-        .find(|name| !read.contains(*name) && !name.starts_with("model.visual."))
-    {
+    if let Some(name) = names.into_iter().find(|name| !read.contains(*name)) {
         return Err(format!(
             "the checkpoint holds the tensor {name}, which the Inkling 2 engine does not know. The file is not \
              Inkling 2"

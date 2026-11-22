@@ -5,10 +5,11 @@
 //! puts the patch rows of an image at `rows`, runs the tasks, and reads `T` projector rows of 2,304 values at `out`.
 //! The tower of each image runs alone, so an image has the same bits in a call of one image or of many.
 
+use std::collections::HashMap;
 use std::ops::Range;
 
 use nagaya_mk_bmg::protocol::MkTaskDescriptor;
-use nagaya_mk_bmg::safetensors::SafeTensorsView;
+use nagaya_mk_bmg::safetensors::{self, SafeTensorsView, TensorMeta};
 use nagaya_mk_bmg::tasks;
 
 use crate::host::ops::HIDDEN;
@@ -94,6 +95,53 @@ pub fn rope_table() -> Vec<f32> {
     table
 }
 
+/// Each tensor of `model.visual.` that [`load`] reads, with its dtype and its shape: 422 tensors, each `bf16`. The plan
+/// and the load check the header with [`check_tensors`], so an open never meets a tensor that the plan did not check.
+pub fn tensors() -> Vec<(String, safetensors::Dtype, Vec<usize>)> {
+    let mut out = Vec::new();
+    let mut t = |name: String, shape: &[usize]| out.push((visual(&name), safetensors::Dtype::BF16, shape.to_vec()));
+    let emb = "backbone.embeddings";
+    t(format!("{emb}.class_embedding"), &[WIDTH]);
+    t(format!("{emb}.cls_position_embedding"), &[WIDTH]);
+    t(format!("{emb}.patch_embedding.weight"), &[WIDTH, PATCH_VALUES]);
+    t(format!("{emb}.position_embedding"), &[GRID * GRID, WIDTH]);
+    let norm = |t: &mut dyn FnMut(String, &[usize]), name: &str| {
+        t(format!("{name}.weight"), &[WIDTH]);
+        t(format!("{name}.bias"), &[WIDTH]);
+    };
+    norm(&mut t, "backbone.ln_pre");
+    for l in 0..LAYERS {
+        let p = format!("backbone.layers.{l}");
+        norm(&mut t, &format!("{p}.ln_1"));
+        norm(&mut t, &format!("{p}.ln_2"));
+        t(format!("{p}.ls_1.gamma"), &[WIDTH]);
+        t(format!("{p}.ls_2.gamma"), &[WIDTH]);
+        for (name, rows, cols) in [
+            ("self_attn.q_proj", WIDTH, WIDTH),
+            ("self_attn.k_proj", WIDTH, WIDTH),
+            ("self_attn.v_proj", WIDTH, WIDTH),
+            ("self_attn.out_proj", WIDTH, WIDTH),
+            ("mlp.c_fc", MLP, WIDTH),
+            ("mlp.c_proj", WIDTH, MLP),
+        ] {
+            t(format!("{p}.{name}.weight"), &[rows, cols]);
+            t(format!("{p}.{name}.bias"), &[rows]);
+        }
+    }
+    t("proj_in.weight".to_owned(), &[PROJ_HIDDEN, MERGE * MERGE * WIDTH]);
+    t("proj_out.weight".to_owned(), &[HIDDEN, PROJ_HIDDEN]);
+    out
+}
+
+/// Check that the header `tensors` holds each tensor of [`tensors`] with its dtype and its shape. It reads no weight
+/// bytes (spec 2.4). The error names the first tensor that is missing or of another dtype or shape.
+pub fn check_tensors(tensors: &HashMap<String, TensorMeta>) -> Result<(), String> {
+    for (name, dtype, shape) in self::tensors() {
+        crate::spec::tensor(tensors, &name, dtype, &shape)?;
+    }
+    Ok(())
+}
+
 /// The tensors of one load and its sink.
 struct Loader<'s, 'v> {
     sink: &'s mut dyn Upload,
@@ -155,6 +203,7 @@ impl<'v> Loader<'_, 'v> {
 /// Load the 422 tensors of `model.visual.` of `view` into `sink`, and the rotary table. A tensor with another dtype
 /// or shape is an error.
 pub fn load(sink: &mut dyn Upload, view: &SafeTensorsView<'_>) -> Result<Weights, String> {
+    check_tensors(&view.tensors)?;
     let mut ld = Loader { sink, view };
     let emb = "backbone.embeddings";
     let class = ld.widened(&format!("{emb}.class_embedding"), &[WIDTH])?;

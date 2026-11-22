@@ -99,10 +99,11 @@ fn a_header_with_another_tensor_is_refused() {
             "{e}"
         );
     }
-    // The tower of images is not loaded yet, so its tensors add no bytes.
+    // The plan checks the tensors of the tower, and they add no bytes to the term `weights`.
     let mut visual = tensors.clone();
     visual.retain(|name, _| !name.starts_with("model.visual."));
-    assert_eq!(spec::weights_bytes_of(&visual), Ok(18_881_368_064));
+    let e = spec::weights_bytes_of(&visual).unwrap_err();
+    assert!(e.contains("holds no tensor model.visual."), "{e}");
 }
 
 /// The load of the weights into a count gives the bytes of the plan, so the open of a card finds the plan's bytes.

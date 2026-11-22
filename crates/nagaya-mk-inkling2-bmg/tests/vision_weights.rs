@@ -36,6 +36,13 @@ fn the_vision_weights_hold_each_tensor_once_and_widen_the_norms_and_the_scales()
     let view = map.view().unwrap();
     let names: Vec<&String> = view.tensors.keys().filter(|n| n.starts_with("model.visual.")).collect();
     assert_eq!(names.len(), 422);
+    // The list of the plan is the list of the checkpoint, so the load reads only tensors that the plan checked.
+    let mut listed: Vec<String> = vision::tensors().into_iter().map(|(name, _, _)| name).collect();
+    let mut held: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+    listed.sort();
+    held.sort();
+    assert_eq!(listed, held);
+    assert_eq!(vision::check_tensors(&view.tensors), Ok(()));
     // The vectors that the LayerNorms and the layer scales read go up as f32; the rest stays bf16.
     let widened = |n: &str| n.contains(".ln_") || n.contains(".ls_");
     let mut want = 0usize;
