@@ -866,12 +866,8 @@ Do the steps in this order. Each step ends with the checks green.
    kind of MMA tile. Write them in the binding. Then write the budget of each op of a decode step from the table
    above. The budget is the target of each card gate.
 
-   The interpreter of step 3 fights the design rules:
-   - Each task is a barrier of the whole grid, a strict chain of events.
-   - No hook fetches the next weights (rule 6).
-   - The descriptor holds 4 pointers and 4 words. A fused op needs more (rule 7).
-   - Shared memory is fixed at 0.
-   - 256 threads in each SM is low for a step bound by bandwidth.
+   The interpreter of step 3 fought the design rules. Each task was a barrier of the grid. It had no prefetch
+   hook, a 64-byte descriptor, no shared memory and 256 threads. Substeps 2 to 6 fixed each of them.
 
    The design is in `docs/engine-abi.md`, "The CUDA interpreter". It is **Proposed** (Claude Opus 5.5,
    2026-11-22). It answers three questions:
@@ -886,17 +882,22 @@ Do the steps in this order. Each step ends with the checks green.
       without L2 prefetch. Re-read 1 to 64 MB to find the knee of L2. Time the tiles of `bf16` `m16n8k16`,
       `mxf4nvf4` and `mxf8f6f4`. Gate: the numbers go in the binding, and each probe tile equals its host value.
    2. **The 128-byte descriptor.** A Rust layout test and a `static_assert` compare the layouts. Gate: `OP_COPY`
-      gives the same bits.
+      gives the same bits. Done: `70e88a5b`, merged in `f4fc865d`. `OP_COPY`, the scoreboard self-test and each
+      probe gave the same bits.
    3. **Counters and the host builder** of the graph of dependencies. Host tests: a reduction is right, the
       removal of a hazard fails, and a forward wait panics. Gate: a ring of copy chains and branches gives exact
-      results, and the profile shows overlap.
+      results, and the profile shows overlap. Done: `789a5754`, merged in `f4fc865d`. The builder also finds
+      write-after-write hazards and takes explicit `after` links. 15 of 16 blocks of a chain left their wait about
+      1.2 ms before the slow fill ended.
    4. **Work items and static assignment**, with the grid size as a launch parameter. Gate: the bits are equal at
-      G of 48, 24, 7 and 1.
+      G of 48, 24, 7 and 1. Done: `31dfb91f`, merged in `f4fc865d`. Five buffers were bit-identical at each G.
    5. **Merge groups**, tested with `OP_REDUCE_PROBE`. Gate: the bits are equal across G, and equal to the fixed
-      tree of the host.
+      tree of the host. Done: `b823f850`, merged in `d5e5d493`. Groups of 11, 16 and 66 items matched the host
+      sum at each G. The host still zeroes the merge counters.
    6. **The producer warp, dynamic shared memory and prefetch.** Gates: the read probe holds at least 85% of the
       peak of substep 1. A run of 1,000 dependent no-op tasks gives the cost of a boundary, old chain against new.
-      The build shows 0 bytes of spill.
+      The build shows 0 bytes of spill. Done: `8c0cc25d` and `8816080b`, merged in `d5e5d493`. The read rate is
+      244 to 246 GB/s, about 97% of the peak. A boundary costs about 750 ns, from 978 ns, at 114 registers.
 
    Wave A builds on substep 6.
 8. **The host oracle.** The B70 crate has a host form of each op in `f32` (`nagaya-mk-inkling2-bmg/src/host/`).

@@ -2200,12 +2200,14 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   | Read bandwidth with a deep bulk L2 prefetch (2 or 4 items ahead) | down to 200 | GB/s |
   | L2 re-read, 1 to 16 MiB | 1.9 to 2.2 | TB/s |
   | L2 re-read, 32 MiB, 64 MiB | 300, 230 | GB/s |
-  | Task boundary, 1,000 no-op tasks in a strict chain | 640 to 656 | ns |
+  | Task boundary of the old strict chain, 1,000 no-op tasks | 640 to 656 | ns |
+  | Task boundary of the current interpreter, 1,000 no-op tasks | 744 to 774 | ns |
   | Part of a boundary that a block waits at the scoreboard | about 257 | ns |
   | `%globaltimer`: smallest step, cost of a read | 32, about 15 | ns |
   | MMA rate for each SM, for each kind | one MMA each 1.55 | ns |
   | MMA rate of the GPU: `bf16`, NVFP4, MXFP8 | 127, 509, 254 | TFLOP/s |
   | Probe kernel registers, spill | 56, 0 | registers, B |
+  | Interpreter registers, stack, local memory, spill | 114, 0, 0, 0 | registers, B, B, B |
 
   - **The read peak.** Every variant of the read probe gives 250 to 257 GB/s, which is 92 to 94% of 273 GB/s.
     Budgets use about 252 GB/s. Direct loads reach the peak with no prefetch and no shared memory.
@@ -2245,10 +2247,11 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   - **The clusters.** The attribute of cluster launch is 1, so clusters exist. The design does not need them, and
     no probe launched one.
 
-- **The CUDA interpreter.** The rules below design the persistent interpreter of `nagaya-mk-cuda` for milestone 37.
-  Each rule is **Proposed** (Claude Opus 5.5, 2026-11-22). The code of step 3 has a 64-byte descriptor, one wait
-  for each task and no shared memory. Migration steps 2 to 6 of milestone 37 step 7 replace these. The
-  facts of the GB10 above replace each hardware guess that this text had before the probes ran.
+- **The CUDA interpreter.** The persistent interpreter of `nagaya-mk-cuda` is milestone 37 step 7. Substeps 2 to 6
+  are built and merged (`f4fc865d`, `d5e5d493`). Each rule below says if the code holds it. A rule marked
+  **Proposed** (Claude Opus 5.5, 2026-11-22) is not in the code yet. These are the matmul core, the fusions and
+  the members of the engine identity. The facts of the GB10 above replace each hardware guess that this
+  text had before the probes ran.
 
   **The core idea.** Two facts shape the design:
   - The bits of a sum depend only on the cut of an op into work items. The cut comes from the shapes. Thus the grid
@@ -2256,23 +2259,43 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   - A weight never depends on the task before it. Thus a block can fetch its next weights before its inputs are
     ready.
 
-  **Dependencies.**
-  - Each task has a counter, which is its signal. A block adds 1 after each work item that it finishes. It runs
-    `__threadfence`, then `atom.release.gpu`. This lets a consumer see the data that the item wrote.
-  - A task waits on at most two pairs of an event and a target. The target is the item count of the producer.
-    Two waits cover a norm output and a residual, the usual inputs.
-  - The host builder finds the hazards. Each task declares the buffers that it reads and writes. The builder finds
-    read-after-write and write-after-read hazards, and it removes each wait that other waits imply. This is sound
-    because a block waits before its first item.
-  - A task that needs a third wait gets a JOIN task before it. A JOIN task has no items, and it waits on two events.
-    Under 1% of tasks need one.
-  - The host asserts that every wait points backward in the ring. A grid that walks the ring in order cannot
+  **Dependencies.** Built in substeps 2 to 4 (`70e88a5b`, `789a5754`, `31dfb91f`) and changed in `8c0cc25d`.
+  - Each task has a counter, which is its signal. Its index in the ring is the index of the counter.
+  - A block runs all its items of a task and then runs `__syncthreads`. Thread 0 then adds the count of the
+    block's items to the counter with one `red.release.gpu.global.add.u32`. A block with no item of the task adds
+    nothing.
+  - The code has no separate fence. A release is cumulative, and the barrier orders the writes of the other
+    threads before the add. The pattern is the one of the barrier of CUTLASS. A fence and an add after each item
+    cost 978 ns for each boundary.
+  - A task waits on at most two pairs of an event and a target. The target is the item count of the producer. A
+    block with no item of the task skips the waits. Two waits cover a norm output and a residual, the usual inputs.
+  - A task with 0 items is a JOIN task. Block 0 signals it one time, so a wait on a JOIN has the target 1.
+  - The host builder is `src/graph.rs`. Each task declares the buffers that it reads and writes. The builder finds
+    read-after-write, write-after-read and write-after-write hazards. Two writers of one range need an order, so
+    the write-after-write case is a hazard too.
+  - The builder removes each wait that other waits imply. It scans back from the nearest producer. This is sound
+    because a block waits before its first item. A task can also name an explicit `after` link.
+  - A task that needs a third wait gets a JOIN task before it. The JOIN waits on two events. Under 1% of tasks
+    need one.
+  - The builder panics on a wait that points forward in the ring. A grid that walks the ring in order cannot
     deadlock then. This needs every block resident (the cooperative launch).
+  - An op that reads `blockIdx` (a probe or a self-test) is marked `per_block`, and its item count is the grid size.
+  - The kernel has one path. The strict chain exists only as the helper `ring::chained`, for timing probes.
   - The per-run scratch (`q`, `attn`, `act`) has two copies that alternate. This removes the write-after-read waits.
+    This rule is **Proposed** (Claude Opus 5.5, 2026-11-22). The engine does not use it yet.
   - A wait changes the timing only. The bits come from the cut and from the merge order.
-  - A wait costs one L2 round trip after the last item. A task boundary measured 640 to 656 ns, and a block waits
-    about 257 ns of it at the scoreboard. The projections `q`, `k`, `v` and gate read one norm output,
-    so they run back to back with no barrier.
+  - The gate of substep 3 ran three chains of copies, two of them behind slow fills. 15 of the 16 blocks of the
+    third chain left their wait about 1.2 ms before the slow fill ended. Each result was exact, and each counter
+    equaled its item count.
+  - The stress test `tests/cuda_stress.rs` runs a chain of 300 copy stages. Each item reads words that other
+    blocks wrote. It ran 10,000 times at each grid size of 48, 24 and 7, and each run was exact.
+  - The limit of the stress test: a relaxed release passed 30,000 runs. This card does not show that order.
+    The test is not a proof of it.
+  - A boundary costs 744 to 774 ns by the profile period, and about 908 to 916 ns by the host wall
+    time. The test ran 1,000 no-op tasks in a strict chain. About 400 ns of it is the release (SASS
+    `MEMBAR.ALL.GPU`, then the add). The next gain is there. The old strict chain measured 640 to 656 ns. The
+    projections `q`, `k`, `v` and gate read one norm output, so they run back to back with no
+    barrier.
 
   **Work items and assignment.**
   - A work item is a column tile and a K slice, and for a prefill a row tile too. A column tile is 16 output
@@ -2281,31 +2304,54 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     blocks.
   - Block `b` of `G` runs the items `b`, `b + G`, `b + 2G` and so on. This gives the bits of a dynamic ticket. Each
     block knows its next item early, so it can prefetch, and it needs no atomic.
+  - Built in `31dfb91f`. `OP_COPY` copies `items` items of `n` floats each. `Ring::run_grid(G)` takes `G` from 1
+    to the SM count. Five buffers were bit-identical at `G` of 48, 24, 7 and 1, and equal to the host copy.
   - The expert ops of a prefill are the exception. Their item count comes from the plan on the device. A ticket may
     balance them better. A ticket is not a sum, so design rule 8 allows it. The spread column of the profile decides.
   - `Kt`, the tile sizes and the merge order never depend on the count of rows (design rule 4). Each token column
     of an MMA is independent.
 
-  **Merge groups.** Some epilogues join several items. These are four cases:
+  **Merge groups.** Built in `b823f850`. Some epilogues join several items. These are four cases:
   - the merge of K slices;
   - the L2 clip of a head over 8 tiles;
   - the amax of a row of an expert;
   - the sum of 8 expert slots.
 
-  The rule for each case is the same:
-  - Each item writes its `f32` partial to a fixed scratch slot. Then it adds 1 to the counter of the group, with
-    release.
-  - The item whose add returns the target minus 1 acquires, and it sums the partials in index order. It then runs
-    the epilogue.
+  The code holds the rule for the first case, through `OP_REDUCE_PROBE`. The rule is the same for each case:
+  - Each item sums its slice into a partial. It uses 256 lanes and a halving tree. It writes the partial to a
+    fixed scratch slot.
+  - Then it adds 1 to the counter of the group, with `atom.acq_rel.gpu`. The add is for each item, not for each
+    block. The items of a group are not consecutive in the stride of a block.
+  - The item whose add returns the slice count minus 1 sums the partials in index order. It then runs the
+    epilogue.
   - The merging block can change from run to run. The result cannot, because the order of the sum is fixed.
+  - The host zeroes the merge counters before each run, with `Ring::zero_device`. This is an open point. A real
+    engine needs the ring to zero them at the launch. **Proposed** (Claude Sonnet 5.5, 2026-11-22): a task of the
+    ring zeroes the counters that the next merge groups use.
+  - The gate is `tests/cuda_merge.rs`. Groups of 11, 16 and 66 items ran 20 times at `G` of 48, 24, 7, 1 and 20.
+    Each result equaled the host sum bit for bit. The test fails on each of these mutations: the reverse order,
+    a target off by one in either direction, and a relaxed add.
 
-  **Prefetch** (design rule 6).
-  - The load repacks the weights so that the bytes of each item are one span at `b + item * item_bytes`.
-  - In a decode, a producer warp issues `cp.async.bulk.prefetch.L2.global` for the next item of its block. While it
-    waits on a scoreboard event, it prefetches the first item of the next task. The consumers read with
-    `ld.global.nc.L1::no_allocate.v4`.
-  - In a prefill, 1D `cp.async.bulk` copies go into a ring of shared memory with an `mbarrier`. No tensor map is
-    needed.
+  **Prefetch** (design rule 6). Built in `8816080b`.
+  - The load repacks the weights so that the bytes of each item are one span at `b + item * item_bytes`. This
+    is **Proposed** (Claude Opus 5.5, 2026-11-22). The engine does not repack yet.
+  - A block of the producer shape has 288 threads. Warp 0 is the producer. It copies the next descriptor into one
+    of two slots in shared memory. It prefetches the first item of its block with a bulk L2 prefetch, one item
+    ahead. Then it waits at the scoreboard.
+  - Each slot has a full barrier and an empty barrier, which are named barriers. The consumers wait on the full
+    barrier of the slot, run the items and arrive on the empty barrier. The producer runs up to two tasks ahead.
+  - The kernel reserves the 16 named barriers of the SM. Barrier 0 is `__syncthreads`, and barrier 1 is for the
+    consumers. The slots use barriers 2 to 5.
+  - All lanes of the producer warp poll the same word. A poll by lane 0 alone cost 170 ns at the reconvergence.
+  - A read of `%globaltimer` after `bar.sync` can run before the barrier ends. The profile timer needs a value
+    that the code loads after the barrier.
+  - The ops use `worker_id()`, `worker_count()` and `worker_sync()`. They run in the producer shape and in the old
+    flat shape (any width other than 288). A sum has 256 lanes in both.
+  - `Ring::run` launches the producer shape with the most dynamic shared memory. `cuFuncSetAttribute` sets it at
+    the launch.
+  - The read rate in the producer shape is 244 to 246 GB/s, about 97% of the measured peak.
+  - A consumer reads with `ld.global.nc.L1::no_allocate.v4`. The prefill ring of `cp.async.bulk` and the
+    `mbarrier` objects are **Proposed** (Claude Opus 5.5, 2026-11-22), and the code does not hold them yet.
   - An expert op prefetches only after the wait on the plan, because the plan names its experts.
   - A bandwidth of 252 GB/s and a latency of about 600 ns give about 150 KB in flight. That is about 3.1 KB for each
     SM. An item is 24 KB, so one item ahead is enough.
@@ -2317,7 +2363,9 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   - The probe shows these PTX forms in `cuobjdump -sass` for `sm_121a` (see "The facts of the GB10"). The device
     attribute of cluster launch is 1, but the design uses no cluster and no multicast.
 
-  **The descriptor** has 128 bytes, inline in the ring. An argument block would add one dependent load for each
+  **The descriptor** has 128 bytes, aligned to 128, inline in the ring. Built in `70e88a5b`. `build.rs` writes each
+  offset into `mk_protocol.h`. The `.cu` file checks each with `static_assert`, and a Rust `offset_of!` test checks
+  each. An argument block would add one dependent load for each
   task. About 600 tasks take about 77 KB.
 
   | Offset | Field |
@@ -2334,7 +2382,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   | 96 | `u32` item_bytes, `u32` scale_bytes, `u32` pos0, `u32` layer |
   | 112 | `f32` p0 to p3 (epsilon, clip bound, log scale, factor) |
 
-  **Fusions** (design rule 7). A fusion removes a task boundary, and a boundary costs about 0.65 microsecond (measured).
+  **Fusions** (design rule 7). A fusion removes a task boundary, and a boundary costs about 0.75 microsecond (measured).
   - The norm runs in the prologue. Each item computes the rms of its 16-row tile in a fixed tree. The tree is the
     same in every block. The norm weight is in `d`.
   - The clip, the gate and the residual run in the epilogue, through `e` and the merge group.
@@ -2347,17 +2395,20 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   - The result is about 10 to 12 tasks for each run, and about 550 tasks for a decode step. The B70 engine has
     1,635.
 
-  **Blocks, threads and shared memory.**
+  **Blocks, threads and shared memory.** The producer shape of `8816080b` holds the first four rules.
   - One block runs on each SM, with 288 threads. Warp 0 is the producer. Warps 1 to 8 are consumers. Thus each
-    thread has 224 registers (65,536 divided by 288).
-  - Each block has 96 KB (98,304 B) of dynamic shared memory. It holds 4 weight stages of 16 KB and a 24 KB
-    activation tile in three `bf16` terms, in fragment order. It also holds 8 KB for partials, the `mbarrier`
-    objects and the next descriptor.
+    thread has 224 registers at most (65,536 divided by 288).
+  - The interpreter uses 114 registers, no stack and no local memory. It spills 0 bytes. `build.rs` fails on a
+    spill, and on a `ptxas` report with no spill line. The parser is `src/ptxas.rs`. Only the empty cubin of
+    `tools/nvcc-stub` skips the check.
   - The host sets `MAX_DYNAMIC_SHARED_SIZE_BYTES` and gives the size at the launch. The limit is 101,248 B: the
     opt-in size of 101,376 B (`MAX_SHARED_MEMORY_PER_BLOCK_OPTIN`) less 128 B of static shared memory. The driver
-    refuses 101,249 B. The plan of 96 KB fits, with about 5 KB to spare for static shared memory.
-  - The producer warp owns the descriptor fetch, the waits, the prefetches and the bulk copies, one task ahead. The
-    consumers start after a `bar.sync` with the producer, and they publish the signal.
+    refuses 101,249 B.
+  - The producer warp owns the descriptor fetch, the waits, the prefetches and the two descriptor slots. The
+    consumers wait on the full barrier, and they publish the signal.
+  - **Proposed** (Claude Opus 5.5, 2026-11-22): a block has 96 KB (98,304 B) of dynamic shared memory. It holds 4
+    weight stages of 16 KB and a 24 KB activation tile in three `bf16` terms, in fragment order. It also holds 8
+    KB for partials, the `mbarrier` objects and the next descriptor. The plan fits, with about 5 KB to spare.
   - Spill gate: each op must fit 224 registers. The build fails unless `-Xptxas -v` shows 0 bytes of spill.
 
   **The matmul core.**
@@ -2397,8 +2448,8 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     - the MMA shapes, and the size of an attention chunk;
     - the order of each merge group.
   - The engine identity does not hold the grid size or the assignment. A gate proves that they change no bit.
-  - Three risks remain. The acquire of the producer must order before the reads of the consumers. A stress test of
-    10^4 runs checks it.
+  - Three risks remain. The acquire of the producer must order before the reads of the consumers. The stress test
+    of 10^4 runs for each grid size checks it, but it is not a proof (see "Dependencies").
   - One large switch over many ops can press the instruction cache.
   - LPDDR5x gives about 252 GB/s, not 273 GB/s, so budgets use the measured peak.
 - **Identity and oracle.** Because expert activations are quantized to NVFP4 and MXFP8, this engine has its own
