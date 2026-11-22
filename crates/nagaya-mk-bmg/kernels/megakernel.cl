@@ -205,6 +205,15 @@ typedef struct __attribute__((aligned(64))) {
     uint reserved[11];
 } XeCoreStats;
 
+#ifdef MK_PROFILE
+// The clock of the profile binary: clock_read_device of cl_khr_kernel_clock, which the library of ocloc holds and no
+// header declares. On the card it counts at the clock of the card (2,800 MHz), and the Xe cores agree to about 600
+// counts. __builtin_IB_get_timestamp gives 0, and intel_get_cycle_counter leaves an undefined symbol.
+ulong __attribute__((overloadable)) clock_read_device(void);
+#define PROFILE_CLOCK() clock_read_device()
+#define PROFILE_WORDS 3
+#endif
+
 inline uint usm_event_load(__global atomic_uint* counter) {
     return atomic_load_explicit(counter, memory_order_acquire, memory_scope_device);
 }
@@ -615,6 +624,10 @@ __kernel void mk_persistent_interpreter(
     __global XeCoreStats*            core_stats,
     uint                             gpu_id,
     __global float*                  scratch
+#ifdef MK_PROFILE
+    // The profile binary only: PROFILE_WORDS clocks of each task of each work-group (protocol.rs, `profile`).
+    , __global ulong*                profile
+#endif
 ) {
     const uint wg_id   = get_group_id(0);
     const uint num_wgs = get_num_groups(0);
@@ -652,6 +665,11 @@ __kernel void mk_persistent_interpreter(
     uint last_op = OP_NOP;
 
     for (uint pc = 0; pc < num_tasks; pc++) {
+#ifdef MK_PROFILE
+        // Each clock goes to memory at once: a clock held in a register can sink to its store past the op (IGC).
+        __global ulong* prof_at = profile + ((ulong)pc * num_wgs + wg_id) * PROFILE_WORDS;
+        if (lid == 0) prof_at[0] = PROFILE_CLOCK();
+#endif
         MkTaskDescriptor task = task_ring[pc];
         ushort op = task.opcode;
         if (op == OP_HALT) {
@@ -674,6 +692,9 @@ __kernel void mk_persistent_interpreter(
             }
             barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
         }
+#ifdef MK_PROFILE
+        if (lid == 0) prof_at[1] = PROFILE_CLOCK();
+#endif
 
         const uint flags = task.flags;
         const bool accumulate = (flags & FLAG_ACCUMULATE) != 0;
@@ -1529,6 +1550,9 @@ __kernel void mk_persistent_interpreter(
 
         atomic_work_item_fence(CLK_GLOBAL_MEM_FENCE, memory_order_release, memory_scope_device);
         barrier(CLK_LOCAL_MEM_FENCE | CLK_GLOBAL_MEM_FENCE);
+#ifdef MK_PROFILE
+        if (lid == 0) prof_at[2] = PROFILE_CLOCK();
+#endif
         if (lid == 0 && task.signal_event != NO_EVENT) {
             usm_event_signal(&scoreboard[task.signal_event], 1u);
         }

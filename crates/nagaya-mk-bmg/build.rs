@@ -164,6 +164,33 @@ fn main() {
         "ocloc did not compile {} with MK_INKLING2 for bmg-g31: {status}",
         source.display()
     );
+    // The profile binary of the Inkling 2 engine: the same ops, and the clocks of each task (MK_PROFILE). Only a
+    // profile run loads it, so the binary of each engine keeps its bytes.
+    let options = format!(
+        "-cl-std=CL3.0 -D MK_QWEN3TTS -D MK_INKLING2 -D MK_PROFILE -I {}",
+        kernels.display()
+    );
+    let status = Command::new("ocloc")
+        .arg("compile")
+        .arg("-file")
+        .arg(&source)
+        .args([
+            "-device",
+            "bmg-g31",
+            "-options",
+            &options,
+            "-output",
+            "megakernel_inkling2_profile",
+            "-out_dir",
+        ])
+        .arg(&out)
+        .status()
+        .unwrap_or_else(|e| panic!("cannot run ocloc: {e}. Install ocloc, or build without the feature xe."));
+    assert!(
+        status.success(),
+        "ocloc did not compile {} with MK_PROFILE for bmg-g31: {status}",
+        source.display()
+    );
     // The compiler is in the plan table lineage of the identity (spec 12.1).
     let version = Command::new("ocloc")
         .arg("--version")
@@ -193,6 +220,7 @@ fn main() {
         "megakernel_embeddinggemma2_bmg.bin",
         "megakernel_lfm3_bmg.bin",
         "megakernel_inkling2_bmg.bin",
+        "megakernel_inkling2_profile_bmg.bin",
     ] {
         let binary = out.join(name);
         assert!(
