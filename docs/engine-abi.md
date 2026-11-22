@@ -1841,8 +1841,12 @@ choice open.
     image of 1,614 tokens or more declares a bound.
   - A square law can be low for a small image. That does no harm: the deadline is never less than the timeout of
     30 s.
-  - The bound and the pass hash each image of the pass once (`media::RowHashes`). The bound keeps its hashes, and
-    the pass takes them when it gets the same rows.
+  - The bound changes no state, so it hashes the rows of each image, and the pass hashes them again. One hash of
+    the largest image, 203,692,800 bytes, took 20.4 ms on the B70 machine (BLAKE3, a release build, 2026-11-22).
+    That is 2.4% of the 843 ms of a later block, and about 430 ms over the 21 blocks of the image. A cache keyed by
+    the address of the rows was refused: a stale entry could skip a tower and give wrong bits.
+  - The square law rests on one measurement, the largest image. A measurement of smaller images can change the
+    rule.
   - The card gate `crates/nagaya/tests/xe_inkling2_long_pass.rs` runs a cold image of 4,096 px through the process,
     with the watchdog at its defaults. It has not run yet.
 - **The tower in quanta of its own** (from ChatGPT through kaibo `gpt-plan`, 2026-11-21; accepted 2026-11-22 under

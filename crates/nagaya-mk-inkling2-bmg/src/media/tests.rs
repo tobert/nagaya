@@ -184,35 +184,6 @@ fn the_towers_of_a_pass_are_the_images_that_the_held_rows_lack() {
     assert_eq!(held.runs(), 1);
 }
 
-/// The bound and the pass of one segment hash each image once: `prepare` hashes, and the next `take` of the same rows
-/// reuses the hashes. A `take` with no `prepare`, or of other rows, hashes again, and a `take` keeps nothing.
-/// Falsified by a `take` that ignores the prepared hashes, and by a `take` that keeps them.
-#[test]
-fn the_bound_and_the_pass_hash_each_image_once() {
-    let hashes = RowHashes::default();
-    let (a, b) = (vec![1u8; 64], vec![2u8; 64]);
-    let want = vec![blake3::hash(&a), blake3::hash(&b)];
-    assert_eq!(hashes.prepare(&[&a, &b]), want);
-    assert_eq!(hashes.hashed(), 2);
-    assert_eq!(hashes.take(&[&a, &b]), want);
-    assert_eq!(hashes.hashed(), 2, "the pass reuses the hashes of the bound");
-    assert_eq!(hashes.take(&[&a, &b]), want);
-    assert_eq!(
-        hashes.hashed(),
-        4,
-        "a take keeps nothing, so a second pass hashes again"
-    );
-    hashes.prepare(&[&a]);
-    assert_eq!(hashes.take(&[&b]), vec![blake3::hash(&b)], "other rows hash again");
-    assert_eq!(hashes.hashed(), 6);
-    assert_eq!(
-        hashes.take(&[&a]),
-        vec![blake3::hash(&a)],
-        "the take of b dropped the prepared a"
-    );
-    assert_eq!(hashes.hashed(), 7);
-}
-
 /// The record of `count` latent rows of `width` values from `first` (engine-abi "The lab of Inkling 2", "Latent
 /// rows").
 fn latent_record(first: u64, count: u32, width: u32) -> Vec<u8> {

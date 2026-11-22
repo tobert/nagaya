@@ -8,7 +8,6 @@
 //! 0. The rows of a segment are the rows of each span whole, in `f32`, in the order of the records: the patch rows of
 //! an image, and one row of 2,304 values for each latent position.
 
-use std::cell::{Cell, RefCell};
 use std::ops::Range;
 
 pub use nagaya_text_inkling2::media::{Grid, IMAGE_KIND, IMAGE_TOKEN, PATCH_VALUES, RECORD_BYTES};
@@ -269,8 +268,8 @@ impl HeldRows {
         false
     }
 
-    /// The grids of `images` whose tower a pass runs, in order, from the rows held now. It changes nothing, so the
-    /// bound of a pass reads it before the pass (engine-abi D8).
+    /// The grids of `images` whose tower a pass runs, in order, from the rows held now, with the hash of the rows of
+    /// each image. It changes nothing, so the bound of a pass reads it before the pass (engine-abi D8).
     pub fn towers(&self, images: impl IntoIterator<Item = (Grid, blake3::Hash)>) -> Vec<Grid> {
         let mut held = self.image;
         let mut towers = Vec::new();
@@ -292,52 +291,6 @@ impl HeldRows {
     /// The count of the images that the tower ran for.
     pub fn runs(&self) -> u64 {
         self.runs
-    }
-}
-
-/// The BLAKE3 hashes of the patch rows of the images of a pass. The bound of a pass and the pass read the same
-/// segment, so each image of a pass is hashed once (engine-abi D8).
-///
-/// `prepare` hashes and keeps the hashes. The next `take` of the same rows gives them, and every `take` drops them.
-/// The key is the address and the length of each slice of rows. It is sound because the process calls the bound and
-/// then the pass with one borrow of the segments: the rows cannot change or move between the two calls.
-#[derive(Debug, Default)]
-pub struct RowHashes {
-    prepared: RefCell<Option<Prepared>>,
-    hashed: Cell<u64>,
-}
-
-/// The address and the length of each slice of rows, and their hashes.
-type Prepared = (Vec<(usize, usize)>, Vec<blake3::Hash>);
-
-impl RowHashes {
-    /// Hash the rows of each image, and keep the hashes for the next `take`.
-    pub fn prepare(&self, images: &[&[u8]]) -> Vec<blake3::Hash> {
-        let hashes = self.hash(images);
-        *self.prepared.borrow_mut() = Some((Self::key(images), hashes.clone()));
-        hashes
-    }
-
-    /// The hashes of the rows of each image: those of `prepare` when it had the same rows, or new ones.
-    pub fn take(&self, images: &[&[u8]]) -> Vec<blake3::Hash> {
-        match self.prepared.borrow_mut().take() {
-            Some((key, hashes)) if key == Self::key(images) => hashes,
-            _ => self.hash(images),
-        }
-    }
-
-    /// The count of images hashed so far. A test reads it.
-    pub fn hashed(&self) -> u64 {
-        self.hashed.get()
-    }
-
-    fn key(images: &[&[u8]]) -> Vec<(usize, usize)> {
-        images.iter().map(|rows| (rows.as_ptr() as usize, rows.len())).collect()
-    }
-
-    fn hash(&self, images: &[&[u8]]) -> Vec<blake3::Hash> {
-        self.hashed.set(self.hashed.get() + images.len() as u64);
-        images.iter().map(|rows| blake3::hash(rows)).collect()
     }
 }
 
