@@ -1866,8 +1866,12 @@ Opus 5.5, 2026-11-21).
 - **A restore of a ring part** must hold the last 1,024 positions, the window of a sliding layer.
 - **The probe of the oracle** (8.3) runs from position 0 of a slot that it empties. Its check comes first, so a probe
   that the check refuses changes nothing (`Held::check_probe`).
-- **`last_error`** gives the failure of the last call. Each call that can fail clears it first, so a call that does
-  not fail leaves `None`.
+- **`last_error`** gives the failure of the last call that returns a status (D5): `pass`, the part calls,
+  `set_n`, `slot_clear` and `control_write`. Each of them clears it first, so a call that does not fail leaves
+  `None`. A call that returns its own message changes nothing in it: `fits`, which reads only, and the probe
+  `residual`.
+- **The slot of a probe** is checked before the probe segment names it as `u32`. Thus slot 2^32 is refused, and
+  it is not slot 0.
 - **Tokens.** A token id of 200,058 or more is refused. Reason: the rows past the unpadded vocabulary are padding
   of the head and the embedding.
 - **The term `weights`.** The plan counts the bytes of the header, and it reads no weight bytes (spec 2.4).

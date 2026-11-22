@@ -518,7 +518,8 @@ impl Inkling2Engine {
     }
 
     /// The residual after `upto` runs of `ids` from position 0 of `slot`, `[n][2304]`, or the final norm after all
-    /// runs with `norm`. The probe of the oracle (8.3) uses it. It empties the slot.
+    /// runs with `norm`. The probe of the oracle (8.3) uses it. It empties the slot. It returns its error, and it
+    /// leaves `last_error` as it is.
     pub fn residual(&mut self, slot: usize, ids: &[u32], upto: usize, norm: bool) -> Result<Vec<f32>, String> {
         let all = self.runs_of(spec::DEFAULT_CYCLES).len();
         if upto > all || norm && upto != all {
@@ -727,7 +728,7 @@ impl Engine for Inkling2Engine {
         })
     }
 
-    /// Why the last call failed, or `None` when it did not fail. Each call that can fail clears it first.
+    /// Why the last call that returns a status failed, or `None` when it did not fail. Each such call clears it first.
     fn last_error(&self) -> Option<String> {
         self.last_error.clone()
     }

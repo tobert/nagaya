@@ -1060,4 +1060,7 @@ fn a_probe_is_checked_before_it_empties_its_slot() {
     let e = held.check_probe(1, &[1], 512).unwrap_err();
     assert!(e.contains("the engine has 1 slots"), "{e}");
     assert!(held.check_probe(0, &vec![1; 513], 512).is_err());
+    // A slot past `u32` is not slot 0 of the probe segment.
+    let e = held.check_probe(1 << 32, &[1], 512).unwrap_err();
+    assert!(e.contains("the engine has 1 slots, not slot 4294967296"), "{e}");
 }

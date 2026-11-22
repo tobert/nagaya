@@ -1291,10 +1291,12 @@ impl Held {
     /// Check a probe of the oracle (8.3): `ids` from position 0 of `slot` at the default count, as if the slot were
     /// empty. It changes nothing, so the caller empties the slot only after the check passes.
     pub fn check_probe(&self, slot: usize, ids: &[u32], max_block: usize) -> Result<Block, String> {
-        let mut empty = self.clone();
-        if slot < empty.n.len() {
-            empty.clear(slot);
+        // The probe segment names the slot as `u32`, so the check of the slot comes before that cast.
+        if slot >= self.n.len() {
+            return Err(format!("the engine has {} slots, not slot {slot}", self.n.len()));
         }
+        let mut empty = self.clone();
+        empty.clear(slot);
         empty.check_pass(&[probe_segment(slot, ids)], max_block)
     }
 
