@@ -2515,8 +2515,10 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
         8 experts give 288 items, 6 for each of 48 blocks.
       - The NVFP4 epilogue is `(total * expert_scale) * ((x_amax * w_amax) * (1 / (1536 * w_denominator)))`. The
         MXFP8 epilogue is `total * expert_scale`.
-      - The op writes the weight rows in their order: output column `n` of row `y_row` is weight row `n`. The wave
-        A op does not interleave the gate and up rows. A repack in wave B does that (see "The task graph").
+      - The op writes the weight rows in their order: output column `n` of row `y_row` is weight row `n`. The
+        checkpoint interleaves the rows of `w13`: row 2i is gate row i, and row 2i+1 is up row i
+        (`nagaya-mk-inkling2-bmg/src/formats.rs`, `gate_up_source_row`). Thus the output of the op is interleaved
+        too. The repack of wave B puts gate i and up i in rows g and g+8 of one MMA (see "The task graph").
       - The producer prefetch is off (`item_bytes` is 0), because the items of a list are not in the order of the
         item index. A warp prefetches the next item of its block into L2.
     - **The load rule.** Data that an earlier task writes and a later task reads loads with `.cg`, never with
