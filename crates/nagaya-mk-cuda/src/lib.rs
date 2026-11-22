@@ -1,11 +1,12 @@
 //! The shared persistent megakernel interpreter for CUDA GPUs (`sm_121`).
 //!
 //! `kernels/megakernel.cu` is compiled ahead of time by `nvcc` into one `.cubin` per engine under the feature `cuda`.
-//! `driver` loads the `.cubin` through the CUDA Driver API (`libcuda`) and `ring` drives the 64-byte task ring.
+//! `driver` loads the `.cubin` through the CUDA Driver API (`libcuda`) and `ring` drives the 128-byte task ring, and `graph` plans its dependencies.
 //! Without the feature `cuda`, the crate needs no GPU and no CUDA toolkit.
 
 #[cfg(feature = "cuda")]
 pub mod driver;
+pub mod graph;
 pub mod protocol;
 #[cfg(feature = "cuda")]
 pub mod ring;

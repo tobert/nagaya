@@ -17,7 +17,7 @@ use nagaya_mk_cuda::protocol::{
     PROBE_READ_PLAIN, PROBE_READ_PREFETCH_BULK, PROBE_READ_PREFETCH_LINE, PROBE_READ_SMEM_BULK, PROFILE_WORDS,
     probe_smem_bytes,
 };
-use nagaya_mk_cuda::ring::Ring;
+use nagaya_mk_cuda::ring::{Ring, chained};
 use nagaya_mk_cuda::{INKLING2_CUBIN, INKLING2_PROFILE_CUBIN, test_cards};
 
 fn open() -> CudaDevice {
@@ -99,10 +99,10 @@ fn a_launch_with_more_shared_memory_than_the_gpu_allows_is_refused() {
     let optin = dev.max_dynamic_shared_bytes().unwrap();
     eprintln!("probe attributes: most dynamic shared memory of a block of the kernel {optin}");
     let mut ring = Ring::new(&dev, 1024, false).unwrap();
-    ring.set(&[MkTaskDescriptor {
+    ring.set(&chained(&[MkTaskDescriptor {
         opcode: OP_NOP,
         ..Default::default()
-    }]);
+    }]));
     let error = unsafe { ring.run_shaped(256, optin + 1) }.expect_err("too much shared memory is an error");
     assert!(
         error.contains(&(optin + 1).to_string()) && error.contains(&optin.to_string()),
@@ -214,7 +214,7 @@ fn probe_read_bandwidth() {
                     ..Default::default()
                 })
                 .collect();
-            ring.set(&tasks);
+            ring.set(&chained(&tasks));
             let start = Instant::now();
             unsafe { ring.run_shaped(threads, case.shared_bytes).unwrap() };
             let wall = start.elapsed().as_nanos() as u64;
@@ -286,7 +286,7 @@ fn probe_l2_knee() {
                     ..Default::default()
                 })
                 .collect();
-            ring.set(&tasks);
+            ring.set(&chained(&tasks));
             unsafe { ring.run_shaped(threads, 0).unwrap() };
             let profile = ring.read_profile().unwrap();
             let got: Vec<u32> = download(&dev, checks, 2 * blocks);
@@ -329,7 +329,7 @@ fn probe_task_boundary() {
     ];
     let mut ring = Ring::new(&dev, 1024, true).unwrap();
     ring.zero_device().unwrap();
-    ring.set(&nops);
+    ring.set(&chained(&nops));
     let mut walls = Vec::new();
     for _ in 0..5 {
         let start = Instant::now();
@@ -379,13 +379,13 @@ fn probe_task_boundary() {
     let wall_min = |tasks: usize| -> u64 {
         let mut ring = Ring::new(&plain, 1024, false).unwrap();
         ring.zero_device().unwrap();
-        ring.set(&vec![
+        ring.set(&chained(&vec![
             MkTaskDescriptor {
                 opcode: OP_NOP,
                 ..Default::default()
             };
             tasks
-        ]);
+        ]));
         let best = (0..20)
             .map(|_| {
                 let start = Instant::now();
@@ -422,12 +422,12 @@ fn probe_globaltimer_resolution() {
     dev.memset_zero(out, 32).unwrap();
     let mut ring = Ring::new(&dev, 1024, false).unwrap();
     ring.zero_device().unwrap();
-    ring.set(&[MkTaskDescriptor {
+    ring.set(&chained(&[MkTaskDescriptor {
         opcode: OP_PROBE_TIMER,
         c: out,
         n: READS,
         ..Default::default()
-    }]);
+    }]));
     unsafe { ring.run().unwrap() };
     let words: Vec<u64> = download(&dev, out, 4);
     eprintln!(
@@ -600,7 +600,7 @@ fn run_tile(dev: &CudaDevice, kind: u16, tile: &Tile) -> Vec<f32> {
     dev.memset_zero(out, 128 * 4).unwrap();
     let mut ring = Ring::new(dev, 1024, false).unwrap();
     ring.zero_device().unwrap();
-    ring.set(&[MkTaskDescriptor {
+    ring.set(&chained(&[MkTaskDescriptor {
         opcode: OP_PROBE_MMA_TILE,
         a,
         b,
@@ -608,7 +608,7 @@ fn run_tile(dev: &CudaDevice, kind: u16, tile: &Tile) -> Vec<f32> {
         d: s,
         k: u32::from(kind),
         ..Default::default()
-    }]);
+    }]));
     unsafe { ring.run().unwrap() };
     let result = download(dev, out, 128);
     ring.free().unwrap();
@@ -711,7 +711,7 @@ fn probe_mma_rate() {
                     ..Default::default()
                 })
                 .collect();
-            ring.set(&tasks);
+            ring.set(&chained(&tasks));
             unsafe { ring.run_shaped(threads, 0).unwrap() };
             let profile = ring.read_profile().unwrap();
             let got: Vec<f32> = download(&dev, out, 2 * words);

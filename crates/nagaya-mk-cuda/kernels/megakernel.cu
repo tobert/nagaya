@@ -1,9 +1,9 @@
 // Persistent megakernel task-ring interpreter for CUDA GPUs (GB10 / sm_121a).
 //
 // Launched with one thread block per SM (or a configured grid width). Every block walks the same
-// task ring in order. Before each task, thread 0 waits until scoreboard[wait0_event] reaches
-// wait0_target using GPU-scope acquire loads; after each task, thread 0 signals scoreboard[signal]
-// using GPU-scope release atomics.
+// task ring in order. Before its first item of a task, thread 0 waits until each of the two events of the task
+// reaches its target, with GPU-scope acquire loads. After each item, thread 0 adds 1 to the event `signal` with a
+// GPU-scope release atomic. Block b runs the items b, b + gridDim.x and so on.
 
 #include <stddef.h>
 #include <stdint.h>
@@ -106,6 +106,11 @@ __device__ __forceinline__ uint32_t ld_acquire_gpu_u32(const uint32_t* ptr) {
     return val;
 }
 
+// A fence of release and acquire order at GPU scope. It costs less than __threadfence, which is sequentially consistent.
+__device__ __forceinline__ void fence_acq_rel_gpu() {
+    asm volatile("fence.acq_rel.gpu;" ::: "memory");
+}
+
 __device__ __forceinline__ uint32_t atom_release_gpu_add_u32(uint32_t* ptr, uint32_t val) {
     uint32_t old;
     asm volatile("atom.release.gpu.add.u32 %0, [%1], %2;" : "=r"(old) : "l"(ptr), "r"(val));
@@ -172,6 +177,52 @@ __device__ __forceinline__ void op_selftest_check(const MkTaskDescriptor& task) 
 
 #include "probe_ops.cuh"
 
+// Thread 0 polls the event until it reaches the target. A lost signal traps at the spin limit.
+__device__ __forceinline__ void wait_for_event(const uint32_t* event, uint32_t target) {
+    uint64_t polls = 0;
+    while (ld_acquire_gpu_u32(event) < target) {
+        if (++polls >= MK_SPIN_LIMIT) {
+            __trap();
+        }
+    }
+}
+
+// Run one work item of the task. Each op for now is one item for each block, and it reads blockIdx.x.
+__device__ __forceinline__ void run_op(const MkTaskDescriptor& task) {
+    switch (task.opcode) {
+        case OP_NOP:
+            break;
+        case OP_COPY:
+            op_copy(task);
+            break;
+        case OP_SELFTEST_FILL:
+            op_selftest_fill(task);
+            break;
+        case OP_SELFTEST_CHECK:
+            op_selftest_check(task);
+            break;
+        case OP_PROBE_READ:
+            op_probe_read(task);
+            break;
+        case OP_PROBE_L2:
+            op_probe_l2(task);
+            break;
+        case OP_PROBE_TIMER:
+            op_probe_timer(task);
+            break;
+        case OP_PROBE_MMA_TILE:
+            op_probe_mma_tile(task);
+            break;
+        case OP_PROBE_MMA_RATE:
+            op_probe_mma_rate(task);
+            break;
+        default:
+            // Unknown opcode: trap rather than silently corrupt state (spec 8.5).
+            __trap();
+            break;
+    }
+}
+
 extern "C" __global__ void mk_persistent_interpreter(
     const MkTaskDescriptor* __restrict__ tasks,
     uint32_t num_tasks,
@@ -193,16 +244,22 @@ extern "C" __global__ void mk_persistent_interpreter(
         uint64_t t_start = 0;
         uint64_t t_after_wait = 0;
 
+        if (task.opcode != OP_HALT && task.items == 0xFFFFFFFFu) {
+            // The count of items comes from a plan on the device. No op reads one yet, so this is a defect of the ring.
+            __trap();
+        }
+        // A task with no items is a JOIN: block 0 runs one item that does no work, and it signals once.
+        const uint32_t count = task.items == 0 ? 1u : task.items;
+
         if (threadIdx.x == 0) {
             t_start = globaltimer_ns();
-            if (task.wait0_event != NO_EVENT) {
-                const uint32_t* ev = scoreboard + (base_event + task.wait0_event);
-                uint64_t polls = 0;
-                while (ld_acquire_gpu_u32(ev) < task.wait0_target) {
-                    // Spin on GPU-scope acquire load, up to the limit.
-                    if (++polls >= MK_SPIN_LIMIT) {
-                        __trap();
-                    }
+            // A block that has no item of the task does not wait. A wait on the task still sees every item done.
+            if (task.opcode != OP_HALT && bid < count) {
+                if (task.wait0_event != NO_EVENT) {
+                    wait_for_event(scoreboard + (base_event + task.wait0_event), task.wait0_target);
+                }
+                if (task.wait1_event != NO_EVENT) {
+                    wait_for_event(scoreboard + (base_event + task.wait1_event), task.wait1_target);
                 }
             }
             t_after_wait = globaltimer_ns();
@@ -226,40 +283,19 @@ extern "C" __global__ void mk_persistent_interpreter(
             break;
         }
 
-        switch (task.opcode) {
-            case OP_NOP:
-                break;
-            case OP_COPY:
-                op_copy(task);
-                break;
-            case OP_SELFTEST_FILL:
-                op_selftest_fill(task);
-                break;
-            case OP_SELFTEST_CHECK:
-                op_selftest_check(task);
-                break;
-            case OP_PROBE_READ:
-                op_probe_read(task);
-                break;
-            case OP_PROBE_L2:
-                op_probe_l2(task);
-                break;
-            case OP_PROBE_TIMER:
-                op_probe_timer(task);
-                break;
-            case OP_PROBE_MMA_TILE:
-                op_probe_mma_tile(task);
-                break;
-            case OP_PROBE_MMA_RATE:
-                op_probe_mma_rate(task);
-                break;
-            default:
-                // Unknown opcode: trap rather than silently corrupt state (spec 8.5).
-                __trap();
-                break;
+        // Block b runs the items b, b + G, b + 2G and so on. After each item it adds 1 to the event of the task.
+        for (uint32_t item = bid; item < count; item += grid) {
+            if (task.items != 0) {
+                run_op(task);
+            }
+            __syncthreads();
+            if (threadIdx.x == 0 && task.signal != NO_EVENT) {
+                // The fence and the release make the writes of the block visible to a block that reads the event.
+                fence_acq_rel_gpu();
+                atom_release_gpu_add_u32(scoreboard + (base_event + task.signal), 1u);
+            }
         }
 
-        __syncthreads();
         if (threadIdx.x == 0) {
             uint64_t t_end = globaltimer_ns();
             exec_ns += (t_end - t_after_wait);
@@ -272,9 +308,6 @@ extern "C" __global__ void mk_persistent_interpreter(
                 slot[2] = t_end;
             }
 #endif
-            if (task.signal != NO_EVENT) {
-                atom_release_gpu_add_u32(scoreboard + (base_event + task.signal), 1u);
-            }
         }
     }
 
