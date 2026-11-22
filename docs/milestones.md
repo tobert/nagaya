@@ -914,9 +914,8 @@ Do the steps in this order. Each step ends with the checks green.
    - **Wave B, the layer.** The norms, the short convolutions, the attention residual, the message gates, the
      router with the plan and the gather, the expert sum and the clips. Fuse them as rule 7 says.
    - **Wave C, the attention.** The sliding layers, and the full layers over key chunks of a fixed size on all SMs,
-     with a merge in a fixed order. The cache of a full run is contiguous for each head, so the reads stream.
-     The ops read the format of the cache as a parameter: `f32`, `float16` or `fp8_e4m3` (step 11). Build `f32` and
-     `fp8_e4m3` first, so that the gate of step 11 can compare them.
+     with a merge in a fixed order. The cache follows "The layout of the cache" of step 11. Build `f32` and the
+     first packed format together, so that the gate of step 11 can compare them.
 10. **The pass.** The task ring of a decode step and of a prefill block, at 1 to 5 cycles. Gates: the oracle of
     step 8, and a row of a decode step gives the bits of its position in a block. Print the table of the ops, and
     compare each op with its budget.
@@ -927,13 +926,35 @@ Do the steps in this order. Each step ends with the checks green.
     - The candidates come from the GB10 path of vLLM (`vllm/models/inkling2/nvidia/attention.py`). It keeps `bf16`
       by default, and it allows `float16` and `fp8_e4m3` with a unit scale on `sm_120` and `sm_121`. A unit scale
       can work because the model clips the norm of each query and key, and it normalizes each value.
-    - At 409,600 positions, a decode step reads about 26 GB of cache in `f32`, 13 GB in `float16` and 6.5 GB in
-      `fp8_e4m3`. At the measured 252 GB/s, that is about 104 ms, 52 ms or 26 ms.
+    - **The layout of the cache.** **Proposed** (Claude Opus 5.5, 2026-11-22). Store the cache packed, and compute
+      the attention in `bf16`. Each value expands to `bf16` in registers before the MMA.
+      - Each position holds one row of 128 values for each run and KV head. The rows of a head are contiguous, so
+        the attention reads them as a stream.
+      - A scale covers channels of one row only, never more than one position. Thus the row of a new token is
+        complete when its projection writes it. The epilogue of the k and v projection quantizes and writes it.
+      - The format is a parameter of the attention op. Only the expansion changes between formats.
+      - Reason: a block-scaled MMA needs both of its operands in the format. Then the queries and the softmax
+        weights must be quantized, and 8 or 4 bits in the softmax weights hurt the attention most.
+      - Reason: a scale over 32 positions has no value until all 32 keys exist. Then the newest block needs a buffer
+        and a second write.
+      - Reason: a decode step of the attention waits on memory. The MMA can do about 60 times the work that the
+        bandwidth feeds. One `cvt` expands two `e4m3` or `e2m1` values to `f16`, and each expanded value is exact
+        in `bf16`.
+    - **The formats.** The table gives the approximate reads of a decode step at 409,600 positions and 252 GB/s:
+
+      | format | bytes per value | read per step | time | risk |
+      |---|---:|---:|---:|---|
+      | `f32` (the oracle) | 4 | 26 GB | 104 ms | none |
+      | `float16` | 2 | 13 GB | 52 ms | low |
+      | `e4m3`, unit scale (vLLM, `sm_120`) | 1 | 6.5 GB | 26 ms | low: the model clips q and k |
+      | `e4m3`, `ue8m0` per 32 channels | 1.03 | 6.7 GB | 27 ms | lower: an outlier stays in its block |
+      | `e2m1`, `e4m3` per 16 channels | 0.56 | 3.7 GB | 15 ms | high: 4-bit keys move the softmax |
     - **The gate of coherence.** Compare each format with the `f32` cache on the oracle prompts. Compare the logit
       gap, the top token and the greedy text. Then compare them at long positions with a
       retrieval of a fact from early in a context of 400K. A format passes when its greedy text and its retrievals
       match those of `f32`. The thresholds of the gap go into the binding with the first measure.
-    - Start with `fp8_e4m3`. If it fails the gate, measure `float16`.
+    - Start with `e4m3` with a unit scale, because it is the format that ships. If it fails the gate, try the scale
+      per 32 channels, then `float16`. The `e2m1` format is an experiment for the gate. It comes after the others.
 12. **Rows.** A ring of several slots, as LFM3's `model::batch`. The ops take 16 rows from wave A, so this step is
     work of the ring and the scheduler. Measure tokens each second at 1, 2, 4, 8 and 16 rows. The MTP head waits
     for Amy's word (milestone 35 step 10).
