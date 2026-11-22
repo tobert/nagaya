@@ -247,6 +247,10 @@ __device__ __forceinline__ void op_selftest_check(const MkTaskDescriptor& task) 
 #include "matmul_bf16.cuh"
 #include "quant.cuh"
 #include "experts.cuh"
+#include "ops_dense.cuh"
+#include "ops_rows.cuh"
+#include "ops_moe.cuh"
+#include "ops_attn.cuh"
 
 // Thread 0 polls the event until it reaches the target. A lost signal traps at the spin limit.
 __device__ __forceinline__ void wait_for_event(const uint32_t* event, uint32_t target) {
@@ -306,6 +310,45 @@ __device__ __forceinline__ void run_op(const MkTaskDescriptor& task, uint32_t it
         case OP_EXPERT_MXFP8:
             op_expert_mxfp8(task, item);
             break;
+
+        // The cases below are reserved for the lanes of wave B. Each calls a stub that traps, in the file of its lane.
+        // A lane changes the stub of its own ops, and not this switch.
+        case OP_PROJ:
+            op_proj(task, item);
+            break;
+
+        case OP_OUT_MIX:
+            op_out_mix(task, item);
+            break;
+
+        case OP_ROUTE:
+            op_route(task, item);
+            break;
+
+        case OP_EMBED:
+            op_embed(task, item);
+            break;
+
+        case OP_MIX:
+            op_mix(task, item);
+            break;
+
+        case OP_GATE_DOWN:
+            op_gate_down(task, item);
+            break;
+
+        case OP_GATE_UP:
+            op_gate_up(task, item);
+            break;
+
+        case OP_MIX_OUT:
+            op_mix_out(task, item);
+            break;
+
+        case OP_ATTN:
+            op_attn(task, item);
+            break;
+
         default:
             // Unknown opcode: trap rather than silently corrupt state (spec 8.5).
             __trap();

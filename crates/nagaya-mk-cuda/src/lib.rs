@@ -168,6 +168,54 @@ mod tests {
     }
 
     #[test]
+    fn each_opcode_sits_in_the_range_of_its_lane() {
+        let lanes: [(&str, std::ops::RangeInclusive<u16>, &[&str]); 5] = [
+            ("dense, lane D", 40..=49, &["OP_MATMUL_BF16", "OP_PROJ", "OP_OUT_MIX"]),
+            (
+                "MoE, lane M",
+                50..=69,
+                &[
+                    "OP_QUANT_NVFP4",
+                    "OP_QUANT_MXFP8",
+                    "OP_EXPERT_NVFP4",
+                    "OP_EXPERT_MXFP8",
+                    "OP_ROUTE",
+                ],
+            ),
+            (
+                "rows, lane R",
+                70..=79,
+                &["OP_EMBED", "OP_MIX", "OP_GATE_DOWN", "OP_GATE_UP", "OP_MIX_OUT"],
+            ),
+            ("attention, lane A", 80..=89, &["OP_ATTN"]),
+            ("shared", 0..=39, &["OP_NOP", "OP_COPY"]),
+        ];
+        let mut named = 0;
+        for (lane, range, names) in &lanes {
+            for name in *names {
+                let value = protocol::OPCODES
+                    .iter()
+                    .find(|(known, _)| known == name)
+                    .unwrap_or_else(|| panic!("{name} is not in the table of the opcodes"))
+                    .1;
+                assert!(
+                    range.contains(&value),
+                    "{name} = {value} is outside the range of {lane}"
+                );
+                named += 1;
+            }
+        }
+        // Every opcode of the table is in a lane, or it is the halt, a probe or a test opcode (230 and up).
+        for (name, value) in protocol::OPCODES {
+            let in_lane = lanes
+                .iter()
+                .any(|(_, range, names)| range.contains(value) && names.contains(name));
+            assert!(in_lane || *value >= 230, "{name} = {value} is in no lane");
+        }
+        assert_eq!(named, 16);
+    }
+
+    #[test]
     fn match_addresses_maps_case_insensitively_and_refuses_duplicates_and_missing() {
         let cards = vec!["0000:0a:00.0".to_owned(), "0000:08:00.0".to_owned()];
         assert_eq!(match_addresses(&cards, &["0000:0A:00.0".to_owned()]).unwrap(), vec![0]);

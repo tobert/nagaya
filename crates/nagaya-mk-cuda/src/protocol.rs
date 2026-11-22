@@ -48,47 +48,52 @@ macro_rules! define_u16_table {
 
 define_u16_table! {
     OPCODES;
-    // Core opcodes.
+    // The opcodes of one Inkling 2 run on the GB10 are in lanes of ten numbers. A lane owns its numbers, its kernel
+    // file and the stub of its ops. A number that no constant names is free for its lane. `run_op` in
+    // `kernels/megakernel.cu` traps on an opcode that it does not know, and on an opcode that is reserved and not
+    // yet built.
     OP_NOP = 0;
-    OP_RMSNORM = 1;
-    OP_MATMUL = 2;
-    OP_MOE_PLAN = 7;
-    OP_MOE_GATHER = 20;
     OP_COPY = 21;
-    OP_EMBED = 41;
+
+    // The dense lane D, 40 to 49 (`kernels/matmul_bf16.cuh`, `kernels/ops_dense.cuh`).
     // `OP_MATMUL_BF16`: `y[r, n] = sum_k x[r, k] * W[n, k]` for 1 to 16 rows. `a` = `x` (`f32`, `rows` rows of `k`),
     // `b` = `W` repacked by `repack.rs`, `c` = `y` (`f32`, `rows` rows of `n`), `f` = merge counters, then partials
     // (`MatmulShape::scratch_floats`), `n`, `k`, `kt`, `rows`, `items` and `group_items` as `repack.rs` gives them.
-    // The opcodes 40 to 49 are for the dense matmuls.
+    // The head of the model is this op with `FLAG_NORM` and `FLAG_SOFTCAP_30`, so it has no opcode of its own.
     OP_MATMUL_BF16 = 40;
-    OP_BIAS = 43;
-    OP_LAYERNORM = 47;
-    OP_GELU = 48;
-    OP_SCALE_ADD = 50;
-    // The quantizers and the expert ops of the GB10 (`kernels/quant.cuh` and `kernels/experts.cuh`). The numbers 51 to
-    // 69 are for them. Each has its own comment in its kernel file.
+    // `OP_PROJ`: the joined matmul of the q, relative, sink, gate, k and v rows, with a norm prologue and an epilogue
+    // for each segment (reserved for lane D).
+    OP_PROJ = 44;
+    // `OP_OUT_MIX`: the output matmul, its short convolution, the residual and the row finisher (reserved for lane D).
+    OP_OUT_MIX = 45;
+
+    // The MoE lane M, 50 to 69 (`kernels/quant.cuh`, `kernels/experts.cuh`, `kernels/ops_moe.cuh`). Each op has its
+    // own comment in its kernel file. `OP_EXPERT_NVFP4` and `OP_EXPERT_MXFP8` also run the up and the down matmul
+    // of the experts, with `FLAG_UP` or `FLAG_DOWN`.
     OP_QUANT_NVFP4 = 51;
     OP_QUANT_MXFP8 = 52;
     OP_EXPERT_NVFP4 = 53;
     OP_EXPERT_MXFP8 = 54;
-    OP_HALT = 255;
+    // `OP_ROUTE`: the router matmul, the sigmoid, the top 8 and the list of pairs (reserved for lane M).
+    OP_ROUTE = 55;
 
-    // Inkling 2 opcodes (matching `docs/engine-abi.md` "Inkling 2").
-    OP_EXPERT_UP = 142;
-    OP_EXPERT_DOWN = 143;
-    OP_EXPERT_SUM = 144;
-    OP_ATTN_RESIDUAL = 150;
-    OP_MESSAGE_GATE = 151;
-    OP_HEAD_CLIP = 152;
-    OP_OUTPUT_GATE = 153;
-    OP_RESIDUAL_CONV = 154;
-    OP_SIGMOID_ROUTER = 155;
-    OP_INKLING2_ATTN = 160;
-    OP_INKLING2_ATTN_SUM = 161;
-    OP_INKLING2_VISION_EMBED = 180;
-    OP_INKLING2_VISION_ROPE = 181;
-    OP_INKLING2_VISION_ATTN = 182;
-    OP_INKLING2_CONTROL = 190;
+    // The row lane R, 70 to 79 (`kernels/ops_rows.cuh`). All five are reserved for lane R.
+    // `OP_EMBED`: the embedding of the tokens, the first norm and the row factor.
+    OP_EMBED = 70;
+    // `OP_MIX`: the attention residual and the message mix over the planes.
+    OP_MIX = 71;
+    // `OP_GATE_DOWN`: the down matmul of the message gates.
+    OP_GATE_DOWN = 72;
+    // `OP_GATE_UP`: the forget and gain matmuls of the message gates, and their blend.
+    OP_GATE_UP = 73;
+    // `OP_MIX_OUT`: the output residual over the planes.
+    OP_MIX_OUT = 74;
+
+    // The attention lane A, 80 to 89 (`kernels/ops_attn.cuh`).
+    // `OP_ATTN`: the attention of one layer over the cache (reserved for lane A).
+    OP_ATTN = 80;
+
+    OP_HALT = 255;
 
     // Probe opcodes. They measure the GB10 in `tests/cuda_probe.rs`. An engine does not use them. Each has its own
     // comment in `kernels/probe_ops.cuh`.
