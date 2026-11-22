@@ -309,7 +309,7 @@ __device__ __forceinline__ void run_op(const MkTaskDescriptor& task, const MkTas
             op_copy(task, item);
             break;
         case OP_MATMUL_BF16:
-            op_matmul_bf16(task, item);
+            op_matmul_bf16(task, table, item);
             break;
         case OP_SELFTEST_FILL:
             op_selftest_fill(task);

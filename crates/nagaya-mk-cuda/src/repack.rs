@@ -30,8 +30,11 @@ pub const K_STEP: usize = 16;
 /// Consumer warps that split the K slice of an item. The warps of a block join in a fixed tree.
 pub const K_WARPS: usize = 8;
 
-/// The tokens of a tile of columns that one pass takes at most: two MMAs of 8 columns.
-pub const MAX_ROWS: usize = 16;
+/// The tokens that one tile of 16 rows takes: two MMAs of 8 columns. A pass of more rows loops over such tiles.
+pub const ROW_TILE: usize = 16;
+
+/// The rows that one task takes at most: a block of a prefill.
+pub const MAX_ROWS: usize = crate::protocol::MATMUL_MAX_ROWS;
 
 /// Bytes of one step of an item: 32 lanes of 16 bytes.
 pub const STEP_BYTES: usize = 512;
@@ -388,7 +391,8 @@ mod tests {
         );
         assert_eq!((d.a, d.b, d.c, d.f), (0x1000, 0x2000, 0x3000, 0x4000));
         assert!(shape.descriptor(0, 0x1000, 0x2000, 0x3000, 0x4000).is_err());
-        assert!(shape.descriptor(17, 0x1000, 0x2000, 0x3000, 0x4000).is_err());
+        assert_eq!(shape.descriptor(512, 0x1000, 0x2000, 0x3000, 0x4000).unwrap().rows, 512);
+        assert!(shape.descriptor(513, 0x1000, 0x2000, 0x3000, 0x4000).is_err());
         let error = shape.descriptor(1, 0x1000, 0x2008, 0x3000, 0x4000).unwrap_err();
         assert!(error.contains("repacked weight") && error.contains("16"), "{error}");
     }
