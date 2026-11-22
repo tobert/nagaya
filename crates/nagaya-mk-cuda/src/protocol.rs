@@ -90,7 +90,8 @@ define_u16_table! {
     OP_MIX_OUT = 74;
 
     // The attention lane A, 80 to 89 (`kernels/ops_attn.cuh`).
-    // `OP_ATTN`: the attention of one layer over the cache (reserved for lane A).
+    // `OP_ATTN`: the attention of one layer over the cache. The fields are in `src/attn.rs` and in
+    // `kernels/ops_attn.cuh`.
     OP_ATTN = 80;
 
     OP_HALT = 255;
@@ -220,6 +221,23 @@ pub fn expert_pair_bound(rows: usize) -> usize {
     (TOP_K * rows).min(TOP_K * rows / EXPERT_MAX_ROWS + NUM_EXPERTS)
 }
 
+/// The keys of one chunk of `OP_ATTN`. A chunk is the unit of the split over the SMs and of the merge in index order.
+/// The chunks sit on absolute positions, so the bits of a row do not depend on the block that holds it. The number is
+/// a part of the engine identity (design rule 8). It is a multiple of 64, the keys of one step of the kernel.
+pub const ATTN_CHUNK_KEYS: usize = 256;
+
+/// The most rows of `OP_ATTN` in the split mode (one item for each chunk, with a merge group). A task with more rows
+/// runs in the whole mode (one item for each tile of rows, and it merges its chunks itself). The two modes give the
+/// same bits.
+pub const ATTN_SPLIT_ROWS: usize = 16;
+
+/// The dynamic shared bytes that `OP_ATTN` needs, at offset 0.
+pub const ATTN_SMEM_BYTES: usize = 56 * 1024;
+
+/// The floats of one row of a chunk partial in the scratch of `OP_ATTN`: the maximum, the sum, two spare words, and 128
+/// values.
+pub const ATTN_PARTIAL_ROW_FLOATS: usize = 132;
+
 /// Pointers in a task table.
 pub const TABLE_POINTERS: usize = 16;
 
@@ -240,6 +258,13 @@ pub struct MkTaskTable {
 
 /// The slot of the pointer to the amax of each expert (`f32`, 128 of them) in the table of `OP_EXPERT_NVFP4`.
 pub const EXPERT_TABLE_AMAX: usize = 0;
+
+/// The slots of the table of `OP_ATTN`: the relative states (`f32`, `rows` x 24 x 16), the sinks (`f32`, `rows` x 24),
+/// the gate before its sigmoid (`f32`, `rows` x 3,072) and the relative projection (`bf16`, 16 x 1,024).
+pub const ATTN_TABLE_REL: usize = 0;
+pub const ATTN_TABLE_SINKS: usize = 1;
+pub const ATTN_TABLE_GATE: usize = 2;
+pub const ATTN_TABLE_PROJ: usize = 3;
 
 define_u16_table! {
     FLAGS;

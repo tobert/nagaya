@@ -4,6 +4,7 @@
 //! `driver` loads the `.cubin` through the CUDA Driver API (`libcuda`) and `ring` drives the 128-byte task ring, and `graph` plans its dependencies.
 //! Without the feature `cuda`, the crate needs no GPU and no CUDA toolkit.
 
+pub mod attn;
 #[cfg(feature = "cuda")]
 pub mod driver;
 pub mod experts;

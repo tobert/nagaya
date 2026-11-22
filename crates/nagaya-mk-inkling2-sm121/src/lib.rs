@@ -4,5 +4,6 @@
 //! and block-scaled dot products. `spec` holds the config, model validation, long-context slot sizing, and `Limits`.
 //! None of these needs a GPU.
 
+pub mod cache;
 pub mod quant;
 pub mod spec;
