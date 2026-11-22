@@ -19,7 +19,7 @@
 
 use crate::protocol::{
     EXPERT_K_GROUP, EXPERT_MXFP8_RECORD_BYTES, EXPERT_NVFP4_RECORD_BYTES, EXPERT_PAIR_HEADER_BYTES, EXPERT_TILE_ROWS,
-    ExpertPair, ExpertPairHeader,
+    ExpertPair, ExpertPairHeader, TOP_K, expert_pair_bound,
 };
 
 /// The bytes of a pair list for the device: the header with the live count `pairs.len()`, the live pairs, and zero pairs
@@ -56,6 +56,48 @@ pub fn pair_list_bytes(pairs: &[ExpertPair], capacity: usize) -> Result<Vec<u8>,
         EXPERT_PAIR_HEADER_BYTES + capacity * std::mem::size_of::<ExpertPair>()
     );
     Ok(out)
+}
+
+/// The slot of the pointer to the bias of the router (`f32`, 128 of them) in the task table of `OP_ROUTE`. The slots of
+/// the table are the same in `kernels/ops_moe.cuh`.
+pub const ROUTE_TABLE_BIAS: usize = 0;
+
+/// The slot of the norm weight (`f32`, 2,304 of them) in the table of `OP_ROUTE` with `FLAG_NORM`.
+pub const ROUTE_TABLE_NORM_WEIGHT: usize = 1;
+
+/// The slot of the row factors (`f32`, one for each row) in the table of `OP_ROUTE` with `FLAG_NORM`.
+pub const ROUTE_TABLE_ROW_FACTOR: usize = 2;
+
+/// The rows that one row tile of `OP_ROUTE` takes.
+pub const ROUTE_ROW_TILE: usize = 16;
+
+/// The items of one row tile of `OP_ROUTE`: 8 column tiles of 16 experts, and 3 K slices of 768 values.
+pub const ROUTE_ITEMS_PER_ROW_TILE: usize = 24;
+
+/// The most rows that one `OP_ROUTE` takes (`MAX_PLAN_TOKENS`).
+pub const ROUTE_MAX_ROWS: usize = 1024;
+
+/// The count of items of `OP_ROUTE` for `rows` rows.
+pub fn route_items(rows: usize) -> usize {
+    rows.div_ceil(ROUTE_ROW_TILE) * ROUTE_ITEMS_PER_ROW_TILE
+}
+
+/// The words of the scratch (`f`) of `OP_ROUTE` for `rows` rows: the counters (a counter for each row tile and column
+/// tile, one for each row tile, and one for the plan, rounded to 4 words), then the logits (128 for each row), then the
+/// partials (256 for each item). The counters start at 0 and stay 0.
+pub fn route_scratch_words(rows: usize) -> usize {
+    let tiles = rows.div_ceil(ROUTE_ROW_TILE);
+    (tiles * 9 + 1).next_multiple_of(4) + rows * 128 + route_items(rows) * ROUTE_ROW_TILE * 16
+}
+
+/// The bytes of the pair list of `OP_ROUTE` for `rows` rows: the header and room for the bound of pairs.
+pub fn route_pair_list_bytes(rows: usize) -> usize {
+    EXPERT_PAIR_HEADER_BYTES + expert_pair_bound(rows) * std::mem::size_of::<ExpertPair>()
+}
+
+/// The bytes of the picks of `OP_ROUTE` (`c`): `rows * 8` expert ids, then `rows * 8` route weights.
+pub fn route_picks_bytes(rows: usize) -> usize {
+    rows * TOP_K * 8
 }
 
 /// The two formats of the experts of Inkling 2.
