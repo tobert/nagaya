@@ -121,6 +121,11 @@ starts.
 - NVIDIA: `proc/driver/nvidia` gives the model, the bus location and the minor number. It does not give the memory
   size. NVML gives it. Thus the probe accepts only the models in a short list whose memory is unified, and it reads
   their memory as the host memory. Any other model is an error.
+
+  **Proposed (Gemini 4 Neon, 2026-11-22):** on GB10 hardware, the driver writes `Model: Unknown` in
+  `proc/driver/nvidia/gpus/<addr>/information`. When `Model` is `Unknown`, the probe reads the PCI vendor and device id
+  from `sys/bus/pci/devices/<addr>`. It accepts unified models in a short PCI-id list (`10de:2e12` maps to
+  `NVIDIA GB10`) and takes their memory as the host memory. Any other model name or PCI id is an error that names both.
 - Xe: sysfs has no file for the size of the device memory, and `xe` has no `tile0/vram0` size file. The probe reads
   the largest prefetchable memory BAR of the standard BARs 0 to 5, which are the first six lines of the `resource`
   file. The later lines are the ROM and the SR-IOV BARs of the virtual functions. With resizable BAR off, the BAR is
@@ -140,8 +145,8 @@ Reason for the rules of "What the file probe reads" and "What the file probe can
 size or stop. A heuristic that guesses wrong without a sign
 would corrupt the ledger (8.5).
 
-The tree of the machine with unified memory is made by hand, not captured. The README in the fixture directory marks
-each guessed value. Capture the real tree when a port starts.
+The `dgx-spark` tree is captured from a real GB10 machine. Its `proc/driver/nvidia` file writes `Model: Unknown`,
+with the GPU UUID zeroed.
 
 The tree of the B70 machine is a capture. A Xe card reports the largest prefetchable range among its six
 standard BARs. The ranges after them hold the ROM and the SR-IOV functions, and they are not memory of the card.
