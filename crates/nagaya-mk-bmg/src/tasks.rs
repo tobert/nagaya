@@ -1869,6 +1869,110 @@ impl Inkling2Attention {
     }
 }
 
+/// The attention of one run of Inkling 2 over a batch of contexts, one query position each (`FLAG_ATTN_ROWS` on
+/// `OP_INKLING2_ATTN` and `OP_INKLING2_ATTN_SUM`). Each context reads its own key plane at its own position. Each
+/// context gets the bits of its pass alone, a [`Inkling2Attention`] of one position (engine-abi "A batch of decode
+/// rows"). The queries, the relative states, the sinks and the outputs hold one row for each context.
+#[derive(Clone, Debug)]
+pub struct Inkling2AttentionRows {
+    /// The queries `[rows][24][128]`, the relative states `[rows][24][16]`, the profiles, the sinks `[rows][24]` and
+    /// the outputs `[rows][24][128]`, as for [`Inkling2Attention`].
+    pub q: u64,
+    pub rel: u64,
+    pub proj: u64,
+    pub sinks: u64,
+    pub out: u64,
+    /// The device address of the table of the contexts: one row of 4 words for each, as [`Self::table`] gives.
+    pub table: u64,
+    /// The key plane, the position and the cells of the plane of each context.
+    pub rows: Vec<(u64, u32, u32)>,
+    /// The ring of the run, or 0 for cells, and the keys of one chunk, as for [`Inkling2Attention`].
+    pub ring: u32,
+    pub chunk_keys: u32,
+}
+
+impl Inkling2AttentionRows {
+    /// The pass alone of context `i`: a block of one position.
+    pub fn alone(&self, i: usize) -> Inkling2Attention {
+        let (kv, p0, max_seq) = self.rows[i];
+        let at = |base: u64, floats: usize| base + (i * floats * 4) as u64;
+        Inkling2Attention {
+            q: at(self.q, 24 * 128),
+            kv,
+            rel: at(self.rel, 24 * 16),
+            proj: self.proj,
+            sinks: at(self.sinks, 24),
+            out: at(self.out, 24 * 128),
+            n: 1,
+            p0,
+            max_seq,
+            ring: self.ring,
+            chunk_keys: self.chunk_keys,
+        }
+    }
+
+    /// The most chunks of a context. Each context checks as its pass alone does.
+    pub fn most_chunks(&self) -> u32 {
+        assert!(
+            (1..=MAX_ATTN_ROWS).contains(&self.rows.len()),
+            "a batch of OP_INKLING2_ATTN holds 1 to {MAX_ATTN_ROWS} contexts, and it got {}",
+            self.rows.len()
+        );
+        (0..self.rows.len()).map(|i| self.alone(i).chunks().1).max().unwrap()
+    }
+
+    /// The floats of scratch that the two tasks use: the partial sums of the most chunks for each context, then the
+    /// scratch of each team.
+    pub fn scratch_floats(&self) -> usize {
+        let partial = self.rows.len() * self.most_chunks() as usize * 24 * 130;
+        partial.next_multiple_of(16) + crate::protocol::MEGAKERNEL_SUBGROUPS / 4 * INKLING2_ATTN_TEAM_FLOATS
+    }
+
+    /// The bytes of the table: for each context the address of its key plane, its position and its cells, as 4
+    /// little-endian words.
+    pub fn table(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.rows.len() * 16);
+        for (kv, p0, max_seq) in &self.rows {
+            out.extend_from_slice(&kv.to_le_bytes());
+            out.extend_from_slice(&p0.to_le_bytes());
+            out.extend_from_slice(&max_seq.to_le_bytes());
+        }
+        out
+    }
+
+    /// The two tasks. The keys and values of each context must be in its planes.
+    pub fn tasks(&self) -> [MkTaskDescriptor; 2] {
+        let most = self.most_chunks();
+        let base = MkTaskDescriptor {
+            flags: FLAG_ATTN_ROWS,
+            n: self.rows.len() as u32,
+            k: self.chunk_keys,
+            m: most,
+            layer: self.ring,
+            b: self.table,
+            ..Default::default()
+        };
+        [
+            MkTaskDescriptor {
+                opcode: OP_INKLING2_ATTN,
+                a: self.q,
+                c: self.rel,
+                x: self.proj,
+                ..base
+            },
+            MkTaskDescriptor {
+                opcode: OP_INKLING2_ATTN_SUM,
+                a: self.sinks,
+                c: self.out,
+                ..base
+            },
+        ]
+    }
+}
+
+/// The most contexts of one batch of `OP_INKLING2_ATTN`.
+pub const MAX_ATTN_ROWS: usize = 8;
+
 /// The floats of scratch that the attention of Inkling 2 uses for a block of up to `max_block` positions in a slot of
 /// `max_seq` positions, with the chunks of `inkling2_chunk_keys`. A sliding block reads `n + 1023` keys at most, and
 /// a full block reads `max_seq` keys at most.

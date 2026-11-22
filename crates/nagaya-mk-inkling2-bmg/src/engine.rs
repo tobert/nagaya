@@ -629,6 +629,10 @@ impl Inkling2Engine {
         }
         let bytes: Vec<u8> = blocks.iter().flat_map(|b| b.tokens[0].to_le_bytes()).collect();
         self.device.write(self.card(), self.bufs.ids, &bytes);
+        // The tables of the attention of the batch.
+        for (at, bytes) in &pass.writes {
+            self.device.write(self.card(), *at, bytes);
+        }
         self.run(&launches);
     }
 

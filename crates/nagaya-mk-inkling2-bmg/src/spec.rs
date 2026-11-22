@@ -736,6 +736,11 @@ pub fn block_buffers(n: usize) -> Vec<(&'static str, usize)> {
         ("down rows", n * TOP_K * HIDDEN),
         ("f", n * HIDDEN),
         ("logits", MAX_LOGIT_ROWS * HEAD_ROWS),
+        // The tables of the attention of a batch: 4 words for each row of each run (`model::ROWS_TABLE_BYTES`).
+        (
+            "attention rows",
+            crate::model::MAX_RUNS * crate::model::MAX_BATCH_ROWS * 4,
+        ),
     ]
 }
 

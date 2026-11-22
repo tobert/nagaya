@@ -34,31 +34,55 @@
             // scratch gets [chunk][t][h][max, sum, o[128]], then INKLING2_ATTN_TEAM_FLOATS for each team.
             // Work items: (chunk, head, tile of 16 positions), each for a team of 4 subgroups. Each team of a
             // work-group runs the same count of items and rounds, so each subgroup meets each barrier.
+            //
+            // With FLAG_ATTN_ROWS the task is a batch of n contexts, one query position each (engine-abi "A batch
+            // of decode rows"). b is a table of one uint4 for each context: the address of its key plane (two
+            // words), its position and the cells of its plane. m is the most chunks of a context. The queries, the
+            // relative states, the sinks and the outputs hold one row for each context, and scratch gets
+            // [context][chunk of m][h][max, sum, o[128]]. Each item of a context is the item of its pass alone,
+            // and the rounds past its own count read no key, which changes no bit (see "Bits and splits").
             __global const float*  Q    = (__global const float*)task.a;
-            __global const float*  Kc   = (__global const float*)task.b;
             __global const float*  REL  = (__global const float*)task.c;
             __global const ushort* PROJ = (__global const ushort*)task.x;
             const uint H = INKLING2_HEADS, KV = INKLING2_KV_HEADS, D = INKLING2_HEAD_DIM;
-            uint N = task.n, p0 = task.p0, ck = task.k, ring = task.layer;
-            __global const float* Vc = Kc + kv_plane_rows((ulong)task.m, ring) * KV * D;
-            uint key_rows = p0 + N, k_height = kv_surface_rows(key_rows, ring);
+            bool rows = (flags & FLAG_ATTN_ROWS) != 0;
+            __global const uint4* ROWS = (__global const uint4*)task.b;
+            uint contexts = rows ? task.n : 1u, ck = task.k, ring = task.layer;
+            // The block of one context: n positions from p0, and its first chunk and count of chunks.
+            uint N = rows ? 1u : task.n;
             uint t_tiles = (N + 15) / 16;
-            uint2 cuts = inkling2_attn_chunks(N, p0, ck, ring);
-            uint c_first = cuts.x, chunks = cuts.y;
-            // The rounds of each item: enough for the keys of the block in the chunk that holds the most of them.
-            uint rounds = (min(ck, key_rows - c_first * ck) + INKLING2_ATTN_KEYS - 1) / INKLING2_ATTN_KEYS;
-            ulong part_floats = ((ulong)chunks * N * H * (D + 2) + 15) / 16 * 16;
+            uint c_most = 0, rounds = 0;
+            for (uint r = 0; r < contexts; r++) {
+                uint p0r = rows ? ROWS[r].z : task.p0;
+                uint2 cr = inkling2_attn_chunks(N, p0r, ck, ring);
+                uint key_rows_r = p0r + N;
+                c_most = max(c_most, cr.y);
+                // The rounds of each item: enough for the keys of the block in the chunk that holds the most of them.
+                rounds = max(rounds, (min(ck, key_rows_r - cr.x * ck) + INKLING2_ATTN_KEYS - 1) / INKLING2_ATTN_KEYS);
+            }
+            ulong part_floats = ((ulong)contexts * c_most * N * H * (D + 2) + 15) / 16 * 16;
             uint mem = sg_id & 3u, team = (sg_id >> 2) * num_wgs + wg_id, n_teams = (num_sgs >> 2) * num_wgs;
             // The team's probabilities of one round, [16 positions][128 keys]; then the max and the sum of each
             // position over the key pair of each subgroup.
             __global float* tprob = scratch + part_floats + (ulong)team * INKLING2_ATTN_TEAM_FLOATS;
             __global float* tmax = tprob + 16 * INKLING2_ATTN_KEYS;
             __global float* tsum = tmax + 4 * 16;
-            uint total = chunks * H * t_tiles, turns = (total + n_teams - 1) / n_teams;
+            uint total = contexts * c_most * H * t_tiles, turns = (total + n_teams - 1) / n_teams;
             for (uint turn = 0; turn < turns; turn++) {
                 uint item = team + turn * n_teams;
-                bool active = item < total;
-                uint tt = item % t_tiles, h = (item / t_tiles) % H, c = item / (t_tiles * H);
+                uint tt = item % t_tiles, h = (item / t_tiles) % H, c = (item / (t_tiles * H)) % c_most;
+                uint ctx = min(item / (t_tiles * H * c_most), contexts - 1);
+                // The context of the item: its queries, its states, its planes and its chunks.
+                uint4 row = rows ? ROWS[ctx] : (uint4)(0u);
+                uint p0 = rows ? row.z : task.p0;
+                __global const float* Kc = rows ? (__global const float*)as_ulong(row.xy) : (__global const float*)task.b;
+                __global const float* Vc = Kc + kv_plane_rows(rows ? (ulong)row.w : (ulong)task.m, ring) * KV * D;
+                __global const float* Qc = Q + (ulong)ctx * H * D;
+                __global const float* RELc = REL + (ulong)ctx * H * INKLING2_REL_STATES;
+                uint key_rows = p0 + N, k_height = kv_surface_rows(key_rows, ring);
+                uint2 cuts = inkling2_attn_chunks(N, p0, ck, ring);
+                uint c_first = cuts.x;
+                bool active = item < total && c < cuts.y;
                 uint t0 = tt * 16, kvh = h / (H / KV), c_lo = (c_first + c) * ck;
                 uint t_last = min(t0 + 15, N - 1);
                 // The 16-aligned key tiles [j_lo, j_hi) that the positions of the tile read, in this chunk. A team
@@ -89,7 +113,7 @@
                             short8 qh[2], qm[2], ql[2];
                             _Pragma("unroll") for (uint mt = 0; mt < 2; mt++) {
                                 uint qv[8];
-                                intel_sub_group_2d_block_read_32b_8r16x1c((__global void*)Q, H * D * 4, N, H * D * 4, (int2)(h * D + k0, t0 + 8 * mt), qv);
+                                intel_sub_group_2d_block_read_32b_8r16x1c((__global void*)Qc, H * D * 4, N, H * D * 4, (int2)(h * D + k0, t0 + 8 * mt), qv);
                                 split3_rows(qv, &qh[mt], &qm[mt], &ql[mt]);
                             }
                             _Pragma("unroll") for (uint nt = 0; nt < 2; nt++) {
@@ -108,7 +132,7 @@
                                 bool row_in = t < N;
                                 uint lowest = inkling2_lowest_key(pos, ring);
                                 // Lane i holds relative state i of this position and head.
-                                float relv = row_in ? REL[((ulong)t * H + h) * INKLING2_REL_STATES + lane] : 0.0f;
+                                float relv = row_in ? RELc[((ulong)t * H + h) * INKLING2_REL_STATES + lane] : 0.0f;
                                 for (uint nt = 0; nt < 2; nt++) {
                                     uint jt = jp + 16 * nt, j = jt + lane;
                                     int dist = (int)pos - (int)j;
@@ -202,7 +226,7 @@
                     if (ring && row0 >= ring) row0 -= ring;
                 }
                 if (active) {
-                    __global float* part = scratch + (((ulong)c * N + t0) * H + h) * (D + 2);
+                    __global float* part = scratch + ((((ulong)ctx * c_most + c) * N + t0) * H + h) * (D + 2);
                     ulong part_stride = (ulong)H * (D + 2);
                     for (uint mt = 0; mt < 2; mt++) {
                         for (uint r = 0; r < 8; r++) {
@@ -224,16 +248,23 @@
             // is one more score with a value of 0, so the merge starts from (max = sink, sum = 1, out = 0), once for
             // each position and head. A chunk with the sum 0 holds no key of its position. Work items: (position,
             // head, 16 output values), one value for each lane.
+            // With FLAG_ATTN_ROWS the task is a batch of n contexts of one position, as OP_INKLING2_ATTN's: b is
+            // its table, and m the most chunks of a context. A row of the sinks and the outputs is a context.
             __global const float* S = (__global const float*)task.a;
             __global float*       O = (__global float*)task.c;
             const uint H = INKLING2_HEADS, D = INKLING2_HEAD_DIM;
-            uint N = task.n;
-            uint chunks = inkling2_attn_chunks(N, task.p0, task.k, task.layer).y;
+            bool rows = (flags & FLAG_ATTN_ROWS) != 0;
+            __global const uint4* ROWS = (__global const uint4*)task.b;
+            uint N = task.n, per = rows ? 1u : N;
+            uint c_most = rows ? task.m : inkling2_attn_chunks(N, task.p0, task.k, task.layer).y;
             for (uint item = gsg; item < N * H * (D / 16); item += n_gsg) {
                 uint d = (item % (D / 16)) * 16 + lane, th = item / (D / 16);
+                // The context of the row, and the chunks of its block. Its scratch holds c_most chunks.
+                uint ctx = rows ? th / H : 0u, tc = th - ctx * H;
+                uint chunks = rows ? inkling2_attn_chunks(1u, ROWS[ctx].z, task.k, task.layer).y : c_most;
                 float m = S[th], l = 1.0f, o = 0.0f;
                 for (uint c = 0; c < chunks; c++) {
-                    __global const float* pp = scratch + ((ulong)c * N * H + th) * (D + 2);
+                    __global const float* pp = scratch + (((ulong)ctx * c_most + c) * per * H + tc) * (D + 2);
                     float mc = pp[0], lc = pp[1];
                     if (lc > 0.0f) {
                         float nm = fmax(m, mc);

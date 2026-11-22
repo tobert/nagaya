@@ -2044,7 +2044,12 @@ Each rule is **Proposed** (Claude Opus 5.5, 2026-11-21).
   - The ops of the weights run once over the rows. The matmuls take the tiled path, and each other op takes the
     rows one at a time inside its task. The expert ops take the row path for 1 to 8 tokens.
   - The ops of a slot run for each row on its own slot. They are the four convolutions, the clips of the key and the
-    value, the attention, and the log clips of a full layer.
+    value, and the log clips of a full layer.
+  - The rows share one attention task of each run, with `FLAG_ATTN_ROWS` (`tasks::Inkling2AttentionRows`). A table
+    gives each row its key plane, its position and the cells of its plane. The engine writes the table of each run
+    into the buffer `attention rows` before the pass.
+  - Each item of a row is the item of its pass alone. A row with fewer chunks or rounds than the others runs empty
+    rounds, which add exact zeros. Thus a row keeps the bits of its pass alone, and `xe_bits` keeps each hash.
   - Thus a row gets the bits of its pass alone (spec 5.7). The card test `xe_batch` runs 8 contexts at other
     positions in batches of 8, 4, 3, 2 and 1, at 3 cycles and at 1. Each row gave the bits of its pass alone.
   - `max_segments` is 8, or `max_block` when it is less. Reason: a ninth row takes another path of `OP_MATMUL` and

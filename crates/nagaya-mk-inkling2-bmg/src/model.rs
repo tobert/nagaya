@@ -10,7 +10,7 @@
 //! (engine-abi "A pass in several launches"). The state of the block stays in the buffers between two launches.
 
 use nagaya_mk_bmg::protocol::{ControlOp, FLAG_SOFTCAP_30, FLAG_TILED, MAX_TASKS_PER_CARD, MkTaskDescriptor};
-use nagaya_mk_bmg::tasks::{self, ConvTaps, HeadClip, Inkling2Attention};
+use nagaya_mk_bmg::tasks::{self, ConvTaps, HeadClip, Inkling2Attention, Inkling2AttentionRows};
 
 use crate::host::ops::{D_REL, EPS, EXPERTS, HEAD_DIM, HEADS, HIDDEN, INTERMEDIATE, KV_HEADS, QK_CLIP, REL_CLIP};
 use crate::host::weights::{BLOCK, CYCLE_END, CYCLE_START, LAYERS, is_full};
@@ -95,6 +95,8 @@ pub struct Bufs {
     pub moe: u64,
     /// The logits of each logit row: `[16][200064]`.
     pub logits: u64,
+    /// The tables of the attention of a batch: one of `ROWS_TABLE_BYTES` for each run (`Inkling2AttentionRows`).
+    pub attn_rows: u64,
 }
 
 impl Bufs {
@@ -140,6 +142,7 @@ impl Bufs {
             slots: next("down rows"),
             moe: next("f"),
             logits: next("logits"),
+            attn_rows: next("attention rows"),
         }
     }
 
@@ -342,6 +345,8 @@ pub struct Pass {
     pub head: Vec<MkTaskDescriptor>,
     pub runs: Vec<Vec<MkTaskDescriptor>>,
     pub tail: Vec<MkTaskDescriptor>,
+    /// The bytes that the engine writes to the card before the pass: the tables of the attention of a batch.
+    pub writes: Vec<(u64, Vec<u8>)>,
 }
 
 impl Pass {
@@ -464,6 +469,12 @@ pub fn batch(w: &Weights, bufs: &Bufs, batch: Batch<'_>) -> Pass {
     )
 }
 
+/// The most runs of a pass: the layers and the largest reserve.
+pub const MAX_RUNS: usize = LAYERS + spec::MAX_EXTRA_RUNS;
+
+/// The bytes of the table of the attention of a batch, for one run: 4 words for each row.
+pub const ROWS_TABLE_BYTES: usize = MAX_BATCH_ROWS * 16;
+
 /// The most rows of a batch: the tiled path of `OP_MATMUL` takes 2 to 8 rows, and a row path of the experts takes 1
 /// to 8 tokens. A ninth row would take another path, with other bits.
 pub const MAX_BATCH_ROWS: usize = 8;
@@ -533,7 +544,8 @@ fn build(
             taps: tapped,
             index: r,
         };
-        pass.runs.push(run_tasks(w, bufs, places, n, *run, cycles, lab));
+        let tasks = run_tasks(w, bufs, places, n, *run, cycles, lab, &mut pass.writes);
+        pass.runs.push(tasks);
     }
     if let Some(rows) = logit_rows {
         assert!(
@@ -617,6 +629,7 @@ fn run_tasks(
     run: Run,
     cycles: usize,
     lab: Lab<'_>,
+    writes: &mut Vec<(u64, Vec<u8>)>,
 ) -> Vec<MkTaskDescriptor> {
     let Run {
         layer: l,
@@ -887,8 +900,41 @@ fn run_tasks(
             }
         }
     }
-    // 6. The attention, the output gate, the output projection and the convolution after the attention.
-    for p in places {
+    // 6. The attention, the output gate, the output projection and the convolution after the attention. The contexts
+    // of a batch share one attention task, which gives each the bits of its pass alone.
+    if places.len() > 1 {
+        let ring = places[0].slot.ring(s);
+        assert!(lab.index < MAX_RUNS, "a pass has at most {MAX_RUNS} runs");
+        let attention = Inkling2AttentionRows {
+            q: bufs.q,
+            rel: bufs.rel,
+            proj: lw.rel_proj,
+            sinks: bufs.sinks,
+            out: bufs.attn,
+            table: bufs.attn_rows + (lab.index * ROWS_TABLE_BYTES) as u64,
+            rows: places
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    assert!(
+                        p.n == 1 && p.row == i && p.slot.ring(s) == ring,
+                        "a context of a batch is one row, in order, with the ring of the others"
+                    );
+                    (p.slot.planes[s], p.pos0 as u32, p.slot.seq as u32)
+                })
+                .collect(),
+            ring: ring as u32,
+            chunk_keys: tasks::inkling2_chunk_keys(ring as u32),
+        };
+        let longest = places.iter().map(|p| p.slot.seq).max().unwrap();
+        assert!(
+            attention.scratch_floats() <= tasks::inkling2_attn_scratch_floats(bufs.max_block, longest),
+            "the attention of a batch fits the scratch of a block"
+        );
+        writes.push((attention.table, attention.table()));
+        t.extend(attention.tasks());
+    }
+    for p in places.iter().filter(|_| places.len() == 1) {
         let ring = p.slot.ring(s);
         let attention = Inkling2Attention {
             q: at_row(bufs.q, p.row, Q_ROW),

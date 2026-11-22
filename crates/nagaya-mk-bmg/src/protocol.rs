@@ -180,6 +180,9 @@ pub const FLAG_PAD_END: u16 = 1 << 13;
 /// `OP_MATMUL` and `OP_GEGLU`: one row takes the path of 2 to 8 rows, so a row has the same bits for 1 to 8 rows
 /// (engine-abi "LFM3", "Batched passes").
 pub const FLAG_TILED: u16 = 1 << 14;
+/// `OP_INKLING2_ATTN` and `OP_INKLING2_ATTN_SUM`: the task is a batch of contexts of one position each, from a table
+/// (`tasks::Inkling2AttentionRows`).
+pub const FLAG_ATTN_ROWS: u16 = 1 << 1;
 
 pub const NO_EVENT: u32 = u32::MAX;
 pub const NUM_EXPERTS: usize = 128;
