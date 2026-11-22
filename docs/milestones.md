@@ -834,20 +834,45 @@ Do the steps in this order. Each step ends with the checks green.
 5. **GPU smoke gate.** `cuModuleLoadData` loads both cubins on the GB10. `OP_COPY` copies 16,384 values bit for bit
    over 48 blocks, and `MK_PROFILE` writes monotonic times. Done (`1fb96d0e`).
 6. **Corrections.** Make the work of steps 2 to 5 fit the rules of this milestone:
-   - **A fixture from the kernel that ships.** Run `nvfp4_quantize` and `mxfp8_quantize` of vLLM on the GB10, from
-     the vLLM image that the node holds. The rows hold ties, zero rows, zero blocks, saturation and a tiny `amax`.
-     Each row goes in as `bf16` values, so that the `f32` rows of the fixture are exact.
-   - **`quant.rs`** follows the rules of vLLM. The global scale is `amax / 1536`. The order of each operation is
-     vLLM's. The error is a pairwise sum. The UE8M0 scale rounds up by the bits. Write the test first, against the
-     fixture.
+   - **A fixture from the kernel that ships.** Done (`19816e11`, merged in `2e455c86`). The fixture tool runs the
+     Triton kernels of vLLM at `186882d9e8`, unmodified, on the GB10, from a venv with torch and Triton. The image
+     of vLLM that the node holds is an older build with no Inkling 2 path, so it is not the source. The rows hold
+     ties, zero rows, zero blocks, saturation and a tiny `amax`. Each row goes in as `bf16` values, so that the
+     `f32` rows of the fixture are exact.
+   - **`quant.rs`** follows the rules of vLLM. Done (`4a2af81e`, merged in `2e455c86`). The global scale is
+     `amax / 1536`. The order of each operation is vLLM's. The error is a pairwise sum. The UE8M0 scale rounds up
+     by the bits.
+     - One mutant survives. No row of the fixture decides the order of the reconstruction `(v × s) × outer`
+       against `v × (s × outer)`. Add a row that decides it.
    - **The binding.** Write the rules of the activations again in `docs/engine-abi.md`, from the source of vLLM.
      They stay **Proposed**.
    - **A review** of steps 3 to 5 by a model of another family than the writer's (`docs/reviews.md`), against the
      design rules. Then run the full list of checks of `AGENTS.md` on sm121host.
+     The review is done. Its findings are defects to fix in this step. A lane fixes them on a branch:
+     - The smoke gate does not test the scoreboard.
+     - The layout test does not compare the Rust layout with the CUDA layout.
+     - A grid that is not all resident hangs.
+     - The SM count falls back to 1 with no error.
+     - Error messages have no name and no action for the reader.
+     - Driver lifetimes: the context is not always current, and `Ring` has no `Drop`.
+     - `op_copy` uses a 32-bit index.
+     - `Model::parse` checks too few fields of `config.json`.
+     - The slot tests are loose.
+     - `identity_numbers` lacks `ring_rows` and `cycles`.
 7. **The facts of the GPU.** Measure them with ops of the interpreter. They are the peak read bandwidth and the size
    of L2. They are also the cost of a task boundary and the time of each kind of MMA tile. Write them in the
    binding. Then write the budget of each op of a decode step from the table above. The budget is the target of
    each card gate.
+
+   The structure of the interpreter gets a design before wave A, because it fights the design rules:
+   - Each task is a barrier of the whole grid, a strict chain of events.
+   - No hook fetches the next weights (rule 6).
+   - The descriptor holds 4 pointers and 4 words. A fused op needs more (rule 7).
+   - Shared memory is fixed at 0.
+   - 256 threads in each SM is low for a step bound by bandwidth.
+
+   The design names three things. First, how a task waits on more than one event. Second, how a split of one op over
+   all SMs is expressed (rule 5). Third, how its split constants enter the engine identity (rule 8).
 8. **The host oracle.** The B70 crate has a host form of each op in `f32` (`nagaya-mk-inkling2-bmg/src/host/`).
    **Proposed** (Claude Opus 5.5, 2026-11-22): move the host forms into a crate with no GPU code, and both engines
    use it. Its name follows the rules of "Layout"; Amy chooses it. Then:
