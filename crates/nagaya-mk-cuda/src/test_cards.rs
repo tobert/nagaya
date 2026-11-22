@@ -20,7 +20,7 @@ pub fn parse(value: Option<&str>, count: usize) -> Result<Vec<String>, String> {
     if value.is_empty() {
         return Err(format!(
             "{VARIABLE} is not set, so the GPU test has no device. Set it to the PCI address of a free GPU, for \
-             example {VARIABLE}=000f:01:00.0; put `,` between multiple addresses"
+             example {VARIABLE}=0000:0a:00.0; put `,` between multiple addresses"
         ));
     }
     let addresses: Vec<String> = value.split(',').map(|a| a.trim().to_ascii_lowercase()).collect();

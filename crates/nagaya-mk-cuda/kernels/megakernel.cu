@@ -5,14 +5,18 @@
 // gridDim.x using GPU-scope acquire loads; after each task, thread 0 signals scoreboard[signal_event]
 // using GPU-scope release atomics.
 
+#include <stddef.h>
 #include <stdint.h>
 
-// Opcodes (must match src/protocol.rs).
-#define OP_NOP   0u
-#define OP_COPY  21u
-#define OP_HALT  255u
+// The opcodes, the flags, the sizes and the offsets come from src/protocol.rs. `build.rs` writes this header.
+#include "mk_protocol.h"
 
-#define NO_EVENT 0xFFFFFFFFu
+// A block that polls a scoreboard event this many times traps. A normal run never reaches the limit, so the bits do
+// not change. The limit turns a lost signal into an error of the launch, not a hang. At about 100 ns for each poll,
+// the default is about 7 minutes.
+#ifndef MK_SPIN_LIMIT
+#define MK_SPIN_LIMIT (1ull << 32)
+#endif
 
 struct alignas(64) MkTaskDescriptor {
     uint16_t opcode;
@@ -30,8 +34,24 @@ struct alignas(64) MkTaskDescriptor {
     uint32_t p3;
 };
 
-static_assert(sizeof(MkTaskDescriptor) == 64, "MkTaskDescriptor must be 64 bytes");
-static_assert(alignof(MkTaskDescriptor) == 64, "MkTaskDescriptor must be 64-byte aligned");
+#define MK_CHECK_OFFSET(type, field, offset) \
+    static_assert(offsetof(type, field) == (offset), #type "::" #field " is not where src/protocol.rs puts it")
+
+static_assert(sizeof(MkTaskDescriptor) == MK_DESC_BYTES, "MkTaskDescriptor differs in size from src/protocol.rs");
+static_assert(alignof(MkTaskDescriptor) == MK_DESC_ALIGN, "MkTaskDescriptor differs in alignment from src/protocol.rs");
+MK_CHECK_OFFSET(MkTaskDescriptor, opcode, MK_DESC_OFF_opcode);
+MK_CHECK_OFFSET(MkTaskDescriptor, flags, MK_DESC_OFF_flags);
+MK_CHECK_OFFSET(MkTaskDescriptor, layer, MK_DESC_OFF_layer);
+MK_CHECK_OFFSET(MkTaskDescriptor, wait_event, MK_DESC_OFF_wait_event);
+MK_CHECK_OFFSET(MkTaskDescriptor, signal_event, MK_DESC_OFF_signal_event);
+MK_CHECK_OFFSET(MkTaskDescriptor, a, MK_DESC_OFF_a);
+MK_CHECK_OFFSET(MkTaskDescriptor, b, MK_DESC_OFF_b);
+MK_CHECK_OFFSET(MkTaskDescriptor, c, MK_DESC_OFF_c);
+MK_CHECK_OFFSET(MkTaskDescriptor, d, MK_DESC_OFF_d);
+MK_CHECK_OFFSET(MkTaskDescriptor, p0, MK_DESC_OFF_p0);
+MK_CHECK_OFFSET(MkTaskDescriptor, p1, MK_DESC_OFF_p1);
+MK_CHECK_OFFSET(MkTaskDescriptor, p2, MK_DESC_OFF_p2);
+MK_CHECK_OFFSET(MkTaskDescriptor, p3, MK_DESC_OFF_p3);
 
 struct BlockStats {
     uint32_t tasks_run;
@@ -40,7 +60,11 @@ struct BlockStats {
     uint64_t exec_ns;
 };
 
-static_assert(sizeof(BlockStats) == 24, "BlockStats must be 24 bytes");
+static_assert(sizeof(BlockStats) == MK_STATS_BYTES, "BlockStats differs in size from src/protocol.rs");
+MK_CHECK_OFFSET(BlockStats, tasks_run, MK_STATS_OFF_tasks_run);
+MK_CHECK_OFFSET(BlockStats, pad, MK_STATS_OFF_pad);
+MK_CHECK_OFFSET(BlockStats, wait_ns, MK_STATS_OFF_wait_ns);
+MK_CHECK_OFFSET(BlockStats, exec_ns, MK_STATS_OFF_exec_ns);
 
 __device__ __forceinline__ uint64_t globaltimer_ns() {
     uint64_t t;
@@ -64,11 +88,54 @@ __device__ __forceinline__ void op_copy(const MkTaskDescriptor& task) {
     // a = dst (float*), b = src (const float*), p0 = count of floats.
     float* dst = reinterpret_cast<float*>(task.a);
     const float* src = reinterpret_cast<const float*>(task.b);
-    uint32_t n = task.p0;
-    uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-    uint32_t stride = gridDim.x * blockDim.x;
-    for (uint32_t i = tid; i < n; i += stride) {
+    // The index is 64 bits: with a 32-bit index, `i += stride` wraps for a count near 2^32 and the loop never ends.
+    const uint64_t n = task.p0;
+    const uint64_t tid = static_cast<uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    const uint64_t stride = static_cast<uint64_t>(gridDim.x) * blockDim.x;
+    for (uint64_t i = tid; i < n; i += stride) {
         dst[i] = src[i];
+    }
+}
+
+// The value that OP_SELFTEST_FILL writes. It is never zero, so a word that no block wrote is wrong. The same function
+// is `selftest_value` in src/protocol.rs.
+__device__ __forceinline__ uint32_t selftest_value(uint32_t seed, uint32_t owner, uint32_t index) {
+    return ((seed * 0x9E3779B1u) ^ (owner * 0x85EBCA6Bu) ^ (index * 0xC2B2AE35u)) | 1u;
+}
+
+// Block n writes p0 words at a + n * p0 words. Block p2 waits p1 ns first, so that it is the last to write.
+__device__ __forceinline__ void op_selftest_fill(const MkTaskDescriptor& task) {
+    uint32_t* data = reinterpret_cast<uint32_t*>(task.a);
+    const uint32_t words = task.p0;
+    if (blockIdx.x == task.p2 && threadIdx.x == 0) {
+        const uint64_t until = globaltimer_ns() + task.p1;
+        while (globaltimer_ns() < until) {
+        }
+    }
+    __syncthreads();
+    for (uint32_t i = threadIdx.x; i < words; i += blockDim.x) {
+        data[static_cast<uint64_t>(blockIdx.x) * words + i] = selftest_value(task.p3, blockIdx.x, i);
+    }
+}
+
+// Each block reads the words of all blocks and counts the words that differ from selftest_value. Thread 0 writes the
+// count to d[blockIdx.x].
+__device__ __forceinline__ void op_selftest_check(const MkTaskDescriptor& task) {
+    const uint32_t* data = reinterpret_cast<const uint32_t*>(task.a);
+    uint32_t* out = reinterpret_cast<uint32_t*>(task.d);
+    const uint32_t words = task.p0;
+    const uint64_t total = static_cast<uint64_t>(gridDim.x) * words;
+    uint32_t wrong = 0;
+    for (uint64_t base = 0; base < total; base += blockDim.x) {
+        const uint64_t k = base + threadIdx.x;
+        bool differs = false;
+        if (k < total) {
+            differs = data[k] != selftest_value(task.p3, static_cast<uint32_t>(k / words), static_cast<uint32_t>(k % words));
+        }
+        wrong += __syncthreads_count(differs);
+    }
+    if (threadIdx.x == 0) {
+        out[blockIdx.x] = wrong;
     }
 }
 
@@ -97,8 +164,12 @@ extern "C" __global__ void mk_persistent_interpreter(
             t_start = globaltimer_ns();
             if (task.wait_event != NO_EVENT) {
                 const uint32_t* ev = scoreboard + (base_event + task.wait_event);
+                uint64_t polls = 0;
                 while (ld_acquire_gpu_u32(ev) < grid) {
-                    // Spin on GPU-scope acquire load.
+                    // Spin on GPU-scope acquire load, up to the limit.
+                    if (++polls >= MK_SPIN_LIMIT) {
+                        __trap();
+                    }
                 }
             }
             t_after_wait = globaltimer_ns();
@@ -112,7 +183,7 @@ extern "C" __global__ void mk_persistent_interpreter(
                 exec_ns += (t_end - t_after_wait);
 #ifdef MK_PROFILE
                 if (profile != nullptr) {
-                    uint64_t* slot = profile + ((static_cast<uint64_t>(idx) * grid + bid) * 3u);
+                    uint64_t* slot = profile + ((static_cast<uint64_t>(idx) * grid + bid) * MK_PROFILE_WORDS);
                     slot[0] = t_start;
                     slot[1] = t_after_wait;
                     slot[2] = t_end;
@@ -128,6 +199,12 @@ extern "C" __global__ void mk_persistent_interpreter(
             case OP_COPY:
                 op_copy(task);
                 break;
+            case OP_SELFTEST_FILL:
+                op_selftest_fill(task);
+                break;
+            case OP_SELFTEST_CHECK:
+                op_selftest_check(task);
+                break;
             default:
                 // Unknown opcode: trap rather than silently corrupt state (spec 8.5).
                 __trap();
@@ -141,7 +218,7 @@ extern "C" __global__ void mk_persistent_interpreter(
             tasks_run += 1;
 #ifdef MK_PROFILE
             if (profile != nullptr) {
-                uint64_t* slot = profile + ((static_cast<uint64_t>(idx) * grid + bid) * 3u);
+                uint64_t* slot = profile + ((static_cast<uint64_t>(idx) * grid + bid) * MK_PROFILE_WORDS);
                 slot[0] = t_start;
                 slot[1] = t_after_wait;
                 slot[2] = t_end;

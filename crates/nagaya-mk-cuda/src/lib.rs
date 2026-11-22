@@ -15,14 +15,20 @@ pub mod test_cards;
 /// Entry point of every CUDA persistent megakernel `.cubin`.
 pub const KERNEL_ENTRY: &str = "mk_persistent_interpreter";
 
-/// Compiled `sm_121a` `.cubin` for the Inkling 2 engine (`MK_INKLING2`).
+/// Compiled `sm_121a` `.cubin` for the Inkling 2 engine.
 #[cfg(feature = "cuda")]
 pub const INKLING2_CUBIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_inkling2_sm121.cubin"));
 
-/// Compiled `sm_121a` `.cubin` for Inkling 2 profiling (`MK_INKLING2`, `MK_PROFILE`).
+/// Compiled `sm_121a` `.cubin` for Inkling 2 profiling (`MK_PROFILE`).
 #[cfg(feature = "cuda")]
 pub const INKLING2_PROFILE_CUBIN: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_inkling2_profile_sm121.cubin"));
+
+/// Test cubin with a spin limit of 65,536 polls (`MK_SPIN_LIMIT`). A wait that never ends traps in about 10 ms.
+/// A production engine must not load it.
+#[cfg(feature = "cuda")]
+pub const INKLING2_SPIN_TEST_CUBIN: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_inkling2_spin_test_sm121.cubin"));
 
 /// Version string reported by `nvcc --version` at build time, for engine identity (spec 12.1).
 #[cfg(feature = "cuda")]
@@ -55,24 +61,75 @@ pub fn match_addresses(cards: &[String], wanted: &[String]) -> Result<Vec<usize>
 
 #[cfg(test)]
 mod tests {
-    use std::mem::{align_of, size_of};
+    use std::mem::{align_of, offset_of, size_of};
 
     use super::*;
-    use crate::protocol::{BlockStats, MkTaskDescriptor};
+    use crate::protocol::{self, BlockStats, MkTaskDescriptor};
     use crate::safetensors::SafeTensorsHeader;
 
     #[test]
-    fn descriptor_and_stats_layouts_match_cuda_kernel() {
+    fn descriptor_and_stats_layouts_are_fixed() {
         assert_eq!(size_of::<MkTaskDescriptor>(), 64);
         assert_eq!(align_of::<MkTaskDescriptor>(), 64);
+        let offsets = [
+            (offset_of!(MkTaskDescriptor, opcode), 0),
+            (offset_of!(MkTaskDescriptor, flags), 2),
+            (offset_of!(MkTaskDescriptor, layer), 4),
+            (offset_of!(MkTaskDescriptor, wait_event), 8),
+            (offset_of!(MkTaskDescriptor, signal_event), 12),
+            (offset_of!(MkTaskDescriptor, a), 16),
+            (offset_of!(MkTaskDescriptor, b), 24),
+            (offset_of!(MkTaskDescriptor, c), 32),
+            (offset_of!(MkTaskDescriptor, d), 40),
+            (offset_of!(MkTaskDescriptor, p0), 48),
+            (offset_of!(MkTaskDescriptor, p1), 52),
+            (offset_of!(MkTaskDescriptor, p2), 56),
+            (offset_of!(MkTaskDescriptor, p3), 60),
+        ];
+        for (index, (got, want)) in offsets.into_iter().enumerate() {
+            assert_eq!(got, want, "descriptor field {index}");
+        }
         assert_eq!(size_of::<BlockStats>(), 24);
+        assert_eq!(offset_of!(BlockStats, tasks_run), 0);
+        assert_eq!(offset_of!(BlockStats, pad), 4);
+        assert_eq!(offset_of!(BlockStats, wait_ns), 8);
+        assert_eq!(offset_of!(BlockStats, exec_ns), 16);
+    }
+
+    #[test]
+    fn the_header_of_the_kernel_comes_from_the_protocol() {
+        let header = include_str!(concat!(env!("OUT_DIR"), "/mk_protocol.h"));
+        for (name, value) in protocol::OPCODES.iter().chain(protocol::FLAGS) {
+            assert!(
+                header.contains(&format!("#define {name} {value}u\n")),
+                "{name} is not in the header"
+            );
+        }
+        assert!(header.contains("#define OP_COPY 21u\n"));
+        assert!(header.contains("#define OP_HALT 255u\n"));
+        assert!(header.contains("#define MK_DESC_OFF_a 16\n"));
+        assert!(header.contains("#define MK_DESC_OFF_p3 60\n"));
+        assert!(header.contains("#define MK_STATS_OFF_exec_ns 16\n"));
+        assert!(header.contains("#define MK_PROFILE_WORDS 3u\n"));
+    }
+
+    #[test]
+    fn opcodes_and_flags_are_distinct() {
+        for table in [protocol::OPCODES, protocol::FLAGS] {
+            for (i, (name, value)) in table.iter().enumerate() {
+                assert!(
+                    table[..i].iter().all(|(other, v)| v != value && other != name),
+                    "{name} = {value} repeats an earlier entry"
+                );
+            }
+        }
     }
 
     #[test]
     fn match_addresses_maps_case_insensitively_and_refuses_duplicates_and_missing() {
-        let cards = vec!["000f:01:00.0".to_owned(), "0000:08:00.0".to_owned()];
-        assert_eq!(match_addresses(&cards, &["000F:01:00.0".to_owned()]).unwrap(), vec![0]);
-        let dup = match_addresses(&cards, &["000f:01:00.0".to_owned(), "000F:01:00.0".to_owned()]).unwrap_err();
+        let cards = vec!["0000:0a:00.0".to_owned(), "0000:08:00.0".to_owned()];
+        assert_eq!(match_addresses(&cards, &["0000:0A:00.0".to_owned()]).unwrap(), vec![0]);
+        let dup = match_addresses(&cards, &["0000:0a:00.0".to_owned(), "0000:0A:00.0".to_owned()]).unwrap_err();
         assert!(dup.contains("twice"), "{dup}");
         let missing = match_addresses(&cards, &["0000:99:00.0".to_owned()]).unwrap_err();
         assert!(missing.contains("0000:99:00.0"), "{missing}");
@@ -82,11 +139,11 @@ mod tests {
     fn test_cards_parser_checks_format_duplicates_and_count() {
         assert!(test_cards::parse(None, 1).is_err());
         assert!(test_cards::parse(Some("not-a-pci"), 1).is_err());
-        assert!(test_cards::parse(Some("000f:01:00.0,000f:01:00.0"), 2).is_err());
-        assert!(test_cards::parse(Some("000f:01:00.0"), 2).is_err());
+        assert!(test_cards::parse(Some("0000:0a:00.0,0000:0a:00.0"), 2).is_err());
+        assert!(test_cards::parse(Some("0000:0a:00.0"), 2).is_err());
         assert_eq!(
-            test_cards::parse(Some("000F:01:00.0"), 1).unwrap(),
-            vec!["000f:01:00.0".to_owned()]
+            test_cards::parse(Some("0000:0A:00.0"), 1).unwrap(),
+            vec!["0000:0a:00.0".to_owned()]
         );
     }
 

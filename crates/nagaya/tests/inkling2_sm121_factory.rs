@@ -19,7 +19,7 @@ fn device(id: u32, pci_address: &str) -> GroupDevice {
 }
 
 fn one_device() -> Vec<GroupDevice> {
-    vec![device(0, "000f:01:00.0")]
+    vec![device(0, "0000:0a:00.0")]
 }
 
 #[test]
@@ -38,7 +38,7 @@ fn config_refuses_unknown_key_missing_keys_and_two_devices() {
     table.remove("bogus");
     assert!(inkling2_sm121::config(&table).is_ok());
 
-    let two = vec![device(0, "000f:01:00.0"), device(1, "000f:02:00.0")];
+    let two = vec![device(0, "0000:0a:00.0"), device(1, "0000:0b:00.0")];
     let dev_err = inkling2_sm121::plan(&table, &two).unwrap_err().message;
     assert!(dev_err.contains("one GPU"), "{dev_err}");
 
@@ -48,6 +48,27 @@ fn config_refuses_unknown_key_missing_keys_and_two_devices() {
     let mut no_dir = toml::Table::new();
     no_dir.insert("slots".to_owned(), toml::Value::Integer(1));
     assert!(inkling2_sm121::config(&no_dir).is_err());
+}
+
+#[cfg(feature = "cuda")]
+#[test]
+fn open_says_which_milestone_steps_are_missing() {
+    use nagaya::admission::Factory;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut table = toml::Table::new();
+    table.insert(
+        "model_dir".to_owned(),
+        toml::Value::String(dir.path().display().to_string()),
+    );
+    table.insert("slots".to_owned(), toml::Value::Integer(1));
+    let error = match inkling2_sm121::Inkling2Sm121Factory.open(&table, &one_device()) {
+        Ok(_) => panic!("open must refuse until the engine exists"),
+        Err(error) => error.message,
+    };
+    assert!(error.contains("step 9"), "{error}");
+    assert!(error.contains("step 11"), "{error}");
+    assert!(!error.contains("step 8"), "{error}");
 }
 
 #[test]
@@ -104,4 +125,8 @@ fn real_model_plans_512k_slot_through_factory() {
     );
     let lim = inkling2_sm121::plan(&table, &one_device()).unwrap();
     lim.check().unwrap();
+    let kv = lim.memory.mandatory.iter().find(|t| t.name == "kv").unwrap().bytes;
+    assert_eq!(kv, 35_370_205_184);
+    assert_eq!(lim.slots.len(), 1);
+    assert_eq!((lim.slots[0].tokens, lim.slots[0].bytes), (524_288, 35_370_205_184));
 }

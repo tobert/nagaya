@@ -11,8 +11,11 @@ use crate::protocol::{
 /// Default thread count per block for the persistent interpreter.
 pub const DEFAULT_BLOCK_THREADS: u32 = 256;
 
-/// One task ring allocated on a [`CudaDevice`].
-pub struct Ring {
+/// One task ring allocated on a [`CudaDevice`]. The ring borrows the device, so the device outlives it.
+///
+/// `Drop` frees each buffer and prints each failure to stderr. Use [`Ring::free`] to read the failures.
+pub struct Ring<'d> {
+    dev: &'d CudaDevice,
     host_tasks: *mut MkTaskDescriptor,
     dev_tasks: CUdeviceptr,
     scoreboard: CUdeviceptr,
@@ -24,35 +27,38 @@ pub struct Ring {
     len: usize,
 }
 
-unsafe impl Send for Ring {}
-
-impl Ring {
+impl<'d> Ring<'d> {
     /// Allocate a ring on `dev` with `scratch_floats` floats of scratch and optional `%globaltimer` profile buffer.
-    pub fn new(dev: &CudaDevice, scratch_floats: usize, with_profile: bool) -> Result<Self, String> {
+    ///
+    /// If an allocation fails, `Drop` frees the buffers that the ring already holds.
+    pub fn new(dev: &'d CudaDevice, scratch_floats: usize, with_profile: bool) -> Result<Self, String> {
         let grid_blocks = dev.sm_count();
-        let host_tasks = dev.alloc_host_pinned(RING_DEV_BYTES)?.cast::<MkTaskDescriptor>();
-        let dev_tasks = dev.alloc_device(RING_DEV_BYTES)?;
-        let scoreboard = dev.alloc_device(NUM_SCOREBOARD_EVENTS * 4)?;
-        let dev_stats = dev.alloc_device(grid_blocks as usize * std::mem::size_of::<BlockStats>())?;
         let scratch_floats = scratch_floats.max(1);
-        let scratch = dev.alloc_device(scratch_floats * 4)?;
-        let profile = if with_profile {
-            let bytes = MAX_TASKS_PER_CARD * grid_blocks as usize * PROFILE_WORDS * 8;
-            dev.alloc_device(bytes)?
-        } else {
-            0
-        };
-        Ok(Self {
-            host_tasks,
-            dev_tasks,
-            scoreboard,
-            dev_stats,
-            scratch,
+        let scratch_bytes = scratch_floats.checked_mul(4).ok_or_else(|| {
+            format!("a scratch of {scratch_floats} floats overflows the byte count. Ask for fewer floats")
+        })?;
+        let mut ring = Self {
+            dev,
+            host_tasks: std::ptr::null_mut(),
+            dev_tasks: 0,
+            scoreboard: 0,
+            dev_stats: 0,
+            scratch: 0,
             scratch_floats,
-            profile,
+            profile: 0,
             grid_blocks,
             len: 0,
-        })
+        };
+        ring.host_tasks = dev.alloc_host_pinned(RING_DEV_BYTES)?.cast::<MkTaskDescriptor>();
+        ring.dev_tasks = dev.alloc_device(RING_DEV_BYTES)?;
+        ring.scoreboard = dev.alloc_device(NUM_SCOREBOARD_EVENTS * 4)?;
+        ring.dev_stats = dev.alloc_device(grid_blocks as usize * std::mem::size_of::<BlockStats>())?;
+        ring.scratch = dev.alloc_device(scratch_bytes)?;
+        if with_profile {
+            let bytes = MAX_TASKS_PER_CARD * grid_blocks as usize * PROFILE_WORDS * 8;
+            ring.profile = dev.alloc_device(bytes)?;
+        }
+        Ok(ring)
     }
 
     /// Load `tasks` into the ring, chaining each task's wait and signal events and appending `OP_HALT`.
@@ -79,17 +85,19 @@ impl Ring {
         self.len = tasks.len();
     }
 
-    /// Zero the scoreboard and scratch buffers on `dev`.
-    pub fn zero_device(&self, dev: &CudaDevice) -> Result<(), String> {
+    /// Zero the scoreboard and scratch buffers.
+    pub fn zero_device(&self) -> Result<(), String> {
+        let dev = self.dev;
         dev.memset_zero(self.scoreboard, NUM_SCOREBOARD_EVENTS * 4)?;
         dev.memset_zero(self.scratch, self.scratch_floats * 4)
     }
 
-    /// Upload the active descriptors, zero the scoreboard, and run the ring on `dev`.
+    /// Upload the active descriptors, zero the scoreboard, and run the ring.
     ///
     /// # Safety
     /// Every device pointer referenced inside the descriptors must be valid for its op.
-    pub unsafe fn run(&self, dev: &CudaDevice) -> Result<(), String> {
+    pub unsafe fn run(&self) -> Result<(), String> {
+        let dev = self.dev;
         let count = self.len + 1;
         dev.memset_zero(self.scoreboard, (count + 1) * 4)?;
         unsafe {
@@ -109,15 +117,25 @@ impl Ring {
     }
 
     /// Read back per-block execution statistics from the last run.
-    pub fn read_stats(&self, dev: &CudaDevice) -> Result<Vec<BlockStats>, String> {
+    pub fn read_stats(&self) -> Result<Vec<BlockStats>, String> {
+        let dev = self.dev;
         let mut out = vec![BlockStats::default(); self.grid_blocks as usize];
         let bytes = out.len() * std::mem::size_of::<BlockStats>();
         unsafe { dev.copy_dtoh(out.as_mut_ptr().cast::<c_void>(), self.dev_stats, bytes)? };
         Ok(out)
     }
 
+    /// Read back the scoreboard after the last run: one counter for each event from 0 to `len + 1`.
+    pub fn read_scoreboard(&self) -> Result<Vec<u32>, String> {
+        let dev = self.dev;
+        let mut out = vec![0u32; self.len + 2];
+        unsafe { dev.copy_dtoh(out.as_mut_ptr().cast::<c_void>(), self.scoreboard, out.len() * 4)? };
+        Ok(out)
+    }
+
     /// Read back `%globaltimer` timestamps (`[start, after_wait, end]` per task per block) from the last profiled run.
-    pub fn read_profile(&self, dev: &CudaDevice) -> Result<Vec<u64>, String> {
+    pub fn read_profile(&self) -> Result<Vec<u64>, String> {
+        let dev = self.dev;
         if self.profile == 0 {
             return Err("ring was allocated without a profile buffer".to_owned());
         }
@@ -138,21 +156,52 @@ impl Ring {
         self.scratch
     }
 
-    /// Free all device and pinned host buffers held by this ring.
-    pub fn free(&mut self, dev: &CudaDevice) -> Result<(), String> {
-        unsafe { dev.free_host_pinned(self.host_tasks.cast::<c_void>())? };
-        self.host_tasks = std::ptr::null_mut();
-        dev.free_device(self.dev_tasks)?;
-        self.dev_tasks = 0;
-        dev.free_device(self.scoreboard)?;
-        self.scoreboard = 0;
-        dev.free_device(self.dev_stats)?;
-        self.dev_stats = 0;
-        dev.free_device(self.scratch)?;
-        self.scratch = 0;
-        dev.free_device(self.profile)?;
-        self.profile = 0;
+    /// Free all device and pinned host buffers, and report every failure. A failure does not stop the other frees.
+    pub fn free(mut self) -> Result<(), String> {
+        self.release()
+    }
+
+    fn release(&mut self) -> Result<(), String> {
+        let mut errors: Vec<String> = Vec::new();
+        let host = std::mem::replace(&mut self.host_tasks, std::ptr::null_mut());
+        // SAFETY: `host` is null or the pinned block that `new` allocated, and the field is null now.
+        if let Err(e) = unsafe { self.dev.free_host_pinned(host.cast::<c_void>()) } {
+            errors.push(e);
+        }
+        for buffer in [
+            &mut self.dev_tasks,
+            &mut self.scoreboard,
+            &mut self.dev_stats,
+            &mut self.scratch,
+            &mut self.profile,
+        ] {
+            let ptr = std::mem::take(buffer);
+            if let Err(e) = self.dev.free_device(ptr) {
+                errors.push(e);
+            }
+        }
         self.len = 0;
-        Ok(())
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
+    }
+}
+
+impl Drop for Ring<'_> {
+    fn drop(&mut self) {
+        if let Err(error) = self.release() {
+            eprintln!("nagaya-mk-cuda: the ring did not free all of its buffers: {error}");
+        }
+    }
+}
+
+impl std::fmt::Debug for Ring<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Ring")
+            .field("grid_blocks", &self.grid_blocks)
+            .field("len", &self.len)
+            .finish_non_exhaustive()
     }
 }

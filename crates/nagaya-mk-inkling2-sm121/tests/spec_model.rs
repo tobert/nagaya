@@ -1,4 +1,4 @@
-//! Integration test planning a 512K slot against the real Inkling 2 Mini checkpoint when `INKLING2_MODEL_DIR` is set.
+//! Integration test planning a 512K slot against the real Inkling 2 checkpoint when `INKLING2_MODEL_DIR` is set.
 
 use std::path::PathBuf;
 
@@ -43,24 +43,13 @@ fn real_checkpoint_plans_512k_slot_without_reading_weights() {
     };
     let lim = spec::plan(&cfg).unwrap();
     lim.check().unwrap();
-    let weights = lim
-        .memory
-        .mandatory
-        .iter()
-        .find(|t| t.name == "weights")
-        .expect("weights term")
-        .bytes;
-    let kv = lim
-        .memory
-        .mandatory
-        .iter()
-        .find(|t| t.name == "kv")
-        .expect("kv term")
-        .bytes;
-    // Inkling 2 Mini packed LLM weights ~ 18-20 GB; 512K slot at 3 cycles ~ 35.4 GB.
-    assert!(
-        (17_000_000_000..=21_000_000_000).contains(&weights),
-        "weights={weights}"
-    );
-    assert!((34_000_000_000..=37_000_000_000).contains(&kv), "kv={kv}");
+    let bytes = |name: &str| lim.memory.mandatory.iter().find(|t| t.name == name).expect(name).bytes;
+    // The slot is exact for any checkpoint of the two models: 8 full and 40 sliding states at 3 cycles.
+    assert_eq!(bytes("kv"), 35_370_205_184);
+    assert_eq!(lim.slots[0].bytes, 35_370_205_184);
+    // The sums of the header of Inkling 2 Mini, each tensor rounded up to 64 bytes. The research model differs.
+    if spec::Model::read(&cfg.model_dir).unwrap() == spec::Model::Mini {
+        assert_eq!(bytes("weights"), 18_889_360_896);
+        assert_eq!(bytes("vision"), 636_512_256);
+    }
 }
