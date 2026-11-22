@@ -1580,12 +1580,23 @@ of cells and 10 rings.
     33,374,960 KiB of the card. At 164,864 positions, 130,732 KiB go to system memory.
   - With `extra_runs` 48: 106,496 positions. The term `kv` is 11,984,683,008 bytes. At 107,008 positions, a part
     goes to system memory.
-- **No refusal past the card.** The open does not refuse a slot that does not fit. The driver puts the buffers that
-  do not fit in system memory. A slot of 262,144 positions opens, and its terms plan about 40.6 GB on a card of
-  34.4 GB. Then a block of 512 from position 0 takes 4.0 to 5.0 s, where it takes 0.78 s on the card.
-- The ledger does not stop it either. The budget of a card in the B70 example is 32 GiB. With it, the ledger admits
-  up to 170,585 positions at 24 and 110,533 at 48. The driver and the kernels take about 0.24 GB more than the terms.
-  Thus a profile names a slot of at most 164,352 positions at 3 cycles.
+- **The open refuses a slot past the card.** The driver puts a buffer that does not fit in system memory. Then a
+  block of 512 from position 0 takes 4.0 to 5.0 s, where it takes 0.78 s on the card. Thus the open reads the
+  memory of the process on its card before and after its allocations (`nagaya_mk_bmg::vram`). These are the keys
+  `drm-total-vram0` and `drm-resident-vram0` of each `xe` fd of `/proc/self/fdinfo` (spec 9.6). The open refuses in
+  two cases, and it frees what it took:
+  - the memory of the card grew by less than the device bytes of the terms and of the ring;
+  - a byte of a buffer of the process on the card is not resident there.
+- The card gate `tests/xe_fit.rs` ran on 2026-11-21. A slot of 262,144 positions asks for 40,679,296,644 bytes.
+  The driver puts 34,031,300,608 of them on the card, and the open is refused. Then a slot of 164,352 opens, and it
+  holds 34,016,722,944 bytes of the card.
+- Each rule of the two items above is **Proposed** (Claude Opus 5.5, 2026-11-21, by the review of DeepSeek through
+  kaibo). Reason: a slot in system memory is a silent fallback, and spec 8.5 asks for a crash first.
+- The ledger does not stop it. The budget of a card in the B70 example is 32 GiB. With it, the ledger admits up to
+  170,585 positions at 24 and 110,533 at 48. The driver and the kernels take about 0.24 GB more than the terms.
+  - Thus a profile names a slot of at most 164,352 positions at 3 cycles.
+  - A budget of the usable memory of the card, not of its 32 GiB, lets the ledger refuse such a profile first. The
+    owner chooses the budget of the profile.
 
 **Positions.** The model has no rotary embedding.
 
