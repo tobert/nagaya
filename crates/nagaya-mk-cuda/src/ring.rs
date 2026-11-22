@@ -116,6 +116,23 @@ impl Ring {
         Ok(out)
     }
 
+    /// Read back `%globaltimer` timestamps (`[start, after_wait, end]` per task per block) from the last profiled run.
+    pub fn read_profile(&self, dev: &CudaDevice) -> Result<Vec<u64>, String> {
+        if self.profile == 0 {
+            return Err("ring was allocated without a profile buffer".to_owned());
+        }
+        let count = self.len + 1;
+        let words = count * self.grid_blocks as usize * PROFILE_WORDS;
+        let mut out = vec![0u64; words];
+        unsafe { dev.copy_dtoh(out.as_mut_ptr().cast::<c_void>(), self.profile, words * 8)? };
+        Ok(out)
+    }
+
+    /// Number of persistent thread blocks launched for this ring.
+    pub fn grid_blocks(&self) -> u32 {
+        self.grid_blocks
+    }
+
     /// Device pointer to the ring's scratch buffer.
     pub fn scratch(&self) -> CUdeviceptr {
         self.scratch
