@@ -859,20 +859,43 @@ Do the steps in this order. Each step ends with the checks green.
      - `Model::parse` checks too few fields of `config.json`.
      - The slot tests are loose.
      - `identity_numbers` lacks `ring_rows` and `cycles`.
-7. **The facts of the GPU.** Measure them with ops of the interpreter. They are the peak read bandwidth and the size
-   of L2. They are also the cost of a task boundary and the time of each kind of MMA tile. Write them in the
-   binding. Then write the budget of each op of a decode step from the table above. The budget is the target of
-   each card gate.
+7. **The facts of the GPU and the shape of the interpreter.** Measure the facts with ops of the interpreter. They
+   are the peak read bandwidth and the size of L2. They are also the cost of a task boundary and the time of each
+   kind of MMA tile. Write them in the binding. Then write the budget of each op of a decode step from the table
+   above. The budget is the target of each card gate.
 
-   The structure of the interpreter gets a design before wave A, because it fights the design rules:
+   The interpreter of step 3 fights the design rules:
    - Each task is a barrier of the whole grid, a strict chain of events.
    - No hook fetches the next weights (rule 6).
    - The descriptor holds 4 pointers and 4 words. A fused op needs more (rule 7).
    - Shared memory is fixed at 0.
    - 256 threads in each SM is low for a step bound by bandwidth.
 
-   The design names three things. First, how a task waits on more than one event. Second, how a split of one op over
-   all SMs is expressed (rule 5). Third, how its split constants enter the engine identity (rule 8).
+   The design is in `docs/engine-abi.md`, "The CUDA interpreter". It is **Proposed** (Claude Opus 5.5,
+   2026-11-22). It answers three questions:
+   - A task waits on two events through counters.
+   - A split of one op over all SMs is a cut into work items from the shapes (rule 5).
+   - Its split constants enter the engine identity (rule 8).
+
+   Migrate in six substeps. Each ends with the checks green and its GPU gate:
+   1. **Probes** on the current interpreter. Read 1 GB in items of 32 KB, with direct loads and with bulk copies
+      into shared memory, each with and without L2 prefetch. Re-read 1 to 64 MB to find the knee of L2. Time the
+      tiles of `bf16` `m16n8k16`, `mxf4nvf4` and `mxf8f6f4`. Gate: the numbers go in the binding, and each probe
+      tile equals its host value.
+   2. **The 128-byte descriptor.** A Rust layout test and a `static_assert` compare the layouts. Gate: `OP_COPY`
+      gives the same bits.
+   3. **Counters and the host builder** of the graph of dependencies. Host tests: a reduction is right, the
+      removal of a hazard fails, and a forward wait panics. Gate: a ring of copy chains and branches gives exact
+      results, and the profile shows overlap.
+   4. **Work items and static assignment**, with the grid size as a launch parameter. Gate: the bits are equal at
+      G of 48, 24, 7 and 1.
+   5. **Merge groups**, tested with `OP_REDUCE_PROBE`. Gate: the bits are equal across G, and equal to the fixed
+      tree of the host.
+   6. **The producer warp, dynamic shared memory and prefetch.** Gates: the read probe holds at least 85% of the
+      peak of substep 1. A run of 1,000 dependent no-op tasks gives the cost of a boundary, old chain against new.
+      The build shows 0 bytes of spill.
+
+   Wave A builds on substep 6.
 8. **The host oracle.** The B70 crate has a host form of each op in `f32` (`nagaya-mk-inkling2-bmg/src/host/`).
    **Proposed** (Claude Opus 5.5, 2026-11-22): move the host forms into a crate with no GPU code, and both engines
    use it. Its name follows the rules of "Layout"; Amy chooses it. Then:
