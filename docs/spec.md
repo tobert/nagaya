@@ -1802,9 +1802,10 @@ pass holds the device for minutes, and another client must see why. The route re
 - A device that no engine of the profile names is a 404 `not_found` that names `id`, as for a release (3.3b).
 
 **A stop during a long pass.** A stop lets the running quantum go to its end (10.3 step 2), so it waits for a long
-pass up to its deadline. The units of `deploy/` give `TimeoutStopSec=60`. After that time, systemd kills the process,
-and the park does not run. Thus a profile with a long pass needs `TimeoutStopSec` of at least the ceiling of its
-bounds plus the beat interval and the park budget. The units do not have it yet.
+pass up to its deadline. After `TimeoutStopSec`, systemd kills the process, and the park does not
+run. Thus a profile with a long pass needs `TimeoutStopSec` of at least the ceiling of its bounds plus the beat
+interval and the park budget. The B70 unit gives 210 s for the ceiling of Inkling 2, 180 s. The Strix Halo unit has
+no long pass, and it gives 60 s.
 
 **The watchdog during an open.** An engine's open can take longer than the timeout: the Qwen3.8 engine loads in 24 to
 50 s. A group beats its heartbeat while its engine opens, so a long open is not a stall. The group thread is blocked

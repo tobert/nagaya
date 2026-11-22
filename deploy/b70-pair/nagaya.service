@@ -58,9 +58,9 @@ ExecStart=%h/src/nagaya/target/release/nagaya
 FileDescriptorStoreMax=512
 FileDescriptorStorePreserve=restart
 # SIGTERM: the running quantum ends (at most 2 s on the B70s), then the park runs (10 s by default). A second signal
-# ends it now.
+# ends it now. A long pass of Inkling 2 can run to its ceiling of 180 s first (spec 7.4): 180 + 5 + 10 s, with room.
 KillSignal=SIGTERM
-TimeoutStopSec=60
+TimeoutStopSec=210
 # Spec 10.4. Exit 1 is a crash: start again, but not in a tight loop. Exit 3 is a refusal that repeats on every
 # start, so the unit stays down. Exit 4 is a planned restart after a profile swap (spec 3.3), and it always restarts.
 Restart=on-failure
