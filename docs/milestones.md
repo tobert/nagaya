@@ -647,15 +647,21 @@ The experts take 33.2 ms, 11 times their floor of about 3 ms. Two small ops run 
    can read the packed planes as fast with less work. The review of the binding by ChatGPT asked to measure both.
    - An up task reads about 24 MB in 507 us, about 47 GB/s. A down task reads about 12 MB in 184 us.
    - At half of 608 GB/s, the two ops take about 6 ms. Thus the gain is about 27 ms of a step.
-2. **Wider ops of the residual and the gates: 16.4 ms of a decode step.** `OP_ATTN_RESIDUAL` and `OP_MESSAGE_GATE`
-   take one work-group for each position. A decode step has one position, so 31 of 32 work-groups wait. Split each
-   one over more work-groups, with a fixed order of the sums.
-   - In one work-group, a subgroup takes a whole row of 2,304 values. Thus at most 5 of 64 subgroups work in the
-     first step of `OP_ATTN_RESIDUAL`.
-   - `OP_MESSAGE_GATE` reads the gate weights again for each position: about 1.2 MB. In a block of 512 it takes
-     143 ms. A form as matmuls over the block reads them once.
-   - The estimated gain is about 15 ms of a step. The matmul form of the gate can gain most of its 143 ms of a
-     block.
+2. **Wider ops of the residual and the gates: done on 2026-11-22.** `OP_ATTN_RESIDUAL` and `OP_MESSAGE_GATE` took
+   one work-group for each position, and one load for each step of a sum. They now spread over all 32 work-groups,
+   and each sum keeps the order of the host `dot`. Thus the bits and the engine identity did not change.
+   - A team of subgroups takes a position of the residual. The gate is two tasks: `OP_MESSAGE_GATE_DOWN` writes `g`
+     into the router rows, and `OP_MESSAGE_GATE` reads it.
+   - The sums read their rows with subgroup block reads: one read gives each lane 8 steps in the order of the host.
+     A position alone first copies its rows into local memory.
+   - A decode step at position 1,024 at 3 cycles: the residual takes 1.02 ms, not 6.35 ms. The gate takes 1.55 ms,
+     not 9.83 ms. The tasks of a step take 59.82 ms, not 71.85 ms.
+   - A prefill block of 512: the residual takes 11.74 ms, not 67.64 ms. The gate takes 32.06 ms, not 142.27 ms.
+   - `xe_feed` measured 17.3 tokens each second for a decode step, from 14.4. A prefill of 512 took 657 ms, from
+     801 ms.
+   - `tests/xe_bits.rs` compares the SHA-256 of the logits of 21 cases with a fixture. A change of bits fails it.
+   - Left: a decode task of the gate still takes 6 to 10 us, and the megakernel spills registers (6.8 KB a work
+     item). The gate as matmuls over a block can gain most of its 32 ms.
 3. **The chunk size of the attention: 7.1 ms of a decode step.** It is 256 keys on a sliding layer and 2,048 on a
    full layer (Proposed in the binding). At position 1,024, a full layer has 24 items for 512 teams: 401 us. Measure
    other sizes for a decode step and for a prefill. A new size changes bits.
