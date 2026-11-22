@@ -97,14 +97,14 @@ fn a_pass_of_3_cycles_has_48_runs_in_order() {
 #[test]
 fn the_parts_follow_the_states_of_the_runs() {
     let p = parts(DEFAULT_EXTRA_RUNS);
-    assert_eq!(p.len(), 3 * 48);
+    assert_eq!(p.len(), 3 * 48 + 1);
     let names: Vec<&str> = p.iter().map(|part| part.name.as_str()).collect();
     assert_eq!(&names[..6], ["k.00", "v.00", "conv.00", "k.01", "v.01", "conv.01"]);
     assert_eq!(
         &names[71..77],
         ["conv.23", "k.x00", "v.x00", "conv.x00", "k.x01", "v.x01"]
     );
-    assert_eq!(names[143], "conv.x23");
+    assert_eq!((names[143], names[144]), ("conv.x23", "cycles"));
     let find = |name: &str| {
         p.iter()
             .find(|part| part.name == name)
@@ -122,15 +122,19 @@ fn the_parts_follow_the_states_of_the_runs() {
         (PartKind::Fixed, vec![3, 6656])
     );
     assert!(
-        p.iter()
+        p[..p.len() - 1]
+            .iter()
             .all(|part| part.dtype == Dtype::F32 && part.stage == 0 && part.block_format.is_none())
     );
     assert_eq!(p.iter().filter(|part| part.kind == PartKind::Cells).count(), 2 * 8);
     // A reserve of 48 adds the runs of cycles 4 and 5 after those of cycles 2 and 3.
     let five = parts(MAX_EXTRA_RUNS);
-    assert_eq!(&five[..p.len()], &p[..]);
-    assert_eq!(five.len(), 3 * 72);
-    assert_eq!(five.last().unwrap().name, "conv.x47");
+    assert_eq!(&five[..p.len() - 1], &p[..p.len() - 1]);
+    assert_eq!(five.len(), 3 * 72 + 1);
+    assert_eq!(
+        (five[3 * 72 - 1].name.as_str(), five[3 * 72].name.as_str()),
+        ("conv.x47", "cycles")
+    );
     assert_eq!(five.iter().filter(|part| part.kind == PartKind::Cells).count(), 2 * 12);
 }
 
@@ -330,7 +334,7 @@ fn the_limits_hold_the_terms_the_taps_and_the_control_table_and_declare_no_loop(
     five.check().unwrap();
     assert_eq!(five.cycles.map(|c| (c.min, c.max, c.default)), Some((1, 5, 3)));
     assert_eq!(cycles_limit(36).max, 4);
-    assert_eq!(five.parts.len(), 3 * 72);
+    assert_eq!(five.parts.len(), 3 * 72 + 1);
     assert_eq!(five.slots[0].bytes, 4_736_925_696);
     assert_eq!(
         term(&five, "work").bytes - term(&short, "work").bytes,
@@ -582,35 +586,37 @@ fn a_restore_writes_every_part_and_set_n_takes_the_count_only_then() {
             .contains("fixed part")
     );
     assert!(
-        held.check_part_write(state, CELLS, 79_872)
+        held.check_part_write(state, CELLS, &[0; 79_872])
             .unwrap_err()
             .contains("row part")
     );
-    assert!(held.check_part_write(state, CONV, 79_871).is_err());
+    assert!(held.check_part_write(state, CONV, &[0; 79_871]).is_err());
     let list = part_list(DEFAULT_EXTRA_RUNS);
     for (id, part) in list.iter().enumerate() {
-        if matches!(part, Part::Conv(_)) {
-            held.check_part_write(state, id, 79_872).unwrap();
-            held.wrote(0, id, None);
+        if *part == Part::Cycles {
+            held.wrote_count(0, 3);
+        } else if matches!(part, Part::Conv(_)) {
+            held.check_part_write(state, id, &[0; 79_872]).unwrap();
+            held.wrote(0, id, None, false);
         } else if id != RING {
             let start = if is_full(state_layer(part.state())) {
                 0
             } else {
                 1500 - 1024
             };
-            held.wrote(0, id, Some(start..1500));
+            held.wrote(0, id, Some(start..1500), false);
         }
     }
     assert_eq!(held.n[0], 0, "a write empties the slot until set_n");
     let e = held.check_set_n(state, 1500).unwrap_err();
     assert!(e.contains(&format!("part {RING} got no bytes")), "{e}");
-    held.wrote(0, RING, Some(477..1500));
+    held.wrote(0, RING, Some(477..1500), false);
     assert!(held.check_set_n(state, 1500).unwrap_err().contains("window"));
-    held.wrote(0, RING, Some(0..1499));
+    held.wrote(0, RING, Some(0..1499), false);
     assert!(held.check_set_n(state, 1500).unwrap_err().contains("up to 1499"));
-    held.wrote(0, RING, None);
+    held.wrote(0, RING, None, false);
     assert!(held.check_set_n(state, 1500).unwrap_err().contains("got no rows"));
-    held.wrote(0, RING, Some(476..1500));
+    held.wrote(0, RING, Some(476..1500), false);
     assert_eq!(held.check_set_n(state, 1500), Ok(0));
     held.set_n(0, 1500);
     assert_eq!(held.n[0], 1500);
@@ -650,9 +656,9 @@ fn a_read_stays_inside_the_rows_that_a_part_holds() {
     assert!(held.check_part_read(state, CONV, row).is_err());
     assert!(held.check_part_read(State::Slot(1), CONV, 79_872).is_err());
     assert!(
-        held.check_part_read(state, 3 * 48, row)
+        held.check_part_read(state, 3 * 48 + 1, row)
             .unwrap_err()
-            .contains("no part 144")
+            .contains("no part 145")
     );
 }
 
@@ -691,7 +697,7 @@ fn a_slot_runs_the_count_of_cycles_that_fed_it() {
     assert_eq!(held.cycles[0], Some(2));
     // A restore writes parts and a count. The bytes do not say their count, so the next pass sets it; the council
     // keys a state by its count (spec 11.17).
-    held.wrote(0, CONV, None);
+    held.wrote(0, CONV, None, false);
     assert_eq!(held.cycles[0], None);
     held.set_n(0, 0);
     assert_eq!(held.cycles[0], None);
@@ -875,4 +881,167 @@ fn the_plan_checks_each_tensor_of_the_text_model() {
         let e = weights_bytes_of(&other).unwrap_err();
         assert!(e.contains(&format!("the tensor {name} is")), "{e}");
     }
+}
+
+/// The part `cycles`: the last part of a state, `u32 [1]`.
+const CYCLES_24: PartId = 3 * 48;
+
+/// Feed `n` positions of `cycles` cycles into `slot` of `held`, in blocks of 512.
+fn feed(held: &mut Held, slot: u32, n: usize, cycles: u8) {
+    let mut at = 0;
+    while at < n {
+        let take = (n - at).min(512);
+        let s = Segment {
+            cycles: Some(cycles),
+            ..segment(slot, at as u64, &vec![1; take], &[])
+        };
+        let block = held.check_pass(&[s], 512).unwrap();
+        held.ran(&block);
+        at += take;
+    }
+}
+
+/// The parts of a run that the count of the slot does not reach read as zeros, and the part `cycles` reads the count
+/// (engine-abi "Inkling 2", "The parts that a count does not reach"). Thus one recipe gives one content id.
+#[test]
+fn an_inactive_run_reads_as_zeros_and_the_count_is_a_part() {
+    let list = part_list(DEFAULT_EXTRA_RUNS);
+    assert_eq!((list.len(), list[CYCLES_24]), (CYCLES_24 + 1, Part::Cycles));
+    let declared = parts(DEFAULT_EXTRA_RUNS);
+    let last = declared.last().unwrap();
+    assert_eq!(
+        (last.name.as_str(), last.kind, last.dtype, last.shape.clone()),
+        ("cycles", PartKind::Fixed, Dtype::U32, vec![1])
+    );
+    let mut held = Held::new(&[4096], DEFAULT_EXTRA_RUNS);
+    let state = State::Slot(0);
+    // An empty slot reads the count 0.
+    assert_eq!(held.check_part_read(state, CYCLES_24, 4).unwrap().3, Source::Count(0));
+    assert!(held.check_part_read(state, CYCLES_24, 8).is_err());
+    feed(&mut held, 0, 3000, 1);
+    assert_eq!(held.check_part_read(state, CYCLES_24, 4).unwrap().3, Source::Count(1));
+    assert!(held.active(0, 23) && !held.active(0, 24) && !held.active(0, 47));
+    let row = ROW_BYTES as usize;
+    // A run of layer 4 is active; the ring of layer 6 in cycle 2 is not.
+    assert_eq!(
+        held.check_read(state, RING, 952, 2048, 2048 * row).unwrap().2,
+        Source::Device
+    );
+    assert_eq!(
+        held.check_read(state, RESERVE_RING, 952, 2048, 2048 * row).unwrap().2,
+        Source::Zeros
+    );
+    assert_eq!(
+        held.check_part_read(state, CONV, CONV_BYTES as usize).unwrap().3,
+        Source::Device
+    );
+    let reserve_conv = RESERVE_RING + 2;
+    assert_eq!(list[reserve_conv], Part::Conv(24));
+    assert_eq!(
+        held.check_part_read(state, reserve_conv, CONV_BYTES as usize)
+            .unwrap()
+            .3,
+        Source::Zeros
+    );
+    // The cells of layer 11 in cycle 2 read as zeros from position 0.
+    let reserve_cells = 3 * (24 + 5);
+    assert_eq!(
+        held.check_part_read(state, reserve_cells, 3000 * row).unwrap(),
+        (0, Part::K(29), 0, Source::Zeros)
+    );
+    // At 2 cycles, the first 12 entries of the reserve are active.
+    let mut two = Held::new(&[4096], DEFAULT_EXTRA_RUNS);
+    feed(&mut two, 0, 10, 2);
+    assert!(two.active(0, 35) && !two.active(0, 36));
+    assert_eq!(two.check_part_read(state, CYCLES_24, 4).unwrap().3, Source::Count(2));
+    assert_eq!(
+        two.check_read(state, RESERVE_RING, 0, 10, 10 * row).unwrap().2,
+        Source::Device
+    );
+}
+
+/// The parts of a restore of `n` positions at `cycles` cycles: each part with its rows, zeros for an inactive part.
+fn restore(held: &mut Held, n: u64, cycles: u32) {
+    let list = held.list.clone();
+    for (id, part) in list.iter().enumerate() {
+        match part {
+            Part::Cycles => held.wrote_count(0, cycles),
+            Part::Conv(s) => held.wrote(0, id, None, !held.runs_at(cycles as usize, *s)),
+            Part::K(s) | Part::V(s) => {
+                let start = if is_full(state_layer(*s)) {
+                    0
+                } else {
+                    n.saturating_sub(2048)
+                };
+                held.wrote(0, id, Some(start..n), !held.runs_at(cycles as usize, *s));
+            }
+        }
+    }
+}
+
+/// A restore writes the count, and `set_n` takes it with the positions. An inactive part must hold zeros (engine-abi
+/// "Inkling 2", "A restore").
+#[test]
+fn a_restore_keeps_the_count_and_needs_zeros_in_the_inactive_parts() {
+    let state = State::Slot(0);
+    let mut held = Held::new(&[4096], DEFAULT_EXTRA_RUNS);
+    restore(&mut held, 3000, 1);
+    assert_eq!(held.check_set_n(state, 3000), Ok(0));
+    held.set_n(0, 3000);
+    assert_eq!((held.n[0], held.cycles[0]), (3000, Some(1)));
+    // The next pass runs at the count of the snapshot, not at the default.
+    let e = held.check_pass(&[segment(0, 3000, &[1], &[])], 512).unwrap_err();
+    assert!(e.contains("3000 positions of 1 cycles, and the pass runs 3"), "{e}");
+    // A restore with no count is refused.
+    let mut none = Held::new(&[4096], DEFAULT_EXTRA_RUNS);
+    restore(&mut none, 3000, 1);
+    none.writes[0].remove(&CYCLES_24);
+    let e = none.check_set_n(state, 3000).unwrap_err();
+    assert!(e.contains(&format!("part {CYCLES_24} got no bytes")), "{e}");
+    // A count of 0 restores only an empty slot.
+    let mut zero = Held::new(&[4096], DEFAULT_EXTRA_RUNS);
+    restore(&mut zero, 3000, 1);
+    zero.wrote_count(0, 0);
+    let e = zero.check_set_n(state, 3000).unwrap_err();
+    assert!(e.contains("count of cycles 0"), "{e}");
+    // An inactive part that does not hold zeros is refused, and the error names it.
+    let mut dirty = Held::new(&[4096], DEFAULT_EXTRA_RUNS);
+    restore(&mut dirty, 3000, 1);
+    dirty.wrote(0, RESERVE_RING, Some(952..3000), false);
+    let e = dirty.check_set_n(state, 3000).unwrap_err();
+    assert!(
+        e.contains(&format!("part {RESERVE_RING} is a run that 1 cycles do not reach")),
+        "{e}"
+    );
+    // The same bytes at 2 cycles are an active part.
+    let mut two = Held::new(&[4096], DEFAULT_EXTRA_RUNS);
+    restore(&mut two, 3000, 2);
+    two.wrote(0, RESERVE_RING, Some(952..3000), false);
+    assert_eq!(two.check_set_n(state, 3000), Ok(0));
+    // The write of a count checks its value, and a second count must be the same.
+    let mut write = Held::new(&[4096], DEFAULT_EXTRA_RUNS);
+    let count = |v: u32| v.to_le_bytes().to_vec();
+    assert!(write.check_part_write(state, CYCLES_24, &count(3)).is_ok());
+    let e = write.check_part_write(state, CYCLES_24, &count(4)).unwrap_err();
+    assert!(e.contains("count of cycles 4; the engine runs 1 to 3"), "{e}");
+    assert!(write.check_part_write(state, CYCLES_24, &[0; 8]).is_err());
+    write.wrote_count(0, 2);
+    assert!(write.check_part_write(state, CYCLES_24, &count(2)).is_ok());
+    let e = write.check_part_write(state, CYCLES_24, &count(3)).unwrap_err();
+    assert!(e.contains("got the count 2"), "{e}");
+    // The rings start at the first restored row of an active ring. An inactive ring from 0 does not move it.
+    let mut rings = Held::new(&[4096], DEFAULT_EXTRA_RUNS);
+    restore(&mut rings, 1500, 1);
+    for (id, part) in rings.list.clone().iter().enumerate() {
+        if let Part::K(s) | Part::V(s) = part
+            && ringed(4096, *s)
+            && rings.runs_at(1, *s)
+        {
+            rings.wrote(0, id, Some(476..1500), false);
+        }
+    }
+    rings.wrote(0, RESERVE_RING, Some(0..1500), true);
+    assert_eq!(rings.check_set_n(state, 1500), Ok(0));
+    rings.set_n(0, 1500);
+    assert_eq!((rings.base(0, 4), rings.base(0, 24)), (476, 0));
 }

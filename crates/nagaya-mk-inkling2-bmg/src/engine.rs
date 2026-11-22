@@ -21,7 +21,7 @@ use crate::host::ops::HIDDEN;
 use crate::host::weights::LOGITS;
 use crate::media::HeldRows;
 use crate::model::{self, Bufs, LAUNCH_TASKS, SlotMemory, TapBufs, TapRing, TaskRing};
-use crate::spec::{self, Block, Config, FAMILY, HEAD_ROWS, Held, Model, Part, ROUTE_WORDS, Run, Taps};
+use crate::spec::{self, Block, Config, FAMILY, HEAD_ROWS, Held, Model, Part, ROUTE_WORDS, Run, Source, Taps};
 use crate::vision::{self, PassBufs};
 use crate::weights::{self, Count, Weights};
 
@@ -641,6 +641,11 @@ impl Inkling2Engine {
     }
 }
 
+/// True when each byte is zero: the bytes of a run that a count does not reach.
+fn zeros(bytes: &[u8]) -> bool {
+    bytes.iter().all(|b| *b == 0)
+}
+
 /// The most cycles of the limits.
 fn limits_cycles_max(limits: &Limits) -> u8 {
     limits.cycles.expect("the engine declares `cycles`").max
@@ -755,15 +760,18 @@ impl Control for Inkling2Engine {
 }
 
 impl Parts for Inkling2Engine {
-    /// Read a conv part whole, or the rows of a row part from its base: as many as `out` holds.
+    /// Read a fixed part whole, or the rows of a row part from its base: as many as `out` holds. A run that the count
+    /// of the slot does not reach reads as zeros, and the part `cycles` reads the count (engine-abi "Inkling 2").
     fn part_read(&mut self, state: State, part: PartId, out: &mut [u8]) -> Result<(), PartError> {
-        let (slot, which, from) = match self.held.check_part_read(state, part, out.len()) {
+        let (slot, which, from, source) = match self.held.check_part_read(state, part, out.len()) {
             Ok(found) => found,
             Err(message) => return Err(self.refuse_read(message)),
         };
-        match which {
-            Part::Conv(s) => self.device.read_into(self.card(), self.slots[slot].conv[s], out),
-            _ => {
+        match (which, source) {
+            (_, Source::Zeros) => out.fill(0),
+            (_, Source::Count(count)) => out.copy_from_slice(&count.to_le_bytes()),
+            (Part::Conv(s), Source::Device) => self.device.read_into(self.card(), self.slots[slot].conv[s], out),
+            (_, Source::Device) => {
                 let rows = out.len() as u64 / spec::ROW_BYTES;
                 self.read_rows(slot, which, from..from + rows, out);
             }
@@ -771,24 +779,32 @@ impl Parts for Inkling2Engine {
         Ok(())
     }
 
-    /// Write a conv part whole. The slot holds no token until `set_n`.
+    /// Write a fixed part whole: a conv part, or the count of cycles. The slot holds no token until `set_n`.
     fn part_write(&mut self, state: State, part: PartId, bytes: &[u8]) -> WriteResult {
-        let (slot, which) = match self.held.check_part_write(state, part, bytes.len()) {
+        let (slot, which) = match self.held.check_part_write(state, part, bytes) {
             Ok(found) => found,
             Err(message) => return self.refuse(message),
         };
+        if which == Part::Cycles {
+            let count = u32::from_le_bytes(bytes.try_into().expect("check_part_write took 4 bytes"));
+            self.held.wrote_count(slot, count);
+            return WriteResult::Ok;
+        }
         self.device
             .write(self.card(), self.slots[slot].conv[which.state()], bytes);
-        self.held.wrote(slot, part, None);
+        self.held.wrote(slot, part, None, zeros(bytes));
         WriteResult::Ok
     }
 
     fn cells_read(&mut self, state: State, part: PartId, from: u64, n: u64, out: &mut [u8]) -> Result<(), PartError> {
-        let (slot, which) = match self.held.check_read(state, part, from, n, out.len()) {
+        let (slot, which, source) = match self.held.check_read(state, part, from, n, out.len()) {
             Ok(found) => found,
             Err(message) => return Err(self.refuse_read(message)),
         };
-        self.read_rows(slot, which, from..from + n, out);
+        match source {
+            Source::Device => self.read_rows(slot, which, from..from + n, out),
+            Source::Zeros | Source::Count(_) => out.fill(0),
+        }
         Ok(())
     }
 
@@ -807,7 +823,7 @@ impl Parts for Inkling2Engine {
             self.device.write(self.card(), dst, &bytes[at..at + rows * row]);
             at += rows * row;
         }
-        self.held.wrote(slot, part, Some(from..from + n));
+        self.held.wrote(slot, part, Some(from..from + n), zeros(bytes));
         WriteResult::Ok
     }
 

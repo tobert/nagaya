@@ -490,22 +490,47 @@ pub enum Part {
     V(usize),
     /// The conv state of a state: a fixed part.
     Conv(usize),
+    /// The count of cycles of the slot: a fixed part, `u32 [1]`, the last part (engine-abi "Inkling 2", "The part
+    /// `cycles`").
+    Cycles,
 }
 
 impl Part {
-    /// The state of the slot that holds the part.
+    /// The state of the slot that holds the part. The part `cycles` has no state, so a call for it is a defect.
     pub fn state(self) -> usize {
         match self {
             Part::K(s) | Part::V(s) | Part::Conv(s) => s,
+            Part::Cycles => panic!("the part cycles has no state of a run; the caller must match it first"),
         }
     }
 }
 
+/// Where the bytes of a part read come from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    /// The memory of the card.
+    Device,
+    /// Zeros: a run that the count of the slot does not reach.
+    Zeros,
+    /// The count of cycles of the slot, or 0 for an empty slot.
+    Count(u32),
+}
+
+/// True when a pass of `cycles` cycles runs state `s`: a state outside the reserve, or an entry of the reserve up to
+/// the count.
+pub fn runs_at(cycles: usize, s: usize) -> bool {
+    s < LAYERS || s - LAYERS < CYCLE_LAYERS * cycles.saturating_sub(1)
+}
+
+/// The layout of the parts of a state, in the identity (`identity_numbers`). Version 2 adds the part `cycles`.
+pub const STATE_LAYOUT: u32 = 2;
+
 /// The parts in state order: `k.<ll>`, `v.<ll>` and `conv.<ll>` for each layer, then the same for each entry of a
-/// reserve of `extra` runs, as `k.x<ii>`. The part id is the index in this list.
+/// reserve of `extra` runs, as `k.x<ii>`, then `cycles`. The part id is the index in this list.
 pub fn part_list(extra: usize) -> Vec<Part> {
     (0..LAYERS + extra)
         .flat_map(|s| [Part::K(s), Part::V(s), Part::Conv(s)])
+        .chain([Part::Cycles])
         .collect()
 }
 
@@ -515,6 +540,16 @@ pub fn parts(extra: usize) -> Vec<PartLimits> {
     part_list(extra)
         .into_iter()
         .map(|part| {
+            if part == Part::Cycles {
+                return PartLimits {
+                    name: "cycles".to_owned(),
+                    kind: PartKind::Fixed,
+                    dtype: Dtype::U32,
+                    shape: vec![1],
+                    block_format: None,
+                    stage: 0,
+                };
+            }
             let s = part.state();
             let row = if is_full(state_layer(s)) {
                 PartKind::Cells
@@ -525,6 +560,7 @@ pub fn parts(extra: usize) -> Vec<PartLimits> {
                 Part::K(_) => ("k", row, vec![KV_HEADS as u64, HEAD_DIM as u64]),
                 Part::V(_) => ("v", row, vec![KV_HEADS as u64, HEAD_DIM as u64]),
                 Part::Conv(_) => ("conv", PartKind::Fixed, vec![CONV_ROWS as u64, CONV_ROW as u64]),
+                Part::Cycles => unreachable!("the part cycles returned above"),
             };
             PartLimits {
                 name: format!("{prefix}.{}", state_name(s)),
@@ -637,6 +673,7 @@ pub fn identity_numbers(config: &Config) -> BTreeMap<String, String> {
         ("ring_rows", RING_ROWS.to_string()),
         ("cycles", DEFAULT_CYCLES.to_string()),
         ("extra_runs", config.extra_runs.to_string()),
+        ("state", STATE_LAYOUT.to_string()),
     ]
     .into_iter()
     .map(|(name, value)| (name.to_owned(), value))
@@ -1047,7 +1084,9 @@ pub struct Held {
     /// The token count of each slot.
     pub n: Vec<u64>,
     /// The parts that got a write since the last `set_n`, with the positions of a row part.
-    writes: Vec<BTreeMap<PartId, Option<Range<u64>>>>,
+    writes: Vec<BTreeMap<PartId, Write>>,
+    /// The count of cycles that a restore wrote since the last `set_n`.
+    pending: Vec<Option<u32>>,
     /// The first position that the rings of each slot hold since its last restore: 0, or the start of the restored
     /// rows.
     ring_from: Vec<u64>,
@@ -1056,6 +1095,13 @@ pub struct Held {
     pub cycles: Vec<Option<usize>>,
     /// The counts of cycles that a pass can run.
     limit: CyclesLimit,
+}
+
+/// One write of a restore: the positions of a row part, and whether its bytes are all zeros.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Write {
+    pub rows: Option<Range<u64>>,
+    pub zero: bool,
 }
 
 /// The bytes of one row of a row part.
@@ -1072,6 +1118,7 @@ impl Held {
             seqs: seqs.to_vec(),
             n: vec![0; seqs.len()],
             writes: vec![BTreeMap::new(); seqs.len()],
+            pending: vec![None; seqs.len()],
             ring_from: vec![0; seqs.len()],
             cycles: vec![None; seqs.len()],
             limit: cycles_limit(extra),
@@ -1092,14 +1139,31 @@ impl Held {
     /// The first position that a row part of state `s` holds in `slot`. A cells part, or a sliding state of a slot
     /// with no ring, holds every position from 0. A ring holds the last `RING_ROWS` positions, and after a restore no
     /// position before the restored rows.
+    ///
+    /// An inactive ring reads as zeros, so it holds the last `RING_ROWS` positions with no restored start.
     pub fn base(&self, slot: usize, s: usize) -> u64 {
-        if ringed(self.seqs[slot], s) {
-            self.n[slot]
-                .saturating_sub(RING_ROWS as u64)
-                .max(self.ring_from[slot])
-                .min(self.n[slot])
+        if !ringed(self.seqs[slot], s) {
+            return 0;
+        }
+        let last = self.n[slot].saturating_sub(RING_ROWS as u64);
+        if self.active(slot, s) {
+            last.max(self.ring_from[slot]).min(self.n[slot])
         } else {
-            0
+            last
+        }
+    }
+
+    /// True when the count of `slot` runs state `s`. A slot with no count, empty or in a restore, runs each state.
+    pub fn active(&self, slot: usize, s: usize) -> bool {
+        self.cycles[slot].is_none_or(|c| runs_at(c, s))
+    }
+
+    /// The source of a read of state `s` of `slot`.
+    fn source(&self, slot: usize, s: usize) -> Source {
+        if self.active(slot, s) {
+            Source::Device
+        } else {
+            Source::Zeros
         }
     }
 
@@ -1228,6 +1292,7 @@ impl Held {
     pub fn ran(&mut self, block: &Block) {
         self.n[block.slot] = (block.pos0 + block.tokens.len()) as u64;
         self.writes[block.slot].clear();
+        self.pending[block.slot] = None;
         self.cycles[block.slot] = Some(block.cycles);
     }
 
@@ -1238,12 +1303,22 @@ impl Held {
             Some(Part::Conv(_)) => Err(format!(
                 "part {id} is a conv state, a fixed part; use part_read and part_write"
             )),
+            Some(Part::Cycles) => Err(format!(
+                "part {id} is the count of cycles, a fixed part; use part_read and part_write"
+            )),
             None => Err(format!("the engine has no part {id}")),
         }
     }
 
-    /// Check a read of `n` rows from `from` of a row part, and give its slot and part.
-    pub fn check_read(&self, state: State, id: PartId, from: u64, n: u64, len: usize) -> Result<(usize, Part), String> {
+    /// Check a read of `n` rows from `from` of a row part, and give its slot, its part and the source of its bytes.
+    pub fn check_read(
+        &self,
+        state: State,
+        id: PartId,
+        from: u64,
+        n: u64,
+        len: usize,
+    ) -> Result<(usize, Part, Source), String> {
         let (slot, part) = self.row_part(state, id)?;
         let base = self.base(slot, part.state());
         if len as u64 != n * ROW_BYTES || from < base || from + n > self.n[slot] {
@@ -1254,25 +1329,37 @@ impl Held {
                 self.n[slot],
             ));
         }
-        Ok((slot, part))
+        Ok((slot, part, self.source(slot, part.state())))
     }
 
-    /// Check a whole read of a part into `len` bytes, and give the first row for a row part.
-    pub fn check_part_read(&self, state: State, id: PartId, len: usize) -> Result<(usize, Part, u64), String> {
+    /// Check a whole read of a part into `len` bytes, and give the first row for a row part and the source of the
+    /// bytes. The part `cycles` reads the count of the slot, or 0 for an empty slot.
+    pub fn check_part_read(&self, state: State, id: PartId, len: usize) -> Result<(usize, Part, u64, Source), String> {
         let slot = self.slot(state).ok_or_else(|| format!("the engine has no {state:?}"))?;
         let part = self.part(id).ok_or_else(|| format!("the engine has no part {id}"))?;
         match part {
-            Part::Conv(_) if len as u64 == CONV_BYTES => Ok((slot, part, 0)),
+            Part::Conv(s) if len as u64 == CONV_BYTES => Ok((slot, part, 0, self.source(slot, s))),
             Part::Conv(_) => Err(format!("part {id} is a conv state of {CONV_BYTES} bytes, not {len}")),
+            Part::Cycles if len == 4 => Ok((slot, part, 0, Source::Count(self.count(slot)))),
+            Part::Cycles => Err(format!("part {id} is the count of cycles, 4 bytes, not {len}")),
             _ => {
                 if !(len as u64).is_multiple_of(ROW_BYTES) {
                     return Err(format!("{len} bytes are not whole rows of {ROW_BYTES} bytes"));
                 }
                 let from = self.base(slot, part.state());
-                self.check_read(state, id, from, len as u64 / ROW_BYTES, len)?;
-                Ok((slot, part, from))
+                let (_, _, source) = self.check_read(state, id, from, len as u64 / ROW_BYTES, len)?;
+                Ok((slot, part, from, source))
             }
         }
+    }
+
+    /// The count of cycles of `slot`: the count that fed its positions, or 0 for an empty slot.
+    pub fn count(&self, slot: usize) -> u32 {
+        if self.n[slot] == 0 {
+            return 0;
+        }
+        let cycles = self.cycles[slot].expect("a slot that holds positions has a count of cycles");
+        cycles as u32
     }
 
     /// Check a write of the rows of positions `from` to `from + n`, and give the slot, the part and the positions that
@@ -1306,22 +1393,59 @@ impl Held {
         Ok((slot, part, kept))
     }
 
-    /// Check a whole write of a conv part, and give its slot and part.
-    pub fn check_part_write(&self, state: State, id: PartId, len: usize) -> Result<(usize, Part), String> {
+    /// Check a whole write of a fixed part, and give its slot and part. The part `cycles` takes a count of 1 to the
+    /// most of the limit, or 0 for an empty slot, and one count in each restore.
+    pub fn check_part_write(&self, state: State, id: PartId, bytes: &[u8]) -> Result<(usize, Part), String> {
         let slot = self.slot(state).ok_or_else(|| format!("the engine has no {state:?}"))?;
+        let len = bytes.len();
         match self.part(id) {
             Some(part @ Part::Conv(_)) if len as u64 == CONV_BYTES => Ok((slot, part)),
             Some(Part::Conv(_)) => Err(format!("part {id} is a conv state of {CONV_BYTES} bytes, not {len}")),
+            Some(Part::Cycles) => {
+                let Ok(word) = <[u8; 4]>::try_from(bytes) else {
+                    return Err(format!("part {id} is the count of cycles, 4 bytes, not {len}"));
+                };
+                let count = u32::from_le_bytes(word);
+                if count > u32::from(self.limit.max) {
+                    return Err(format!(
+                        "the part cycles holds the count of cycles {count}; the engine runs 1 to {}, and 0 is an \
+                         empty slot",
+                        self.limit.max
+                    ));
+                }
+                if let Some(had) = self.pending[slot]
+                    && had != count
+                {
+                    return Err(format!(
+                        "slot {slot} got the count {had} in this restore, and this write names {count}; clear the \
+                         slot first to restore another count"
+                    ));
+                }
+                Ok((slot, Part::Cycles))
+            }
             Some(_) => Err(format!("part {id} is a row part; write its rows with cells_write")),
             None => Err(format!("the engine has no part {id}")),
         }
     }
 
-    /// Take a write that the device made: the slot holds no token until `set_n`.
-    pub fn wrote(&mut self, slot: usize, id: PartId, rows: Option<Range<u64>>) {
+    /// Take a write that the device made: the slot holds no token until `set_n`. `zero` is true when its bytes are
+    /// all zeros, the bytes of an inactive run.
+    pub fn wrote(&mut self, slot: usize, id: PartId, rows: Option<Range<u64>>, zero: bool) {
         self.n[slot] = 0;
         self.cycles[slot] = None;
-        self.writes[slot].insert(id, rows);
+        self.writes[slot].insert(id, Write { rows, zero });
+    }
+
+    /// Take a write of the part `cycles` that `check_part_write` passed.
+    pub fn wrote_count(&mut self, slot: usize, count: u32) {
+        let id = self.list.len() - 1;
+        self.wrote(slot, id, None, true);
+        self.pending[slot] = Some(count);
+    }
+
+    /// True when a pass of `cycles` cycles runs state `s` (`runs_at`).
+    pub fn runs_at(&self, cycles: usize, s: usize) -> bool {
+        runs_at(cycles, s)
     }
 
     /// Check a `set_n`. With no write since the last count, the count must stay or go to 0. After writes, every part
@@ -1343,12 +1467,32 @@ impl Held {
                 self.n[slot]
             ));
         }
+        if let Some(id) = (0..self.list.len()).find(|id| !writes.contains_key(id)) {
+            return Err(format!("part {id} got no bytes since the last set_n"));
+        }
+        let cycles = self.pending[slot].unwrap_or(0) as usize;
+        if cycles == 0 && n > 0 {
+            return Err(format!(
+                "the restore wrote the count of cycles 0, and set_n names {n} positions; a count of 0 restores only an \
+                 empty slot"
+            ));
+        }
         for (id, part) in self.list.iter().enumerate() {
-            match (part, writes.get(&id)) {
-                (_, None) => return Err(format!("part {id} got no bytes since the last set_n")),
-                (Part::Conv(_), Some(_)) => {}
-                (_, Some(None)) => return Err(format!("part {id} got no rows")),
-                (_, Some(Some(rows))) => {
+            let write = &writes[&id];
+            let inactive = match part {
+                Part::Cycles => continue,
+                Part::K(s) | Part::V(s) | Part::Conv(s) => n > 0 && !runs_at(cycles, *s),
+            };
+            if inactive && !write.zero {
+                return Err(format!(
+                    "part {id} is a run that {cycles} cycles do not reach, so it must hold zeros; the restore wrote \
+                     other bytes"
+                ));
+            }
+            match (part, &write.rows) {
+                (Part::Conv(_), _) => {}
+                (_, None) => return Err(format!("part {id} got no rows")),
+                (_, Some(rows)) => {
                     if rows.end != n {
                         return Err(format!("part {id} got rows up to {}, not up to {n}", rows.end));
                     }
@@ -1366,27 +1510,32 @@ impl Held {
         Ok(slot)
     }
 
-    /// Take a count that `check_set_n` passed. After writes, the rings hold the positions from the latest start of the
-    /// rows of a ring part.
+    /// Take a count that `check_set_n` passed. After writes, the slot takes the restored count of cycles, and the
+    /// rings hold the positions from the latest start of the rows of an active ring part.
     pub fn set_n(&mut self, slot: usize, n: u64) {
         let seq = self.seqs[slot];
-        let from = self.writes[slot]
-            .iter()
-            .filter_map(|(id, rows)| match (self.list[*id], rows) {
-                (Part::K(s) | Part::V(s), Some(rows)) if ringed(seq, s) => Some(rows.start),
-                _ => None,
-            })
-            .max();
+        let restored = (!self.writes[slot].is_empty() && n > 0).then(|| self.pending[slot].unwrap_or(0) as usize);
+        let from = restored.and_then(|cycles| {
+            self.writes[slot]
+                .iter()
+                .filter_map(|(id, write)| match (self.list[*id], &write.rows) {
+                    (Part::K(s) | Part::V(s), Some(rows)) if ringed(seq, s) && runs_at(cycles, s) => Some(rows.start),
+                    _ => None,
+                })
+                .max()
+        });
         if n == 0 {
             self.ring_from[slot] = 0;
-        } else if let Some(from) = from {
-            self.ring_from[slot] = from;
-        }
-        if n == 0 || !self.writes[slot].is_empty() {
             self.cycles[slot] = None;
+        } else if let Some(cycles) = restored {
+            self.cycles[slot] = Some(cycles);
+            if let Some(from) = from {
+                self.ring_from[slot] = from;
+            }
         }
         self.n[slot] = n;
         self.writes[slot].clear();
+        self.pending[slot] = None;
     }
 
     /// Empty a slot.
@@ -1394,6 +1543,7 @@ impl Held {
         self.n[slot] = 0;
         self.ring_from[slot] = 0;
         self.writes[slot].clear();
+        self.pending[slot] = None;
         self.cycles[slot] = None;
     }
 
@@ -1426,8 +1576,15 @@ impl Held {
         let part = self
             .part(span.part)
             .ok_or_else(|| format!("the engine has no part {}", span.part))?;
-        if matches!(part, Part::Conv(_)) {
-            return Err(format!("part {} is a conv state; it has no positions", span.part));
+        match part {
+            Part::Conv(_) => return Err(format!("part {} is a conv state; it has no positions", span.part)),
+            Part::Cycles => {
+                return Err(format!(
+                    "part {} is the count of cycles; it has no positions",
+                    span.part
+                ));
+            }
+            Part::K(_) | Part::V(_) => {}
         }
         if span.start > span.end || span.end > seq as u64 {
             return Err(format!(
