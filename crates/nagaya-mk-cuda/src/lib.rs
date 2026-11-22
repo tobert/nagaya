@@ -99,7 +99,12 @@ mod tests {
     #[test]
     fn the_header_of_the_kernel_comes_from_the_protocol() {
         let header = include_str!(concat!(env!("OUT_DIR"), "/mk_protocol.h"));
-        for (name, value) in protocol::OPCODES.iter().chain(protocol::FLAGS) {
+        let all = protocol::OPCODES
+            .iter()
+            .chain(protocol::PROBE_READ_VARIANTS)
+            .chain(protocol::PROBE_MMA_KINDS)
+            .chain(protocol::FLAGS);
+        for (name, value) in all {
             assert!(
                 header.contains(&format!("#define {name} {value}u\n")),
                 "{name} is not in the header"
@@ -111,11 +116,28 @@ mod tests {
         assert!(header.contains("#define MK_DESC_OFF_p3 60\n"));
         assert!(header.contains("#define MK_STATS_OFF_exec_ns 16\n"));
         assert!(header.contains("#define MK_PROFILE_WORDS 3u\n"));
+        assert!(header.contains("#define MK_PROBE_ITEM_BYTES 32768\n"));
+        assert!(header.contains("#define OP_PROBE_READ 230u\n"));
+        assert!(header.contains("#define PROBE_READ_SMEM_BULK 4u\n"));
+        assert!(header.contains("#define PROBE_MMA_MXFP8 2u\n"));
+    }
+
+    #[test]
+    fn the_probe_smem_size_holds_the_stages_and_their_barriers() {
+        assert_eq!(protocol::probe_smem_bytes(2), 2 * 16384 + 256);
+        assert_eq!(protocol::probe_smem_bytes(6), 6 * 16384 + 256);
+        let bytes = protocol::probe_smem_bytes(3);
+        assert!(bytes >= 3 * protocol::PROBE_STAGE_BYTES + 3 * 8 && bytes.is_multiple_of(256));
     }
 
     #[test]
     fn opcodes_and_flags_are_distinct() {
-        for table in [protocol::OPCODES, protocol::FLAGS] {
+        for table in [
+            protocol::OPCODES,
+            protocol::PROBE_READ_VARIANTS,
+            protocol::PROBE_MMA_KINDS,
+            protocol::FLAGS,
+        ] {
             for (i, (name, value)) in table.iter().enumerate() {
                 assert!(
                     table[..i].iter().all(|(other, v)| v != value && other != name),

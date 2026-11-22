@@ -97,14 +97,23 @@ impl<'d> Ring<'d> {
     /// # Safety
     /// Every device pointer referenced inside the descriptors must be valid for its op.
     pub unsafe fn run(&self) -> Result<(), String> {
+        unsafe { self.run_shaped(DEFAULT_BLOCK_THREADS, 0) }
+    }
+
+    /// Like [`Ring::run`], with `block_threads` threads and `shared_bytes` of dynamic shared memory in each block.
+    ///
+    /// # Safety
+    /// The same rules as [`Ring::run`].
+    pub unsafe fn run_shaped(&self, block_threads: u32, shared_bytes: u32) -> Result<(), String> {
         let dev = self.dev;
         let count = self.len + 1;
         dev.memset_zero(self.scoreboard, (count + 1) * 4)?;
         unsafe {
             dev.copy_htod(self.dev_tasks, self.host_tasks.cast::<c_void>(), count * 64)?;
-            dev.launch_megakernel(
+            dev.launch_megakernel_shared(
                 self.grid_blocks,
-                DEFAULT_BLOCK_THREADS,
+                block_threads,
+                shared_bytes,
                 self.dev_tasks,
                 count as u32,
                 self.scoreboard,

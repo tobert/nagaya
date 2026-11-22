@@ -84,6 +84,9 @@ __device__ __forceinline__ uint32_t atom_release_gpu_add_u32(uint32_t* ptr, uint
     return old;
 }
 
+// The dynamic shared memory of the block. The launch gives its size. Only the probe ops use it for now.
+extern __shared__ __align__(128) uint8_t mk_smem[];
+
 __device__ __forceinline__ void op_copy(const MkTaskDescriptor& task) {
     // a = dst (float*), b = src (const float*), p0 = count of floats.
     float* dst = reinterpret_cast<float*>(task.a);
@@ -138,6 +141,8 @@ __device__ __forceinline__ void op_selftest_check(const MkTaskDescriptor& task) 
         out[blockIdx.x] = wrong;
     }
 }
+
+#include "probe_ops.cuh"
 
 extern "C" __global__ void mk_persistent_interpreter(
     const MkTaskDescriptor* __restrict__ tasks,
@@ -204,6 +209,21 @@ extern "C" __global__ void mk_persistent_interpreter(
                 break;
             case OP_SELFTEST_CHECK:
                 op_selftest_check(task);
+                break;
+            case OP_PROBE_READ:
+                op_probe_read(task);
+                break;
+            case OP_PROBE_L2:
+                op_probe_l2(task);
+                break;
+            case OP_PROBE_TIMER:
+                op_probe_timer(task);
+                break;
+            case OP_PROBE_MMA_TILE:
+                op_probe_mma_tile(task);
+                break;
+            case OP_PROBE_MMA_RATE:
+                op_probe_mma_rate(task);
                 break;
             default:
                 // Unknown opcode: trap rather than silently corrupt state (spec 8.5).

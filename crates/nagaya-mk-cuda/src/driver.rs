@@ -22,6 +22,34 @@ pub type CUdeviceptr = u64;
 const CUDA_SUCCESS: CUresult = 0;
 const CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT: c_int = 16;
 const CU_DEVICE_ATTRIBUTE_COOPERATIVE_LAUNCH: c_int = 95;
+const CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN: c_int = 97;
+const CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES: c_int = 1;
+const CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES: c_int = 8;
+
+/// The device attributes that a probe reports: the name, and the code of `CUdevice_attribute` in `cuda.h`.
+pub const REPORTED_ATTRIBUTES: &[(&str, i32)] = &[
+    ("MULTIPROCESSOR_COUNT", 16),
+    ("COMPUTE_CAPABILITY_MAJOR", 75),
+    ("COMPUTE_CAPABILITY_MINOR", 76),
+    ("WARP_SIZE", 10),
+    ("MAX_THREADS_PER_BLOCK", 1),
+    ("MAX_THREADS_PER_MULTIPROCESSOR", 39),
+    ("MAX_BLOCKS_PER_MULTIPROCESSOR", 106),
+    ("MAX_SHARED_MEMORY_PER_BLOCK", 8),
+    ("MAX_SHARED_MEMORY_PER_BLOCK_OPTIN", 97),
+    ("MAX_SHARED_MEMORY_PER_MULTIPROCESSOR", 81),
+    ("RESERVED_SHARED_MEMORY_PER_BLOCK", 111),
+    ("MAX_REGISTERS_PER_BLOCK", 12),
+    ("MAX_REGISTERS_PER_MULTIPROCESSOR", 82),
+    ("L2_CACHE_SIZE", 38),
+    ("MAX_PERSISTING_L2_CACHE_SIZE", 108),
+    ("COOPERATIVE_LAUNCH", 95),
+    ("CLUSTER_LAUNCH", 120),
+    ("INTEGRATED", 18),
+    ("CLOCK_RATE_KHZ", 13),
+    ("MEMORY_CLOCK_RATE_KHZ", 36),
+    ("GLOBAL_MEMORY_BUS_WIDTH_BITS", 37),
+];
 
 unsafe extern "C" {
     fn cuInit(flags: c_uint) -> CUresult;
@@ -53,6 +81,8 @@ unsafe extern "C" {
     fn cuMemcpyDtoH(dst_host: *mut c_void, src_device: CUdeviceptr, byte_count: usize) -> CUresult;
     #[link_name = "cuMemsetD8_v2"]
     fn cuMemsetD8(dst_device: CUdeviceptr, uc: u8, n: usize) -> CUresult;
+    fn cuFuncGetAttribute(pi: *mut c_int, attrib: c_int, hfunc: CUfunction) -> CUresult;
+    fn cuFuncSetAttribute(hfunc: CUfunction, attrib: c_int, value: c_int) -> CUresult;
     fn cuOccupancyMaxActiveBlocksPerMultiprocessor(
         num_blocks: *mut c_int,
         func: CUfunction,
@@ -371,15 +401,71 @@ impl CudaDevice {
         unsafe { check(cuCtxSynchronize(), "cuCtxSynchronize") }
     }
 
+    /// Read one device attribute by its `CUdevice_attribute` code. The table `REPORTED_ATTRIBUTES` names the codes.
+    pub fn attribute(&self, code: i32) -> Result<i32, String> {
+        let mut value: c_int = 0;
+        unsafe {
+            check(
+                cuDeviceGetAttribute(&mut value, code, self.device),
+                &format!("cuDeviceGetAttribute(code {code})"),
+            )?;
+        }
+        Ok(value)
+    }
+
+    /// The most dynamic shared memory that a block of the kernel can have: the opt-in limit of a block, less the static
+    /// shared memory of the kernel.
+    pub fn max_dynamic_shared_bytes(&self) -> Result<u32, String> {
+        let optin = self.attribute(CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN)?;
+        let mut fixed: c_int = 0;
+        unsafe {
+            check(
+                cuFuncGetAttribute(&mut fixed, CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES, self.kernel),
+                "cuFuncGetAttribute(SHARED_SIZE_BYTES)",
+            )?;
+        }
+        Ok(u32::try_from(optin - fixed).unwrap_or(0))
+    }
+
+    /// Allow `bytes` of dynamic shared memory for the kernel. The launch then gives the size in its shape.
+    fn allow_dynamic_shared(&self, bytes: u32) -> Result<(), String> {
+        if bytes == 0 {
+            return Ok(());
+        }
+        let limit = self.max_dynamic_shared_bytes()?;
+        if bytes > limit {
+            return Err(format!(
+                "a launch asks for {bytes} bytes of dynamic shared memory, and a block of the kernel can have {limit} \
+                 bytes. Ask for {limit} bytes or fewer"
+            ));
+        }
+        unsafe {
+            check(
+                cuFuncSetAttribute(
+                    self.kernel,
+                    CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+                    bytes as c_int,
+                ),
+                "cuFuncSetAttribute(MAX_DYNAMIC_SHARED_SIZE_BYTES)",
+            )
+        }
+    }
+
     /// Blocks of `block_threads` threads that the GPU holds at once, from the occupancy of the loaded kernel.
     pub fn max_resident_blocks(&self, block_threads: u32) -> Result<u32, String> {
+        self.max_resident_blocks_with_shared(block_threads, 0)
+    }
+
+    /// Like [`Self::max_resident_blocks`], for blocks that each hold `shared_bytes` of dynamic shared memory.
+    pub fn max_resident_blocks_with_shared(&self, block_threads: u32, shared_bytes: u32) -> Result<u32, String> {
         self.set_current()?;
+        self.allow_dynamic_shared(shared_bytes)?;
         let threads = c_int::try_from(block_threads)
             .map_err(|_| format!("{block_threads} threads in a block is more than the driver takes"))?;
         let mut per_sm: c_int = 0;
         unsafe {
             check(
-                cuOccupancyMaxActiveBlocksPerMultiprocessor(&mut per_sm, self.kernel, threads, 0),
+                cuOccupancyMaxActiveBlocksPerMultiprocessor(&mut per_sm, self.kernel, threads, shared_bytes as usize),
                 "cuOccupancyMaxActiveBlocksPerMultiprocessor",
             )?;
         }
@@ -407,8 +493,42 @@ impl CudaDevice {
         scratch_dev: CUdeviceptr,
         profile_dev: CUdeviceptr,
     ) -> Result<(), String> {
+        unsafe {
+            self.launch_megakernel_shared(
+                grid_blocks,
+                block_threads,
+                0,
+                tasks_dev,
+                num_tasks,
+                scoreboard_dev,
+                base_event,
+                stats_dev,
+                scratch_dev,
+                profile_dev,
+            )
+        }
+    }
+
+    /// Like [`Self::launch_megakernel`], with `shared_bytes` of dynamic shared memory in each block.
+    ///
+    /// # Safety
+    /// The same rules as [`Self::launch_megakernel`].
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn launch_megakernel_shared(
+        &self,
+        grid_blocks: u32,
+        block_threads: u32,
+        shared_bytes: u32,
+        tasks_dev: CUdeviceptr,
+        num_tasks: u32,
+        scoreboard_dev: CUdeviceptr,
+        base_event: u32,
+        stats_dev: CUdeviceptr,
+        scratch_dev: CUdeviceptr,
+        profile_dev: CUdeviceptr,
+    ) -> Result<(), String> {
         self.set_current()?;
-        let resident = self.max_resident_blocks(block_threads)?;
+        let resident = self.max_resident_blocks_with_shared(block_threads, shared_bytes)?;
         residency_problem(grid_blocks, block_threads, resident / self.sm_count, self.sm_count)?;
         let mut p_tasks = tasks_dev;
         let mut p_num = num_tasks;
@@ -436,7 +556,7 @@ impl CudaDevice {
                     block_threads,
                     1,
                     1,
-                    0,
+                    shared_bytes,
                     ptr::null_mut(),
                     params.as_mut_ptr(),
                 ),

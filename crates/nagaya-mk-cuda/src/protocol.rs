@@ -71,12 +71,60 @@ define_u16_table! {
     OP_INKLING2_VISION_ATTN = 182;
     OP_INKLING2_CONTROL = 190;
 
+    // Probe opcodes. They measure the GB10 in `tests/cuda_probe.rs`. An engine does not use them. Each has its own
+    // comment in `kernels/probe_ops.cuh`.
+    // `OP_PROBE_READ`: every block streams items of `PROBE_ITEM_BYTES` from `a`, in the variant `p1`.
+    // `OP_PROBE_L2`: every block reads its own slice of `p0` bytes at `a`, `p1` times.
+    // `OP_PROBE_TIMER`: block 0 reads `%globaltimer` `p0` times, and writes four words to `c`.
+    // `OP_PROBE_MMA_TILE`: warp 0 of block 0 runs one MMA tile of the kind `p1` and writes its result to `c`.
+    // `OP_PROBE_MMA_RATE`: every warp runs `p0` MMAs of the kind `p1` in each of `PROBE_MMA_CHAINS` chains.
+    OP_PROBE_READ = 230;
+    OP_PROBE_L2 = 231;
+    OP_PROBE_TIMER = 232;
+    OP_PROBE_MMA_TILE = 233;
+    OP_PROBE_MMA_RATE = 234;
+
     // Test opcodes. They gate the scoreboard in `tests/cuda_smoke.rs`. An engine does not use them.
     // `OP_SELFTEST_FILL`: block `n` writes `p0` words at `a + n * p0` words, after a delay of `p1` ns in block `p2`.
     // `OP_SELFTEST_CHECK`: each block reads the words of all blocks and writes its count of wrong words to `d[block]`.
     // Both use the seed `p3` for the value of each word.
     OP_SELFTEST_FILL = 250;
     OP_SELFTEST_CHECK = 251;
+}
+
+define_u16_table! {
+    PROBE_READ_VARIANTS;
+    // The variants of `OP_PROBE_READ` in `p1`. The two prefetch variants read with `PROBE_READ_NC`, and `p2` is the
+    // distance of the prefetch in items. `PROBE_READ_SMEM_BULK` copies into shared memory, and `p2` is the count of
+    // stages of `PROBE_STAGE_BYTES` each.
+    PROBE_READ_PLAIN = 0;
+    PROBE_READ_NC = 1;
+    PROBE_READ_PREFETCH_LINE = 2;
+    PROBE_READ_PREFETCH_BULK = 3;
+    PROBE_READ_SMEM_BULK = 4;
+}
+
+define_u16_table! {
+    PROBE_MMA_KINDS;
+    // The kinds of MMA in `p1` of `OP_PROBE_MMA_TILE` and `OP_PROBE_MMA_RATE`.
+    PROBE_MMA_BF16 = 0;
+    PROBE_MMA_NVFP4 = 1;
+    PROBE_MMA_MXFP8 = 2;
+}
+
+/// Bytes of one item of `OP_PROBE_READ`.
+pub const PROBE_ITEM_BYTES: usize = 32 * 1024;
+
+/// Bytes of one stage of shared memory in the variant `PROBE_READ_SMEM_BULK`.
+pub const PROBE_STAGE_BYTES: usize = 16 * 1024;
+
+/// Independent accumulators of each warp in `OP_PROBE_MMA_RATE`.
+pub const PROBE_MMA_CHAINS: usize = 8;
+
+/// Dynamic shared bytes that `OP_PROBE_READ` needs in the variant `PROBE_READ_SMEM_BULK` with `stages` stages: the
+/// stages, then one 8-byte barrier for each stage, rounded to 256 bytes.
+pub fn probe_smem_bytes(stages: usize) -> usize {
+    (stages * PROBE_STAGE_BYTES + stages * 8).next_multiple_of(256)
 }
 
 define_u16_table! {
