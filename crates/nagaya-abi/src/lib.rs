@@ -1,6 +1,7 @@
 //! The engine ABI: the `Engine` trait, its types, and a fake engine behind the feature `fake`.
 
 use std::collections::BTreeMap;
+use std::num::NonZeroU32;
 use std::ops::Range;
 
 /// One device in a device group.
@@ -372,6 +373,9 @@ pub enum Capability {
     Cycles,
 }
 
+/// The largest ceiling of a long pass that an engine can declare, in milliseconds (engine-abi D8).
+pub const LONG_QUANTUM_CEILING_MS: u32 = 180_000;
+
 /// The limits that an engine declares.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Limits {
@@ -395,6 +399,10 @@ pub struct Limits {
     pub slots: Vec<SlotLimit>,
     /// The longest quantum in milliseconds.
     pub max_quantum_ms: u32,
+    /// The ceiling of the bound of a long pass in milliseconds, or `None` when the engine has no long pass (engine-abi
+    /// D8, "A long pass with a declared bound"). It is more than `max_quantum_ms` and at most
+    /// [`LONG_QUANTUM_CEILING_MS`].
+    pub max_long_quantum_ms: Option<NonZeroU32>,
     /// The memory terms.
     pub memory: MemoryLimits,
     /// The chain limits.
@@ -594,6 +602,7 @@ impl Limits {
 
     /// Check the rules of the stages and the feed rule (engine-abi D1, D11). The message says which rule breaks.
     pub fn check(&self) -> Result<(), String> {
+        self.check_long_quantum()?;
         self.check_control()?;
         self.check_layer_loops()?;
         self.check_cycles()?;
@@ -710,6 +719,63 @@ impl Limits {
             return Err(format!(
                 "segment {other} names the loop {:?}, and segment 0 names {:?}; the segments of one pass name one loop",
                 segments[other].layer_loop, first.layer_loop
+            ));
+        }
+        Ok(())
+    }
+
+    /// Check the ceiling of a long pass: it is more than `max_quantum_ms` and at most 180,000 ms, and an engine with
+    /// stages declares none (engine-abi D8).
+    fn check_long_quantum(&self) -> Result<(), String> {
+        let Some(ceiling) = self.max_long_quantum_ms else {
+            return Ok(());
+        };
+        if self.capabilities.contains(&Capability::Stages) {
+            return Err(
+                "an engine with stages declares no long pass in v0; remove max_long_quantum_ms or the stages"
+                    .to_owned(),
+            );
+        }
+        if ceiling.get() <= self.max_quantum_ms {
+            return Err(format!(
+                "max_long_quantum_ms is {ceiling} ms; it must be more than max_quantum_ms ({} ms)",
+                self.max_quantum_ms
+            ));
+        }
+        if ceiling.get() > LONG_QUANTUM_CEILING_MS {
+            return Err(format!(
+                "max_long_quantum_ms is {ceiling} ms; it must be at most {LONG_QUANTUM_CEILING_MS} ms"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Check the bound that `Engine::pass_bound_ms` declared for a pass of `segments`: the engine declares a ceiling,
+    /// the bound is more than `max_quantum_ms` and at most the ceiling, and the pass holds one segment (engine-abi
+    /// D8). The message says which rule breaks.
+    pub fn check_pass_bound(&self, segments: &[Segment], bound: NonZeroU32) -> Result<(), String> {
+        let Some(ceiling) = self.max_long_quantum_ms else {
+            return Err(format!(
+                "the engine declared a bound of {bound} ms for a pass, but it declares no max_long_quantum_ms"
+            ));
+        };
+        if bound.get() <= self.max_quantum_ms {
+            return Err(format!(
+                "the engine declared a bound of {bound} ms for a pass; a bound must be more than max_quantum_ms ({} \
+                 ms), or the engine declares none",
+                self.max_quantum_ms
+            ));
+        }
+        if bound > ceiling {
+            return Err(format!(
+                "the engine declared a bound of {bound} ms for a pass; a bound must be at most max_long_quantum_ms \
+                 ({ceiling} ms)"
+            ));
+        }
+        if segments.len() != 1 {
+            return Err(format!(
+                "the engine declared a bound of {bound} ms for a pass of {} segments; a long pass holds one segment",
+                segments.len()
             ));
         }
         Ok(())
@@ -1543,6 +1609,14 @@ pub trait Engine {
 
     /// Run one pass.
     fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError>;
+
+    /// The bound of a pass of `segments` and `taps` in milliseconds, when it is a long pass (engine-abi D8, "A long
+    /// pass with a declared bound"). The call does no device work and changes no state. `Some(b)` declares a long
+    /// pass: `b` is more than `max_quantum_ms` and at most `max_long_quantum_ms`. `Err` refuses the pass before it
+    /// runs. The default declares no long pass.
+    fn pass_bound_ms(&self, _segments: &[Segment], _taps: &[Tap]) -> Result<Option<NonZeroU32>, String> {
+        Ok(None)
+    }
 
     /// Why the last call failed.
     fn last_error(&self) -> Option<String>;

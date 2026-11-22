@@ -381,6 +381,8 @@ pub fn limits(config: &Config, llm_weights: u64, vision_weights: u64) -> Limits 
         max_logit_rows: MAX_LOGIT_ROWS as u32,
         slots: slot_limits(&config.seqs(), config.extra_runs),
         max_quantum_ms: MAX_QUANTUM_MS,
+        // No long pass until the vision tower runs here (milestone 37 step 13).
+        max_long_quantum_ms: None,
         memory: MemoryLimits {
             mandatory: vec![
                 term("weights", Tier::Device(0), llm_weights),

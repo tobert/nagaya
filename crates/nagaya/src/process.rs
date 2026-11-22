@@ -33,10 +33,13 @@ use crate::signal::SignalFlag;
 use in_place::{Exit, Member, Unloaded};
 use loads::Ask;
 pub use loads::{DeviceReply, EngineStates, LoadError, LoadReply};
+use long_pass::LongLinks;
+pub use long_pass::{LongPass, LongPasses};
 
 mod handoff;
 mod in_place;
 mod loads;
+mod long_pass;
 mod staged;
 
 /// The default watchdog timeout. Three times the longest declared quantum bound (the Qwen3.8 engine: 10 s).
@@ -1042,12 +1045,14 @@ impl Start {
         });
 
         // The watchdog thread. It watches the group threads from outside (spec 3.2, 7.4).
+        let long_passes = LongPasses::default();
+        let watchdog_passes = long_passes.clone();
         let watchdog_events = events_tx.clone();
         let watchdog_body = watchdog_events.clone();
         let watchdog_thread = spawn_named("nagaya-watchdog".to_owned(), move || {
             guard("watchdog", &watchdog_events, || {
                 pin("watchdog", housekeeping.as_deref());
-                watchdog(watch_rx, watchdog_body, timeout);
+                watchdog(watch_rx, watchdog_body, timeout, watchdog_passes);
             });
         });
 
@@ -1177,6 +1182,11 @@ impl Start {
             let group_fd_store = fd_store.clone();
             let group_ledger = ledger_tx.clone();
             let group_states = states.clone();
+            let group_long = LongLinks {
+                passes: long_passes.clone(),
+                timeout,
+                interval: heartbeat,
+            };
             let handle = spawn_named(format!("nagaya-group-{index}"), move || {
                 guard("group", &group_guard, || {
                     pin("group", group_cpus.as_deref());
@@ -1192,6 +1202,7 @@ impl Start {
                         fd_store: group_fd_store,
                         ledger: group_ledger,
                         states: group_states,
+                        long: group_long,
                     };
                     group_thread(index, jobs, links, heartbeat);
                 });
@@ -1226,6 +1237,7 @@ impl Start {
             failure: Arc::new(Mutex::new(None)),
             states,
             released: Released::default(),
+            long_passes,
             stopped: false,
         })
     }
@@ -1306,6 +1318,8 @@ struct GroupLinks {
     ledger: Sender<LedgerMessage>,
     /// The state of each engine. The group writes the states of its own engines (spec 3.3b).
     states: EngineStates,
+    /// The links of the long passes of the engines that the group opens (engine-abi D8).
+    long: LongLinks,
 }
 
 fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: Duration) {
@@ -1344,7 +1358,12 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
             later.push(index);
             continue;
         }
-        match in_place::open(&mut members[index].job, links.fd_store.as_ref()) {
+        match in_place::open(
+            &mut members[index].job,
+            links.fd_store.as_ref(),
+            (group, None),
+            &links.long,
+        ) {
             Ok((engine, handles, info)) => {
                 engines[index] = engine;
                 members[index].handles = handles;
@@ -1437,6 +1456,7 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
                     ledger: &links.ledger,
                     fd_store: links.fd_store.as_ref(),
                     states: &links.states,
+                    long: &links.long,
                 };
                 in_place::swap(group, &mut members, &mut engines, plan, swap_links, interval);
                 if links
@@ -1689,7 +1709,7 @@ fn park_group(names: &[String], engines: &mut [Box<dyn Engine>], store: Option<&
     report
 }
 
-fn watchdog(messages: Receiver<WatchMessage>, events: Sender<Event>, timeout: Duration) {
+fn watchdog(messages: Receiver<WatchMessage>, events: Sender<Event>, timeout: Duration, passes: LongPasses) {
     // The key is the group, and the stage for a stage thread.
     let mut watches: BTreeMap<(usize, Option<usize>), Watch> = BTreeMap::new();
     let poll = (timeout / 4).clamp(Duration::from_millis(5), Duration::from_millis(250));
@@ -1730,11 +1750,31 @@ fn watchdog(messages: Receiver<WatchMessage>, events: Sender<Event>, timeout: Du
             Err(RecvTimeoutError::Timeout) => {}
         }
         let now = Instant::now();
-        let stalled: Vec<(usize, Option<usize>)> = watches
+        // The table of long passes decides for each watch with a long pass. A pass past its bound gives one
+        // report (engine-abi D8).
+        let judged = passes.judge(now);
+        for ((group, _), bound_ms) in &judged.over_bound {
+            tracing::warn!(
+                group,
+                bound_ms,
+                "a long pass runs past the bound that its engine declared; at its deadline the process stops \
+                 (spec 7.4)"
+            );
+        }
+        // A watch with a long pass in time does not read its beats. The end of a long pass in time is a beat. Any
+        // other watch reads the timeout (spec 7.4).
+        let mut stalled: Vec<(usize, Option<usize>)> = watches
             .iter()
-            .filter(|(_, watch)| now.duration_since(watch.last) > timeout)
+            .filter(|(key, watch)| {
+                if judged.running.contains(key) {
+                    return false;
+                }
+                let last = judged.ended.get(key).map_or(watch.last, |ended| watch.last.max(*ended));
+                now.duration_since(last) > timeout
+            })
             .map(|(key, _)| *key)
             .collect();
+        stalled.extend(judged.late.iter().copied());
         for key in stalled {
             if let Some(watch) = watches.remove(&key) {
                 let _ = events.send(Event::Stalled {
@@ -1912,6 +1952,8 @@ pub struct Ports {
     states: EngineStates,
     /// The released devices, each with the engines that it holds (spec 3.3b, "The release of a device").
     released: Released,
+    /// The long passes that run now (engine-abi D8, spec 7.4).
+    long_passes: LongPasses,
 }
 
 impl Ports {
@@ -1928,6 +1970,11 @@ impl Ports {
             tracing::error!("{message}; the process stops (spec 8.5)");
             *failure = Some(message);
         }
+    }
+
+    /// The long passes that run now, which the route `busy` of a device shows (spec 7.4).
+    pub fn long_passes(&self) -> LongPasses {
+        self.long_passes.clone()
     }
 
     /// The first failure that a service saw outside a call, or `None`.
@@ -2277,6 +2324,8 @@ pub struct Process {
     states: EngineStates,
     /// The released devices. The process keeps them in memory only, so a start releases none (spec 3.3b).
     released: Released,
+    /// The long passes that run now (engine-abi D8).
+    long_passes: LongPasses,
     stopped: bool,
 }
 
@@ -2328,6 +2377,7 @@ impl Process {
             failure: Arc::clone(&self.failure),
             states: self.states.clone(),
             released: Arc::clone(&self.released),
+            long_passes: self.long_passes.clone(),
         }
     }
 

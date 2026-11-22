@@ -22,11 +22,19 @@ identity of the engine.
 | Target | Hardware | Engines |
 |---|---|---|
 | `gfx1151` | one AMD Strix Halo GPU with 128 GB of unified memory, through HIP | Qwen3.8, Qwen-Image 2.1 |
-| `bmg` | Intel Arc Pro B70 cards, through Level Zero and OpenCL C kernels | Gemma 4 (two cards), Qwen3-TTS, SDXL, EmbeddingGemma 2, LFM3 |
+| `bmg` | Intel Arc Pro B70 cards, through Level Zero and OpenCL C kernels | Gemma 4 (two cards), Qwen3-TTS, SDXL, EmbeddingGemma 2, LFM3, Inkling 2 |
 
 A crate name tells the kind, the model and the target: `nagaya-mk-qwen38-gfx1151` is the megakernel engine of
 Qwen3.8 on `gfx1151`. A family library, such as `nagaya-text-lfm3`, holds the tokenizer, the chat template and the
 reply parser of a model. It needs no GPU.
+
+### The profile of a megakernel
+
+A megakernel runs a whole pass in one launch, so a host profiler sees one long call. Thus the B70 interpreter has a
+profile binary. It holds the same ops, and it records a clock at the start and the end of each task. The ops keep
+their bits, and the binary of each engine keeps its bytes. The Inkling 2 engine has it first
+(`Inkling2Engine::open_profiled`, `tests/xe_profile.rs`), and milestone 36 holds its first profile. We will make the
+profile a feature of each engine.
 
 ## Status
 

@@ -37,6 +37,7 @@ impl FakeEmbedder {
             max_logit_rows: 0,
             slots: Vec::new(),
             max_quantum_ms: 1000,
+            max_long_quantum_ms: None,
             memory: MemoryLimits {
                 mandatory: vec![MandatoryTerm {
                     name: "weights".to_owned(),

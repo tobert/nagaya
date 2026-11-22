@@ -240,6 +240,9 @@ fn the_limits_hold_the_terms_the_taps_and_the_control_table_and_declare_no_loop(
     assert_eq!(table.table_bytes(), 1_769_472);
     // The bound leaves room over the slowest measured block, 2,020 ms at 164,352 positions (engine-abi D8).
     assert_eq!(l.max_quantum_ms, 5_000);
+    // The tower of the largest image runs in a long pass (engine-abi D8, "The time of a large image").
+    assert_eq!(l.max_long_quantum_ms.map(|ms| ms.get()), Some(180_000));
+    l.check().unwrap();
     // The reserve of 24 runs holds cycles 2 and 3. Layers 6 to 17 make a cycle (engine-abi "Inkling 2").
     assert_eq!(
         l.cycles,

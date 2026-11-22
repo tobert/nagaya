@@ -610,6 +610,7 @@ pub fn limits(b: &Backbone, config: &Config, weights: u64, vision: Option<Vision
         max_logit_rows: MAX_LOGIT_ROWS as u32,
         slots: slot_limits(b, &config.seqs(), config.extra_runs),
         max_quantum_ms: MAX_QUANTUM_MS,
+        max_long_quantum_ms: None,
         memory: MemoryLimits {
             mandatory,
             elastic: Vec::new(),

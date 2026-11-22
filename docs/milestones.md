@@ -546,7 +546,22 @@ might have a kaijutsu agent go after some". This milestone is a list of findings
 engine on one B70 card. Each item stands alone, and an agent may take any one. Add each new finding here.
 
 Amy set the order on 2026-11-21: "mostly we'll want some batching for when we want to try swarm or parallel
-contexts I think; we can focus on other perf gains first". Thus the items of the batch come last.
+contexts I think; we can focus on other perf gains first". On 2026-11-22 she let the agent choose the order: "if
+pulling swarm forward puts us on the right path I'm all for making it next". Thus the batch (items 10 to 12) comes
+next after item 1, and then the other items. Reasons:
+
+- With 8 rows, each run reads about 51 experts, so each expert gets one or two rows. That is the path of item 1.
+- Item 1 and `FLAG_TILED` both move bits. Back to back, the engine identity moves once, and the gap is measured once.
+- A batch shares the fixed costs of a step: the head, the dense weights and the task boundaries.
+
+**The ceiling of one row.** A decode step must read each weight that it uses once. At 3 cycles it reads these:
+
+- about 1.7 GB of experts and 0.92 GB of the head;
+- 0.5 to 1 GB of the other dense weights, an estimate (item 13).
+
+At 608 GB/s, with about 2 ms of task boundaries, a step takes at least 7 to 8 ms: 120 to 150 tokens each second.
+Persistent kernels seldom hold more than 60% to 70% of the bandwidth, so 60 to 90 tokens each second is a fair goal.
+A batch can pass this ceiling in the tokens of all its rows.
 
 **Where the engine is.** Milestone 35 step 5 measured it on 2026-11-21 (`effd4d2`):
 
@@ -648,15 +663,21 @@ The experts take 33.2 ms, 11 times their floor of about 3 ms. Two small ops run 
    can read the packed planes as fast with less work. The review of the binding by ChatGPT asked to measure both.
    - An up task reads about 24 MB in 507 us, about 47 GB/s. A down task reads about 12 MB in 184 us.
    - At half of 608 GB/s, the two ops take about 6 ms. Thus the gain is about 27 ms of a step.
-2. **Wider ops of the residual and the gates: 16.4 ms of a decode step.** `OP_ATTN_RESIDUAL` and `OP_MESSAGE_GATE`
-   take one work-group for each position. A decode step has one position, so 31 of 32 work-groups wait. Split each
-   one over more work-groups, with a fixed order of the sums.
-   - In one work-group, a subgroup takes a whole row of 2,304 values. Thus at most 5 of 64 subgroups work in the
-     first step of `OP_ATTN_RESIDUAL`.
-   - `OP_MESSAGE_GATE` reads the gate weights again for each position: about 1.2 MB. In a block of 512 it takes
-     143 ms. A form as matmuls over the block reads them once.
-   - The estimated gain is about 15 ms of a step. The matmul form of the gate can gain most of its 143 ms of a
-     block.
+2. **Wider ops of the residual and the gates: done on 2026-11-22.** `OP_ATTN_RESIDUAL` and `OP_MESSAGE_GATE` took
+   one work-group for each position, and one load for each step of a sum. They now spread over all 32 work-groups,
+   and each sum keeps the order of the host `dot`. Thus the bits and the engine identity did not change.
+   - A team of subgroups takes a position of the residual. The gate is two tasks: `OP_MESSAGE_GATE_DOWN` writes `g`
+     into the router rows, and `OP_MESSAGE_GATE` reads it.
+   - The sums read their rows with subgroup block reads: one read gives each lane 8 steps in the order of the host.
+     A position alone first copies its rows into local memory.
+   - A decode step at position 1,024 at 3 cycles: the residual takes 1.02 ms, not 6.35 ms. The gate takes 1.55 ms,
+     not 9.83 ms. The tasks of a step take 59.82 ms, not 71.85 ms.
+   - A prefill block of 512: the residual takes 11.74 ms, not 67.64 ms. The gate takes 32.06 ms, not 142.27 ms.
+   - `xe_feed` measured 17.3 tokens each second for a decode step, from 14.4. A prefill of 512 took 657 ms, from
+     801 ms.
+   - `tests/xe_bits.rs` compares the SHA-256 of the logits of 21 cases with a fixture. A change of bits fails it.
+   - Left: a decode task of the gate still takes 6 to 10 us, and the megakernel spills registers (6.8 KB a work
+     item). The gate as matmuls over a block can gain most of its 32 ms.
 3. **The chunk size of the attention: 7.1 ms of a decode step.** It is 256 keys on a sliding layer and 2,048 on a
    full layer (Proposed in the binding). At position 1,024, a full layer has 24 items for 512 teams: 401 us. Measure
    other sizes for a decode step and for a prefill. A new size changes bits.
@@ -672,8 +693,9 @@ The experts take 33.2 ms, 11 times their floor of about 3 ms. Two small ops run 
    tasks take about 1 ms. Join a small op to the task before it when it reads only its output. Examples: the clips
    with their matmul, or the gate with the output matmul.
 8. **The tower of an image** (milestone 35 step 9). An image of 4,096 by 4,096 px has 42,436 patches, and its
-   attention reads every pair. Its tower takes about 56,780 ms in one pass, 28 times `max_quantum_ms` (milestone 35
-   step 11). Decide between a flash form of that attention, a tower in several quanta, and a limit.
+   attention reads every pair. Its tower takes about 56,780 ms in one pass. Since 2026-11-22 it runs as a long pass
+   with a declared bound (engine-abi D8), and its card gate passed through the process. A flash form of that
+   attention, or a tower in several quanta, is now for its speed and for the wait of other work.
 9. **Long contexts.** A slot of one card holds 164,352 positions at 3 cycles, and 106,496 at up to 5 (milestone 35
    step 11). The keys and values in `bf16` would hold about twice as many, but they change bits: a new identity and a
    new gap. Two cards could hold the keys of the full layers on the second card.
@@ -696,6 +718,15 @@ The experts take 33.2 ms, 11 times their floor of about 3 ms. Two small ops run 
     expert bytes of a row alone. Most of the gain comes from the fixed costs that the rows share. They are the
     tasks, the weights of the attention and the idle rows of each dpas. Measure tokens each second at 1, 2, 4 and 8
     rows.
+
+**Also.**
+
+13. **Bytes in the profile.** Give each row of the profile the bytes that its tasks read, and their rate against
+    608 GB/s. Then each op shows its distance from its floor, and the ceiling above stops being an estimate. Amy,
+    2026-11-22, of the profile binary: "a super cool feature". The README names it as a feature to grow.
+14. **The register spills.** The megakernel spills about 6.8 KB of scratch for each work item at 128 GRF (5.8 KB
+    before item 2). A work-group of 1,024 threads cannot use the large GRF. Thus the time of each op depends on the
+    compiler. Find the ops that spill most, and measure a binary with fewer threads in each work-group.
 
 ## Milestone 37: Inkling 2 on GB10 (`sm_121`)
 

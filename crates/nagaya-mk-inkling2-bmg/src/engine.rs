@@ -20,7 +20,7 @@ use nagaya_mk_bmg::{IGC_REVISION, INKLING2_KERNEL, INKLING2_PROFILE_KERNEL, KERN
 use crate::device::{Device, OnCard};
 use crate::host::ops::HIDDEN;
 use crate::host::weights::LOGITS;
-use crate::media::HeldRows;
+use crate::media::{Grid, HeldRows};
 use crate::model::{self, Bufs, LAUNCH_TASKS, SlotMemory, TapBufs, TapRing, TaskRing};
 use crate::profile::Launch;
 use crate::spec::{self, Block, Config, FAMILY, HEAD_ROWS, Held, Model, Part, ROUTE_WORDS, Run, Source, Taps};
@@ -546,7 +546,7 @@ impl Inkling2Engine {
                 continue;
             };
             let mut tasks = Vec::new();
-            if !self.held_rows.holds(g, bytes) {
+            if !self.held_rows.holds(g, blake3::hash(bytes)) {
                 let card = &self.cluster.cards[0];
                 self.device.write(card, self.images.rows, bytes);
                 self.device.write(card, self.images.axes, &vision::axes(g));
@@ -752,6 +752,18 @@ impl Inkling2Engine {
     }
 }
 
+/// The grid and the patch rows of each image span of `block`, in the order of the spans. Latent spans have none.
+fn image_rows<'a>(segment: &'a Segment, block: &Block) -> Vec<(Grid, &'a [u8])> {
+    let nagaya_abi::SegmentInputs::TokensAndRows { rows, .. } = &segment.inputs else {
+        return Vec::new();
+    };
+    block
+        .spans
+        .iter()
+        .filter_map(|used| Some((used.span.grid()?, &rows[used.rows_at..used.rows_at + used.span.bytes()])))
+        .collect()
+}
+
 /// True when each byte is zero: the bytes of a run that a count does not reach.
 fn zeros(bytes: &[u8]) -> bool {
     bytes.iter().all(|b| *b == 0)
@@ -779,6 +791,22 @@ impl Engine for Inkling2Engine {
 
     fn limits(&self) -> Limits {
         self.limits.clone()
+    }
+
+    /// A pass that runs the tower of an image declares a bound from its count of tokens (`bound::pass_bound_ms`).
+    /// The held rows of the last image tell which towers run, as in `encode`.
+    fn pass_bound_ms(&self, segments: &[Segment], taps: &[Tap]) -> Result<Option<std::num::NonZeroU32>, String> {
+        // A pass that the checks refuse runs nothing, and `pass` gives the refusal.
+        let Ok((block, _)) = self.check_block(segments, taps) else {
+            return Ok(None);
+        };
+        // The bound hashes each image, and the pass hashes it again: about 20 ms for the largest image, against 843 ms
+        // for a later block of it (engine-abi "The bound of a pass with a tower").
+        let images = image_rows(&segments[0], &block)
+            .into_iter()
+            .map(|(grid, rows)| (grid, blake3::hash(rows)));
+        let towers: Vec<usize> = self.held_rows.towers(images).iter().map(|g| g.tokens()).collect();
+        Ok(crate::bound::pass_bound_ms(&towers))
     }
 
     fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {

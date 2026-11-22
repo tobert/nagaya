@@ -139,19 +139,49 @@ fn the_held_rows_run_the_tower_once_for_the_blocks_of_one_image() {
     let mut held = HeldRows::default();
     let g = Grid { rows: 2, columns: 2 };
     let (a, b) = (vec![1u8; 64], vec![2u8; 64]);
-    assert!(!held.holds(g, &a), "nothing is held at the start");
-    assert!(held.holds(g, &a), "the second block of the image");
+    assert!(!held.holds(g, blake3::hash(&a)), "nothing is held at the start");
+    assert!(held.holds(g, blake3::hash(&a)), "the second block of the image");
     assert_eq!(held.runs(), 1);
-    assert!(!held.holds(g, &b), "other patch rows are another image");
+    assert!(!held.holds(g, blake3::hash(&b)), "other patch rows are another image");
     assert!(
-        !held.holds(Grid { rows: 1, columns: 4 }, &b),
+        !held.holds(Grid { rows: 1, columns: 4 }, blake3::hash(&b)),
         "another grid is another image"
     );
-    assert!(!held.holds(g, &a), "the first image is held no more");
+    assert!(!held.holds(g, blake3::hash(&a)), "the first image is held no more");
     assert_eq!(held.runs(), 4);
     held.forget();
-    assert!(!held.holds(g, &a), "after a forget the tower runs again");
+    assert!(!held.holds(g, blake3::hash(&a)), "after a forget the tower runs again");
     assert_eq!(held.runs(), 5);
+}
+
+/// The towers of a pass follow the held rows as `holds` does, and they change nothing. Falsified by `towers` that
+/// skip the image that the pass itself held before.
+#[test]
+fn the_towers_of_a_pass_are_the_images_that_the_held_rows_lack() {
+    let mut held = HeldRows::default();
+    let g = Grid { rows: 2, columns: 2 };
+    let (a, b) = (vec![1u8; 64], vec![2u8; 64]);
+    assert_eq!(
+        held.towers([(g, blake3::hash(&a))]),
+        [g],
+        "nothing is held at the start"
+    );
+    assert_eq!(held.towers([(g, blake3::hash(&a))]), [g], "towers changed nothing");
+    assert!(!held.holds(g, blake3::hash(&a)));
+    assert_eq!(
+        held.towers([(g, blake3::hash(&a))]),
+        Vec::<Grid>::new(),
+        "a later block of the image"
+    );
+    assert_eq!(held.towers([(g, blake3::hash(&b))]), [g], "other rows of the same grid");
+    let other = Grid { rows: 1, columns: 4 };
+    assert_eq!(held.towers([(other, blake3::hash(&a))]), [other], "another grid");
+    // Image b replaces a in the held rows, so a runs again after it.
+    assert_eq!(
+        held.towers([(g, blake3::hash(&a)), (g, blake3::hash(&b)), (g, blake3::hash(&a))]),
+        [g, g]
+    );
+    assert_eq!(held.runs(), 1);
 }
 
 /// The record of `count` latent rows of `width` values from `first` (engine-abi "The lab of Inkling 2", "Latent

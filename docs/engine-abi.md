@@ -914,28 +914,40 @@ Each engine chooses the bound that suits its model and its device (Amy, 2026-11-
 below 10 s, and an engine can make its own tradeoff. Amy, 2026-11-22: "if we have a case where we need to allow for
 a continuous run for a few minutes let's make it possible."
 
-**Proposed (ChatGPT through kaibo `gpt-plan`, and Claude Opus 5.5, 2026-11-22): a long pass with a declared bound.**
-Today the watchdog does not read `max_quantum_ms`. It stops the process when a group sends no beat for 30 s, and a
-pass sends no beat (spec 7.4). Thus no pass can run for more than 30 s.
+**A long pass with a declared bound** (accepted 2026-11-22).
+Before this rule, the watchdog did not read `max_quantum_ms`. It stopped the process when a group sent no beat for
+30 s, and a pass sends no beat (spec 7.4). Thus no pass could run for more than 30 s. The rule is built, and spec 7.4
+("A long pass") gives the watchdog and the route.
 
-- `Limits` gets `max_long_quantum_ms: Option<NonZeroU32>`. `None` means that the engine has no long pass. When it is
-  set, it is more than `max_quantum_ms` and at most 180,000 ms.
-- `Engine` gets `pass_bound_ms(segments, taps) -> Result<Option<NonZeroU32>, String>`, with a default of `Ok(None)`.
-  It is a host call that does no device work and changes no state. `Some(b)` declares a long pass, and `b` is
-  more than `max_quantum_ms` and at most the ceiling. `Err` refuses the pass before it runs.
-- The scheduler gets the bound before it chooses a quantum. A long pass keeps the order of classes. It does not
-  start before ready work of a higher rank, and it is not joined with other segments.
+- `Limits` has `max_long_quantum_ms: Option<NonZeroU32>`. `None` means that the engine has no long pass. When it is
+  set, it is more than `max_quantum_ms` and at most `LONG_QUANTUM_CEILING_MS`, 180,000 ms. An engine with stages
+  declares none. `Limits::check` refuses each other value.
+- `Engine` has `pass_bound_ms(segments, taps) -> Result<Option<NonZeroU32>, String>`, with a default of `Ok(None)`.
+  It is a host call that does no device work and changes no state. `Some(b)` declares a long pass. `Err` refuses the
+  pass before it runs.
+- `Limits::check_pass_bound` holds the rules of `b`. The engine declares a ceiling, and `b` is more than
+  `max_quantum_ms` and at most the ceiling. The pass holds one segment. A bound that breaks a rule refuses the pass
+  before it runs.
+- The process asks for the bound of each pass just before the pass, after the scheduler chose the quantum. A long
+  pass keeps the order of classes. The scheduler runs the ready quantum of the highest rank, and it joins only
+  plain decode rows of one token.
 - The watchdog arms a deadline for that pass alone: its start plus the larger of the timeout and `b` plus the beat
   interval. An ordinary pass keeps the timeout of 30 s. A pass past `b` gives one report. A pass past the deadline
-  stops the process, as a stall does now. A result that returns after its deadline is never published.
-- A read-only route shows the long pass to other clients: the group, the devices, `bound_ms`, `elapsed_ms` and
-  `overdue`.
+  stops the process, as a stall does. A result that returns after its deadline is never published.
+- The read-only route `GET /nagaya/v1/devices/{id}/busy` shows the long pass to other clients: the group, the devices,
+  `bound_ms`, `elapsed_ms` and `overdue`.
+- The scheduler does not read the bound. It chooses by the order of classes, as for each quantum. The bound comes
+  from the segments, and the body of a job builds them in its quantum, after the choice. Decided 2026-11-22. Amy:
+  "if I want to prioritize interactive work, the thing should be scheduled as batch in the first place".
 - Not in the first version: a long stage quantum, and beats from the device while a pass runs.
 - Reason: a group timeout that grows with the largest bound slows the detection of a real hang in every pass. A
   bound for each kind of pass cannot tell a short feed block from a long one. A declared bound for each pass keeps
-  the health check of each ordinary pass, and the scheduler knows the wait before it starts.
-- The Inkling 2 engine is the first user: the tower of a large image, about 57 s, in one pass. Tower slices (D8,
-  "The time of a large image") stay the better path where they give useful boundaries.
+  the health check of each ordinary pass.
+- The Inkling 2 engine is the first user: the tower of a large image, about 57 s, in one pass ("The time of a large
+  image"). Tower slices (D8, "The time of a large image") stay the better path where they give useful boundaries.
+- The image calls of SDXL and Qwen-Image do not use `pass`, so they get no long pass. They declare a
+  `max_quantum_ms` of 60,000, which the watchdog does not read. Each of their quanta is one step or one decode, and
+  each such quantum must still end within the timeout of 30 s.
 
 ds4-recipe chose cooperative yields after a short turn waited 283.95 s behind a long prefill. The nagaya uses the
 bounded wait instead.
@@ -1818,9 +1830,25 @@ choice open.
   media rows of a block, 2,304 `f32` values for each position. For a block of 512 that is 1,870,588,096 bytes more.
 - **The time of a large image.** The card gate `tests/xe_long.rs` measured an image of 4,096 by 4,096 px, 10,609
   tokens, on 2026-11-21. Its tower takes about 56,780 ms in the pass of its first block, and a later block takes
-  843 ms. The bound `max_quantum_ms` is 5,000 ms (D8), and the watchdog stops a group with no beat for 30 s (spec
-  7.4). Thus such a pass breaks the bound, and in the process it can stop the process. This is a known defect, not
-  an exception to the bound.
+  843 ms. The bound `max_quantum_ms` is 5,000 ms, so that pass is a long pass (D8, "A long pass with a declared
+  bound"). The ceiling `max_long_quantum_ms` is 180,000 ms.
+- **The bound of a pass with a tower** (accepted 2026-11-22). `pass_bound_ms` finds the towers
+  that the pass runs, from the held rows, as the pass does. The tower of an image of `n` tokens takes about
+  56,780 ms times the square of `n / 10,609`. Reason: its attention reads each pair of patches. The bound is 1.5
+  times the sum of the towers plus 2,020 ms, the slowest text block, up to the ceiling (`src/bound.rs`).
+  - The largest image gives 88,200 ms. A pass with no tower, or whose bound is 5,000 ms or less, declares none. An
+    image of 1,614 tokens or more declares a bound.
+  - A square law can be low for a small image. That does no harm: the deadline is never less than the timeout of
+    30 s.
+  - The bound changes no state, so it hashes the rows of each image, and the pass hashes them again. One hash of
+    the largest image, 203,692,800 bytes, took 20.4 ms on the B70 machine (BLAKE3, a release build, 2026-11-22).
+    That is 2.4% of the 843 ms of a later block, and about 430 ms over the 21 blocks of the image. A cache keyed by
+    the address of the rows was refused: a stale entry could skip a tower and give wrong bits.
+  - The square law rests on one measurement, the largest image. A measurement of smaller images can change the
+    rule.
+  - The card gate `crates/nagaya/tests/xe_inkling2_long_pass.rs` runs a cold image of 4,096 px through the process,
+    with the watchdog at its defaults. It passed on card 0 on 2026-11-22, on `7f6880a`. The pass of 10,631 tokens
+    declared 88,200 ms, and the route showed 57,309 ms elapsed with `overdue` false. The generation took 75,073 ms.
 - **The tower in quanta of its own** (from ChatGPT through kaibo `gpt-plan`, 2026-11-21; accepted 2026-11-22 under
   D8). The family keeps the bound of 4,096 px. The tower runs in quanta before the pass that reads its rows. Each
   quantum fits `max_quantum_ms`.
@@ -1956,7 +1984,7 @@ Opus 5.5, 2026-11-21).
   statistics and a staging buffer of 64 MiB, as for LFM3.
 - **The limits.** One segment in each pass, and 16 logit rows. `max_quantum_ms` is 5,000 (D8, 2026-11-22). The slowest
   text pass of the long gate took 1,768 ms. A block at 164,352 positions takes about 2,020 ms, from a line through
-  the measured blocks. The tower of a large image breaks the bound ("The time of a large image"). The
+  the measured blocks. The tower of a large image runs in a long pass ("The time of a large image"). The
   capabilities are `parts`, `slots`, `coverage`, `close` and `cycles`.
 - **Not declared.** `layer_loops`. A pass with a layer loop is refused. "The lab of Inkling 2" adds the taps,
   `control` and latent rows.
