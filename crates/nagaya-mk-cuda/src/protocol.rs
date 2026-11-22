@@ -70,6 +70,13 @@ define_u16_table! {
     OP_INKLING2_VISION_ROPE = 181;
     OP_INKLING2_VISION_ATTN = 182;
     OP_INKLING2_CONTROL = 190;
+
+    // Test opcodes. They gate the scoreboard in `tests/cuda_smoke.rs`. An engine does not use them.
+    // `OP_SELFTEST_FILL`: block `n` writes `p0` words at `a + n * p0` words, after a delay of `p1` ns in block `p2`.
+    // `OP_SELFTEST_CHECK`: each block reads the words of all blocks and writes its count of wrong words to `d[block]`.
+    // Both use the seed `p3` for the value of each word.
+    OP_SELFTEST_FILL = 250;
+    OP_SELFTEST_CHECK = 251;
 }
 
 define_u16_table! {
@@ -127,4 +134,9 @@ pub struct BlockStats {
     pub pad: u32,
     pub wait_ns: u64,
     pub exec_ns: u64,
+}
+
+/// The value that `OP_SELFTEST_FILL` writes for word `index` of block `owner` under `seed`. It is never zero.
+pub fn selftest_value(seed: u32, owner: u32, index: u32) -> u32 {
+    (seed.wrapping_mul(0x9E37_79B1) ^ owner.wrapping_mul(0x85EB_CA6B) ^ index.wrapping_mul(0xC2B2_AE35)) | 1
 }

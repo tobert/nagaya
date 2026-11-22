@@ -9,7 +9,9 @@
 use std::ffi::c_void;
 
 use nagaya_mk_cuda::driver::CudaDevice;
-use nagaya_mk_cuda::protocol::{MkTaskDescriptor, OP_COPY, OP_NOP, PROFILE_WORDS};
+use nagaya_mk_cuda::protocol::{
+    MkTaskDescriptor, OP_COPY, OP_NOP, OP_SELFTEST_CHECK, OP_SELFTEST_FILL, PROFILE_WORDS, selftest_value,
+};
 use nagaya_mk_cuda::ring::Ring;
 use nagaya_mk_cuda::{INKLING2_CUBIN, INKLING2_PROFILE_CUBIN, test_cards};
 
@@ -169,4 +171,140 @@ fn a_grid_that_is_not_resident_is_refused_before_the_launch() {
         error.contains(&format!("Use a grid of {resident} blocks or fewer")),
         "{error}"
     );
+}
+
+/// Words that each block writes in the scoreboard test.
+const WORDS_PER_BLOCK: usize = 1024;
+/// Delay of the slow block of a fill, in ns. It is long enough for the other blocks to reach the next task.
+const DELAY_NS: u32 = 300_000;
+
+/// The tasks of one round: fill, check, fill again with a new seed and a new slow block, check again, then two nops.
+fn scoreboard_tasks(data: u64, out1: u64, out2: u64, slow_a: u32, slow_b: u32) -> Vec<MkTaskDescriptor> {
+    let fill = |seed: u32, slow: u32| MkTaskDescriptor {
+        opcode: OP_SELFTEST_FILL,
+        a: data,
+        p0: WORDS_PER_BLOCK as u32,
+        p1: DELAY_NS,
+        p2: slow,
+        p3: seed,
+        ..Default::default()
+    };
+    let check = |seed: u32, out: u64| MkTaskDescriptor {
+        opcode: OP_SELFTEST_CHECK,
+        a: data,
+        d: out,
+        p0: WORDS_PER_BLOCK as u32,
+        p3: seed,
+        ..Default::default()
+    };
+    let nop = MkTaskDescriptor {
+        opcode: OP_NOP,
+        ..Default::default()
+    };
+    vec![
+        fill(1, slow_a),
+        check(1, out1),
+        fill(2, slow_b),
+        check(2, out2),
+        nop,
+        nop,
+    ]
+}
+
+/// Run the ring in a thread with a watchdog, so that a hang fails the test.
+fn run_with_watchdog(ring: &Ring<'_>) {
+    let done = std::sync::atomic::AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            for _ in 0..300 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                if done.load(std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
+            }
+            eprintln!("cuda_smoke: the ring did not finish within 30 s; it hangs");
+            std::process::exit(2);
+        });
+        unsafe { ring.run().unwrap() };
+        done.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+}
+
+#[test]
+fn the_scoreboard_orders_the_tasks_of_all_blocks() {
+    let pci = test_cards::card();
+    let dev = CudaDevice::open_by_pci(&pci, INKLING2_PROFILE_CUBIN).expect("open GB10 with the profile cubin");
+    let mut ring = Ring::new(&dev, 1024, true).unwrap();
+    let blocks = ring.grid_blocks() as usize;
+    let data_words = blocks * WORDS_PER_BLOCK;
+    let data = dev.alloc_device(data_words * 4).unwrap();
+    let out1 = dev.alloc_device(blocks * 4).unwrap();
+    let out2 = dev.alloc_device(blocks * 4).unwrap();
+
+    for round in 0..6 {
+        // A word that no block writes stays zero, and the check counts it as wrong.
+        dev.memset_zero(data, data_words * 4).unwrap();
+        dev.memset_zero(out1, blocks * 4).unwrap();
+        dev.memset_zero(out2, blocks * 4).unwrap();
+        let slow_a = (blocks - 1 - round % blocks) as u32;
+        let slow_b = (round * 7 % blocks) as u32;
+        ring.set(&scoreboard_tasks(data, out1, out2, slow_a, slow_b));
+        run_with_watchdog(&ring);
+
+        // Each block read the words of all other blocks, and found each one right.
+        for (name, out) in [("first", out1), ("second", out2)] {
+            let mut wrong = vec![u32::MAX; blocks];
+            unsafe {
+                dev.copy_dtoh(wrong.as_mut_ptr().cast::<c_void>(), out, blocks * 4)
+                    .unwrap()
+            };
+            assert!(
+                wrong.iter().all(|&w| w == 0),
+                "round {round}: a block read stale words in the {name} check: {wrong:?}"
+            );
+        }
+        // The check is not empty: the words hold the pattern of the second seed.
+        let mut words = vec![0u32; data_words];
+        unsafe {
+            dev.copy_dtoh(words.as_mut_ptr().cast::<c_void>(), data, data_words * 4)
+                .unwrap()
+        };
+        for (k, &got) in words.iter().enumerate() {
+            let want = selftest_value(2, (k / WORDS_PER_BLOCK) as u32, (k % WORDS_PER_BLOCK) as u32);
+            assert_eq!(got, want, "round {round}: word {k}");
+        }
+
+        // Each signalled event holds one count for each block. Event 0 has no task that signals it.
+        let tasks = 6;
+        let scoreboard = ring.read_scoreboard().unwrap();
+        assert_eq!(scoreboard.len(), tasks + 2);
+        assert_eq!(scoreboard[0], 0, "round {round}: event 0");
+        for (event, &count) in scoreboard.iter().enumerate().take(tasks + 1).skip(1) {
+            assert_eq!(count, blocks as u32, "round {round}: event {event}");
+        }
+        assert_eq!(scoreboard[tasks + 1], 0, "round {round}: the halt signals no event");
+
+        // Task i + 1 leaves its wait in each block no earlier than the last end of task i in any block.
+        let prof = ring.read_profile().unwrap();
+        let slot = |task: usize, block: usize| {
+            let base = (task * blocks + block) * PROFILE_WORDS;
+            (prof[base], prof[base + 1], prof[base + 2])
+        };
+        for task in 0..tasks {
+            let last_end = (0..blocks).map(|b| slot(task, b).2).max().unwrap();
+            for block in 0..blocks {
+                let after_wait = slot(task + 1, block).1;
+                assert!(
+                    after_wait >= last_end,
+                    "round {round}: block {block} left the wait of task {} {} ns before task {task} ended",
+                    task + 1,
+                    last_end - after_wait
+                );
+            }
+        }
+    }
+    ring.free().unwrap();
+    dev.free_device(data).unwrap();
+    dev.free_device(out1).unwrap();
+    dev.free_device(out2).unwrap();
 }

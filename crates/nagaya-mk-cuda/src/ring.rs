@@ -125,6 +125,14 @@ impl<'d> Ring<'d> {
         Ok(out)
     }
 
+    /// Read back the scoreboard after the last run: one counter for each event from 0 to `len + 1`.
+    pub fn read_scoreboard(&self) -> Result<Vec<u32>, String> {
+        let dev = self.dev;
+        let mut out = vec![0u32; self.len + 2];
+        unsafe { dev.copy_dtoh(out.as_mut_ptr().cast::<c_void>(), self.scoreboard, out.len() * 4)? };
+        Ok(out)
+    }
+
     /// Read back `%globaltimer` timestamps (`[start, after_wait, end]` per task per block) from the last profiled run.
     pub fn read_profile(&self) -> Result<Vec<u64>, String> {
         let dev = self.dev;

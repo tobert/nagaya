@@ -97,6 +97,48 @@ __device__ __forceinline__ void op_copy(const MkTaskDescriptor& task) {
     }
 }
 
+// The value that OP_SELFTEST_FILL writes. It is never zero, so a word that no block wrote is wrong. The same function
+// is `selftest_value` in src/protocol.rs.
+__device__ __forceinline__ uint32_t selftest_value(uint32_t seed, uint32_t owner, uint32_t index) {
+    return ((seed * 0x9E3779B1u) ^ (owner * 0x85EBCA6Bu) ^ (index * 0xC2B2AE35u)) | 1u;
+}
+
+// Block n writes p0 words at a + n * p0 words. Block p2 waits p1 ns first, so that it is the last to write.
+__device__ __forceinline__ void op_selftest_fill(const MkTaskDescriptor& task) {
+    uint32_t* data = reinterpret_cast<uint32_t*>(task.a);
+    const uint32_t words = task.p0;
+    if (blockIdx.x == task.p2 && threadIdx.x == 0) {
+        const uint64_t until = globaltimer_ns() + task.p1;
+        while (globaltimer_ns() < until) {
+        }
+    }
+    __syncthreads();
+    for (uint32_t i = threadIdx.x; i < words; i += blockDim.x) {
+        data[static_cast<uint64_t>(blockIdx.x) * words + i] = selftest_value(task.p3, blockIdx.x, i);
+    }
+}
+
+// Each block reads the words of all blocks and counts the words that differ from selftest_value. Thread 0 writes the
+// count to d[blockIdx.x].
+__device__ __forceinline__ void op_selftest_check(const MkTaskDescriptor& task) {
+    const uint32_t* data = reinterpret_cast<const uint32_t*>(task.a);
+    uint32_t* out = reinterpret_cast<uint32_t*>(task.d);
+    const uint32_t words = task.p0;
+    const uint64_t total = static_cast<uint64_t>(gridDim.x) * words;
+    uint32_t wrong = 0;
+    for (uint64_t base = 0; base < total; base += blockDim.x) {
+        const uint64_t k = base + threadIdx.x;
+        bool differs = false;
+        if (k < total) {
+            differs = data[k] != selftest_value(task.p3, static_cast<uint32_t>(k / words), static_cast<uint32_t>(k % words));
+        }
+        wrong += __syncthreads_count(differs);
+    }
+    if (threadIdx.x == 0) {
+        out[blockIdx.x] = wrong;
+    }
+}
+
 extern "C" __global__ void mk_persistent_interpreter(
     const MkTaskDescriptor* __restrict__ tasks,
     uint32_t num_tasks,
@@ -156,6 +198,12 @@ extern "C" __global__ void mk_persistent_interpreter(
                 break;
             case OP_COPY:
                 op_copy(task);
+                break;
+            case OP_SELFTEST_FILL:
+                op_selftest_fill(task);
+                break;
+            case OP_SELFTEST_CHECK:
+                op_selftest_check(task);
                 break;
             default:
                 // Unknown opcode: trap rather than silently corrupt state (spec 8.5).
