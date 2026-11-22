@@ -49,8 +49,10 @@ pub const MAX_SLOT_TOKENS: usize = 1_048_576;
 /// 164,352 positions. The bound leaves room over it and stays under the 10 s of the guidance of D8.
 pub const MAX_QUANTUM_MS: u32 = 5_000;
 
-/// The most segments in a pass. A batch of decode rows comes later.
-pub const MAX_SEGMENTS: u32 = 1;
+/// The most segments in a pass. Two or more segments are a batch of decode rows, each on its own slot. The tiled path
+/// of the matmuls and the row path of the experts keep the bits of a row for 1 to 8 rows (engine-abi "A batch of
+/// decode rows").
+pub const MAX_SEGMENTS: u32 = crate::model::MAX_BATCH_ROWS as u32;
 
 /// The most logit rows of one pass.
 pub const MAX_LOGIT_ROWS: usize = 16;
@@ -795,7 +797,8 @@ pub fn limits(config: &Config, weights: u64) -> Limits {
         inputs: Inputs::TokensAndRows,
         devices: vec![0],
         stages: Vec::new(),
-        max_segments: MAX_SEGMENTS,
+        // A batch has one row for each segment, and the buffers hold `max_block` rows.
+        max_segments: MAX_SEGMENTS.min(config.max_block as u32),
         max_pass_inputs: config.max_block as u32,
         max_logit_rows: MAX_LOGIT_ROWS as u32,
         slots: slot_limits(&config.seqs(), config.extra_runs),
@@ -1180,7 +1183,7 @@ impl Held {
     pub fn check_pass(&self, segments: &[Segment], max_block: usize) -> Result<Block, String> {
         let [segment] = segments else {
             return Err(format!(
-                "the pass has {} segments; the engine takes {MAX_SEGMENTS}",
+                "the pass has {} segments; a block has one, and a batch has 2 to {MAX_SEGMENTS}",
                 segments.len()
             ));
         };
@@ -1288,6 +1291,59 @@ impl Held {
             spans,
             control: segment.control.clone(),
         })
+    }
+
+    /// Check a batch before it changes anything, and give the block of each segment (engine-abi "A batch of decode
+    /// rows"). The message says which rule breaks.
+    ///
+    /// - A batch has 2 to `MAX_SEGMENTS` segments, and no more than `max_block`: the buffers hold one row of each.
+    /// - Each segment passes the checks of a pass alone (`check_pass`). It is one token with no media, and it asks
+    ///   for the logits of its token.
+    /// - The segments are on slots of their own. They have one control list and one count of cycles.
+    pub fn check_batch(&self, segments: &[Segment], max_block: usize) -> Result<Vec<Block>, String> {
+        let most = (MAX_SEGMENTS as usize).min(max_block);
+        if !(2..=most).contains(&segments.len()) {
+            return Err(format!(
+                "the pass has {} segments; a batch has 2 to {most}, each one decode token on its own slot",
+                segments.len()
+            ));
+        }
+        let mut blocks: Vec<Block> = Vec::with_capacity(segments.len());
+        for (i, segment) in segments.iter().enumerate() {
+            let block = self
+                .check_pass(std::slice::from_ref(segment), max_block)
+                .map_err(|why| format!("segment {i}: {why}"))?;
+            if block.tokens.len() != 1 || !matches!(segment.inputs, SegmentInputs::Tokens(_)) {
+                return Err(format!(
+                    "segment {i} has {} tokens; each segment of a batch is one decode token with no media",
+                    block.tokens.len()
+                ));
+            }
+            if block.logit_rows != [0] {
+                return Err(format!(
+                    "segment {i} asks for {} logit rows; each segment of a batch gives the logits of its token",
+                    block.logit_rows.len()
+                ));
+            }
+            if let Some(j) = blocks.iter().position(|b| b.slot == block.slot) {
+                return Err(format!("segments {j} and {i} are both on slot {}", block.slot));
+            }
+            if segment.control != segments[0].control {
+                return Err(format!(
+                    "segment {i} has another control list than segment 0; a batch has one list"
+                ));
+            }
+            if let Some(first) = blocks.first()
+                && block.cycles != first.cycles
+            {
+                return Err(format!(
+                    "segment {i} runs {} cycles, and segment 0 runs {}; the rows of a batch run one count",
+                    block.cycles, first.cycles
+                ));
+            }
+            blocks.push(block);
+        }
+        Ok(blocks)
     }
 
     /// Check a probe of the oracle (8.3): `ids` from position 0 of `slot` at the default count, as if the slot were

@@ -1,7 +1,7 @@
 use super::*;
 use nagaya_mk_bmg::protocol::{
-    OP_ATTN_RESIDUAL, OP_COPY, OP_EMBED, OP_INKLING2_ATTN, OP_INKLING2_CONTROL, OP_MATMUL, OP_MESSAGE_GATE,
-    OP_MESSAGE_GATE_DOWN, OP_RESIDUAL_CONV, OP_SIGMOID_ROUTER,
+    OP_ATTN_RESIDUAL, OP_COPY, OP_EMBED, OP_HEAD_CLIP, OP_INKLING2_ATTN, OP_INKLING2_ATTN_SUM, OP_INKLING2_CONTROL,
+    OP_MATMUL, OP_MESSAGE_GATE, OP_MESSAGE_GATE_DOWN, OP_RESIDUAL_CONV, OP_SIGMOID_ROUTER,
 };
 
 use crate::host::weights::CYCLE_END;
@@ -701,6 +701,241 @@ fn each_matmul_of_a_pass_takes_the_tiled_path() {
         );
         for t in matmuls {
             assert_ne!(t.flags & FLAG_TILED, 0, "a block of {n}: a matmul of {} rows", t.m);
+        }
+    }
+}
+
+/// Slots for a batch, at addresses that do not overlap the fixture: one of 32,768 positions with a ring that wraps,
+/// one short slot, and another long one.
+fn batch_slots() -> Vec<SlotMemory> {
+    let mut next = 1u64 << 46;
+    let mut z = move |bytes: usize| {
+        let at = next;
+        next += spec::rounded(bytes) as u64;
+        at
+    };
+    [32_768, 2_048, 32_768]
+        .into_iter()
+        .map(|seq| SlotMemory::new(&mut z, seq, DEFAULT_EXTRA_RUNS))
+        .collect()
+}
+
+/// The ops that a context runs on its own slot: the convolutions, the clips, the attention and the copies of a
+/// ring's spill.
+fn slot_op(t: &MkTaskDescriptor, slot: &SlotMemory) -> bool {
+    t.opcode == OP_INKLING2_ATTN_SUM || [t.a, t.b, t.c, t.x].into_iter().any(|at| inside(slot, at))
+}
+
+/// True when `at` is in the memory of `slot`. The counter gives a slot one span: the plane and the conv part of each
+/// state in turn.
+fn inside(slot: &SlotMemory, at: u64) -> bool {
+    (slot.planes[0]..*slot.conv.last().unwrap() + spec::CONV_BYTES).contains(&at)
+}
+
+/// A clip with the log scale of a full layer, which reads the position of its row.
+fn log_clip(t: &MkTaskDescriptor) -> bool {
+    t.opcode == OP_HEAD_CLIP && t.layer & 256 != 0
+}
+
+/// What a task of a slot op does, without the rows of the buffers that it reads: its op, its sizes, its positions and
+/// the addresses that it reads or writes in the slot.
+fn slot_shape(t: &MkTaskDescriptor, slot: &SlotMemory) -> (u16, u32, u32, u32, u32, u32, u16, [u64; 4]) {
+    let keep = |at: u64| if inside(slot, at) { at } else { 0 };
+    (
+        t.opcode,
+        t.n,
+        t.m,
+        t.k,
+        t.p0,
+        t.layer,
+        t.flags,
+        [t.a, t.b, t.c, t.x].map(keep),
+    )
+}
+
+fn tasks_of(p: &Pass) -> Vec<MkTaskDescriptor> {
+    p.head
+        .iter()
+        .chain(p.runs.iter().flatten())
+        .chain(&p.tail)
+        .copied()
+        .collect()
+}
+
+/// A batch of one row is the pass of one token alone, task for task (milestone 36 item 11).
+#[test]
+fn a_batch_of_one_row_is_the_pass_of_its_token_alone() {
+    let f = fixture(32_768);
+    for pos in [0, 1_024, 5_000] {
+        let alone = f.pass(pos, 1, Some(&[0]));
+        let rows = [(&f.slot, pos)];
+        let one = batch(
+            &f.w,
+            &f.bufs,
+            Batch {
+                rows: &rows,
+                runs: &f.runs,
+                control: &[],
+            },
+        );
+        assert_eq!(
+            format!("{:?}", tasks_of(&one)),
+            format!("{:?}", tasks_of(&alone)),
+            "a row at {pos}"
+        );
+    }
+}
+
+/// Each row of a batch runs the slot ops of its pass alone on its own slot, at its own position. The other ops run
+/// once over all the rows, with the weights of the pass alone (engine-abi "A batch of decode rows").
+#[test]
+fn each_row_of_a_batch_runs_the_slot_ops_of_its_pass_alone() {
+    let f = fixture(32_768);
+    let slots = batch_slots();
+    let rows: Vec<(&SlotMemory, usize)> = slots.iter().zip([5_000usize, 1_500, 0]).collect();
+    let got = tasks_of(&batch(
+        &f.w,
+        &f.bufs,
+        Batch {
+            rows: &rows,
+            runs: &f.runs,
+            control: &[],
+        },
+    ));
+    let k = rows.len();
+    let mut shared = Vec::new();
+    for (i, (slot, pos)) in rows.iter().enumerate() {
+        let alone = tasks_of(&pass(
+            &f.w,
+            &f.bufs,
+            TaskRing {
+                slot,
+                pos0: *pos,
+                n: 1,
+                runs: &f.runs,
+                upto: f.runs.len(),
+                logit_rows: Some(&[0]),
+                after_embed: &[],
+                control: &[],
+                taps: None,
+            },
+        ));
+        let want: Vec<_> = alone
+            .iter()
+            .filter(|t| slot_op(t, slot))
+            .map(|t| slot_shape(t, slot))
+            .collect();
+        // The clips with the log scale of row i read its queries and its position, as the pass alone does.
+        let clips = |ts: &[MkTaskDescriptor], row: usize| -> Vec<(u32, u32, u64)> {
+            ts.iter()
+                .filter(|t| {
+                    log_clip(t)
+                        && (t.a == f.bufs.q + (row * HEADS * HEAD_DIM * 4) as u64
+                            || t.a == f.bufs.rel + (row * HEADS * D_REL * 4) as u64)
+                })
+                .map(|t| (t.n, t.p0, t.b))
+                .collect()
+        };
+        assert_eq!(clips(&got, i), clips(&alone, 0), "the log clips of row {i}");
+        assert_eq!(
+            clips(&alone, 0).len(),
+            2 * 8,
+            "two log clips in each of the 8 full runs"
+        );
+        // Each other row's slot ops name its own slot, so the filter of this slot finds only the ops of row i.
+        let mine: Vec<&MkTaskDescriptor> = got
+            .iter()
+            .filter(|t| {
+                if t.opcode == OP_INKLING2_ATTN_SUM {
+                    t.c == f.bufs.attn + (i * HEADS * HEAD_DIM * 4) as u64
+                } else {
+                    slot_op(t, slot)
+                }
+            })
+            .collect();
+        let have: Vec<_> = mine.iter().map(|t| slot_shape(t, slot)).collect();
+        assert_eq!(have.len(), want.len(), "row {i} at {pos}");
+        assert_eq!(have, want, "row {i} at {pos}");
+        // The slot ops of the row read and write row i of the buffers.
+        for t in mine.iter().filter(|t| t.opcode == OP_INKLING2_ATTN) {
+            assert_eq!(
+                t.a,
+                f.bufs.q + (i * HEADS * HEAD_DIM * 4) as u64,
+                "the queries of row {i}"
+            );
+            assert_eq!(
+                t.c,
+                f.bufs.rel + (i * HEADS * D_REL * 4) as u64,
+                "the bias states of row {i}"
+            );
+        }
+        // The convolutions and the clips read and write row i of the buffers: the row of the pass alone, i rows on.
+        let alone_ops: Vec<&MkTaskDescriptor> = alone.iter().filter(|t| slot_op(t, slot)).collect();
+        for (g, a) in mine.iter().zip(&alone_ops) {
+            let (input, output) = match g.opcode {
+                OP_RESIDUAL_CONV => (g.m & 0xFFFF, g.k),
+                OP_HEAD_CLIP => (g.m * g.k, g.m * g.k),
+                _ => continue,
+            };
+            let moved =
+                |have: u64, want: u64, width: u32| inside(slot, want) || have == want + (i * width as usize * 4) as u64;
+            assert!(
+                moved(g.a, a.a, input) && moved(g.c, a.c, output),
+                "op {} of row {i} reads or writes another row",
+                g.opcode
+            );
+        }
+        for t in mine.iter().filter(|t| t.opcode == OP_INKLING2_ATTN_SUM) {
+            assert_eq!(t.a, f.bufs.sinks + (i * HEADS * 4) as u64, "the sinks of row {i}");
+        }
+        if i == 0 {
+            shared = alone
+                .into_iter()
+                .filter(|t| !slot_op(t, slot) && !log_clip(t))
+                .collect();
+        }
+    }
+    // The ops of the weights run once over the k rows, in the order of the pass alone. The pass alone has one head;
+    // the batch has one for each row.
+    let ops: Vec<&MkTaskDescriptor> = got
+        .iter()
+        .filter(|t| !log_clip(t) && !rows.iter().any(|(slot, _)| slot_op(t, slot)))
+        .collect();
+    let alone_heads = shared
+        .iter()
+        .filter(|t| t.opcode == OP_MATMUL && t.m == HEAD_ROWS as u32)
+        .count();
+    assert_eq!(alone_heads, 1);
+    let heads: Vec<&&MkTaskDescriptor> = ops
+        .iter()
+        .filter(|t| t.opcode == OP_MATMUL && t.m == HEAD_ROWS as u32)
+        .collect();
+    assert_eq!(heads.len(), k, "one head for each row");
+    for (i, t) in heads.iter().enumerate() {
+        assert_eq!(
+            (t.n, t.a),
+            (1, f.bufs.e_norm + (i * HIDDEN * 4) as u64),
+            "the head of row {i}"
+        );
+        assert_ne!(t.flags & FLAG_TILED, 0);
+    }
+    let body: Vec<&&MkTaskDescriptor> = ops
+        .iter()
+        .filter(|t| !(t.opcode == OP_MATMUL && t.m == HEAD_ROWS as u32))
+        .collect();
+    let alone_body: Vec<&MkTaskDescriptor> = shared
+        .iter()
+        .filter(|t| !(t.opcode == OP_MATMUL && t.m == HEAD_ROWS as u32))
+        .collect();
+    assert_eq!(body.len(), alone_body.len());
+    for (b, a) in body.iter().zip(&alone_body) {
+        assert_eq!((b.opcode, b.b, b.flags), (a.opcode, a.b, a.flags));
+        if b.opcode == OP_MATMUL {
+            assert_eq!(
+                (b.n, b.m, b.k),
+                (k as u32, a.m, a.k),
+                "a matmul runs once over the rows"
+            );
         }
     }
 }
