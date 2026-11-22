@@ -2169,9 +2169,158 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   The quantizers give bits, and the fixture tests them.
 - **Packed weights.** Expert weights stay packed in unified memory in their checkpoint formats (NVFP4 in layers 0
   to 19, MXFP8 in layers 20 to 23).
-- **Persistent CUDA interpreter.** `nagaya-mk-cuda` compiles `kernels/megakernel.cu` to `sm_121a` `.cubin` with
-  `nvcc --fmad=false`. `mk_persistent_interpreter` walks 64-byte `MkTaskDescriptor` entries using GPU-scope
-  acquire and release scoreboard atomics. The profile binary records `%globaltimer` timestamps in nanoseconds.
+- **The CUDA interpreter.** The rules below design the persistent interpreter of `nagaya-mk-cuda` for milestone 37.
+  Each rule is **Proposed** (Claude Opus 5.5, 2026-11-22). The code of step 3 has a 64-byte descriptor, one wait
+  for each task and no shared memory. Migration steps 2 to 6 of milestone 37 step 7 replace these. Each hardware
+  figure marked "to measure in step 7" is a guess until the probes run.
+
+  **The core idea.** Two facts shape the design:
+  - The bits of a sum depend only on the cut of an op into work items. The cut comes from the shapes. Thus the grid
+    size and the assignment of items to blocks are free, and a gate proves that they change no bit.
+  - A weight never depends on the task before it. Thus a block can fetch its next weights before its inputs are
+    ready.
+
+  **Dependencies.**
+  - Each task has a counter, which is its signal. A block adds 1 after each work item that it finishes. It runs
+    `__threadfence`, then `atom.release.gpu`. This lets a consumer see the data that the item wrote.
+  - A task waits on at most two pairs of an event and a target. The target is the item count of the producer.
+    Two waits cover a norm output and a residual, the usual inputs.
+  - The host builder finds the hazards. Each task declares the buffers that it reads and writes. The builder finds
+    read-after-write and write-after-read hazards, and it removes each wait that other waits imply. This is sound
+    because a block waits before its first item.
+  - A task that needs a third wait gets a JOIN task before it. A JOIN task has no items, and it waits on two events.
+    Under 1% of tasks need one.
+  - The host asserts that every wait points backward in the ring. A grid that walks the ring in order cannot
+    deadlock then. This needs every block resident (the cooperative launch).
+  - The per-run scratch (`q`, `attn`, `act`) has two copies that alternate. This removes the write-after-read waits.
+  - A wait changes the timing only. The bits come from the cut and from the merge order.
+  - A wait costs one L2 round trip after the last item, about 0.5 to 1 microsecond (to measure in step 7). The
+    projections `q`, `k`, `v` and gate read one norm output, so they run back to back with no barrier.
+
+  **Work items and assignment.**
+  - A work item is a column tile and a K slice, and for a prefill a row tile too. A column tile is 16 output
+    columns. The K slice `Kt` comes from the shape: 768 for K of 2,304 or 3,072, and 1,152 for the expert down op.
+    A `bf16` item is 16 x 768 x 2 bytes, 24.6 KB. The op `q` (N 3,072, K 2,304) has 576 items: 12 on each of 48
+    blocks.
+  - Block `b` of `G` runs the items `b`, `b + G`, `b + 2G` and so on. This gives the bits of a dynamic ticket. Each
+    block knows its next item early, so it can prefetch, and it needs no atomic.
+  - The expert ops of a prefill are the exception. Their item count comes from the plan on the device. A ticket may
+    balance them better. A ticket is not a sum, so design rule 8 allows it. The spread column of the profile decides.
+  - `Kt`, the tile sizes and the merge order never depend on the count of rows (design rule 4). Each token column
+    of an MMA is independent.
+
+  **Merge groups.** Some epilogues join several items. These are four cases:
+  - the merge of K slices;
+  - the L2 clip of a head over 8 tiles;
+  - the amax of a row of an expert;
+  - the sum of 8 expert slots.
+
+  The rule for each case is the same:
+  - Each item writes its `f32` partial to a fixed scratch slot. Then it adds 1 to the counter of the group, with
+    release.
+  - The item whose add returns the target minus 1 acquires, and it sums the partials in index order. It then runs
+    the epilogue.
+  - The merging block can change from run to run. The result cannot, because the order of the sum is fixed.
+
+  **Prefetch** (design rule 6).
+  - The load repacks the weights so that the bytes of each item are one span at `b + item * item_bytes`.
+  - In a decode, a producer warp issues `cp.async.bulk.prefetch.L2.global` for the next item of its block. While it
+    waits on a scoreboard event, it prefetches the first item of the next task. The consumers read with
+    `ld.global.nc.L1::no_allocate.v4`.
+  - In a prefill, 1D `cp.async.bulk` copies go into a ring of shared memory with an `mbarrier`. No tensor map is
+    needed.
+  - An expert op prefetches only after the wait on the plan, because the plan names its experts.
+  - A bandwidth of 273 GB/s and a latency of about 600 ns give about 164 KB in flight. That is about 3.4 KB for each
+    SM (both to measure in step 7). An item is 24 KB, so one item ahead is enough.
+  - For a decode, the direct loads with L2 prefetch and the bulk copies into shared memory are two choices. The read
+    probe of step 7 decides.
+  - These PTX forms exist since `sm_90`. They are likely on `sm_121`, but a probe must show the bulk-copy
+    instructions in `cuobjdump -sass`. The GB10 has no clusters or multicast (to measure in step 7, through the
+    device attribute of cluster launch).
+
+  **The descriptor** has 128 bytes, inline in the ring. An argument block would add one dependent load for each
+  task. About 600 tasks take about 77 KB.
+
+  | Offset | Field |
+  |---|---|
+  | 0 | `u16` opcode, `u16` flags (the kinds of prologue and epilogue) |
+  | 4 | `u32` items (`u32::MAX` means read the count from `d`, the plan) |
+  | 8 | `u32` wait0_event, `u32` wait0_target |
+  | 16 | `u32` wait1_event, `u32` wait1_target |
+  | 24 | `u32` signal, `u32` rows |
+  | 32 | `u64` a (input rows), `u64` b (repacked weight), `u64` c (output) |
+  | 56 | `u64` d (norm weight, scales or plan), `u64` e (residual, gate or convolution taps) |
+  | 72 | `u64` f (partial scratch and merge counters) |
+  | 80 | `u32` n, `u32` k, `u32` kt, `u32` group_items |
+  | 96 | `u32` item_bytes, `u32` scale_bytes, `u32` pos0, `u32` layer |
+  | 112 | `f32` p0 to p3 (epsilon, clip bound, log scale, factor) |
+
+  **Fusions** (design rule 7). A fusion removes a task boundary, and a boundary costs about 0.6 microsecond.
+  - The norm runs in the prologue. Each item computes the rms of its 16-row tile in a fixed tree. The tree is the
+    same in every block. The norm weight is in `d`.
+  - The clip, the gate and the residual run in the epilogue, through `e` and the merge group.
+  - The router, the plan and the gather are one op. A merge group of 8 router tiles ends in one merger. It writes
+    the plan and gathers the rows.
+  - The expert up op has the gate and up columns interleaved in the repack. Its epilogue computes SiLU of the gate
+    times the up value. The merge group of the expert row quantizes it to NVFP4 or MXFP8.
+  - The expert down op has the slot merge group. It sums the 8 slots in top-k order, and it adds the convolution.
+  - The projections that read one input join into one repacked matrix at load. This changes no value.
+  - The result is about 10 to 12 tasks for each run, and about 550 tasks for a decode step. The B70 engine has
+    1,635.
+
+  **Blocks, threads and shared memory.**
+  - One block runs on each SM, with 288 threads. Warp 0 is the producer. Warps 1 to 8 are consumers. Thus each
+    thread has 224 registers (65,536 divided by 288).
+  - Each block has 96 KB of dynamic shared memory. It holds 4 weight stages of 16 KB and a 24 KB activation tile in
+    three `bf16` terms, in fragment order. It also holds 8 KB for partials, the `mbarrier` objects and the next
+    descriptor.
+  - The host sets `MAX_DYNAMIC_SHARED_SIZE_BYTES` and gives the size at the launch. The limit is to measure in step
+    7, through `MAX_SHARED_MEMORY_PER_BLOCK_OPTIN`.
+  - The producer warp owns the descriptor fetch, the waits, the prefetches and the bulk copies, one task ahead. The
+    consumers start after a `bar.sync` with the producer, and they publish the signal.
+  - Spill gate: each op must fit 224 registers. The build fails unless `-Xptxas -v` shows 0 bytes of spill.
+
+  **The matmul core.**
+  - The weights are MMA operand A, and the tokens are operand B (n8). An A fragment of `m16n8k16` `bf16`, or of
+    `m16n8k64` `e2m1`, is one 16-byte vector for each lane. Thus design rule 2 holds with one `v4` load for each
+    lane for each MMA.
+  - A tile of 16 rows is two n8 MMAs that share one A fragment. With 8 rows or fewer, skip the second MMA. The
+    columns are independent, so the bits stay the same.
+  - Design rule 9 gives three terms: `hi = bf16(x)`, `mid = bf16(x - hi)` and `lo = bf16(x - hi - mid)`. Each
+    k step accumulates them into one `f32` accumulator in the order `lo`, `mid`, `hi`. The small terms go first so
+    that they do not vanish.
+  - The sum order of an item is fixed. Each warp runs 6 sequential k16 steps (768 divided by 8 warps). A fixed
+    pairwise tree joins the 8 warps in shared memory. The merge group joins the K slices in index order. A row with
+    K of 2,304 and N of 3,072 has 3 slices.
+  - The NVFP4 experts use `mma.sync.m16n8k64.kind::mxf4nvf4.block_scale.scale_vec::4X` with `ue4m3` scales. The
+    MXFP8 experts use `m16n8k32.kind::mxf8f6f4.block_scale.scale_vec::1X` with `ue8m0` scales. The repack puts the
+    scales next to each item, in the order of the scale fragment. The epilogue applies the row scale and the expert
+    factor.
+  - A decode has 36 items of 64 columns for each of 8 experts: 288 items for the up op, and 288 for the down op.
+  - In a prefill, one weight item stays in shared memory while the consumers loop over the row tiles. The bits are
+    those of a decode.
+  - Three risks need a probe in step 7. The operand and scale layouts of the block-scaled MMA must match the host.
+    The `f32` accumulation of a tensor core may not round to nearest, so the gate must use a tolerance. Three terms
+    triple the MMA work of a prefill. It may become compute bound by a factor of 4 (to measure in step 7, in bf16
+    TFLOP/s).
+
+  **The profile and the engine identity.**
+  - The profile records for each task and block: `t_desc`, `t_wait_done`, `t_first_item` and `t_end` from
+    `%globaltimer`. It records for each item: the block, `t0`, `t1` and whether it merged.
+  - The host derives the bytes from `item_bytes` and `scale_bytes`. Each op row then shows its GB/s and its share
+    of the measured peak. If `%globaltimer` is too coarse (to measure in step 7), add `clock64` for the durations
+    inside one SM.
+  - The engine identity holds these members:
+    - the descriptor version, the column tile and the table of `Kt`;
+    - the warp count of the K split, and the reduction tree;
+    - the order of the terms, and the split rule;
+    - the MMA shapes, and the size of an attention chunk;
+    - the order of each merge group.
+  - The engine identity does not hold the grid size or the assignment. A gate proves that they change no bit.
+  - Three risks remain. The acquire of the producer must order before the reads of the consumers. A stress test of
+    10^4 runs checks it.
+  - One large switch over many ops can press the instruction cache.
+  - LPDDR5x may give well under 273 GB/s, so budgets use the measured peak.
 - **Identity and oracle.** Because expert activations are quantized to NVFP4 and MXFP8, this engine has its own
   quantized host oracle and engine identity. Its `numbers` hold `quant` (`nvfp4_fouroversix_mae+mxfp8_ue8m0`),
   `max_block`, `extra_runs`, `state` (`2`), the `nvcc` version, and the BLAKE3 of the `.cubin`.
