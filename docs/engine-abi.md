@@ -910,6 +910,33 @@ be opportunities to pipeline and have hot caches and so on, but also we do some 
 checks". Thus a bound from 1,000 to 10,000 ms is in range. Split expensive work at a rough boundary where a switch
 of work is possible, even if the scheduler seldom switches there.
 
+Each engine chooses the bound that suits its model and its device (Amy, 2026-11-22). The guidance is a quantum
+below 10 s, and an engine can make its own tradeoff. Amy, 2026-11-22: "if we have a case where we need to allow for
+a continuous run for a few minutes let's make it possible."
+
+**Proposed (ChatGPT through kaibo `gpt-plan`, and Claude Opus 5.5, 2026-11-22): a long pass with a declared bound.**
+Today the watchdog does not read `max_quantum_ms`. It stops the process when a group sends no beat for 30 s, and a
+pass sends no beat (spec 7.4). Thus no pass can run for more than 30 s.
+
+- `Limits` gets `max_long_quantum_ms: Option<NonZeroU32>`. `None` means that the engine has no long pass. When it is
+  set, it is more than `max_quantum_ms` and at most 180,000 ms.
+- `Engine` gets `pass_bound_ms(segments, taps) -> Result<Option<NonZeroU32>, String>`, with a default of `Ok(None)`.
+  It is a host call that does no device work and changes no state. `Some(b)` declares a long pass, and `b` is
+  more than `max_quantum_ms` and at most the ceiling. `Err` refuses the pass before it runs.
+- The scheduler gets the bound before it chooses a quantum. A long pass keeps the order of classes. It does not
+  start before ready work of a higher rank, and it is not joined with other segments.
+- The watchdog arms a deadline for that pass alone: its start plus the larger of the timeout and `b` plus the beat
+  interval. An ordinary pass keeps the timeout of 30 s. A pass past `b` gives one report. A pass past the deadline
+  stops the process, as a stall does now. A result that returns after its deadline is never published.
+- A read-only route shows the long pass to other clients: the group, the devices, `bound_ms`, `elapsed_ms` and
+  `overdue`.
+- Not in the first version: a long stage quantum, and beats from the device while a pass runs.
+- Reason: a group timeout that grows with the largest bound slows the detection of a real hang in every pass. A
+  bound for each kind of pass cannot tell a short feed block from a long one. A declared bound for each pass keeps
+  the health check of each ordinary pass, and the scheduler knows the wait before it starts.
+- The Inkling 2 engine is the first user: the tower of a large image, about 57 s, in one pass. Tower slices (D8,
+  "The time of a large image") stay the better path where they give useful boundaries.
+
 ds4-recipe chose cooperative yields after a short turn waited 283.95 s behind a long prefill. The nagaya uses the
 bounded wait instead.
 
