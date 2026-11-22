@@ -14,7 +14,8 @@ use std::sync::OnceLock;
 use common::gpu::{self, GRIDS};
 use nagaya_mk_cuda::driver::CudaDevice;
 use nagaya_mk_cuda::protocol::{
-    FLAG_NORM, MkTaskDescriptor, MkTaskTable, OP_EMBED, OP_GATE_DOWN, OP_GATE_UP, OP_MIX, OP_ROWS_PROBE, PROFILE_WORDS,
+    FLAG_NORM, MkTaskDescriptor, MkTaskTable, OP_EMBED, OP_GATE_DOWN, OP_GATE_UP, OP_MIX, OP_MIX_OUT, OP_ROWS_PROBE,
+    PROFILE_WORDS,
 };
 use nagaya_mk_cuda::ring::{DEFAULT_BLOCK_THREADS, Ring, Task};
 use nagaya_mk_cuda::rows::{GATE_UP_ITEM_BYTES, GATE_UP_TILES, gate_down_shape, gate_down_weights, repack_gate_up};
@@ -395,7 +396,14 @@ struct MixSetup {
     owned: Vec<u64>,
 }
 
-fn mix_setup(dev: &CudaDevice, case: &MixCase, stacks: &[Vec<f32>], msg: &[Vec<f32>], rows: usize) -> MixSetup {
+fn mix_setup(
+    dev: &CudaDevice,
+    opcode: u16,
+    case: &MixCase,
+    stacks: &[Vec<f32>],
+    msg: &[Vec<f32>],
+    rows: usize,
+) -> MixSetup {
     let q = case.queries.len();
     let mq = usize::from(case.messages.is_some()) * 4;
     let rf_of = |plane: &[f32]| -> Vec<f32> {
@@ -430,7 +438,7 @@ fn mix_setup(dev: &CudaDevice, case: &MixCase, stacks: &[Vec<f32>], msg: &[Vec<f
     let m = gpu::upload(dev, &vec![0f32; (mq * rows * HIDDEN).max(4)]);
     let m_rf = gpu::upload(dev, &vec![0f32; (mq * rows).max(4)]);
     let desc = MkTaskDescriptor {
-        opcode: OP_MIX,
+        opcode,
         items: (rows * (q + mq)) as u32,
         rows: rows as u32,
         a,
@@ -456,8 +464,16 @@ fn mix_setup(dev: &CudaDevice, case: &MixCase, stacks: &[Vec<f32>], msg: &[Vec<f
     }
 }
 
-fn run_mix(dev: &CudaDevice, case: &MixCase, stacks: &[Vec<f32>], msg: &[Vec<f32>], rows: usize, grid: u32) -> MixOut {
-    let setup = mix_setup(dev, case, stacks, msg, rows);
+fn run_mix(
+    dev: &CudaDevice,
+    opcode: u16,
+    case: &MixCase,
+    stacks: &[Vec<f32>],
+    msg: &[Vec<f32>],
+    rows: usize,
+    grid: u32,
+) -> MixOut {
+    let setup = mix_setup(dev, opcode, case, stacks, msg, rows);
     let q = case.queries.len();
     let mq = usize::from(case.messages.is_some()) * 4;
     run_task(dev, setup.desc, 16, grid);
@@ -564,7 +580,7 @@ fn mix_gives_the_rows_of_the_host_form_and_bits_that_do_not_depend_on_rows_or_gr
         let mut first: Option<Vec<u32>> = None;
         for rows in [16usize, 7, 1] {
             for grid in GRIDS {
-                let got = run_mix(&dev, &case, &stacks, &msg, rows, grid);
+                let got = run_mix(&dev, OP_MIX, &case, &stacks, &msg, rows, grid);
                 let (worst, worst_rf) = check_mix(&case, &stacks, &msg, rows, &got);
                 worst_all = (worst_all.0.max(worst), worst_all.1.max(worst_rf));
                 assert!(
@@ -611,7 +627,7 @@ fn the_mix_at_one_row_takes_this_many_microseconds() {
             let stacks: Vec<Vec<f32>> = (0..case.depth).map(|s| stack_rows(model, s, 16, 1)).collect();
             let msg: Vec<Vec<f32>> = (0..2).map(|s| stack_rows(model, 7 + s, 16, 2)).collect();
             // Build the descriptor the same way as the gate, and time a chain of copies.
-            let setup = mix_setup(&dev, &case, &stacks, &msg, rows);
+            let setup = mix_setup(&dev, OP_MIX, &case, &stacks, &msg, rows);
             let us = task_us(&dev, setup.desc, 16, 40);
             let items = setup.desc.items;
             eprintln!(
@@ -1013,5 +1029,61 @@ fn the_gates_take_this_many_microseconds_and_this_many_gb_per_second() {
         for rig in rigs {
             rig.free(&dev);
         }
+    }
+}
+
+/// The case of the output residual: the 4 planes of the blocks and the row of the last run, one query.
+fn mix_out_case(model: &Model) -> MixCase {
+    MixCase {
+        name: "the output residual over 4 planes and x".into(),
+        queries: vec![model.weights.output_query.clone()],
+        depth: 5,
+        messages: None,
+    }
+}
+
+#[test]
+fn mix_out_gives_the_output_residual_of_the_host_form_and_bits_that_do_not_depend_on_rows_or_grid() {
+    let Some(model) = model() else { return };
+    let dev = gpu::open();
+    let case = mix_out_case(model);
+    let stacks: Vec<Vec<f32>> = (0..5).map(|s| stack_rows(model, s, 16, 9)).collect();
+    let (mut worst, mut worst_rf) = (0f64, 0f64);
+    let mut first: Option<Vec<u32>> = None;
+    for rows in [16usize, 7, 1] {
+        for grid in GRIDS {
+            let got = run_mix(&dev, OP_MIX_OUT, &case, &stacks, &[], rows, grid);
+            let (e, e_rf) = check_mix(&case, &stacks, &[], rows, &got);
+            (worst, worst_rf) = (worst.max(e), worst_rf.max(e_rf));
+            assert!(
+                e <= MIX_BOUND_EPS && e_rf <= MIX_BOUND_EPS,
+                "{rows} rows, grid {grid}: {e:.2} and {e_rf:.2} epsilons"
+            );
+            let mut key = bits(&got.a[..HIDDEN]);
+            key.extend(bits(&got.a_rf[..1]));
+            match &first {
+                None => first = Some(key),
+                Some(want) => assert_eq!(&key, want, "row 0 differs at {rows} rows, grid {grid}"),
+            }
+        }
+    }
+    eprintln!(
+        "cuda_rows mix_out: worst error against the host form {worst:.2} epsilons of the largest normed value, and {worst_rf:.2} for a factor (bound {MIX_BOUND_EPS})"
+    );
+}
+
+#[test]
+fn the_output_residual_at_one_row_takes_this_many_microseconds() {
+    let Some(model) = model() else { return };
+    let dev = gpu::open_profile();
+    let case = mix_out_case(model);
+    let stacks: Vec<Vec<f32>> = (0..5).map(|s| stack_rows(model, s, 16, 9)).collect();
+    for rows in [1usize, 16] {
+        let setup = mix_setup(&dev, OP_MIX_OUT, &case, &stacks, &[], rows);
+        let us = task_us(&dev, setup.desc, 16, 40);
+        eprintln!(
+            "cuda_rows mix_out time: {rows} rows: {} items, {us:.2} us",
+            setup.desc.items
+        );
     }
 }

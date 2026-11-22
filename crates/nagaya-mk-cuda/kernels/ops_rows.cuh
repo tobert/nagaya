@@ -615,10 +615,11 @@ __device__ __forceinline__ void op_gate_up(const MkTaskDescriptor& task, const M
     }
 }
 
-// Reserved for wave B lane R (rows).
+// OP_MIX_OUT: the output residual: one query over the stack of `k` rows (the 4 planes and the row of the last run). It
+// is OP_MIX with `n` = 1 and no message mix. `a` = the mixed rows and `b` = their row factors, for the norm of the head.
 __device__ __forceinline__ void op_mix_out(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
-    (void)task;
-    (void)table;
-    (void)item;
-    __trap();
+    if (task.n != 1 || task.kt != 0) {
+        __trap();
+    }
+    rw_mix_dispatch(task, table, item, 1, task.k, 0, 0);
 }
