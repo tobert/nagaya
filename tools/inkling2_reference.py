@@ -50,7 +50,9 @@ The tool stops with an AssertionError when a self check fails. The checks:
   - each prompt fits in MAX_TOKENS tokens;
   - the hooks see 24 + 2 * 12 = 48 runs of the decoder layers at 3 cycles;
   - the final norm of the hooks, the head and the softcap give the logits of the model;
-  - a decode with the cache gives the logits of a forward over the whole sequence with no cache;
+  - a decode with the cache gives the logits of a forward over the whole sequence with no cache. With --quant the
+    forward replays the quantized rows of the decode (`QuantTape`): a quantizer is a step function, so two orders of
+    the f32 sums can flip a code, and a free comparison would measure the flips and not the cache;
   - the count of placeholders of an image equals its count of projector rows;
   - the rows that the model scatters into the placeholders are the projector rows, and the other rows are the
     normed embeddings of their tokens;
@@ -75,10 +77,6 @@ ROOT = Path(__file__).resolve().parent.parent
 TOP = 64
 MAX_TOKENS = 640
 DECODE_STEPS = 8
-# In the quantized mode the cache run and the whole run sum in another order, and a row can cross the edge of a
-# quantization step. One flipped code moves a logit by more than the f32 gap of 1e-3. Proposed limit, to check on the
-# first run of the quantized mode.
-QUANT_CACHE_GAP = 0.1
 STAGES = ("text", "layers", "cycles", "decode", "vision")
 # The synthetic images of the stage "vision": (width, height, seed). No side is a multiple of 40, so the processor
 # pads each image on the right and at the bottom.
@@ -174,6 +172,58 @@ def quant_module():
     return module
 
 
+class QuantTape:
+    """The quantized rows of the cache run, which the run with no cache replays.
+
+    A quantizer is a step function: two f32 sums that differ in the last bit can fall on two sides of an edge and
+    flip a code. The cache run and the run with no cache sum in another order, so a free comparison of their logits
+    measures the flips, not the cache. The tape fixes the codes: the second run takes each quantized row from the
+    first run, and the remaining gap is the order of the f32 sums only.
+
+    A row has the key (kind, visit, position, slot). A visit is the place of a call in one forward pass, from 0 to
+    `visits - 1`, and the same visit has the same layer in each pass. The position of a row is the count of rows that
+    the earlier calls of that visit had, plus its place in the call. The input row of a token has the slot -1.
+    """
+
+    def __init__(self, visits):
+        self.visits = visits
+        self.rows = {}
+        self.replay = False
+        self.flips = 0
+        self.start_run()
+
+    def start_run(self):
+        self.calls = 0
+        self.seen = collections.Counter()
+
+    def begin_call(self, count):
+        """Returns the visit and the position of the first row of this call, for a call of `count` rows."""
+        visit = self.calls % self.visits
+        self.calls += 1
+        first = self.seen[visit]
+        self.seen[visit] += count
+        return visit, first
+
+    def rows_of(self, kind, visit, first, token, slot, fresh):
+        """Records the quantized rows `fresh` (one for each entry of `token` and `slot`), or replays the recorded rows.
+
+        A replay counts in `flips` the rows that the free quantizer would have changed. The outer scale of NVFP4 moves
+        by a few ulp with the order of the sums, so a row counts only when a value moves by more than 1e-5 of its amax.
+        """
+        keys = [(kind, visit, first + int(t), int(s)) for t, s in zip(token, slot)]
+        if not self.replay:
+            for key, row in zip(keys, fresh):
+                check(key not in self.rows, f"the tape has the row {key} twice")
+                self.rows[key] = row.clone()
+            return fresh
+        missing = [key for key in keys if key not in self.rows]
+        check(not missing, f"the run with no cache has the rows {missing[:3]}, which the cache run did not have")
+        taped = torch.stack([self.rows[key] for key in keys])
+        moved = (taped - fresh).abs().amax(dim=1) > 1e-5 * taped.abs().amax(dim=1)
+        self.flips += int(moved.sum())
+        return taped
+
+
 class ExpertCalls:
     """The expert call of the reference, with every sum in f32. It counts its calls for a self check.
 
@@ -185,6 +235,7 @@ class ExpertCalls:
     count = 0
     formats = None
     quant = None
+    tape = None
     calls = collections.Counter()
     inputs = collections.Counter()
     downs = collections.Counter()
@@ -218,6 +269,11 @@ class ExpertCalls:
         if ExpertCalls.quant is None:
             ExpertCalls.quant = quant_module()
         rows = ExpertCalls.quant.fake_quantize(hidden_states.float(), fmt)
+        tape = ExpertCalls.tape
+        if tape:
+            visit, first = tape.begin_call(hidden_states.shape[0])
+            every = torch.arange(hidden_states.shape[0])
+            rows = tape.rows_of("input", visit, first, every, [-1] * len(every), rows)
         ExpertCalls.inputs[layer] += 1
         for expert in hit:
             expert = expert[0]
@@ -227,6 +283,8 @@ class ExpertCalls:
             state = self._apply_gate(F.linear(rows[token], self.gate_up_proj[expert].float()))
             state = state.float() * top_k_weights[token, position, None]
             state = ExpertCalls.quant.fake_quantize(state, fmt)
+            if tape:
+                state = tape.rows_of("down", visit, first, token.tolist(), position.tolist(), state)
             ExpertCalls.downs[layer] += 1
             state = F.linear(state, self.down_proj[expert].float())
             final.index_add_(0, token, state.float())
@@ -446,30 +504,52 @@ def run_cycles(model, text, tokenizer, label, out, facts):
     log(f"wrote {path}")
 
 
-def run_decode(model, tokenizer, label, out, facts):
-    """8 greedy tokens of "chat" with the cache of the reference. The logits match a forward with no cache."""
-    ids = tokenizer.encode(chat_text(tokenizer), add_special_tokens=False)
+def decode_compare(model, ids, steps, visits):
+    """Greedy decode with the cache, and the same positions in a forward with no cache.
+
+    Returns the tokens, the cached logits `[steps, vocab]`, the logits with no cache, and the count of quantized rows
+    that the second run changed.
+    """
     before = ExpertCalls.snapshot()
+    tape = ExpertCalls.tape = QuantTape(visits) if ExpertCalls.formats else None
     with torch.no_grad():
         generated = model.generate(
             input_ids=torch.tensor([ids]),
-            max_new_tokens=DECODE_STEPS,
+            max_new_tokens=steps,
             do_sample=False,
             output_logits=True,
             return_dict_in_generate=True,
         )
     ExpertCalls.verify(before)
     tokens = generated.sequences[0, len(ids) :].tolist()
-    check(len(tokens) == DECODE_STEPS, f"{DECODE_STEPS} greedy tokens, not {len(tokens)}")
     cached = torch.stack([row[0].float() for row in generated.logits])
-    whole = forward(model, ids + tokens)[len(ids) - 1 : len(ids) - 1 + DECODE_STEPS]
+    if tape is None:
+        whole = forward(model, ids + tokens)[len(ids) - 1 : len(ids) - 1 + steps]
+        return tokens, cached, whole, 0
+    # The cache run fed the ids and the first steps - 1 tokens. The last token has no taped row.
+    check(tape.calls == visits * steps, f"the cache run made {tape.calls} expert calls, not {visits} for each of {steps} forwards")
+    tape.replay = True
+    tape.start_run()
+    try:
+        whole = forward(model, ids + tokens[:-1])[len(ids) - 1 :]
+    finally:
+        ExpertCalls.tape = None
+    check(tape.calls == visits, f"the run with no cache made {tape.calls} expert calls, not {visits}")
+    return tokens, cached, whole, tape.flips
+
+
+def run_decode(model, tokenizer, label, out, facts):
+    """8 greedy tokens of "chat" with the cache of the reference. The logits match a forward with no cache."""
+    ids = tokenizer.encode(chat_text(tokenizer), add_special_tokens=False)
+    text_config = model.config.text_config
+    tokens, cached, whole, flips = decode_compare(model, ids, DECODE_STEPS, text_config.total_num_hidden_layers)
+    check(len(tokens) == DECODE_STEPS, f"{DECODE_STEPS} greedy tokens, not {len(tokens)}")
     gap = max_abs(cached, whole)
-    log(f"{label} decode: the cache against no cache, max abs {gap:.3g}")
-    limit = QUANT_CACHE_GAP if ExpertCalls.formats else 1e-3
-    check(gap <= limit, f"the cache gives the logits of no cache: max abs {gap:.3g}, limit {limit}")
+    log(f"{label} decode: the cache against no cache, max abs {gap:.3g}, {flips} quantized rows replayed that differ")
+    check(gap <= 1e-3, f"the cache gives the logits of no cache: max abs {gap:.3g}, limit 0.001")
     check(whole.argmax(-1).tolist() == tokens, "the greedy tokens are the argmax of the logits with no cache")
     tensors = {"ids": torch.tensor(ids), "tokens": torch.tensor(tokens), "logits": whole}
-    meta = {"prompt": chat_text(tokenizer), "cache_gap": gap, "versions": versions()}
+    meta = {"prompt": chat_text(tokenizer), "cache_gap": gap, "replayed_flips": flips, "versions": versions()}
     save(tensors, out / f"{label}{TAG}.decode.safetensors", meta)
     facts[f"{label}.decode.cache_gap"] = gap
     facts[f"{label}.decode.text"] = tokenizer.decode(tokens)

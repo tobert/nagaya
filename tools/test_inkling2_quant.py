@@ -218,5 +218,92 @@ class ExpertCall(unittest.TestCase):
         reference.ExpertCalls.formats = None
 
 
+def tiny_model(seed, quantized):
+    """A tiny Inkling 2 text model: 6 layers, 3 cycles of the layers 2 and 3, 8 experts, hidden size 64.
+
+    With `quantized`, the layers 0 to 3 use NVFP4 and the layers 4 and 5 use MXFP8, as the layers of Mini do in two
+    groups. The expert weights are large on purpose: a flipped code then moves a logit by a visible amount.
+    """
+    from transformers.models.inkling2_loop import configuration_inkling2_loop as cfg
+    from transformers.models.inkling2_loop import modeling_inkling2_loop as modeling
+
+    torch.manual_seed(seed)
+    config = cfg.Inkling2LoopTextConfig(
+        vocab_size=96,
+        unpadded_vocab_size=90,
+        eos_token_id=None,
+        hidden_size=64,
+        num_hidden_layers=6,
+        num_attention_heads=4,
+        num_key_value_heads=2,
+        head_dim=16,
+        swa_num_attention_heads=4,
+        swa_num_key_value_heads=2,
+        swa_head_dim=16,
+        sliding_window_size=8,
+        d_rel=4,
+        rel_extent=16,
+        n_layers_per_attn_res_block=2,
+        moe_intermediate_size=32,
+        n_routed_experts=8,
+        num_experts_per_tok=2,
+        loop_layer_index_start=2,
+        loop_layer_index_end=4,
+        loop_num_passes=3,
+        loop_gate_rank=8,
+        layer_types=["hybrid_sliding"] * 5 + ["hybrid"],
+    )
+    model = modeling.Inkling2LoopForCausalLM(config).eval()
+    for name, parameter in model.named_parameters():
+        if parameter.dim() > 1:
+            parameter.data = torch.randn_like(parameter) * (0.5 if ".experts." in name else 0.3)
+    modeling.Inkling2LoopExperts.forward = reference.ExpertCalls.forward
+    formats = ["nvfp4"] * 4 + ["mxfp8"] * 2
+    for index, layer in enumerate(model.model.layers):
+        layer.mlp.experts.layer_index = index
+        layer.mlp.experts.activation_format = formats[index] if quantized else None
+    reference.ExpertCalls.formats = formats if quantized else None
+    return model, config
+
+
+class DecodeWithCache(unittest.TestCase):
+    """The cache run and the run with no cache of the quantized model.
+
+    A code of the quantizer flips when two f32 sums that differ in their last bit fall on two sides of an edge. The
+    cache run (one row in each matrix product) and the run with no cache (all the rows) sum in another order. A flip in
+    one block of one layer moved a logit of the tiny model by 0.3 to 8 in 6 of 60 seeds, so the check of the decode must
+    not depend on it.
+    """
+
+    def tearDown(self):
+        reference.ExpertCalls.formats = None
+        reference.ExpertCalls.tape = None
+
+    def compare(self, seed, quantized):
+        model, config = tiny_model(seed, quantized)
+        generator = torch.Generator().manual_seed(100 + seed)
+        ids = torch.randint(0, 90, (12,), generator=generator).tolist()
+        tokens, cached, whole, flips = reference.decode_compare(model, ids, 6, config.total_num_hidden_layers)
+        self.assertEqual(len(tokens), 6)
+        return (cached - whole).abs().max().item(), flips
+
+    def test_the_f32_model_gives_the_same_logits_with_the_cache(self):
+        gap, flips = self.compare(0, False)
+        self.assertLess(gap, 1e-3)
+        self.assertEqual(flips, 0)
+
+    def test_the_quantized_model_gives_the_same_logits_with_the_cache_when_a_code_flips(self):
+        # In the seeds 7 and 29 the run with no cache flips a code, and a free comparison gives a large gap.
+        for seed in (7, 29):
+            gap, flips = self.compare(seed, True)
+            self.assertGreater(flips, 0, f"seed {seed}: the test must meet a flip")
+            self.assertLess(gap, 1e-3, f"seed {seed}")
+
+    def test_the_quantized_model_gives_the_same_logits_with_the_cache_when_no_code_flips(self):
+        gap, flips = self.compare(1, True)
+        self.assertEqual(flips, 0, "seed 1 has no flip")
+        self.assertLess(gap, 1e-3)
+
+
 if __name__ == "__main__":
     unittest.main()
