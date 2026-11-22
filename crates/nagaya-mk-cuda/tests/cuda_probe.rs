@@ -198,7 +198,7 @@ fn probe_read_bandwidth() {
         READ_TASKS - 1
     );
     for case in &cases {
-        for threads in [256u32, 288, 512] {
+        for threads in [256u32, 288] {
             let checks = dev.alloc_device(READ_TASKS * blocks * 4).unwrap();
             dev.memset_zero(checks, READ_TASKS * blocks * 4).unwrap();
             let mut ring = Ring::new(&dev, 1024, true).unwrap();
@@ -271,7 +271,7 @@ fn probe_read_bandwidth_in_the_producer_shape() {
     // (name, threads, shared bytes, prefetch the first item of each block)
     let cases: [(&str, u32, u32, bool); 5] = [
         ("flat, 256 threads, nc", 256, 0, false),
-        ("flat, 512 threads, nc", 512, 0, false),
+        ("flat, 128 threads, nc", 128, 0, false),
         ("producer shape, no shared memory", PRODUCER_BLOCK_THREADS, 0, false),
         (
             "producer shape, most shared memory",
@@ -353,7 +353,7 @@ fn probe_l2_knee() {
         "probe l2: L2 size reported {} MiB; each block re-reads its own slice; about 8 GiB read in each task",
         l2 >> 20
     );
-    for threads in [256u32, 512] {
+    for threads in [128u32, 256] {
         let mut footprint = 1usize << 20;
         while footprint <= MAX_FOOTPRINT {
             // The slice of a block is a multiple of 16 bytes. The footprint is the slices together.
@@ -796,7 +796,7 @@ fn probe_mma_rate() {
         };
         let b_byte = a_byte[..256].to_vec();
         let (a, b, s) = (upload(&dev, &a_byte), upload(&dev, &b_byte), upload(&dev, &scale_a));
-        for threads in [256u32, 288, 512] {
+        for threads in [256u32, 288] {
             // A block of 288 threads has a producer warp, and only the consumers run MMAs.
             let workers = if threads == PRODUCER_BLOCK_THREADS {
                 CONSUMER_THREADS as usize

@@ -245,6 +245,8 @@ __device__ __forceinline__ void op_selftest_check(const MkTaskDescriptor& task) 
 
 #include "probe_ops.cuh"
 #include "matmul_bf16.cuh"
+#include "quant.cuh"
+#include "experts.cuh"
 
 // Thread 0 polls the event until it reaches the target. A lost signal traps at the spin limit.
 __device__ __forceinline__ void wait_for_event(const uint32_t* event, uint32_t target) {
@@ -291,6 +293,18 @@ __device__ __forceinline__ void run_op(const MkTaskDescriptor& task, uint32_t it
             break;
         case OP_REDUCE_PROBE:
             op_reduce_probe(task, item);
+            break;
+        case OP_QUANT_NVFP4:
+            op_quant_nvfp4(task, item);
+            break;
+        case OP_QUANT_MXFP8:
+            op_quant_mxfp8(task, item);
+            break;
+        case OP_EXPERT_NVFP4:
+            op_expert_nvfp4(task, item);
+            break;
+        case OP_EXPERT_MXFP8:
+            op_expert_mxfp8(task, item);
             break;
         default:
             // Unknown opcode: trap rather than silently corrupt state (spec 8.5).
@@ -497,11 +511,10 @@ __device__ __forceinline__ void run_producer_shape(
     }
 }
 
-// A block of 288 threads has 9 warps. A multiprocessor has 4 partitions of 16,384 registers, and the warps go to them in
-// turn, so one partition holds 3 warps: a thread has at most 168 registers (not 65,536 / 288). The flat shape of the
-// probes has 512 threads, which allows 128. The bound of 512 threads keeps every shape launchable, and ptxas still
-// reports 0 bytes of spill (build.rs).
-extern "C" __global__ void __launch_bounds__(512, 1) mk_persistent_interpreter(
+// The production shape sets the register budget. A block of 288 threads has 9 warps. A multiprocessor has 4 partitions
+// of 16,384 registers, and the warps go to them in turn, so one partition holds 3 warps: a thread has at most 168
+// registers (not 65,536 / 288). A flat shape has at most 288 threads. The build fails on a spill (build.rs).
+extern "C" __global__ void __launch_bounds__(288, 1) mk_persistent_interpreter(
     const MkTaskDescriptor* __restrict__ tasks,
     uint32_t num_tasks,
     uint32_t* __restrict__ scoreboard,

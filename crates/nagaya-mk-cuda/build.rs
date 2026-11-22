@@ -1,7 +1,8 @@
 //! Compiles the CUDA C++ persistent megakernel interpreter with `nvcc` ahead of time when the feature `cuda` is on.
 //!
 //! Each engine gets its own `.cubin` in `OUT_DIR`, embedded via `include_bytes!`. The flags fix float rounding
-//! (`--fmad=false`) for reproducible bits and target `sm_121a` for GB10 Blackwell block-scaled MMA instructions.
+//! (`--fmad=false`, `-prec-div=true`, `-ftz=false`) for reproducible bits and target `sm_121a` for GB10 Blackwell
+//! block-scaled MMA instructions.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -42,6 +43,12 @@ fn compile_cubin(nvcc: &Path, source: &Path, kernels: &Path, out: &Path, name: &
         &format!("-arch={ARCH}"),
         "-std=c++20",
         "--fmad=false",
+        // The quantizers of `kernels/quant.cuh` give the bits of `quant.rs`. They need an IEEE division, an IEEE square
+        // root, and denormals that stay. These are the defaults of nvcc without `--use_fast_math`. Say them, so that a
+        // later change of the flags cannot move the bits by chance.
+        "-prec-div=true",
+        "-prec-sqrt=true",
+        "-ftz=false",
         "-O3",
         "-Xptxas",
         "-v",
@@ -109,6 +116,35 @@ fn protocol_header() -> String {
     writeln!(h, "#define MK_PROBE_MMA_CHAINS {}", protocol::PROBE_MMA_CHAINS).unwrap();
     writeln!(h, "#define MK_PRODUCER_THREADS {}", protocol::PRODUCER_BLOCK_THREADS).unwrap();
     writeln!(h, "#define MK_CONSUMER_THREADS {}", protocol::CONSUMER_THREADS).unwrap();
+    writeln!(h, "#define MK_EXPERT_TILE_ROWS {}", protocol::EXPERT_TILE_ROWS).unwrap();
+    writeln!(h, "#define MK_EXPERT_MAX_ROWS {}", protocol::EXPERT_MAX_ROWS).unwrap();
+    writeln!(h, "#define MK_EXPERT_K_GROUP {}", protocol::EXPERT_K_GROUP).unwrap();
+    writeln!(
+        h,
+        "#define MK_EXPERT_NVFP4_RECORD_BYTES {}",
+        protocol::EXPERT_NVFP4_RECORD_BYTES
+    )
+    .unwrap();
+    writeln!(
+        h,
+        "#define MK_EXPERT_MXFP8_RECORD_BYTES {}",
+        protocol::EXPERT_MXFP8_RECORD_BYTES
+    )
+    .unwrap();
+    writeln!(h, "#define MK_EXPERT_SMEM_BYTES {}", protocol::EXPERT_SMEM_BYTES).unwrap();
+    writeln!(h, "#define MK_EXPERT_PAIR_BYTES {}", size_of::<protocol::ExpertPair>()).unwrap();
+    writeln!(
+        h,
+        "#define MK_EXPERT_PAIR_OFF_x_row {}",
+        std::mem::offset_of!(protocol::ExpertPair, x_row)
+    )
+    .unwrap();
+    writeln!(
+        h,
+        "#define MK_EXPERT_PAIR_OFF_y_row {}",
+        std::mem::offset_of!(protocol::ExpertPair, y_row)
+    )
+    .unwrap();
     writeln!(h, "#define NO_EVENT {}u", protocol::NO_EVENT).unwrap();
     writeln!(h, "#define MK_PROFILE_WORDS {}u", protocol::PROFILE_WORDS).unwrap();
     writeln!(h, "#define MK_DESC_BYTES {}", size_of::<MkTaskDescriptor>()).unwrap();
