@@ -491,6 +491,7 @@ impl Engine for TestEngine {
                 tokens: 4096,
             }],
             max_quantum_ms: 10,
+            max_long_quantum_ms: None,
             memory: MemoryLimits::default(),
             chain: ChainLimits {
                 max_depth: 0,

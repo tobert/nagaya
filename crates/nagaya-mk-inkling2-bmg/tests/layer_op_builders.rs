@@ -51,17 +51,50 @@ fn the_attention_residual_refuses_outputs_over_its_inputs() {
     assert!(msg.contains("overlap"), "{msg}");
     // The next plane after the last block output is free.
     tasks::attn_residual(A, 2, B, X, 1, A + 2 * plane, 8, H, 8);
+    // The op reads its rows in blocks of 16-byte aligned values.
+    for (a, b, x, c) in [(A + 8, B, X, C), (A, B + 8, X, C), (A, B, X + 8, C), (A, B, X, C + 8)] {
+        let msg = panics(move || tasks::attn_residual(a, 1, b, x, 1, c, 8, H, 8));
+        assert!(msg.contains("multiple of 16 bytes"), "{msg}");
+    }
 }
 
 #[test]
 fn the_message_gate_runs_in_place_and_refuses_an_output_over_the_message_or_the_weights() {
-    let t = tasks::message_gate(A, B, X, A, 5, H);
-    assert_eq!(t.opcode, OP_MESSAGE_GATE);
-    assert_eq!((t.a, t.b, t.c, t.x, t.n, t.k), (A, B, A, X, 5, H));
-    assert!(panics(|| tasks::message_gate(A, B, X, B + 4, 5, H)).contains("overlap"));
-    assert!(panics(|| tasks::message_gate(A, B, X, X + 64, 5, H)).contains("overlap"));
-    assert!(panics(|| tasks::message_gate(A, B, X, A + 4, 5, H)).contains("not h"));
-    assert!(panics(|| tasks::message_gate(A, B, X, C, 5, 100)).contains("steps of 16"));
+    // An address above 4 GiB, so that the gate must carry both halves of g.
+    const G: u64 = (5 << 40) | 0x1234_5670;
+    let [down, gate] = tasks::message_gate(A, B, X, A, G, 5, H);
+    assert_eq!(down.opcode, OP_MESSAGE_GATE_DOWN);
+    assert_eq!((down.a, down.b, down.c, down.x, down.n, down.k), (A, B, G, X, 5, H));
+    assert_eq!(gate.opcode, OP_MESSAGE_GATE);
+    assert_eq!((gate.a, gate.b, gate.c, gate.x, gate.n, gate.k), (A, B, A, X, 5, H));
+    assert_eq!(
+        gate.p0 as u64 | (gate.layer as u64) << 32,
+        G,
+        "the gate reads g at p0 | layer << 32"
+    );
+    assert!(panics(|| tasks::message_gate(A, B, X, B + 4, G, 5, H)[0]).contains("overlap"));
+    assert!(panics(|| tasks::message_gate(A, B, X, X + 64, G, 5, H)[0]).contains("overlap"));
+    assert!(panics(|| tasks::message_gate(A, B, X, A + 4, G, 5, H)[0]).contains("not h"));
+    assert!(panics(|| tasks::message_gate(A, B, X, C, G, 5, 100)[0]).contains("steps of 16"));
+    // The rows g must not overlap h, the messages, the output or the weights: 5 rows of 64 floats from G.
+    for g in [A + 4, B + 4, C + 4, X + 64] {
+        let msg = panics(move || tasks::message_gate(A, B, X, C, g, 5, H)[0]);
+        assert!(msg.contains("rows g overlap"), "{msg}");
+    }
+    let [_, gate] = tasks::message_gate(A, B, X, C, C - 5 * 64 * 4, 5, H);
+    assert_eq!(gate.c, C, "the rows g may end where the output starts");
+    // The op reads its rows in blocks of 16-byte aligned values.
+    for (h, m, w, y, g) in [
+        (A + 8, B, X, A + 8, G),
+        (A, B + 8, X, A, G),
+        (A, B, X + 8, A, G),
+        (A, B, X, C + 8, G),
+    ] {
+        let msg = panics(move || tasks::message_gate(h, m, w, y, g, 5, H)[0]);
+        assert!(msg.contains("multiple of 16 bytes"), "{msg}");
+    }
+    let msg = panics(|| tasks::message_gate(A, B, X, A, G + 8, 5, H)[0]);
+    assert!(msg.contains("multiple of 16 bytes"), "{msg}");
 }
 
 #[test]

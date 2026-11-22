@@ -170,6 +170,7 @@ pub fn limits(weights: u64) -> Limits {
             tokens: MAX_IDS as u64,
         }],
         max_quantum_ms: MAX_QUANTUM_MS,
+        max_long_quantum_ms: None,
         memory: MemoryLimits {
             mandatory: vec![term("weights", weights), term("scratch", scratch_bytes())],
             ..Default::default()

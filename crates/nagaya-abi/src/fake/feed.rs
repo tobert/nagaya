@@ -164,6 +164,7 @@ impl FakeFeed {
             max_logit_rows: 8,
             slots: slot_limits.clone(),
             max_quantum_ms: 10,
+            max_long_quantum_ms: None,
             memory: MemoryLimits {
                 mandatory,
                 elastic: Vec::new(),

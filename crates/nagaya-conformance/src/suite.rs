@@ -129,6 +129,7 @@ fn gate_limits(mandatory_bytes: u64) -> Limits {
         max_logit_rows: 0,
         slots: Vec::new(),
         max_quantum_ms: 0,
+        max_long_quantum_ms: None,
         memory: MemoryLimits {
             mandatory: vec![MandatoryTerm {
                 name: "gate".to_owned(),

@@ -130,6 +130,7 @@
 #define OP_OUTPUT_GATE      153
 #define OP_RESIDUAL_CONV    154
 #define OP_SIGMOID_ROUTER   155
+#define OP_MESSAGE_GATE_DOWN 156
 // The ops of the Inkling 2 binary (kernels/inkling2_ops.cl): opcodes 140 to 169.
 #define OP_INKLING2_ATTN    160 // the attention of Inkling 2 (kernels/inkling2_attn_ops.cl)
 #define OP_INKLING2_ATTN_SUM 161
