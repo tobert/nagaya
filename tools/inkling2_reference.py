@@ -12,6 +12,24 @@ NVFP4 and MXFP8 experts to bf16 at load. This tool then moves every other parame
 expands to f32 in its call. Thus every sum is f32, and the weights hold their exact values. A run in bf16 differs
 from it by 0.2 on average in each logit (measured on 2026-11-21), so the oracle is f32.
 
+The option --quant runs the quantized mode: each expert quantizes its input rows as the checkpoint requires, and the
+files get the infix ".quant" (`inkling2-mini.quant.oracle.json`, `inkling2-mini.quant.layers.safetensors`, and so on),
+so they never replace the f32 files. transformers quantizes no activation, so `tools/inkling2_quant.py` holds the rules
+of vLLM commit 186882d9e8 (the same rules as `crates/nagaya-mk-inkling2-sm121/src/quant.rs`). The layer split comes from
+`hf_quant_config.json` of the model folder: NVFP4 (block 16, `fouroversix_mae`) for the layers of Mini 0 to 19, and
+MXFP8 (block 32, ue8m0) for the layers 20 to 23. Two rows are quantized in each expert call, as vLLM does them:
+
+  - the input of the gate and up projection: the row of each token, once for all its experts (the router sees the
+    unquantized row), with K = the hidden size 2304 (`ops/moe.py` `_quantize_x`, `route`);
+  - the input of the down projection: the row of each token and expert slot, after the softcapped SwiGLU AND after the
+    routing weight (`ops/activation.py` `_situ_quantize_kernel`), with K = 1152. Thus the quantized mode multiplies
+    the routing weight before the down projection. The f32 mode multiplies after it, as transformers does.
+
+The reference keeps f32: a quantized row is expanded to f32 (NVFP4: `e2m1 * block_scale * (amax * (1/1536))`; MXFP8:
+`e4m3 * 2^(byte - 127)`), and the f32 linear runs with the expanded weights. The weights hold their exact values, so the
+product equals the quantized dot product up to the order of the f32 sums. vLLM also rounds the gate and up output and
+the SwiGLU result to bf16 before it quantizes. This tool does not, because the trunk of the engine is f32.
+
 The tool reads the model folders and never writes into them. It writes only into --out. It loads one model at a
 time; each one holds about 74 GiB of RAM.
 
@@ -27,6 +45,8 @@ The stages:
 The tool stops with an AssertionError when a self check fails. The checks:
 
   - the patched expert call runs in every layer, so no expert sum is in bf16;
+  - with --quant, the quantizer runs in every expert call of every layer, on the input row and on the down input
+    (`ExpertCalls.verify`);
   - each prompt fits in MAX_TOKENS tokens;
   - the hooks see 24 + 2 * 12 = 48 runs of the decoder layers at 3 cycles;
   - the final norm of the hooks, the head and the softcap give the logits of the model;
@@ -38,6 +58,7 @@ The tool stops with an AssertionError when a self check fails. The checks:
 """
 
 import argparse
+import collections
 import hashlib
 import json
 import sys
@@ -54,12 +75,19 @@ ROOT = Path(__file__).resolve().parent.parent
 TOP = 64
 MAX_TOKENS = 640
 DECODE_STEPS = 8
+# In the quantized mode the cache run and the whole run sum in another order, and a row can cross the edge of a
+# quantization step. One flipped code moves a logit by more than the f32 gap of 1e-3. Proposed limit, to check on the
+# first run of the quantized mode.
+QUANT_CACHE_GAP = 0.1
 STAGES = ("text", "layers", "cycles", "decode", "vision")
 # The synthetic images of the stage "vision": (width, height, seed). No side is a multiple of 40, so the processor
 # pads each image on the right and at the bottom.
 VISION_IMAGES = ((213, 118, 35_0), (637, 479, 35_1))
 VISION_PROMPT = "Describe the two images."
+REFERENCE = "transformers inkling2_loop 046bdb8cc2, f32 sums with bf16 weights, CPU"
 STARTED = time.time()
+# The infix of every file name that this run writes: ".quant" in the quantized mode, so that the f32 files stay.
+TAG = ""
 
 
 def log(message):
@@ -118,6 +146,7 @@ def versions():
         "torch": torch.__version__,
         "transformers": transformers.__version__,
         "tokenizers": tokenizers.__version__,
+        "activation_formats": "".join(f[0] for f in ExpertCalls.formats) if ExpertCalls.formats else "none",
     }
 
 
@@ -135,14 +164,33 @@ def source_record(folder):
     }
 
 
+def quant_module():
+    """Loads tools/inkling2_quant.py by its path, because the tool runs with `-I` and has no script folder on its path."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("inkling2_quant", ROOT / "tools/inkling2_quant.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 class ExpertCalls:
-    """The expert call of the reference, with every sum in f32. It counts its calls for a self check."""
+    """The expert call of the reference, with every sum in f32. It counts its calls for a self check.
+
+    An expert module with `activation_format` "nvfp4" or "mxfp8" quantizes its input rows (see the docstring of the
+    tool). A module with no format runs the f32 call of transformers. `formats` holds the format of each layer in the
+    quantized mode, and None in the f32 mode.
+    """
 
     count = 0
+    formats = None
+    quant = None
+    calls = collections.Counter()
+    inputs = collections.Counter()
+    downs = collections.Counter()
 
     @staticmethod
-    def forward(self, hidden_states, top_k_index, top_k_weights):
-        ExpertCalls.count += 1
+    def forward_f32(self, hidden_states, top_k_index, top_k_weights):
         final = torch.zeros_like(hidden_states, dtype=torch.float32)
         with torch.no_grad():
             mask = F.one_hot(top_k_index, num_classes=self.num_experts + 1).permute(2, 1, 0)
@@ -158,9 +206,70 @@ class ExpertCalls:
             final.index_add_(0, token, state.float())
         return final.to(hidden_states.dtype)
 
+    @staticmethod
+    def forward_quantized(self, hidden_states, top_k_index, top_k_weights):
+        """The quantized call. The input row is quantized once for each token. The down input is quantized for each
+        token and slot, after the routing weight, as vLLM does it."""
+        fmt, layer = self.activation_format, self.layer_index
+        final = torch.zeros_like(hidden_states, dtype=torch.float32)
+        with torch.no_grad():
+            mask = F.one_hot(top_k_index, num_classes=self.num_experts + 1).permute(2, 1, 0)
+            hit = torch.greater(mask.sum(dim=(-1, -2)), 0).nonzero()
+        if ExpertCalls.quant is None:
+            ExpertCalls.quant = quant_module()
+        rows = ExpertCalls.quant.fake_quantize(hidden_states.float(), fmt)
+        ExpertCalls.inputs[layer] += 1
+        for expert in hit:
+            expert = expert[0]
+            if expert == self.num_experts:
+                continue
+            position, token = torch.where(mask[expert])
+            state = self._apply_gate(F.linear(rows[token], self.gate_up_proj[expert].float()))
+            state = state.float() * top_k_weights[token, position, None]
+            state = ExpertCalls.quant.fake_quantize(state, fmt)
+            ExpertCalls.downs[layer] += 1
+            state = F.linear(state, self.down_proj[expert].float())
+            final.index_add_(0, token, state.float())
+        return final.to(hidden_states.dtype)
 
-def load(folder):
-    """Loads one model in bf16, then moves every parameter but the experts to f32."""
+    @staticmethod
+    def forward(self, hidden_states, top_k_index, top_k_weights):
+        ExpertCalls.count += 1
+        ExpertCalls.calls[getattr(self, "layer_index", -1)] += 1
+        if getattr(self, "activation_format", None) is None:
+            return ExpertCalls.forward_f32(self, hidden_states, top_k_index, top_k_weights)
+        return ExpertCalls.forward_quantized(self, hidden_states, top_k_index, top_k_weights)
+
+    @staticmethod
+    def snapshot():
+        return {
+            "count": ExpertCalls.count,
+            "calls": dict(ExpertCalls.calls),
+            "inputs": dict(ExpertCalls.inputs),
+            "downs": dict(ExpertCalls.downs),
+        }
+
+    @staticmethod
+    def verify(before):
+        """The self check after a forward: the expert call ran, and in the quantized mode each layer ran it and the
+        quantizer ran in each call, on the input row and on the down input."""
+        check(ExpertCalls.count > before["count"], "the f32 expert call ran")
+        if ExpertCalls.formats is None:
+            return
+        for layer in range(len(ExpertCalls.formats)):
+            calls = ExpertCalls.calls[layer] - before["calls"].get(layer, 0)
+            inputs = ExpertCalls.inputs[layer] - before["inputs"].get(layer, 0)
+            downs = ExpertCalls.downs[layer] - before["downs"].get(layer, 0)
+            check(calls > 0, f"the expert call ran in layer {layer}")
+            check(inputs == calls, f"layer {layer} quantized its input row in each of {calls} calls, not {inputs}")
+            check(downs >= calls, f"layer {layer} quantized its down input in each of {calls} calls, not {downs}")
+
+
+def load(folder, quantize):
+    """Loads one model in bf16, then moves every parameter but the experts to f32.
+
+    With `quantize`, each expert module gets its layer and its activation format from `hf_quant_config.json`.
+    """
     from transformers import AutoModelForImageTextToText, AutoTokenizer
     from transformers.models.inkling2_loop import modeling_inkling2_loop as modeling
 
@@ -175,6 +284,16 @@ def load(folder):
     modeling.Inkling2LoopExperts.forward = ExpertCalls.forward
     text = model.model.language_model
     check(len(text.layers) == 24, f"the model has 24 layers, not {len(text.layers)}")
+    ExpertCalls.formats = None
+    if quantize:
+        ExpertCalls.quant = ExpertCalls.quant or quant_module()
+        formats = ExpertCalls.quant.layer_formats(folder, len(text.layers))
+        for layer, fmt in enumerate(formats):
+            experts = text.layers[layer].mlp.experts
+            check(isinstance(experts, modeling.Inkling2LoopExperts), f"layer {layer} has the expert module")
+            experts.layer_index, experts.activation_format = layer, fmt
+        ExpertCalls.formats = formats
+        log(f"quantized mode: activation formats {''.join(f[0] for f in formats)} (n = nvfp4, m = mxfp8)")
     log(f"loaded {folder}, {model.config.text_config.loop_num_passes} cycles")
     return model, text, tokenizer
 
@@ -186,10 +305,10 @@ def set_cycles(text, count):
 
 def forward(model, ids):
     """The logits of every position of one sequence, with no cache, in f32."""
-    before = ExpertCalls.count
+    before = ExpertCalls.snapshot()
     with torch.no_grad():
         logits = model(input_ids=torch.tensor([ids]), use_cache=False).logits[0].float()
-    check(ExpertCalls.count > before, "the f32 expert call ran")
+    ExpertCalls.verify(before)
     return logits
 
 
@@ -228,12 +347,12 @@ def run_text(model, tokenizer, label, folder, out, facts):
     fixture = {
         "family": "inkling2",
         "model": label,
-        "reference": "transformers inkling2_loop 046bdb8cc2, f32 sums with bf16 weights, CPU",
+        "reference": REFERENCE + (" + quantized expert activations" if TAG else ""),
         "source": source_record(folder),
         "versions": versions(),
         "prompts": entries,
     }
-    path = out / f"{label}.oracle.json"
+    path = out / f"{label}{TAG}.oracle.json"
     path.write_text(json.dumps(fixture, indent=1) + "\n")
     facts[f"{label}.prompt_tokens"] = {e["name"]: len(e["ids"]) for e in entries}
     log(f"wrote {path}")
@@ -302,7 +421,7 @@ def run_layers(model, text, tokenizer, out, facts):
     for index, (layer, gate, row) in enumerate(tap.gates):
         tensors[f"gate{index:02}.{gate}"] = row
     meta = {"prompt": "The capital of France is", "run_layers": order, "versions": versions()}
-    save(tensors, out / "inkling2-mini.layers.safetensors", meta)
+    save(tensors, out / f"inkling2-mini{TAG}.layers.safetensors", meta)
     facts["layers.positions"] = len(ids)
     log(f"wrote layers: {len(tap.runs)} runs, {len(tap.messages)} messages, {len(tap.gates)} gates")
 
@@ -321,7 +440,7 @@ def run_cycles(model, text, tokenizer, label, out, facts):
             entries.append(entry)
             log(f"{label} {name} at {count} cycles: top {tokenizer.decode([entry['top_ids'][0]])!r}")
     set_cycles(text, 3)
-    path = out / f"{label}.cycles.json"
+    path = out / f"{label}{TAG}.cycles.json"
     path.write_text(json.dumps({"model": label, "versions": versions(), "prompts": entries}, indent=1) + "\n")
     facts[f"{label}.cycles"] = [1, 2, 3, 4, 5]
     log(f"wrote {path}")
@@ -330,6 +449,7 @@ def run_cycles(model, text, tokenizer, label, out, facts):
 def run_decode(model, tokenizer, label, out, facts):
     """8 greedy tokens of "chat" with the cache of the reference. The logits match a forward with no cache."""
     ids = tokenizer.encode(chat_text(tokenizer), add_special_tokens=False)
+    before = ExpertCalls.snapshot()
     with torch.no_grad():
         generated = model.generate(
             input_ids=torch.tensor([ids]),
@@ -338,17 +458,19 @@ def run_decode(model, tokenizer, label, out, facts):
             output_logits=True,
             return_dict_in_generate=True,
         )
+    ExpertCalls.verify(before)
     tokens = generated.sequences[0, len(ids) :].tolist()
     check(len(tokens) == DECODE_STEPS, f"{DECODE_STEPS} greedy tokens, not {len(tokens)}")
     cached = torch.stack([row[0].float() for row in generated.logits])
     whole = forward(model, ids + tokens)[len(ids) - 1 : len(ids) - 1 + DECODE_STEPS]
     gap = max_abs(cached, whole)
     log(f"{label} decode: the cache against no cache, max abs {gap:.3g}")
-    check(gap <= 1e-3, f"the cache gives the logits of no cache: max abs {gap:.3g}")
+    limit = QUANT_CACHE_GAP if ExpertCalls.formats else 1e-3
+    check(gap <= limit, f"the cache gives the logits of no cache: max abs {gap:.3g}, limit {limit}")
     check(whole.argmax(-1).tolist() == tokens, "the greedy tokens are the argmax of the logits with no cache")
     tensors = {"ids": torch.tensor(ids), "tokens": torch.tensor(tokens), "logits": whole}
     meta = {"prompt": chat_text(tokenizer), "cache_gap": gap, "versions": versions()}
-    save(tensors, out / f"{label}.decode.safetensors", meta)
+    save(tensors, out / f"{label}{TAG}.decode.safetensors", meta)
     facts[f"{label}.decode.cache_gap"] = gap
     facts[f"{label}.decode.text"] = tokenizer.decode(tokens)
 
@@ -427,7 +549,7 @@ def run_vision(model, text, folder, out, facts):
     tensors, images, records = {}, [], []
     for index, (width, height, seed) in enumerate(VISION_IMAGES):
         rgb = synthetic_image(width, height, seed)
-        png = out / f"inkling2-vision-image{index}.png"
+        png = out / f"inkling2-vision-image{index}{TAG}.png"
         Image.fromarray(rgb.numpy()).save(png)
         image = Image.open(png)
         image.load()
@@ -479,7 +601,7 @@ def run_vision(model, text, folder, out, facts):
     check(torch.equal(inputs["pixel_values"].float(), pixels), "the processor gives the same pixels for the chat")
     embeds = EmbedsTap(text)
     tap = VisionTap(tower)
-    before = ExpertCalls.count
+    before = ExpertCalls.snapshot()
     with torch.no_grad():
         logits = model(
             input_ids=inputs["input_ids"],
@@ -487,7 +609,7 @@ def run_vision(model, text, folder, out, facts):
             image_grid_thw=inputs["image_grid_thw"],
             use_cache=False,
         ).logits[0].float()
-    check(ExpertCalls.count > before, "the f32 expert call ran")
+    ExpertCalls.verify(before)
     embeds.remove()
     tap.remove()
     joint = tap.named()["projector"]
@@ -511,19 +633,19 @@ def run_vision(model, text, folder, out, facts):
         "joint_gap": joint_gap,
         "versions": versions(),
     }
-    save(tensors, out / "inkling2-mini.vision.safetensors", meta)
+    save(tensors, out / f"inkling2-mini{TAG}.vision.safetensors", meta)
     source = "two synthetic images of this tool and a fixed question"
     entry = top_entry("vision", source, rendered, ids.tolist(), logits[-1])
     entry["images"] = records
     fixture = {
         "family": "inkling2",
         "model": "inkling2-mini",
-        "reference": "transformers inkling2_loop 046bdb8cc2, f32 sums with bf16 weights, CPU",
+        "reference": REFERENCE + (" + quantized expert activations" if TAG else ""),
         "source": source_record(folder),
         "versions": versions(),
         "prompts": [entry],
     }
-    (out / "inkling2-mini.vision.json").write_text(json.dumps(fixture, indent=1) + "\n")
+    (out / f"inkling2-mini{TAG}.vision.json").write_text(json.dumps(fixture, indent=1) + "\n")
     facts["vision.placeholders"] = counts
     facts["vision.prompt_tokens"] = len(ids)
     facts["vision.joint_gap"] = joint_gap
@@ -538,7 +660,10 @@ def main():
     parser.add_argument("--out", required=True, help="the folder of the reference files")
     parser.add_argument("--stages", default=",".join(STAGES), help="the stages, with commas between them")
     parser.add_argument("--threads", type=int, default=24, help="the CPU threads of torch")
+    parser.add_argument("--quant", action="store_true", help="quantize the expert activations; write files with .quant")
     args = parser.parse_args()
+    global TAG
+    TAG = ".quant" if args.quant else ""
     stages = args.stages.split(",")
     for stage in stages:
         check(stage in STAGES, f"the stage {stage} is one of {STAGES}")
@@ -546,14 +671,14 @@ def main():
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     # The stage "vision" keeps its facts in a file of its own, so that it writes no file of the other stages.
-    facts_name = "vision.facts.json" if stages == ["vision"] else "facts.json"
+    facts_name = f"{TAG.lstrip('.')}{'.' if TAG else ''}{'vision.' if stages == ['vision'] else ''}facts.json"
     facts_path = out / facts_name
     facts = json.loads(facts_path.read_text()) if facts_path.exists() else {}
     for label, folder in (("inkling2-mini", args.mini), ("inkling2-varloop", args.varloop)):
         wanted = [s for s in stages if s not in ("layers", "vision") or label == "inkling2-mini"]
         if not wanted:
             continue
-        model, text, tokenizer = load(folder)
+        model, text, tokenizer = load(folder, args.quant)
         if "text" in wanted:
             run_text(model, tokenizer, label, folder, out, facts)
         if "layers" in wanted:

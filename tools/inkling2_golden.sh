@@ -7,7 +7,13 @@
 #
 #   INKLING2_MODEL_DIR=<snapshot of thinkingmachines/Inkling-2-Mini> \
 #   INKLING2_VARLOOP_MODEL_DIR=<snapshot of thinkingmachines/TML-d24-varloop-research> \
-#       tools/inkling2_golden.sh [--stages text,layers,cycles,decode,vision]
+#       tools/inkling2_golden.sh [--stages text,layers,cycles,decode,vision] [--quant]
+#
+# The option --quant runs the quantized mode: each expert quantizes its input rows as the checkpoint requires (the rules
+# of tools/inkling2_quant.py, and the layer split of hf_quant_config.json). It writes the same files with the infix
+# ".quant" (inkling2-mini.quant.oracle.json, inkling2-mini.quant.layers.safetensors, quant.facts.json, and so on), so
+# the f32 files stay. Run the script twice, with and without the option, for both sets. Each run takes the time and the
+# RAM of the f32 run.
 #
 # The pinned revisions are Inkling-2-Mini ed40e7da625f594fc9c4990f5f66be24873c22d7 and TML-d24-varloop-research
 # 657b53ba5da7baefe9ff15dca5cd25f5bd3dbaa2. The script refuses another revision.
