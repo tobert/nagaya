@@ -11,7 +11,7 @@ use nagaya_abi::{
     Tap, WriteResult,
 };
 use nagaya_mk_bmg::level_zero::{B70Card, L0Cluster};
-use nagaya_mk_bmg::protocol::MkTaskDescriptor;
+use nagaya_mk_bmg::protocol::{MkTaskDescriptor, NUM_SCOREBOARD_EVENTS};
 use nagaya_mk_bmg::ring::Ring;
 use nagaya_mk_bmg::safetensors::{MappedSafeTensors, SafeTensorsView};
 use nagaya_mk_bmg::{IGC_REVISION, INKLING2_KERNEL, KERNEL_ENTRY, OCLOC_VERSION};
@@ -21,7 +21,7 @@ use crate::host::ops::HIDDEN;
 use crate::host::weights::LOGITS;
 use crate::media::HeldRows;
 use crate::model::{self, Bufs, LAUNCH_TASKS, SlotMemory, TapBufs, TapRing, TaskRing};
-use crate::spec::{self, Block, Config, FAMILY, HEAD_ROWS, Held, Model, Part, RING_ROWS, ROUTE_WORDS, Run, Taps};
+use crate::spec::{self, Block, Config, FAMILY, HEAD_ROWS, Held, Model, Part, ROUTE_WORDS, Run, Source, Taps};
 use crate::vision::{self, PassBufs};
 use crate::weights::{self, Count, Weights};
 
@@ -182,7 +182,7 @@ fn identity_of(
     driver: u32,
 ) -> Result<Identity, String> {
     let (vendor, device, revision) = pci_ids(pci)?;
-    let mut numbers = BTreeMap::new();
+    let mut numbers = spec::identity_numbers(config);
     numbers.insert(
         "kernel.megakernel_inkling2_bmg.bin".to_owned(),
         format!("blake3:{}", blake3::hash(INKLING2_KERNEL).to_hex()),
@@ -190,9 +190,6 @@ fn identity_of(
     numbers.insert("ocloc".to_owned(), OCLOC_VERSION.to_owned());
     numbers.insert("igc".to_owned(), IGC_REVISION.to_owned());
     numbers.insert("driver".to_owned(), driver.to_string());
-    numbers.insert("max_block".to_owned(), config.max_block.to_string());
-    numbers.insert("ring_rows".to_owned(), RING_ROWS.to_string());
-    numbers.insert("cycles".to_owned(), spec::DEFAULT_CYCLES.to_string());
     numbers.insert("canary".to_owned(), "not run".to_owned());
     Ok(Identity {
         model: model.name().to_owned(),
@@ -280,6 +277,8 @@ impl Inkling2Engine {
         }
         let checkpoint_digest = checkpoint_digest(&config_text, &view)?;
 
+        // The memory of this process on the card before the open, so the check after it sees what the open placed.
+        let before = nagaya_mk_bmg::vram::card_memory(pci)?;
         // Only the engine's card gets a context, so the open does not stall the work of another card.
         let cluster = L0Cluster::init_at(INKLING2_KERNEL, KERNEL_ENTRY, &[pci.to_owned()])?;
         let card = &cluster.cards[0];
@@ -335,7 +334,19 @@ impl Inkling2Engine {
                 device.bytes
             ));
         }
-        let ring = Ring::new(card, spec::scratch_floats(config.max_seq()));
+        let mut ring = Ring::new(card, spec::scratch_floats(config.max_seq()));
+        // The driver puts a buffer that does not fit in system memory, and then each pass runs 5 to 6 times slower.
+        // Thus the open refuses, and frees what it took (engine-abi "Inkling 2", "The cost of a slot").
+        let fits = nagaya_mk_bmg::vram::card_memory(pci).and_then(|after| {
+            // The scratch and the scoreboard of the ring are device memory too; its tasks are host memory.
+            let ring_bytes = (spec::scratch_floats(config.max_seq()).max(1) + NUM_SCOREBOARD_EVENTS) * 4;
+            nagaya_mk_bmg::vram::check_open(pci, planned + ring_bytes as u64, before, after)
+        });
+        if let Err(message) = fits {
+            ring.free(card);
+            device.free_all(card);
+            return Err(message);
+        }
 
         let identity = identity_of(model, checkpoint_digest, facts, &config, pci, driver)?;
         let runs = (1..=usize::from(limits_cycles_max(&limits))).map(spec::runs).collect();
@@ -510,9 +521,9 @@ impl Inkling2Engine {
         if upto > all || norm && upto != all {
             return Err(format!("a probe of {upto} runs with the norm {norm} does not exist"));
         }
-        let segment = probe_segment(slot, ids);
+        // The check comes before the clear, so a refused probe changes nothing.
+        let block = self.held.check_probe(slot, ids, self.config.max_block)?;
         self.held.clear(slot);
-        let block = self.held.check_pass(&[segment], self.config.max_block)?;
         self.forward(
             slot,
             0,
@@ -644,6 +655,11 @@ impl Inkling2Engine {
     }
 }
 
+/// True when each byte is zero: the bytes of a run that a count does not reach.
+fn zeros(bytes: &[u8]) -> bool {
+    bytes.iter().all(|b| *b == 0)
+}
+
 /// The most cycles of the limits.
 fn limits_cycles_max(limits: &Limits) -> u8 {
     limits.cycles.expect("the engine declares `cycles`").max
@@ -659,20 +675,6 @@ fn weights_f32(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
-/// The segment of a probe: `ids` from position 0 of `slot`, with no logit row.
-fn probe_segment(slot: usize, ids: &[u32]) -> Segment {
-    Segment {
-        control: Vec::new(),
-        state: State::Slot(slot as u32),
-        inputs: nagaya_abi::SegmentInputs::Tokens(ids.to_vec()),
-        positions: (0..ids.len() as u64).collect(),
-        meta: Vec::new(),
-        outputs: Default::default(),
-        layer_loop: None,
-        cycles: None,
-    }
-}
-
 impl Engine for Inkling2Engine {
     fn identity(&self) -> Identity {
         self.identity.clone()
@@ -683,6 +685,7 @@ impl Engine for Inkling2Engine {
     }
 
     fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
+        self.last_error = None;
         let (block, named) = match self.check_block(segments, taps) {
             Ok(found) => found,
             Err(error) => return Err(self.fail(error)),
@@ -721,6 +724,7 @@ impl Engine for Inkling2Engine {
         })
     }
 
+    /// Why the last call failed, or `None` when it did not fail. Each call that can fail clears it first.
     fn last_error(&self) -> Option<String> {
         self.last_error.clone()
     }
@@ -746,6 +750,7 @@ impl Control for Inkling2Engine {
     /// Write one vector into its entry of the table. A wrong index, a wrong size or a value that is not finite is
     /// refused, and nothing changes.
     fn control_write(&mut self, index: u32, bytes: &[u8]) -> Result<(), String> {
+        self.last_error = None;
         let (table, limit) = self.control;
         if let Err(message) = spec::check_control_write(&limit, index, bytes) {
             self.last_error = Some(message.clone());
@@ -758,15 +763,19 @@ impl Control for Inkling2Engine {
 }
 
 impl Parts for Inkling2Engine {
-    /// Read a conv part whole, or the rows of a row part from its base: as many as `out` holds.
+    /// Read a fixed part whole, or the rows of a row part from its base: as many as `out` holds. A run that the count
+    /// of the slot does not reach reads as zeros, and the part `cycles` reads the count (engine-abi "Inkling 2").
     fn part_read(&mut self, state: State, part: PartId, out: &mut [u8]) -> Result<(), PartError> {
-        let (slot, which, from) = match self.held.check_part_read(state, part, out.len()) {
+        self.last_error = None;
+        let (slot, which, from, source) = match self.held.check_part_read(state, part, out.len()) {
             Ok(found) => found,
             Err(message) => return Err(self.refuse_read(message)),
         };
-        match which {
-            Part::Conv(s) => self.device.read_into(self.card(), self.slots[slot].conv[s], out),
-            _ => {
+        match (which, source) {
+            (_, Source::Zeros) => out.fill(0),
+            (_, Source::Count(count)) => out.copy_from_slice(&count.to_le_bytes()),
+            (Part::Conv(s), Source::Device) => self.device.read_into(self.card(), self.slots[slot].conv[s], out),
+            (_, Source::Device) => {
                 let rows = out.len() as u64 / spec::ROW_BYTES;
                 self.read_rows(slot, which, from..from + rows, out);
             }
@@ -774,30 +783,41 @@ impl Parts for Inkling2Engine {
         Ok(())
     }
 
-    /// Write a conv part whole. The slot holds no token until `set_n`.
+    /// Write a fixed part whole: a conv part, or the count of cycles. The slot holds no token until `set_n`.
     fn part_write(&mut self, state: State, part: PartId, bytes: &[u8]) -> WriteResult {
-        let (slot, which) = match self.held.check_part_write(state, part, bytes.len()) {
+        self.last_error = None;
+        let (slot, which) = match self.held.check_part_write(state, part, bytes) {
             Ok(found) => found,
             Err(message) => return self.refuse(message),
         };
+        if which == Part::Cycles {
+            let count = u32::from_le_bytes(bytes.try_into().expect("check_part_write took 4 bytes"));
+            self.held.wrote_count(slot, count);
+            return WriteResult::Ok;
+        }
         self.device
             .write(self.card(), self.slots[slot].conv[which.state()], bytes);
-        self.held.wrote(slot, part, None);
+        self.held.wrote(slot, part, None, zeros(bytes));
         WriteResult::Ok
     }
 
     fn cells_read(&mut self, state: State, part: PartId, from: u64, n: u64, out: &mut [u8]) -> Result<(), PartError> {
-        let (slot, which) = match self.held.check_read(state, part, from, n, out.len()) {
+        self.last_error = None;
+        let (slot, which, source) = match self.held.check_read(state, part, from, n, out.len()) {
             Ok(found) => found,
             Err(message) => return Err(self.refuse_read(message)),
         };
-        self.read_rows(slot, which, from..from + n, out);
+        match source {
+            Source::Device => self.read_rows(slot, which, from..from + n, out),
+            Source::Zeros | Source::Count(_) => out.fill(0),
+        }
         Ok(())
     }
 
     /// Write the rows of positions `from` to `from + n`. A ring keeps the last of them. The slot holds no token until
     /// `set_n`, so a pass cannot read rows of two states.
     fn cells_write(&mut self, state: State, part: PartId, from: u64, n: u64, bytes: &[u8]) -> WriteResult {
+        self.last_error = None;
         let (slot, which, kept) = match self.held.check_cells_write(state, part, from, n, bytes.len()) {
             Ok(found) => found,
             Err(message) => return self.refuse(message),
@@ -810,11 +830,12 @@ impl Parts for Inkling2Engine {
             self.device.write(self.card(), dst, &bytes[at..at + rows * row]);
             at += rows * row;
         }
-        self.held.wrote(slot, part, Some(from..from + n));
+        self.held.wrote(slot, part, Some(from..from + n), zeros(bytes));
         WriteResult::Ok
     }
 
     fn set_n(&mut self, state: State, n: u64) -> WriteResult {
+        self.last_error = None;
         match self.held.check_set_n(state, n) {
             Ok(slot) => {
                 if n == 0 {
@@ -834,6 +855,7 @@ impl Slots for Inkling2Engine {
     }
 
     fn slot_clear(&mut self, slot: SlotId) -> WriteResult {
+        self.last_error = None;
         if slot as usize >= self.held.n.len() {
             return self.refuse(format!("the engine has no slot {slot}"));
         }

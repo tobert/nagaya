@@ -5001,6 +5001,8 @@ research model (milestone 35, engine-abi "Inkling 2"). Each rule below is **Prop
 - **The family.** One library, `nagaya-text-inkling2`, serves both models, because the two folders share every file
   of the family. Its opener reads the key `model_dir` of `[engines.family]`. With no key, it reads
   `INKLING2_MODEL_DIR`. Thus an engine on demand, which has no family table (3.3a), still gets its family.
+  - The family can read another folder than the engine. Thus the opener refuses a family whose chat template is not
+    the template of the identity, and the registry compares the tokenizer hash (11.3).
 - The registry compares the tokenizer hash of the family with the identity, as for each family (11.3). The engine
   takes the hash from the same library, so the two agree.
 - **The generation prompt.** The template of Inkling 2 has none: the model writes `<|message_model|>` first. The

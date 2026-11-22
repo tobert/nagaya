@@ -155,8 +155,9 @@ pub fn served_names(engine: &str, _config: &toml::Table) -> Option<Vec<String>> 
     Some(vec![engine.to_owned()])
 }
 
-/// The Inkling 2 family from a model folder (`family_dir`). The registry compares its tokenizer hash with the identity
-/// (spec 11.3). The served model is the engine name. This family has no objects, so it refuses each image part.
+/// The Inkling 2 family from a model folder (`family_dir`). Its template must be the template of the identity, and the
+/// registry compares its tokenizer hash with the identity (spec 11.3). The served model is the engine name. This
+/// family has no objects, so it refuses each image part.
 pub fn open_family(identity: &Identity, table: &toml::Table) -> Result<OpenedFamily, String> {
     open_family_with(identity, table, None)
 }
@@ -168,10 +169,19 @@ pub fn open_family_with(
     table: &toml::Table,
     objects: Option<&crate::serving::ObjectReader>,
 ) -> Result<OpenedFamily, String> {
-    let _ = identity;
     let dir = family_dir(table)?;
     let mut family = nagaya_text_inkling2::Inkling2Family::from_dir(&dir)
         .map_err(|error| format!("cannot build the Inkling 2 family from `{}`: {error}", dir.display()))?;
+    // The family can read another folder than the engine, so its template must be the template of the identity
+    // (spec 11.3). The registry compares the tokenizer hash.
+    if family.template() != identity.template {
+        return Err(format!(
+            "the chat template of the family in `{}` is not the template of the engine `{}`; give the family the \
+             folder of the engine's model",
+            dir.display(),
+            identity.model
+        ));
+    }
     if let Some(objects) = objects {
         family = family.with_objects(Arc::new(StoreObjects::new(Arc::clone(objects))));
     }

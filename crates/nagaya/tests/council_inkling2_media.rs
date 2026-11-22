@@ -206,7 +206,8 @@ fn the_opener_gives_the_family_the_objects_of_the_process() {
     let context: Context = serde_json::from_value(json!({"thinking": false, "messages": [
         {"role": "user", "content": [{"type": "object", "id": id, "mime": "image/png"}]}]}))
     .unwrap();
-    let identity = nagaya_abi::Engine::identity(&nagaya_abi::fake::FakeAlways::new().with_family("inkling2"));
+    let mut identity = nagaya_abi::Engine::identity(&nagaya_abi::fake::FakeAlways::new().with_family("inkling2"));
+    identity.template = nagaya_mk_inkling2_bmg::spec::text_facts(&dir).unwrap().template;
     let table: toml::Table = format!("model_dir = \"{}\"", dir.display()).parse().unwrap();
     let with = nagaya::inkling2::open_family_with(&identity, &table, Some(&store)).unwrap();
     let rendering = with.family.render(&context, true).unwrap();

@@ -224,6 +224,78 @@ impl Inkling2Family {
         Ok(family)
     }
 
+    /// The rendering of `context`, with the grid of each image part from `grid`. The test renders give fixed grids,
+    /// so the council hash covers the placeholders of an image with no object (spec 11.3a).
+    pub(crate) fn render_with(
+        &self,
+        context: &Context,
+        generation_prompt: bool,
+        grid: &dyn Fn(&ImagePart) -> Result<crate::media::Grid, FamilyError>,
+    ) -> Result<Rendering, FamilyError> {
+        context.check()?;
+        let tools = messages::tools_json(&context.tools);
+        let msgs = messages::messages_json(&context.messages)?;
+        let open = context.open();
+        let base = match open {
+            Some(open) => {
+                let before = &msgs[..msgs.len() - 1];
+                self.check_seams(before, open, &tools, context.thinking)?;
+                self.run_open(before, open, &tools, context.thinking)?
+            }
+            None => self.run(&msgs, &tools, context.thinking)?,
+        };
+        let end = base.tokens.len();
+        let last = msgs.len() - 1;
+        let mut boundaries: Vec<Boundary> = Vec::new();
+        for (i, message) in context.messages.iter().enumerate().take(last) {
+            if !message.snap {
+                continue;
+            }
+            let part = self.run(&msgs[..=i], &tools, context.thinking)?;
+            let after = boundaries.last().map_or(0, |b| b.tokens);
+            if base.tokens.starts_with(&part.tokens) && part.tokens.len() > after && part.tokens.len() < end {
+                boundaries.push(Boundary {
+                    message: i,
+                    tokens: part.tokens.len(),
+                });
+            }
+        }
+        boundaries.push(Boundary {
+            message: last,
+            tokens: end,
+        });
+        let control_text = context
+            .messages
+            .iter()
+            .enumerate()
+            .flat_map(|(i, m)| {
+                let place = format!("message:{i}");
+                messages::message_strings(m)
+                    .into_iter()
+                    .flat_map(|s| self.hits(&place, s))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let mut tokens = base.tokens;
+        if generation_prompt && open.is_none() {
+            tokens.push(self.marks.message_model);
+        }
+        let rendering = Rendering {
+            tokens,
+            end,
+            boundaries,
+            control_text,
+            media: Vec::new(),
+        };
+        // engine-abi "The images of Inkling 2", "The placeholder": the header of each part gives its count.
+        let parts = self.image_parts(context)?;
+        if parts.is_empty() {
+            return Ok(rendering);
+        }
+        let grids = parts.iter().map(grid).collect::<Result<Vec<_>, FamilyError>>()?;
+        expand(rendering, &parts, &grids)
+    }
+
     pub fn tokenizer(&self) -> &Tokenizer {
         self.chat.tokenizer()
     }
@@ -389,71 +461,7 @@ impl Family for Inkling2Family {
     /// reference gives it a probability of 1 - 6e-12 after the prompt "chat". The council needs a generation prompt for
     /// the first logit row (spec 11.18). An open message takes its place.
     fn render(&self, context: &Context, generation_prompt: bool) -> Result<Rendering, FamilyError> {
-        context.check()?;
-        let tools = messages::tools_json(&context.tools);
-        let msgs = messages::messages_json(&context.messages)?;
-        let open = context.open();
-        let base = match open {
-            Some(open) => {
-                let before = &msgs[..msgs.len() - 1];
-                self.check_seams(before, open, &tools, context.thinking)?;
-                self.run_open(before, open, &tools, context.thinking)?
-            }
-            None => self.run(&msgs, &tools, context.thinking)?,
-        };
-        let end = base.tokens.len();
-        let last = msgs.len() - 1;
-        let mut boundaries: Vec<Boundary> = Vec::new();
-        for (i, message) in context.messages.iter().enumerate().take(last) {
-            if !message.snap {
-                continue;
-            }
-            let part = self.run(&msgs[..=i], &tools, context.thinking)?;
-            let after = boundaries.last().map_or(0, |b| b.tokens);
-            if base.tokens.starts_with(&part.tokens) && part.tokens.len() > after && part.tokens.len() < end {
-                boundaries.push(Boundary {
-                    message: i,
-                    tokens: part.tokens.len(),
-                });
-            }
-        }
-        boundaries.push(Boundary {
-            message: last,
-            tokens: end,
-        });
-        let control_text = context
-            .messages
-            .iter()
-            .enumerate()
-            .flat_map(|(i, m)| {
-                let place = format!("message:{i}");
-                messages::message_strings(m)
-                    .into_iter()
-                    .flat_map(|s| self.hits(&place, s))
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-        let mut tokens = base.tokens;
-        if generation_prompt && open.is_none() {
-            tokens.push(self.marks.message_model);
-        }
-        let rendering = Rendering {
-            tokens,
-            end,
-            boundaries,
-            control_text,
-            media: Vec::new(),
-        };
-        // engine-abi "The images of Inkling 2", "The placeholder": the header of each part gives its count.
-        let parts = self.image_parts(context)?;
-        if parts.is_empty() {
-            return Ok(rendering);
-        }
-        let grids = parts
-            .iter()
-            .map(|p| self.part_grid(p))
-            .collect::<Result<Vec<_>, FamilyError>>()?;
-        expand(rendering, &parts, &grids)
+        self.render_with(context, generation_prompt, &|part| self.part_grid(part))
     }
 
     fn decision_read(&self, input: &DecisionInput<'_>) -> Result<Box<dyn ReadPlan>, FamilyError> {

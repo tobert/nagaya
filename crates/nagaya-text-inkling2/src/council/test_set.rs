@@ -67,6 +67,17 @@ pub(crate) fn renders(family: &Inkling2Family) -> Vec<Vec<u32>> {
             out.push(family.render(c, prompt).expect("the test context renders").tokens);
         }
     }
+    // An image part with a fixed grid of 2 by 3 tokens: the council hash covers its placeholders, with no object.
+    let image = context(json!({"thinking": false, "messages": [{"role": "user", "content": [
+        {"type": "text", "text": "what"},
+        {"type": "object", "id": format!("blake3:{}", "ab".repeat(32)), "mime": "image/png"}]}]}));
+    let grid = |_: &_| Ok(crate::media::Grid { rows: 2, columns: 3 });
+    for prompt in [false, true] {
+        let rendering = family
+            .render_with(&image, prompt, &grid)
+            .expect("the test image context renders");
+        out.push(rendering.tokens);
+    }
     let spec = parse_spec(
         &json!({"name": "g", "instructions": "i", "input_label": "x", "questions": [
             {"id": "verdict", "type": "choice", "instructions": "What. Pick one.", "criteria": [

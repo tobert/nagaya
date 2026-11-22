@@ -121,3 +121,30 @@ fn the_load_counts_the_bytes_of_the_plan() {
     assert!(w.layers[20].mxfp8 && !w.layers[19].mxfp8);
     assert!(w.layers[6].gates.iter().all(|g| *g == 0), "a count gives no addresses");
 }
+
+/// The table of the plan is the list of the text tensors of the checkpoint, with their dtypes and shapes. A load of a
+/// view with a tensor missing gives an error that names it, and it does not panic.
+#[test]
+fn the_table_of_the_plan_is_the_text_model_of_the_checkpoint() {
+    if common::model_absent(Which::Mini) {
+        return;
+    }
+    let map = MappedSafeTensors::open(&common::model_weights(Which::Mini)).unwrap();
+    let mut view = map.view().unwrap();
+    let mut table: Vec<(String, Dtype, Vec<usize>)> = spec::text_tensors();
+    table.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut file: Vec<(String, Dtype, Vec<usize>)> = view
+        .tensors
+        .values()
+        .filter(|m| m.name.starts_with("model.llm."))
+        .map(|m| (m.name.clone(), m.dtype, m.shape.clone()))
+        .collect();
+    file.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(table, file);
+    let name = "model.llm.layers.3.mlp_norm.weight";
+    view.tensors.remove(name).unwrap();
+    let mut count = nagaya_mk_inkling2_bmg::weights::Count::default();
+    let e = nagaya_mk_inkling2_bmg::weights::load(&mut count, &view).unwrap_err();
+    assert!(e.contains(&format!("holds no tensor {name}")), "{e}");
+    assert_eq!(count.bytes, 0, "a refused load uploads nothing");
+}

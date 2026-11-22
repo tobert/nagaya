@@ -1516,11 +1516,25 @@ engine declares no `layer_loops`.
   none (`Limits::check_segment_cycles`). A segment names a loop or cycles, and not both.
 - gogi has the context member `cycles` (gogi "Cycles"). The council passes it to `segment.cycles` (spec 11.17).
 - **A slot keeps its count.** A slot that holds positions refuses a pass at another count, and the error names
-  both counts. A clear or a write of parts drops the count, and the next pass sets it. The bytes of a part do not
-  name their count. Thus the engine trusts the council, which keys a state by its count (spec 11.17).
-  **Proposed** (Claude Opus 5.5, 2026-11-21).
-- The parts of the reserve that a count does not reach hold stale rows. A snapshot copies them, and a pass at that
-  count never reads them.
+  both counts. A clear drops the count, and the next pass sets it.
+- **The part `cycles`.** It is the last part of a state: a fixed part, `u32 [1]`. A read gives the count of the
+  slot, or 0 for an empty slot. A restore writes it. Thus a snapshot holds its count, and a restore keeps it.
+- **The parts that a count does not reach.** A run is active when it is outside the cycles, or in a cycle up to the
+  count. The parts of an inactive run of the reserve read as zeros: rows and conv. The engine does not read the card
+  for them. Thus one recipe gives one content id, whatever ran in the slot before.
+  - An inactive ring holds the last `RING_ROWS` positions of the slot, or all of them in a short slot. An inactive
+    cells part holds every position from 0.
+- **A restore.** The writes come in any order. `set_n` with a count of 1 or more needs a write of each part.
+  - The count of `cycles` is 1 to `max`. A second write of another count is refused. A count of 0 restores only
+    an empty slot.
+  - The rows of an active part follow the rules of "The host spec". An inactive part must hold zeros, else
+    `set_n` is refused, and the error names the part.
+  - `set_n` takes the count with the positions. The rings start at the first restored row of an active ring.
+- Reason: a fixed part keeps `limits().parts` static and the ABI as it is. Zeros on a read cost no write to the
+  card. A snapshot of 1 cycle still holds the reserve rows, as zeros (review by ChatGPT through kaibo `gpt-plan`).
+- The identity names `state` 2, the layout of these parts. Thus a snapshot of the parts before `cycles` does not
+  share a recipe with one after.
+- Each rule of this list from "The part `cycles`" is **Proposed** (Claude Opus 5.5, 2026-11-21).
 
 **The weights on the card.** Expanded to `bf16`, the experts take about 49 GB, which is more than the 32 GiB of the
 card. Thus the experts stay in the format of the checkpoint: NVFP4 in layers 0 to 19, and MXFP8 in layers 20 to 23.
@@ -1566,12 +1580,23 @@ of cells and 10 rings.
     33,374,960 KiB of the card. At 164,864 positions, 130,732 KiB go to system memory.
   - With `extra_runs` 48: 106,496 positions. The term `kv` is 11,984,683,008 bytes. At 107,008 positions, a part
     goes to system memory.
-- **No refusal past the card.** The open does not refuse a slot that does not fit. The driver puts the buffers that
-  do not fit in system memory. A slot of 262,144 positions opens, and its terms plan about 40.6 GB on a card of
-  34.4 GB. Then a block of 512 from position 0 takes 4.0 to 5.0 s, where it takes 0.78 s on the card.
-- The ledger does not stop it either. The budget of a card in the B70 example is 32 GiB. With it, the ledger admits
-  up to 170,585 positions at 24 and 110,533 at 48. The driver and the kernels take about 0.24 GB more than the terms.
-  Thus a profile names a slot of at most 164,352 positions at 3 cycles.
+- **The open refuses a slot past the card.** The driver puts a buffer that does not fit in system memory. Then a
+  block of 512 from position 0 takes 4.0 to 5.0 s, where it takes 0.78 s on the card. Thus the open reads the
+  memory of the process on its card before and after its allocations (`nagaya_mk_bmg::vram`). These are the keys
+  `drm-total-vram0` and `drm-resident-vram0` of each `xe` fd of `/proc/self/fdinfo` (spec 9.6). The open refuses in
+  two cases, and it frees what it took:
+  - the memory of the card grew by less than the device bytes of the terms and of the ring;
+  - a byte of a buffer of the process on the card is not resident there.
+- The card gate `tests/xe_fit.rs` ran on 2026-11-21. A slot of 262,144 positions asks for 40,679,296,644 bytes.
+  The driver puts 34,031,300,608 of them on the card, and the open is refused. Then a slot of 164,352 opens, and it
+  holds 34,016,722,944 bytes of the card.
+- Each rule of the two items above is **Proposed** (Claude Opus 5.5, 2026-11-21, by the review of DeepSeek through
+  kaibo). Reason: a slot in system memory is a silent fallback, and spec 8.5 asks for a crash first.
+- The ledger does not stop it. The budget of a card in the B70 example is 32 GiB. With it, the ledger admits up to
+  170,585 positions at 24 and 110,533 at 48. The driver and the kernels take about 0.24 GB more than the terms.
+  - Thus a profile names a slot of at most 164,352 positions at 3 cycles.
+  - A budget of the usable memory of the card, not of its 32 GiB, lets the ledger refuse such a profile first. The
+    owner chooses the budget of the profile.
 
 **Positions.** The model has no rotary embedding.
 
@@ -1592,8 +1617,10 @@ run of a cycle has its own row, and the lab compares the cycles. A control item 
 that its vector holds. "The lab of Inkling 2" gives the other taps: the block outputs, the messages, the gates and
 the routes.
 
-**Not covered yet.** The drafts of the MTP head, which wait (milestone 35 step 10). The images come in step 9
-("The images of Inkling 2").
+**Inputs.** A segment holds tokens, or tokens with the rows of their image and latent spans (`tokens+rows`, "The
+images of Inkling 2", "The lab of Inkling 2"). A segment of rows with no tokens is refused.
+
+**Not covered yet.** The drafts of the MTP head, which wait (milestone 35 step 10).
 
 ### The images of Inkling 2
 
@@ -1720,8 +1747,23 @@ choice open.
 - **The memory terms.** The term `vision` holds the weights of the tower, 636,825,472 bytes. The term `work` adds
   the buffers of the tower, the patch rows, the taps and the projector rows of the largest image. It also adds the
   media rows of a block, 2,304 `f32` values for each position. For a block of 512 that is 1,870,588,096 bytes more.
-- **Open: the time of a large image.** The tower of an image of 10,609 tokens runs in the quantum of its first block.
-  A card test measures it later, against `max_quantum_ms`.
+- **The time of a large image.** The card gate `tests/xe_long.rs` measured an image of 4,096 by 4,096 px, 10,609
+  tokens, on 2026-11-21. Its tower takes about 56,780 ms in the pass of its first block, and a later block takes
+  843 ms. The bound `max_quantum_ms` is 2,000 ms (D8), and the watchdog stops a group with no beat for 30 s (spec
+  7.4). Thus such a pass breaks the bound, and in the process it can stop the process. This is a known defect, not
+  an exception to the bound.
+- **Proposed (ChatGPT through kaibo `gpt-plan`, 2026-11-21): the tower in quanta of its own.** The family keeps the
+  bound of 4,096 px. The tower runs in quanta before the pass that reads its rows. Each quantum fits
+  `max_quantum_ms`.
+  - The engine chooses the slices, and it keeps the state of a tower that is not done. A slice can be a few layers,
+    or the queries of one layer in parts. A slice must not cut the image, because the attention of the tower reads
+    the whole image.
+  - The scheduler runs each slice at the class of the job. A pass reads the projector rows only after the tower is
+    done. The state of a tower that is not done goes when its job ends. The result of `pass` does not change.
+  - Reason: a call that runs the whole tower still holds the card for 57 s. Slices let other ready quanta run
+    between them.
+  - Not built. The card gate of the change runs the largest image with no held rows. A test of the process checks
+    the order of the quanta and the end of a job.
 
 ### The first Inkling 2 binding
 
@@ -1813,6 +1855,10 @@ Opus 5.5, 2026-11-21).
   - A slot of 32,768 positions takes 3,157,950,464 bytes with a reserve of 24, and 4,736,925,696 with 48.
   - A slot of 262,144 positions takes 18,190,336,000 bytes with a reserve of 24.
 - **A restore of a ring part** must hold the last 1,024 positions, the window of a sliding layer.
+- **The probe of the oracle** (8.3) runs from position 0 of a slot that it empties. Its check comes first, so a probe
+  that the check refuses changes nothing (`Held::check_probe`).
+- **`last_error`** gives the failure of the last call. Each call that can fail clears it first, so a call that does
+  not fail leaves `None`.
 - **Tokens.** A token id of 200,058 or more is refused. Reason: the rows past the unpadded vocabulary are padding
   of the head and the embedding.
 - **The term `weights`.** The plan counts the bytes of the header, and it reads no weight bytes (spec 2.4).
@@ -1824,14 +1870,17 @@ Opus 5.5, 2026-11-21).
   - Each other tensor of `model.llm.` keeps its bytes. Some tensors share one allocation ("The weights on the
     card").
   - Each allocation rounds up to 64 bytes. Mini gives 18,881,368,064 bytes.
-  - The tensors of `model.visual.` wait for images (step 9). Another tensor is refused, and so is a missing one.
+  - The plan checks the name, the dtype and the shape of each tensor that the load reads (`spec::text_tensors`).
+    A missing tensor, or one of another dtype or shape, is an error that names it. Thus the load never meets a
+    missing tensor. Another tensor of `model.llm.` is refused too. `vision::load` checks the tensors of `model.visual.`.
 - **The term `work`.** It is the buffers of a block (`spec::block_buffers`), the logits and the ring of the card.
   The list of buffers is the list of `model::Bufs`, and the ring builder names its use. The scratch is the scratch of
   `OP_INKLING2_ATTN` for a block of 512 (`tasks::inkling2_attn_scratch_floats`).
 - **The other terms.** `kv` is the sum of the slots, on `device(0)`. `pinned` is host memory: the tasks, the
   statistics and a staging buffer of 64 MiB, as for LFM3.
-- **The limits.** One segment in each pass, and 16 logit rows. `max_quantum_ms` is 2,000, a budget that a card
-  test measures later. The capabilities are `parts`, `slots`, `coverage`, `close` and `cycles`.
+- **The limits.** One segment in each pass, and 16 logit rows. `max_quantum_ms` is 2,000. The slowest text pass of
+  the long gate took 1,768 ms, and the tower of a large image breaks the bound ("The time of a large image"). The
+  capabilities are `parts`, `slots`, `coverage`, `close` and `cycles`.
 - **Not declared.** `layer_loops`. A pass with a layer loop is refused. "The lab of Inkling 2" adds the taps,
   `control` and latent rows.
 
@@ -1881,6 +1930,8 @@ Each rule is **Proposed** (Claude Opus 5.5, 2026-11-21).
 - **The identity.** The engine names `inkling2-mini` or `inkling2-varloop`. The tokenizer hash and the template
   come from `nagaya-text-inkling2` (`spec::text_facts`). Thus the hash is `sha256:` of the whole `tokenizer.json`,
   and the check of the registry at the start compares like with like (spec 11.3).
+- **The numbers of the config.** The identity names `max_block` and `extra_runs` (`spec::identity_numbers`).
+  `max_block` sets the bits, and `extra_runs` sets the parts of a state. Thus two reserves never share a recipe.
 
 ### The lab of Inkling 2
 

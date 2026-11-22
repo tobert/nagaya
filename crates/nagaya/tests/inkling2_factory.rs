@@ -153,7 +153,9 @@ fn opened(name: &str, dir: &Path) -> OpenedEngine {
         .unwrap()
         .name()
         .to_owned();
-    identity.tokenizer_hash = nagaya_mk_inkling2_bmg::spec::text_facts(dir).unwrap().tokenizer_hash;
+    let facts = nagaya_mk_inkling2_bmg::spec::text_facts(dir).unwrap();
+    identity.tokenizer_hash = facts.tokenizer_hash;
+    identity.template = facts.template;
     OpenedEngine {
         name: name.to_owned(),
         thread: std::thread::current().id(),
@@ -200,6 +202,23 @@ fn the_family_of_either_folder_passes_the_check_of_the_registry() {
         opened.tokenizer_hash.as_deref(),
         Some(nagaya_text_inkling2::tokenizer::sha256_of(&bytes).as_str())
     );
+}
+
+/// The family's template must be the template of the identity, so the council renders what the engine names (spec
+/// 11.3). A family of another template is refused, and the error names both folders' roles.
+#[test]
+fn a_family_of_another_template_is_refused() {
+    let Some(mini) = folder(VARIABLES[0]) else {
+        return;
+    };
+    let mut identity = opened("inkling2-mini", &mini).identity;
+    let family_table = table(&format!("model_dir = \"{}\"", mini.display()));
+    assert!(open_family(&identity, &family_table).is_ok());
+    identity.template.push_str("{# another #}");
+    let Err(error) = open_family(&identity, &family_table) else {
+        panic!("a family with another template serves the engine");
+    };
+    assert!(error.contains("the chat template of the family"), "{error}");
 }
 
 /// With no key `model_dir`, the family reads `INKLING2_MODEL_DIR`, as an engine on demand needs (spec 11.18). A key
