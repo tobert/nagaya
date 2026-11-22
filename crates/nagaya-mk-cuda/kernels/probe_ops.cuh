@@ -2,7 +2,8 @@
 // src/protocol.rs). `tests/cuda_probe.rs` builds their rings and checks each result against the host. Each op
 // returns a checksum or a result tile, so that a compiler cannot remove its work and a wrong value fails a test.
 //
-// This header needs `mk_protocol.h`, `MkTaskDescriptor`, `globaltimer_ns` and `mk_smem` from megakernel.cu.
+// This header needs `mk_protocol.h`, `MkTaskDescriptor`, `globaltimer_ns`, `mk_smem` and the worker functions from
+// megakernel.cu. The ops run on the consumers of a block, in the flat shape or in the producer shape.
 
 #pragma once
 
@@ -100,17 +101,17 @@ __device__ uint32_t probe_block_sum(uint32_t value) {
     for (uint32_t offset = 16; offset > 0; offset >>= 1) {
         value += __shfl_xor_sync(0xffffffffu, value, offset);
     }
-    if ((threadIdx.x & 31) == 0) {
-        partial[threadIdx.x >> 5] = value;
+    if ((worker_id() & 31) == 0) {
+        partial[worker_id() >> 5] = value;
     }
-    __syncthreads();
+    worker_sync();
     uint32_t total = 0;
-    if (threadIdx.x == 0) {
-        for (uint32_t w = 0; w < (blockDim.x + 31) / 32; ++w) {
+    if (worker_id() == 0) {
+        for (uint32_t w = 0; w < (worker_count() + 31) / 32; ++w) {
             total += partial[w];
         }
     }
-    __syncthreads();
+    worker_sync();
     return total;
 }
 
@@ -131,10 +132,10 @@ __device__ uint32_t probe_read_direct(const uint8_t* base, uint32_t items, uint3
         }
         const uint8_t* at = base + item * MK_PROBE_ITEM_BYTES;
         if (PREFETCH == 1) {
-            for (uint32_t line = threadIdx.x; line < PROBE_LINES_PER_ITEM; line += blockDim.x) {
+            for (uint32_t line = worker_id(); line < PROBE_LINES_PER_ITEM; line += worker_count()) {
                 prefetch_l2_line(at + static_cast<uint64_t>(line) * 128);
             }
-        } else if (threadIdx.x == 0) {
+        } else if (worker_id() == 0) {
             bulk_prefetch_l2(at, MK_PROBE_ITEM_BYTES);
         }
     };
@@ -144,11 +145,11 @@ __device__ uint32_t probe_read_direct(const uint8_t* base, uint32_t items, uint3
     for (uint32_t item = blockIdx.x; item < items; item += gridDim.x) {
         prefetch_item(item + static_cast<uint64_t>(distance) * gridDim.x);
         const uint8_t* at = base + static_cast<uint64_t>(item) * MK_PROBE_ITEM_BYTES;
-        for (uint32_t first = 0; first < PROBE_V4_PER_ITEM; first += blockDim.x * PROBE_UNROLL) {
+        for (uint32_t first = 0; first < PROBE_V4_PER_ITEM; first += worker_count() * PROBE_UNROLL) {
             uint4 v[PROBE_UNROLL];
 #pragma unroll
             for (uint32_t j = 0; j < PROBE_UNROLL; ++j) {
-                const uint32_t index = first + j * blockDim.x + threadIdx.x;
+                const uint32_t index = first + j * worker_count() + worker_id();
                 v[j] = make_uint4(0, 0, 0, 0);
                 if (index < PROBE_V4_PER_ITEM) {
                     v[j] = NC ? ld_global_nc_v4(at + static_cast<uint64_t>(index) * 16)
@@ -184,14 +185,14 @@ __device__ uint32_t probe_read_smem_bulk(const uint8_t* base, uint32_t items, ui
         mbarrier_arrive_expect_tx(barriers + stage * 8, MK_PROBE_STAGE_BYTES);
         bulk_copy_to_shared(smem + stage * MK_PROBE_STAGE_BYTES, src, MK_PROBE_STAGE_BYTES, barriers + stage * 8);
     };
-    if (threadIdx.x == 0) {
+    if (worker_id() == 0) {
         for (uint32_t s = 0; s < stages; ++s) {
             mbarrier_init(barriers + s * 8, 1);
         }
         fence_mbarrier_init();
     }
-    __syncthreads();
-    if (threadIdx.x == 0) {
+    worker_sync();
+    if (worker_id() == 0) {
         for (uint32_t j = 0; j < chunks && j < stages; ++j) {
             issue(j);
         }
@@ -201,16 +202,16 @@ __device__ uint32_t probe_read_smem_bulk(const uint8_t* base, uint32_t items, ui
         const uint32_t stage = j % stages;
         mbarrier_wait_parity(barriers + stage * 8, (j / stages) & 1);
         const uint32_t at = smem + stage * MK_PROBE_STAGE_BYTES;
-        for (uint32_t index = threadIdx.x; index < v4_per_chunk; index += blockDim.x) {
+        for (uint32_t index = worker_id(); index < v4_per_chunk; index += worker_count()) {
             sum += sum_words(ld_shared_v4(at + index * 16));
         }
-        __syncthreads();  // Every thread has read the stage, so the copy of a later chunk can overwrite it.
-        if (threadIdx.x == 0 && j + stages < chunks) {
+        worker_sync();  // Every thread has read the stage, so the copy of a later chunk can overwrite it.
+        if (worker_id() == 0 && j + stages < chunks) {
             issue(j + stages);
         }
     }
-    __syncthreads();
-    if (threadIdx.x == 0) {
+    worker_sync();
+    if (worker_id() == 0) {
         for (uint32_t s = 0; s < stages; ++s) {
             mbarrier_inval(barriers + s * 8);
         }
@@ -243,7 +244,7 @@ __device__ __forceinline__ void op_probe_read(const MkTaskDescriptor& task) {
             __trap();
     }
     const uint32_t total = probe_block_sum(sum);
-    if (threadIdx.x == 0) {
+    if (worker_id() == 0) {
         reinterpret_cast<uint32_t*>(task.c)[blockIdx.x] = total;
     }
 }
@@ -260,11 +261,11 @@ __device__ __forceinline__ void op_probe_l2(const MkTaskDescriptor& task) {
     const uint32_t v4_count = task.n / 16;
     uint32_t sum = 0;
     for (uint32_t pass = 0; pass < task.k; ++pass) {
-        for (uint32_t first = 0; first < v4_count; first += blockDim.x * PROBE_UNROLL) {
+        for (uint32_t first = 0; first < v4_count; first += worker_count() * PROBE_UNROLL) {
             uint4 v[PROBE_UNROLL];
 #pragma unroll
             for (uint32_t j = 0; j < PROBE_UNROLL; ++j) {
-                const uint32_t index = first + j * blockDim.x + threadIdx.x;
+                const uint32_t index = first + j * worker_count() + worker_id();
                 v[j] = make_uint4(0, 0, 0, 0);
                 if (index < v4_count) {
                     v[j] = ld_global_nc_v4(slice + static_cast<uint64_t>(index) * 16);
@@ -277,7 +278,7 @@ __device__ __forceinline__ void op_probe_l2(const MkTaskDescriptor& task) {
         }
     }
     const uint32_t total = probe_block_sum(sum);
-    if (threadIdx.x == 0) {
+    if (worker_id() == 0) {
         reinterpret_cast<uint32_t*>(task.c)[blockIdx.x] = total;
     }
 }
@@ -290,7 +291,7 @@ __device__ __forceinline__ void op_probe_l2(const MkTaskDescriptor& task) {
 // in ns (0 if the value never changed), the count of steps, the ns from the first read to the last change, and
 // the count of reads.
 __device__ __forceinline__ void op_probe_timer(const MkTaskDescriptor& task) {
-    if (blockIdx.x != 0 || threadIdx.x != 0) {
+    if (blockIdx.x != 0 || worker_id() != 0) {
         return;
     }
     uint64_t* out = reinterpret_cast<uint64_t*>(task.c);
@@ -341,7 +342,7 @@ __device__ __forceinline__ uint32_t load_word(const uint8_t* p) { return *reinte
 
 __device__ __forceinline__ MmaFragment mma_load_fragment(
     uint32_t kind, const uint8_t* a, const uint8_t* b, const uint8_t* scales) {
-    const uint32_t lane = threadIdx.x & 31;
+    const uint32_t lane = worker_id() & 31;
     const uint32_t g = lane / 4;
     const uint32_t t = lane % 4;
     MmaFragment f;
@@ -401,7 +402,7 @@ __device__ __forceinline__ void mma_tile(float (&d)[4], const MmaFragment& f) {
 // Warp 0 of block 0 runs one tile from zero. a, b = the operands, d = the scales, c = 128 `f32` words: the tile
 // of results in row-major order (16 rows of 8). k = the kind (`PROBE_MMA_*`).
 __device__ __forceinline__ void op_probe_mma_tile(const MkTaskDescriptor& task) {
-    if (blockIdx.x != 0 || threadIdx.x >= 32) {
+    if (blockIdx.x != 0 || worker_id() >= 32) {
         return;
     }
     const MmaFragment f = mma_load_fragment(
@@ -421,8 +422,8 @@ __device__ __forceinline__ void op_probe_mma_tile(const MkTaskDescriptor& task) 
         default:
             __trap();
     }
-    const uint32_t g = (threadIdx.x & 31) / 4;
-    const uint32_t t = (threadIdx.x & 31) % 4;
+    const uint32_t g = (worker_id() & 31) / 4;
+    const uint32_t t = (worker_id() & 31) % 4;
     float* out = reinterpret_cast<float*>(task.c);
     out[g * 8 + 2 * t] = d[0];
     out[g * 8 + 2 * t + 1] = d[1];
@@ -446,7 +447,7 @@ __device__ __forceinline__ void probe_mma_rate(const MkTaskDescriptor& task) {
         }
     }
     float4* out = reinterpret_cast<float4*>(task.c) +
-                  (static_cast<uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x) * MK_PROBE_MMA_CHAINS;
+                  (static_cast<uint64_t>(blockIdx.x) * worker_count() + worker_id()) * MK_PROBE_MMA_CHAINS;
 #pragma unroll
     for (uint32_t chain = 0; chain < MK_PROBE_MMA_CHAINS; ++chain) {
         out[chain] = make_float4(acc[chain][0], acc[chain][1], acc[chain][2], acc[chain][3]);
@@ -454,7 +455,7 @@ __device__ __forceinline__ void probe_mma_rate(const MkTaskDescriptor& task) {
 }
 
 __device__ __forceinline__ void op_probe_mma_rate(const MkTaskDescriptor& task) {
-    if ((blockDim.x & 31) != 0) {
+    if ((worker_count() & 31) != 0) {
         __trap();  // An MMA needs whole warps.
     }
     switch (task.k) {
@@ -469,5 +470,56 @@ __device__ __forceinline__ void op_probe_mma_rate(const MkTaskDescriptor& task) 
             break;
         default:
             __trap();
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// A merge group.
+// ---------------------------------------------------------------------------------------------------------------
+
+// Item `item` sums `kt` floats of the vector of its group: MK_WORKERS lanes, then a tree of halves. It writes the sum,
+// a partial, to its own slot. Then it adds 1 to the counter of its group. The item that reads `slices - 1` is the last
+// in the group: it sums the partials in index order and writes the result. The order of each sum is a function of
+// the shape only, so the bits do not depend on the grid or on which block merges.
+// a = vectors (const float*), c = sums (float*), f = partials, then counters (zero at the start),
+// n = floats in a vector, kt = floats in a slice, group_items = slices in a vector.
+__device__ __forceinline__ void op_reduce_probe(const MkTaskDescriptor& task, uint32_t item) {
+    __shared__ float lanes[MK_WORKERS];
+    const uint32_t slices = task.group_items;
+    // A block of another width has another tree, and a shape that does not cover the vector drops floats.
+    if (worker_count() != MK_WORKERS || slices == 0 || static_cast<uint64_t>(slices) * task.kt < task.n) {
+        __trap();
+    }
+    const uint32_t group = item / slices;
+    const uint32_t slice = item % slices;
+    const float* x = reinterpret_cast<const float*>(task.a) + static_cast<uint64_t>(group) * task.n;
+    const uint64_t begin = static_cast<uint64_t>(slice) * task.kt;
+    const uint64_t end = begin + task.kt < task.n ? begin + task.kt : task.n;
+
+    float acc = 0.0f;
+    for (uint64_t i = begin + worker_id(); i < end; i += MK_WORKERS) {
+        acc += x[i];
+    }
+    lanes[worker_id()] = acc;
+    worker_sync();
+    for (uint32_t half = MK_WORKERS / 2; half > 0; half >>= 1) {
+        if (worker_id() < half) {
+            lanes[worker_id()] += lanes[worker_id() + half];
+        }
+        worker_sync();
+    }
+
+    if (worker_id() == 0) {
+        float* partials = reinterpret_cast<float*>(task.f);
+        uint32_t* counters = reinterpret_cast<uint32_t*>(partials + task.items);
+        partials[item] = lanes[0];
+        if (atom_acq_rel_gpu_add_u32(counters + group, 1u) == slices - 1) {
+            const float* mine = partials + static_cast<uint64_t>(group) * slices;
+            float sum = mine[0];
+            for (uint32_t s = 1; s < slices; ++s) {
+                sum += mine[s];
+            }
+            reinterpret_cast<float*>(task.c)[group] = sum;
+        }
     }
 }

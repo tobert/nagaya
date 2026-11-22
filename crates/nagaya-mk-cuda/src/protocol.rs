@@ -16,6 +16,14 @@ pub const RING_DEV_BYTES: usize = MAX_TASKS_PER_CARD * 128;
 /// `t_start`, `t_after_wait`, and `t_end` from `%globaltimer` (nanoseconds).
 pub const PROFILE_WORDS: usize = 3;
 
+/// Threads in a block of the producer shape: warp 0 is the producer, and warps 1 to 8 are the consumers. A block of
+/// this width runs the producer shape. A block of another width runs the flat shape, where every thread is a
+/// consumer. Only the probes use the flat shape.
+pub const PRODUCER_BLOCK_THREADS: u32 = 288;
+
+/// The consumers of a block of the producer shape. They do the work of the items.
+pub const CONSUMER_THREADS: u32 = 256;
+
 /// Event sentinel meaning "do not wait" or "do not signal".
 pub const NO_EVENT: u32 = u32::MAX;
 
@@ -83,6 +91,12 @@ define_u16_table! {
     OP_PROBE_TIMER = 232;
     OP_PROBE_MMA_TILE = 233;
     OP_PROBE_MMA_RATE = 234;
+    // `OP_REDUCE_PROBE`: K-split sums. It tests the merge groups of `tests/cuda_merge.rs`. The vector of group `g` has
+    // `n` floats at `a + g * n` floats. An item sums `kt` floats of it, and `group_items` items make a group. The
+    // item writes its partial to `f`, and the item that arrives last in its group sums the partials in index order
+    // and writes the sum to `c[g]`. `f` holds one float for each item, then one `u32` counter for each group. The
+    // counters start at 0.
+    OP_REDUCE_PROBE = 235;
 
     // Test opcodes. They gate the scoreboard in `tests/cuda_smoke.rs`. An engine does not use them.
     // `OP_SELFTEST_FILL`: block `n` writes `n` words at `a + n * n` words, after a delay of `k` ns in block `kt`.
@@ -138,9 +152,9 @@ define_u16_table! {
 /// The task descriptor of `docs/engine-abi.md` "The CUDA interpreter". It is 128 bytes, inline in the ring, and it
 /// is shared with `kernels/megakernel.cu`.
 ///
-/// A task waits on up to two pairs of an event and a target before its first work item. It signals the event
-/// `signal` once for each item that it finishes. The pointers `a` to `f`, the words `n` to `layer` and the
-/// parameters `p0` to `p3` have one meaning for each op. The probe and test ops use `n`, `k`, `kt` and
+/// A task waits on up to two pairs of an event and a target before its first work item. Each block signals the event
+/// `signal` one time, after its last item of the task. It adds the count of its items. The pointers `a` to `f`, the
+/// words `n` to `layer` and the parameters `p0` to `p3` have one meaning for each op. The probe and test ops use `n`, `k`, `kt` and
 /// `group_items` as their four integer parameters.
 #[repr(C, align(128))]
 #[derive(Clone, Copy, Debug, PartialEq)]

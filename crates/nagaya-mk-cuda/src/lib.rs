@@ -8,6 +8,7 @@
 pub mod driver;
 pub mod graph;
 pub mod protocol;
+pub mod ptxas;
 #[cfg(feature = "cuda")]
 pub mod ring;
 pub mod safetensors;

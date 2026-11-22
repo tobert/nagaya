@@ -1,9 +1,14 @@
 // Persistent megakernel task-ring interpreter for CUDA GPUs (GB10 / sm_121a).
 //
-// Launched with one thread block per SM (or a configured grid width). Every block walks the same
-// task ring in order. Before its first item of a task, thread 0 waits until each of the two events of the task
-// reaches its target, with GPU-scope acquire loads. After each item, thread 0 adds 1 to the event `signal` with a
-// GPU-scope release atomic. Block b runs the items b, b + gridDim.x and so on.
+// Launched with one thread block per SM (or a configured grid width). Every block walks the same task ring in order.
+// A task waits on up to two events before the first item of the block, with GPU-scope acquire loads. Block b runs the
+// items b, b + gridDim.x and so on. After the last of its items, the block adds the count of its items to the event
+// `signal`, one time, with a GPU-scope release.
+//
+// A block has one of two shapes (see run_producer_shape and run_flat_shape). The producer shape has 288 threads: a
+// producer warp that fetches the descriptors, waits at the scoreboard and prefetches, and eight consumer warps that
+// run the items. The flat shape is any other width: every thread is a consumer, and thread 0 waits. Only the probes
+// use the flat shape.
 
 #include <stddef.h>
 #include <stdint.h>
@@ -100,25 +105,78 @@ __device__ __forceinline__ uint64_t globaltimer_ns() {
     return t;
 }
 
+// The timer, read after `dependency` is known. A barrier with DEFER_BLOCKING lets a later instruction that does not
+// need the barrier run before the barrier ends. A timestamp then reads too early. This read needs a value that the
+// code loads after the barrier, and it adds the high bits of that value (always 0) to the time.
+__device__ __forceinline__ uint64_t globaltimer_after(uint32_t dependency) {
+    uint64_t t;
+    asm volatile(
+        "{ .reg .u64 g; .reg .u32 z; mov.u64 g, %%globaltimer; shr.u32 z, %1, 16; cvt.u64.u32 %0, z; add.u64 %0, %0, g; }"
+        : "=l"(t)
+        : "r"(dependency));
+    return t;
+}
+
 __device__ __forceinline__ uint32_t ld_acquire_gpu_u32(const uint32_t* ptr) {
     uint32_t val;
     asm volatile("ld.acquire.gpu.u32 %0, [%1];" : "=r"(val) : "l"(ptr));
     return val;
 }
 
-// A fence of release and acquire order at GPU scope. It costs less than __threadfence, which is sequentially consistent.
-__device__ __forceinline__ void fence_acq_rel_gpu() {
-    asm volatile("fence.acq_rel.gpu;" ::: "memory");
+// A release add at GPU scope. A release is cumulative: it publishes each write that the thread has seen, and the
+// __syncthreads before it makes the writes of the other threads of the block seen. Thus no separate fence is needed.
+__device__ __forceinline__ void red_release_gpu_add_u32(uint32_t* ptr, uint32_t val) {
+    asm volatile("red.release.gpu.global.add.u32 [%0], %1;" ::"l"(ptr), "r"(val) : "memory");
 }
 
-__device__ __forceinline__ uint32_t atom_release_gpu_add_u32(uint32_t* ptr, uint32_t val) {
+// An add at GPU scope that releases the writes before it and acquires the writes of the adds before it. The thread
+// that gets the last value of a merge counter sees the partials that every other item wrote.
+__device__ __forceinline__ uint32_t atom_acq_rel_gpu_add_u32(uint32_t* ptr, uint32_t val) {
     uint32_t old;
-    asm volatile("atom.release.gpu.add.u32 %0, [%1], %2;" : "=r"(old) : "l"(ptr), "r"(val));
+    asm volatile("atom.acq_rel.gpu.global.add.u32 %0, [%1], %2;" : "=r"(old) : "l"(ptr), "r"(val) : "memory");
     return old;
 }
 
+// The threads that do the work of an item. A sum that an op cuts over the workers has this many lanes, whatever the
+// grid is, so the bits of a sum do not depend on the launch.
+constexpr uint32_t MK_WORKERS = 256;
+
 // The dynamic shared memory of the block. The launch gives its size. Only the probe ops use it for now.
 extern __shared__ __align__(128) uint8_t mk_smem[];
+
+// The two shapes of a block. A block of MK_PRODUCER_THREADS threads has a producer warp (warp 0) and
+// MK_CONSUMER_THREADS consumer threads. A block of another width is flat: every thread is a consumer. An op runs on
+// the consumers only. It uses the functions below, so that it works in both shapes.
+__device__ __forceinline__ bool has_producer() { return blockDim.x == MK_PRODUCER_THREADS; }
+
+// The index of the calling consumer among the consumers of the block.
+__device__ __forceinline__ uint32_t worker_id() { return has_producer() ? threadIdx.x - 32 : threadIdx.x; }
+
+__device__ __forceinline__ uint32_t worker_count() { return has_producer() ? MK_CONSUMER_THREADS : blockDim.x; }
+
+// The named barriers. Barrier 0 is __syncthreads. Barrier 1 is for the consumers. The producer shape uses a pair of
+// barriers for each of the two slots of descriptors (see run_producer_shape).
+constexpr uint32_t MK_BAR_CONSUMERS = 1;
+constexpr uint32_t MK_BAR_FULL = 2;   // slots 0 and 1: barriers 2 and 3
+constexpr uint32_t MK_BAR_EMPTY = 4;  // slots 0 and 1: barriers 4 and 5
+
+__device__ __forceinline__ void bar_sync(uint32_t id, uint32_t threads) {
+    asm volatile("bar.sync %0, %1;" ::"r"(id), "r"(threads) : "memory");
+}
+
+// The thread counts as arrived and does not wait.
+__device__ __forceinline__ void bar_arrive(uint32_t id, uint32_t threads) {
+    asm volatile("bar.arrive %0, %1;" ::"r"(id), "r"(threads) : "memory");
+}
+
+// A barrier of the consumers.
+__device__ __forceinline__ void worker_sync() {
+    if (has_producer()) {
+        bar_sync(MK_BAR_CONSUMERS, MK_CONSUMER_THREADS);
+    } else {
+        __syncthreads();
+    }
+}
 
 // Item `item` copies `n` floats: the floats from `item * n` up to `(item + 1) * n`. The task covers `items * n` floats.
 // The cut comes from the shape of the task, not from the grid, so the bits do not depend on which block runs an item.
@@ -128,7 +186,7 @@ __device__ __forceinline__ void op_copy(const MkTaskDescriptor& task, uint32_t i
     const float* src = reinterpret_cast<const float*>(task.b);
     // The offsets are 64 bits: a task can cover more than 2^32 floats.
     const uint64_t first = static_cast<uint64_t>(item) * task.n;
-    for (uint32_t i = threadIdx.x; i < task.n; i += blockDim.x) {
+    for (uint32_t i = worker_id(); i < task.n; i += worker_count()) {
         dst[first + i] = src[first + i];
     }
 }
@@ -143,13 +201,13 @@ __device__ __forceinline__ uint32_t selftest_value(uint32_t seed, uint32_t owner
 __device__ __forceinline__ void op_selftest_fill(const MkTaskDescriptor& task) {
     uint32_t* data = reinterpret_cast<uint32_t*>(task.a);
     const uint32_t words = task.n;
-    if (blockIdx.x == task.kt && threadIdx.x == 0) {
+    if (blockIdx.x == task.kt && worker_id() == 0) {
         const uint64_t until = globaltimer_ns() + task.k;
         while (globaltimer_ns() < until) {
         }
     }
-    __syncthreads();
-    for (uint32_t i = threadIdx.x; i < words; i += blockDim.x) {
+    worker_sync();
+    for (uint32_t i = worker_id(); i < words; i += worker_count()) {
         data[static_cast<uint64_t>(blockIdx.x) * words + i] = selftest_value(task.group_items, blockIdx.x, i);
     }
 }
@@ -162,15 +220,25 @@ __device__ __forceinline__ void op_selftest_check(const MkTaskDescriptor& task) 
     const uint32_t words = task.n;
     const uint64_t total = static_cast<uint64_t>(gridDim.x) * words;
     uint32_t wrong = 0;
-    for (uint64_t base = 0; base < total; base += blockDim.x) {
-        const uint64_t k = base + threadIdx.x;
+    __shared__ uint32_t warp_wrong[32];
+    for (uint64_t base = 0; base < total; base += worker_count()) {
+        const uint64_t k = base + worker_id();
         bool differs = false;
         if (k < total) {
             differs = data[k] != selftest_value(task.group_items, static_cast<uint32_t>(k / words), static_cast<uint32_t>(k % words));
         }
-        wrong += __syncthreads_count(differs);
+        // The count of the words that differ, over the consumers of the block.
+        const uint32_t in_warp = __popc(__ballot_sync(0xffffffffu, differs));
+        if ((worker_id() & 31) == 0) {
+            warp_wrong[worker_id() >> 5] = in_warp;
+        }
+        worker_sync();
+        for (uint32_t w = 0; w < worker_count() / 32; ++w) {
+            wrong += warp_wrong[w];
+        }
+        worker_sync();
     }
-    if (threadIdx.x == 0) {
+    if (worker_id() == 0) {
         out[blockIdx.x] = wrong;
     }
 }
@@ -217,10 +285,211 @@ __device__ __forceinline__ void run_op(const MkTaskDescriptor& task, uint32_t it
         case OP_PROBE_MMA_RATE:
             op_probe_mma_rate(task);
             break;
+        case OP_REDUCE_PROBE:
+            op_reduce_probe(task, item);
+            break;
         default:
             // Unknown opcode: trap rather than silently corrupt state (spec 8.5).
             __trap();
             break;
+    }
+}
+
+// Write the three times of a task in this block to the profile.
+__device__ __forceinline__ void record_profile(uint64_t* profile, uint32_t idx, uint64_t t_start, uint64_t t_after_wait, uint64_t t_end) {
+#ifdef MK_PROFILE
+    if (profile != nullptr) {
+        uint64_t* slot = profile + ((static_cast<uint64_t>(idx) * gridDim.x + blockIdx.x) * MK_PROFILE_WORDS);
+        slot[0] = t_start;
+        slot[1] = t_after_wait;
+        slot[2] = t_end;
+    }
+#else
+    (void)profile; (void)idx; (void)t_start; (void)t_after_wait; (void)t_end;
+#endif
+}
+
+// The count of items of a task. A task with no items is a JOIN: block 0 runs one item that does no work, and it
+// signals once. A count that comes from a plan on the device is a defect of the ring, because no op reads one yet.
+__device__ __forceinline__ uint32_t item_count(const MkTaskDescriptor& task) {
+    if (task.items == 0xFFFFFFFFu) {
+        __trap();
+    }
+    return task.items == 0 ? 1u : task.items;
+}
+
+// The consumers run the items b, b + G, b + 2G and so on of the task, with b the block and G the grid width. Then the
+// block adds the count of its items to the event of the task, one time. A block with no item adds nothing. The
+// barrier before the add orders the writes of every consumer before the release of the add.
+__device__ __forceinline__ void run_items(const MkTaskDescriptor& task, uint32_t count, uint32_t* scoreboard, uint32_t base_event) {
+    uint32_t ran = 0;
+    for (uint32_t item = blockIdx.x; item < count; item += gridDim.x) {
+        if (task.items != 0) {
+            run_op(task, item);
+        }
+        worker_sync();
+        ran += 1;
+    }
+    if (worker_id() == 0 && ran != 0 && task.signal != NO_EVENT) {
+        red_release_gpu_add_u32(scoreboard + (base_event + task.signal), ran);
+    }
+}
+
+// The wait of a task: each event that the task names reaches its target.
+__device__ __forceinline__ void wait_for_task(const MkTaskDescriptor& task, const uint32_t* scoreboard, uint32_t base_event) {
+    if (task.wait0_event != NO_EVENT) {
+        wait_for_event(scoreboard + (base_event + task.wait0_event), task.wait0_target);
+    }
+    if (task.wait1_event != NO_EVENT) {
+        wait_for_event(scoreboard + (base_event + task.wait1_event), task.wait1_target);
+    }
+}
+
+__device__ __forceinline__ void write_stats(BlockStats* stats, uint32_t tasks_run, uint64_t wait_ns, uint64_t exec_ns) {
+    if (stats != nullptr) {
+        stats[blockIdx.x].tasks_run = tasks_run;
+        stats[blockIdx.x].pad = 0;
+        stats[blockIdx.x].wait_ns = wait_ns;
+        stats[blockIdx.x].exec_ns = exec_ns;
+    }
+}
+
+// The flat shape: every thread is a consumer. Thread 0 waits at the scoreboard before the first item of a task. Only
+// the probes use this shape.
+__device__ __forceinline__ void run_flat_shape(
+    const MkTaskDescriptor* tasks, uint32_t num_tasks, uint32_t* scoreboard, uint32_t base_event, BlockStats* stats, uint64_t* profile) {
+    uint32_t tasks_run = 0;
+    uint64_t wait_ns = 0;
+    uint64_t exec_ns = 0;
+
+    for (uint32_t idx = 0; idx < num_tasks; ++idx) {
+        const MkTaskDescriptor task = tasks[idx];
+        uint64_t t_start = 0;
+        uint64_t t_after_wait = 0;
+        const bool halt = task.opcode == OP_HALT;
+        const uint32_t count = halt ? 0 : item_count(task);
+
+        if (threadIdx.x == 0) {
+            t_start = globaltimer_ns();
+            // A block that has no item of the task does not wait. A wait on the task still sees every item done.
+            if (!halt && blockIdx.x < count) {
+                wait_for_task(task, scoreboard, base_event);
+            }
+            t_after_wait = globaltimer_ns();
+            wait_ns += (t_after_wait - t_start);
+        }
+        __syncthreads();
+
+        if (!halt) {
+            run_items(task, count, scoreboard, base_event);
+        }
+        if (threadIdx.x == 0) {
+            const uint64_t t_end = globaltimer_ns();
+            exec_ns += (t_end - t_after_wait);
+            record_profile(profile, idx, t_start, t_after_wait, t_end);
+            tasks_run += halt ? 0 : 1;
+        }
+        if (halt) {
+            break;
+        }
+    }
+    if (threadIdx.x == 0) {
+        write_stats(stats, tasks_run, wait_ns, exec_ns);
+    }
+}
+
+// The barriers of the producer shape use all the threads of the block: the 32 of the producer and the consumers.
+constexpr uint32_t MK_BAR_THREADS = MK_PRODUCER_THREADS;
+
+// The producer shape. Warp 0 is the producer and warps 1 to 8 are the consumers. The two sides pass tasks through two
+// slots of descriptors in shared memory. For the slot s of a task t (s = t mod 2):
+// - The producer waits for the barrier EMPTY[s] (the consumers are done with the task t - 2). It copies the
+//   descriptor to the slot, asks L2 to prefetch the first item of the block, and waits at the scoreboard. Then it
+//   arrives at FULL[s]. It runs ahead of the consumers by up to two tasks, so the wait of a task that does not depend
+//   on the task before it ends while the consumers work.
+// - The consumers wait at FULL[s], run the items and arrive at EMPTY[s].
+// The arrive of the producer orders the descriptor and the data that its acquire saw before the reads of the
+// consumers. A named barrier orders the memory of the threads that use it.
+__device__ __forceinline__ void run_producer_shape(
+    const MkTaskDescriptor* tasks, uint32_t num_tasks, uint32_t* scoreboard, uint32_t base_event, BlockStats* stats, uint64_t* profile) {
+    __shared__ MkTaskDescriptor slots[2];
+
+    if (threadIdx.x < 32) {
+        const bool lead = threadIdx.x == 0;
+        uint32_t halt_at = num_tasks;
+        for (uint32_t t = 0; t < num_tasks; ++t) {
+            const uint32_t slot = t & 1;
+            if (t >= 2) {
+                bar_sync(MK_BAR_EMPTY + slot, MK_BAR_THREADS);
+            }
+            if (lead) {
+                slots[slot] = tasks[t];
+            }
+            __syncwarp();
+            const MkTaskDescriptor& task = slots[slot];
+            const bool halt = task.opcode == OP_HALT;
+            if (!halt) {
+                const uint32_t count = item_count(task);
+                // A block that has no item of the task does not wait.
+                if (blockIdx.x < count) {
+                    // A weight does not depend on the task before it, so the prefetch starts before the wait.
+                    if (lead && task.item_bytes != 0) {
+                        if ((task.item_bytes & 15u) != 0 || (task.b & 15u) != 0) {
+                            __trap();  // A bulk prefetch needs a size and an address of 16 bytes.
+                        }
+                        bulk_prefetch_l2(reinterpret_cast<const uint8_t*>(task.b) + static_cast<uint64_t>(blockIdx.x) * task.item_bytes, task.item_bytes);
+                    }
+                    // Every lane polls the same word, which is one load. Thus the lanes stay converged.
+                    wait_for_task(task, scoreboard, base_event);
+                }
+            }
+            __syncwarp();
+            bar_arrive(MK_BAR_FULL + slot, MK_BAR_THREADS);
+            if (halt) {
+                halt_at = t;
+                break;
+            }
+        }
+        if (halt_at == num_tasks) {
+            __trap();  // The ring has no OP_HALT: the host appends one, so this is a defect.
+        }
+        // The consumers arrived at EMPTY for each task. The loop above waited for all of them except the last.
+        if (halt_at >= 1) {
+            bar_sync(MK_BAR_EMPTY + ((halt_at - 1) & 1), MK_BAR_THREADS);
+        }
+        return;
+    }
+
+    uint32_t tasks_run = 0;
+    uint64_t wait_ns = 0;
+    uint64_t exec_ns = 0;
+    const bool lead = worker_id() == 0;
+    for (uint32_t idx = 0; idx < num_tasks; ++idx) {
+        const uint32_t slot = idx & 1;
+        const uint64_t t_start = lead ? globaltimer_ns() : 0;
+        bar_sync(MK_BAR_FULL + slot, MK_BAR_THREADS);
+        const MkTaskDescriptor& task = slots[slot];
+        const uint32_t opcode = task.opcode;
+        // The opcode is loaded after the barrier, so the timer below reads after the barrier too.
+        const uint64_t t_after_wait = lead ? globaltimer_after(opcode) : 0;
+        const bool halt = opcode == OP_HALT;
+        if (!halt) {
+            run_items(task, item_count(task), scoreboard, base_event);
+        }
+        if (lead) {
+            const uint64_t t_end = globaltimer_ns();
+            wait_ns += (t_after_wait - t_start);
+            exec_ns += (t_end - t_after_wait);
+            record_profile(profile, idx, t_start, t_after_wait, t_end);
+            tasks_run += halt ? 0 : 1;
+        }
+        if (halt) {
+            break;
+        }
+        bar_arrive(MK_BAR_EMPTY + slot, MK_BAR_THREADS);
+    }
+    if (lead) {
+        write_stats(stats, tasks_run, wait_ns, exec_ns);
     }
 }
 
@@ -234,88 +503,9 @@ extern "C" __global__ void mk_persistent_interpreter(
     uint64_t* __restrict__ profile
 ) {
     (void)scratch;
-    uint32_t bid = blockIdx.x;
-    uint32_t grid = gridDim.x;
-    uint32_t tasks_run = 0;
-    uint64_t wait_ns = 0;
-    uint64_t exec_ns = 0;
-
-    for (uint32_t idx = 0; idx < num_tasks; ++idx) {
-        MkTaskDescriptor task = tasks[idx];
-        uint64_t t_start = 0;
-        uint64_t t_after_wait = 0;
-
-        if (task.opcode != OP_HALT && task.items == 0xFFFFFFFFu) {
-            // The count of items comes from a plan on the device. No op reads one yet, so this is a defect of the ring.
-            __trap();
-        }
-        // A task with no items is a JOIN: block 0 runs one item that does no work, and it signals once.
-        const uint32_t count = task.items == 0 ? 1u : task.items;
-
-        if (threadIdx.x == 0) {
-            t_start = globaltimer_ns();
-            // A block that has no item of the task does not wait. A wait on the task still sees every item done.
-            if (task.opcode != OP_HALT && bid < count) {
-                if (task.wait0_event != NO_EVENT) {
-                    wait_for_event(scoreboard + (base_event + task.wait0_event), task.wait0_target);
-                }
-                if (task.wait1_event != NO_EVENT) {
-                    wait_for_event(scoreboard + (base_event + task.wait1_event), task.wait1_target);
-                }
-            }
-            t_after_wait = globaltimer_ns();
-            wait_ns += (t_after_wait - t_start);
-        }
-        __syncthreads();
-
-        if (task.opcode == OP_HALT) {
-            if (threadIdx.x == 0) {
-                uint64_t t_end = globaltimer_ns();
-                exec_ns += (t_end - t_after_wait);
-#ifdef MK_PROFILE
-                if (profile != nullptr) {
-                    uint64_t* slot = profile + ((static_cast<uint64_t>(idx) * grid + bid) * MK_PROFILE_WORDS);
-                    slot[0] = t_start;
-                    slot[1] = t_after_wait;
-                    slot[2] = t_end;
-                }
-#endif
-            }
-            break;
-        }
-
-        // Block b runs the items b, b + G, b + 2G and so on. After each item it adds 1 to the event of the task.
-        for (uint32_t item = bid; item < count; item += grid) {
-            if (task.items != 0) {
-                run_op(task, item);
-            }
-            __syncthreads();
-            if (threadIdx.x == 0 && task.signal != NO_EVENT) {
-                // The fence and the release make the writes of the block visible to a block that reads the event.
-                fence_acq_rel_gpu();
-                atom_release_gpu_add_u32(scoreboard + (base_event + task.signal), 1u);
-            }
-        }
-
-        if (threadIdx.x == 0) {
-            uint64_t t_end = globaltimer_ns();
-            exec_ns += (t_end - t_after_wait);
-            tasks_run += 1;
-#ifdef MK_PROFILE
-            if (profile != nullptr) {
-                uint64_t* slot = profile + ((static_cast<uint64_t>(idx) * grid + bid) * MK_PROFILE_WORDS);
-                slot[0] = t_start;
-                slot[1] = t_after_wait;
-                slot[2] = t_end;
-            }
-#endif
-        }
-    }
-
-    if (threadIdx.x == 0 && stats != nullptr) {
-        stats[bid].tasks_run = tasks_run;
-        stats[bid].pad = 0;
-        stats[bid].wait_ns = wait_ns;
-        stats[bid].exec_ns = exec_ns;
+    if (has_producer()) {
+        run_producer_shape(tasks, num_tasks, scoreboard, base_event, stats, profile);
+    } else {
+        run_flat_shape(tasks, num_tasks, scoreboard, base_event, stats, profile);
     }
 }

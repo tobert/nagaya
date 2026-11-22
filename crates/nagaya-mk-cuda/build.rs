@@ -10,6 +10,10 @@ use std::process::Command;
 #[allow(dead_code)]
 mod protocol;
 
+#[path = "src/ptxas.rs"]
+#[allow(dead_code)]
+mod ptxas;
+
 const ARCH: &str = "sm_121a";
 
 fn find_nvcc() -> PathBuf {
@@ -33,7 +37,15 @@ fn find_nvcc() -> PathBuf {
 fn compile_cubin(nvcc: &Path, source: &Path, kernels: &Path, out: &Path, name: &str, defines: &[&str]) {
     let dest = out.join(name);
     let mut cmd = Command::new(nvcc);
-    cmd.args(["-cubin", &format!("-arch={ARCH}"), "-std=c++20", "--fmad=false", "-O3"]);
+    cmd.args([
+        "-cubin",
+        &format!("-arch={ARCH}"),
+        "-std=c++20",
+        "--fmad=false",
+        "-O3",
+        "-Xptxas",
+        "-v",
+    ]);
     for def in defines {
         cmd.arg(format!("-D{def}"));
     }
@@ -62,6 +74,13 @@ fn compile_cubin(nvcc: &Path, source: &Path, kernels: &Path, out: &Path, name: &
         "nvcc wrote no {}. Read the nvcc output above.",
         dest.display()
     );
+    // The stub of `tools/nvcc-stub` writes an empty cubin and no report. A real cubin must come with a report with
+    // no spill.
+    if std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0) > 0
+        && let Err(problem) = ptxas::spill_problem(&String::from_utf8_lossy(&output.stderr))
+    {
+        panic!("{name} is not acceptable: {problem}");
+    }
 }
 
 /// Write `mk_protocol.h`: the opcodes, the flags, the sizes and the offset of each field, all from `src/protocol.rs`.
@@ -88,6 +107,8 @@ fn protocol_header() -> String {
     writeln!(h, "#define MK_PROBE_ITEM_BYTES {}", protocol::PROBE_ITEM_BYTES).unwrap();
     writeln!(h, "#define MK_PROBE_STAGE_BYTES {}", protocol::PROBE_STAGE_BYTES).unwrap();
     writeln!(h, "#define MK_PROBE_MMA_CHAINS {}", protocol::PROBE_MMA_CHAINS).unwrap();
+    writeln!(h, "#define MK_PRODUCER_THREADS {}", protocol::PRODUCER_BLOCK_THREADS).unwrap();
+    writeln!(h, "#define MK_CONSUMER_THREADS {}", protocol::CONSUMER_THREADS).unwrap();
     writeln!(h, "#define NO_EVENT {}u", protocol::NO_EVENT).unwrap();
     writeln!(h, "#define MK_PROFILE_WORDS {}u", protocol::PROFILE_WORDS).unwrap();
     writeln!(h, "#define MK_DESC_BYTES {}", size_of::<MkTaskDescriptor>()).unwrap();

@@ -6,12 +6,13 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use crate::driver::{CUdeviceptr, CudaDevice};
 use crate::graph::{self, Node, Planned, Span};
 use crate::protocol::{
-    BlockStats, MAX_TASKS_PER_CARD, MkTaskDescriptor, NO_EVENT, NUM_SCOREBOARD_EVENTS, OP_HALT, PROFILE_WORDS,
-    RING_DEV_BYTES,
+    BlockStats, MAX_TASKS_PER_CARD, MkTaskDescriptor, NO_EVENT, NUM_SCOREBOARD_EVENTS, OP_HALT, PRODUCER_BLOCK_THREADS,
+    PROFILE_WORDS, RING_DEV_BYTES,
 };
 
-/// Default thread count per block for the persistent interpreter.
-pub const DEFAULT_BLOCK_THREADS: u32 = 256;
+/// Default thread count per block for the persistent interpreter: the producer shape, with a producer warp and eight
+/// consumer warps.
+pub const DEFAULT_BLOCK_THREADS: u32 = PRODUCER_BLOCK_THREADS;
 
 /// A task of the ring: its descriptor, and what the host builder needs to order it (see [`crate::graph`]).
 ///
@@ -233,12 +234,22 @@ impl<'d> Ring<'d> {
         dev.memset_zero(self.scratch, self.scratch_floats * 4)
     }
 
-    /// Upload the descriptors, zero the scoreboard, and run the ring with one block for each SM.
+    /// Upload the descriptors, zero the scoreboard, and run the ring with one block for each SM, in the producer shape,
+    /// with the most dynamic shared memory that a block can have.
     ///
     /// # Safety
     /// Every device pointer referenced inside the descriptors must be valid for its op.
     pub unsafe fn run(&self) -> Result<(), String> {
-        unsafe { self.run_shaped(DEFAULT_BLOCK_THREADS, 0) }
+        unsafe { self.run_width(self.grid_blocks) }
+    }
+
+    /// Like [`Ring::run`], with a grid of `grid` blocks.
+    ///
+    /// # Safety
+    /// The same rules as [`Ring::run`].
+    pub unsafe fn run_width(&self, grid: u32) -> Result<(), String> {
+        let shared = self.dev.max_dynamic_shared_bytes()?;
+        unsafe { self.run_grid(grid, DEFAULT_BLOCK_THREADS, shared) }
     }
 
     /// Like [`Ring::run`], with `block_threads` threads and `shared_bytes` of dynamic shared memory in each block.
