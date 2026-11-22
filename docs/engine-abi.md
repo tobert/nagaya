@@ -914,7 +914,7 @@ Each engine chooses the bound that suits its model and its device (Amy, 2026-11-
 below 10 s, and an engine can make its own tradeoff. Amy, 2026-11-22: "if we have a case where we need to allow for
 a continuous run for a few minutes let's make it possible."
 
-**Proposed (ChatGPT through kaibo `gpt-plan`, and Claude Opus 5.5, 2026-11-22): a long pass with a declared bound.**
+**A long pass with a declared bound** (accepted 2026-11-22).
 Before this rule, the watchdog did not read `max_quantum_ms`. It stopped the process when a group sent no beat for
 30 s, and a pass sends no beat (spec 7.4). Thus no pass could run for more than 30 s. The rule is built, and spec 7.4
 ("A long pass") gives the watchdog and the route.
@@ -1832,7 +1832,7 @@ choice open.
   tokens, on 2026-11-21. Its tower takes about 56,780 ms in the pass of its first block, and a later block takes
   843 ms. The bound `max_quantum_ms` is 5,000 ms, so that pass is a long pass (D8, "A long pass with a declared
   bound"). The ceiling `max_long_quantum_ms` is 180,000 ms.
-- **The bound of a pass with a tower** (Proposed, Claude Opus 5.5, 2026-11-22). `pass_bound_ms` finds the towers
+- **The bound of a pass with a tower** (accepted 2026-11-22). `pass_bound_ms` finds the towers
   that the pass runs, from the held rows, as the pass does. The tower of an image of `n` tokens takes about
   56,780 ms times the square of `n / 10,609`. Reason: its attention reads each pair of patches. The bound is 1.5
   times the sum of the towers plus 2,020 ms, the slowest text block, up to the ceiling (`src/bound.rs`).

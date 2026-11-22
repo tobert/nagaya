@@ -1773,7 +1773,7 @@ bootstrap config. The code takes it as a start parameter, so the tests use a sho
 **Open:** The group thread sends no beat while a quantum runs. On a slow NVMe, a copy quantum could run past the 30 s
 timeout, and the watchdog would end the process. This is not measured.
 
-**A long pass (Proposed, Claude Opus 5.5, 2026-11-22; engine-abi D8).** An engine can declare a bound for one pass
+**A long pass (engine-abi D8).** An engine can declare a bound for one pass
 that is longer than `max_quantum_ms`. Then the watchdog keeps a deadline for that pass alone.
 
 - Before each pass, the group asks the engine for the bound of the pass (`pass_bound_ms`). A pass with no bound runs
