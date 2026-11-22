@@ -461,25 +461,25 @@ __device__ __forceinline__ void write_stats(BlockStats* stats, uint32_t tasks_ru
 // the probes use this shape.
 __device__ __forceinline__ void run_flat_shape(
     const MkTaskDescriptor* tasks, uint32_t num_tasks, uint32_t* scoreboard, uint32_t base_event, BlockStats* stats, uint64_t* profile) {
-    uint32_t tasks_run = 0;
-    uint64_t wait_ns = 0;
-    uint64_t exec_ns = 0;
+    // The totals and the timestamps of thread 0 are in shared memory, so that they take no register across an op.
+    __shared__ uint64_t clocks[5];  // tasks run, wait ns, exec ns, t_start, t_after_wait
+    if (threadIdx.x == 0) {
+        clocks[0] = clocks[1] = clocks[2] = 0;
+    }
 
     for (uint32_t idx = 0; idx < num_tasks; ++idx) {
         const MkTaskDescriptor task = tasks[idx];
-        uint64_t t_start = 0;
-        uint64_t t_after_wait = 0;
         const bool halt = task.opcode == OP_HALT;
         const uint32_t count = halt ? 0 : item_count(task);
 
         if (threadIdx.x == 0) {
-            t_start = globaltimer_ns();
+            clocks[3] = globaltimer_ns();
             // A block that has no item of the task does not wait. A wait on the task still sees every item done.
             if (!halt && blockIdx.x < count) {
                 wait_for_task(task, scoreboard, base_event);
             }
-            t_after_wait = globaltimer_ns();
-            wait_ns += (t_after_wait - t_start);
+            clocks[4] = globaltimer_ns();
+            clocks[1] += clocks[4] - clocks[3];
         }
         __syncthreads();
 
@@ -489,16 +489,16 @@ __device__ __forceinline__ void run_flat_shape(
         }
         if (threadIdx.x == 0) {
             const uint64_t t_end = globaltimer_ns();
-            exec_ns += (t_end - t_after_wait);
-            record_profile(profile, idx, t_start, t_after_wait, t_end);
-            tasks_run += halt ? 0 : 1;
+            clocks[2] += t_end - clocks[4];
+            record_profile(profile, idx, clocks[3], clocks[4], t_end);
+            clocks[0] += halt ? 0 : 1;
         }
         if (halt) {
             break;
         }
     }
     if (threadIdx.x == 0) {
-        write_stats(stats, tasks_run, wait_ns, exec_ns);
+        write_stats(stats, static_cast<uint32_t>(clocks[0]), clocks[1], clocks[2]);
     }
 }
 
@@ -574,28 +574,34 @@ __device__ __forceinline__ void run_producer_shape(
         return;
     }
 
-    uint32_t tasks_run = 0;
-    uint64_t wait_ns = 0;
-    uint64_t exec_ns = 0;
+    // The totals and the timestamps of the lead consumer are in shared memory, so that they take no register across an op.
+    __shared__ uint64_t clocks[5];  // tasks run, wait ns, exec ns, t_start, t_after_wait
     const bool lead = worker_id() == 0;
+    if (lead) {
+        clocks[0] = clocks[1] = clocks[2] = 0;
+    }
     for (uint32_t idx = 0; idx < num_tasks; ++idx) {
         const uint32_t slot = idx & 1;
-        const uint64_t t_start = lead ? globaltimer_ns() : 0;
+        if (lead) {
+            clocks[3] = globaltimer_ns();
+        }
         bar_sync(MK_BAR_FULL + slot, MK_BAR_THREADS);
         const MkTaskDescriptor& task = slots[slot];
         const uint32_t opcode = task.opcode;
         // The opcode is loaded after the barrier, so the timer below reads after the barrier too.
-        const uint64_t t_after_wait = lead ? globaltimer_after(opcode) : 0;
+        if (lead) {
+            clocks[4] = globaltimer_after(opcode);
+        }
         const bool halt = opcode == OP_HALT;
         if (!halt) {
             run_items(task, task.d != 0 ? &tables[slot] : nullptr, item_count(task), scoreboard, base_event);
         }
         if (lead) {
             const uint64_t t_end = globaltimer_ns();
-            wait_ns += (t_after_wait - t_start);
-            exec_ns += (t_end - t_after_wait);
-            record_profile(profile, idx, t_start, t_after_wait, t_end);
-            tasks_run += halt ? 0 : 1;
+            clocks[1] += clocks[4] - clocks[3];
+            clocks[2] += t_end - clocks[4];
+            record_profile(profile, idx, clocks[3], clocks[4], t_end);
+            clocks[0] += halt ? 0 : 1;
         }
         if (halt) {
             break;
@@ -603,7 +609,7 @@ __device__ __forceinline__ void run_producer_shape(
         bar_arrive(MK_BAR_EMPTY + slot, MK_BAR_THREADS);
     }
     if (lead) {
-        write_stats(stats, tasks_run, wait_ns, exec_ns);
+        write_stats(stats, static_cast<uint32_t>(clocks[0]), clocks[1], clocks[2]);
     }
 }
 
