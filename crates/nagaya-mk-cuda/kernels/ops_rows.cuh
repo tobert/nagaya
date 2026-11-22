@@ -327,20 +327,292 @@ __device__ __forceinline__ void op_mix(const MkTaskDescriptor& task, const MkTas
     rw_mix_dispatch(task, table, item, task.n, task.k, task.kt, task.group_items);
 }
 
-// Reserved for wave B lane R (rows).
-__device__ __forceinline__ void op_gate_down(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
-    (void)task;
-    (void)table;
-    (void)item;
-    __trap();
+// ---------------------------------------------------------------------------------------------------------------
+// OP_GATE_DOWN and OP_GATE_UP: the message gates. They use the MMA helpers of matmul_bf16.cuh (read only).
+// ---------------------------------------------------------------------------------------------------------------
+
+// Two consecutive values of a row that an earlier task wrote, times the row factor of the row: a normed pair. A row
+// that the pass does not have is zero. The load skips L1 (`__ldcg`): another block wrote the row.
+__device__ __forceinline__ float2 rw_load_normed(const float* row, bool valid, float rf) {
+    if (!valid) {
+        return make_float2(0.0f, 0.0f);
+    }
+    const float2 v = __ldcg(reinterpret_cast<const float2*>(row));
+    return make_float2(v.x * rf, v.y * rf);
 }
 
-// Reserved for wave B lane R (rows).
+__device__ __forceinline__ float2 rw_load_x(const float* row, bool valid) {
+    return valid ? __ldcg(reinterpret_cast<const float2*>(row)) : make_float2(0.0f, 0.0f);
+}
+
+constexpr uint32_t RW_GD_TILES = 4;    // tiles of 16 columns of the down matrix (64 columns)
+constexpr uint32_t RW_GD_SLICES = 6;   // K slices of 768: 3 of the row `a_i`, then 3 of the message `m_i`
+constexpr uint32_t RW_GD_KT = 768;
+constexpr uint32_t RW_GD_ITEMS = RW_GD_TILES * RW_GD_SLICES;  // the items of one gate
+constexpr uint32_t RW_GD_RANK = 64;
+constexpr uint32_t RW_GD_COUNTERS = 16;  // words of `f` before the partials
+constexpr uint32_t RW_GD_TREE_FLOATS = MM_WARPS * 2 * 32 * 4;
+constexpr uint32_t RW_GD_SMEM_BYTES = RW_GD_TREE_FLOATS * 4 + 16;
+
+// The slots of the task table of OP_GATE_DOWN, for the gates 0 to 2.
+constexpr uint32_t RW_GD_A = 0;      // the rows `a_i` (f32, `rows` rows of 2304)
+constexpr uint32_t RW_GD_M = 3;      // the messages `m_i`
+constexpr uint32_t RW_GD_A_RF = 6;   // the row factors of `a_i`
+constexpr uint32_t RW_GD_M_RF = 9;   // the row factors of `m_i`
+
+// OP_GATE_DOWN: `g_i = down_i [norm(a_i), norm(m_i)]` for `n` gates (1 to 3), the norms with no weight. The input of
+// the matmul is `a_i * rf` for the K values below 2304 and `m_i * rf` above, so the slice 0 to 2 read `a_i` and the
+// slices 3 to 5 read `m_i`. The matrix is `[64, 4608]`, laid out by `gate_down_weights`: item `i` is the gate
+// `i / 24`, the tile `(i % 24) / 6` and the slice `i % 6`, and `b` has the gates one after the other. `c` receives
+// `g` (f32, `n` gates of `rows` rows of 64), `f` has 16 words of counters (one for each tile of a gate), then one
+// partial of `rows * 16` floats for each item. The sum of a result is the order of OP_MATMUL_BF16: 3 terms of
+// each x, a warp in order of k, the tree of the 8 warps, then the slices in order.
+__device__ __forceinline__ void op_gate_down(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
+    const uint32_t rows = task.rows;
+    const uint32_t gates = task.n;
+    if (worker_count() != MK_WORKERS || table == nullptr || rows == 0 || rows > MM_MAX_ROWS || gates == 0 || gates > 3 ||
+        task.items != gates * RW_GD_ITEMS || task.k != 2 * RW_HIDDEN || task.kt != RW_GD_KT ||
+        task.group_items != RW_GD_SLICES || task.item_bytes != MM_TILE * RW_GD_KT * 2 ||
+        dynamic_smem_bytes() < RW_GD_SMEM_BYTES || (task.b & 15) != 0 || (task.c & 3) != 0 || (task.f & 3) != 0) {
+        __trap();
+    }
+    for (uint32_t i = 0; i < gates; ++i) {
+        if (table->ptr[RW_GD_A + i] == 0 || table->ptr[RW_GD_M + i] == 0 || table->ptr[RW_GD_A_RF + i] == 0 ||
+            table->ptr[RW_GD_M_RF + i] == 0 || (table->ptr[RW_GD_A + i] & 7) != 0 || (table->ptr[RW_GD_M + i] & 7) != 0) {
+            __trap();
+        }
+    }
+    float* tree = reinterpret_cast<float*>(mk_smem);
+    uint32_t* merge_flag = reinterpret_cast<uint32_t*>(mk_smem + RW_GD_TREE_FLOATS * 4);
+
+    const uint32_t gate = item / RW_GD_ITEMS;
+    const uint32_t tile = (item % RW_GD_ITEMS) / RW_GD_SLICES;
+    const uint32_t slice = item % RW_GD_SLICES;
+    const uint32_t warp = worker_id() >> 5;
+    const uint32_t lane = worker_id() & 31;
+    const uint32_t g = lane >> 2;
+    const uint32_t t = lane & 3;
+    const bool two_tiles = rows > 8;
+    const bool valid0 = g < rows;
+    const bool valid1 = g + 8 < rows;
+
+    const uint8_t* weights = reinterpret_cast<const uint8_t*>(task.b);
+    const uint64_t next = static_cast<uint64_t>(item) + gridDim.x;
+    if (worker_id() == 0 && next < task.items) {
+        bulk_prefetch_l2(weights + next * task.item_bytes, task.item_bytes);
+    }
+
+    // The slices 0 to 2 are the row `a_i`, and 3 to 5 are the message `m_i`.
+    const bool from_message = slice >= RW_GD_SLICES / 2;
+    const float* source = reinterpret_cast<const float*>(table->ptr[(from_message ? RW_GD_M : RW_GD_A) + gate]);
+    const float* factors = reinterpret_cast<const float*>(table->ptr[(from_message ? RW_GD_M_RF : RW_GD_A_RF) + gate]);
+    const uint32_t k_offset = (slice % (RW_GD_SLICES / 2)) * RW_GD_KT;
+    const float rf0 = valid0 ? __ldcg(factors + g) : 0.0f;
+    const float rf1 = valid1 ? __ldcg(factors + g + 8) : 0.0f;
+
+    constexpr uint32_t steps_per_warp = RW_GD_KT / (MM_WARPS * MM_K_STEP);
+    const uint32_t first_step = warp * steps_per_warp;
+    const uint8_t* mine = weights + static_cast<uint64_t>(item) * task.item_bytes + (first_step * 32 + lane) * 16;
+    const float* row0 = source + static_cast<uint64_t>(g) * RW_HIDDEN + k_offset + first_step * MM_K_STEP + 2 * t;
+    const float* row1 = row0 + 8 * static_cast<uint64_t>(RW_HIDDEN);
+
+    float acc[2][4] = {};
+    for (uint32_t s0 = 0; s0 < steps_per_warp; s0 += MM_BATCH) {
+        uint4 a[MM_BATCH];
+#pragma unroll
+        for (uint32_t j = 0; j < MM_BATCH; ++j) {
+            if (s0 + j < steps_per_warp) {
+                a[j] = ld_global_nc_v4(mine + static_cast<uint64_t>(s0 + j) * 512);
+            }
+        }
+#pragma unroll
+        for (uint32_t j = 0; j < MM_BATCH; ++j) {
+            if (s0 + j < steps_per_warp) {
+                const uint32_t k0 = (s0 + j) * MM_K_STEP;
+                mm_step(acc[0], a[j], rw_load_normed(row0 + k0, valid0, rf0), rw_load_normed(row0 + k0 + 8, valid0, rf0));
+                if (two_tiles) {
+                    mm_step(acc[1], a[j], rw_load_normed(row1 + k0, valid1, rf1),
+                            rw_load_normed(row1 + k0 + 8, valid1, rf1));
+                }
+            }
+        }
+    }
+
+    reinterpret_cast<float4*>(tree)[(warp * 2) * 32 + lane] = make_float4(acc[0][0], acc[0][1], acc[0][2], acc[0][3]);
+    if (two_tiles) {
+        reinterpret_cast<float4*>(tree)[(warp * 2 + 1) * 32 + lane] =
+            make_float4(acc[1][0], acc[1][1], acc[1][2], acc[1][3]);
+    }
+    worker_sync();
+
+    const uint32_t i = worker_id();
+    const uint32_t token = (i >> 7) * 8 + 2 * ((i >> 2) & 3) + (i & 1);
+    const uint32_t column = ((i >> 2) & 31) / 4 + 8 * ((i >> 1) & 1);
+    const uint64_t partial_floats = static_cast<uint64_t>(rows) * MM_TILE;
+    uint32_t* counters = reinterpret_cast<uint32_t*>(task.f);
+    float* partials = reinterpret_cast<float*>(task.f) + RW_GD_COUNTERS;
+    if (token < rows) {
+        const float p01 = tree[i] + tree[256 + i];
+        const float p23 = tree[512 + i] + tree[768 + i];
+        const float p45 = tree[1024 + i] + tree[1280 + i];
+        const float p67 = tree[1536 + i] + tree[1792 + i];
+        __stcg(partials + item * partial_floats + token * MM_TILE + column, (p01 + p23) + (p45 + p67));
+    }
+    worker_sync();
+    if (worker_id() == 0) {
+        *merge_flag = merge_arrive(counters + gate * RW_GD_TILES + tile, RW_GD_SLICES) ? 1u : 0u;
+    }
+    worker_sync();
+    if (*merge_flag != 0 && i < partial_floats) {
+        const float* mine_partials =
+            partials + static_cast<uint64_t>(gate * RW_GD_ITEMS + tile * RW_GD_SLICES) * partial_floats + i;
+        float sum = __ldcg(mine_partials);
+        for (uint32_t s = 1; s < RW_GD_SLICES; ++s) {
+            sum += __ldcg(mine_partials + s * partial_floats);
+        }
+        reinterpret_cast<float*>(task.c)[(static_cast<uint64_t>(gate) * rows + i / MM_TILE) * RW_GD_RANK + tile * MM_TILE +
+                                         (i % MM_TILE)] = sum;
+    }
+}
+
+
+constexpr uint32_t RW_GU_TILES = RW_HIDDEN / 64;   // 36 items for each gate: 64 channels each
+constexpr uint32_t RW_GU_ITEM_BYTES = MM_WARPS * 4 * 512;
+constexpr uint32_t RW_GU_COUNTERS = 4;  // words of `f` before the partials
+
+// The slots of the task table of OP_GATE_UP, for the gates 0 to 2.
+constexpr uint32_t RW_GU_A = 0;       // the rows `a_i` (f32)
+constexpr uint32_t RW_GU_M = 3;       // the messages `m_i`
+constexpr uint32_t RW_GU_U = 6;       // the outputs `u_i` (f32, `rows` rows of 2304)
+constexpr uint32_t RW_GU_U_RF = 9;    // the row factors of `u_i`
+constexpr uint32_t RW_GU_NORM = 12;   // the weight of the norm of `h_e` (f32, 2304), with FLAG_NORM
+
+// The sum of 8 values of a shared array in the fixed tree of `rw_block_sum`.
+__device__ __forceinline__ float rw_tree8(const float* s) {
+    return ((s[0] + s[1]) + (s[2] + s[3])) + ((s[4] + s[5]) + (s[6] + s[7]));
+}
+
+// OP_GATE_UP: `u_i = (1 - tanh(F g_i)) * a_i + tanh(G g_i) * m_i` for `n` gates (1 to 3), then the row factor of `u_i`.
+// `a` = `g` (f32, `n` gates of `rows` rows of 64: the output of OP_GATE_DOWN), `b` = the weights of `repack_gate_up`,
+// one gate after the other. K is 64, so an item has no K split: item `i` is the gate `i / 36` and the 64 channels
+// `64 (i % 36)` and up, 8 for each warp. The MMA tile of a warp has the forget row of a channel at the row `g` and the
+// gain row of the same channel at the row `g + 8`, so a lane holds both in one result. `f` has 4 words of counters
+// (one for each gate), then one partial of `rows` floats for each item. The last item of a gate is the row finisher:
+// it adds the 36 partials in order and writes the row factors. With FLAG_NORM (one gate only) it also writes
+// `h_e = w * (u * rf)` to `c`, with `w` from the slot RW_GU_NORM, and `h_e` is the input of the router.
 __device__ __forceinline__ void op_gate_up(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
-    (void)task;
-    (void)table;
-    (void)item;
-    __trap();
+    const uint32_t rows = task.rows;
+    const uint32_t gates = task.n;
+    const bool norm = (task.flags & FLAG_NORM) != 0;
+    if (worker_count() != MK_WORKERS || table == nullptr || rows == 0 || rows > MM_MAX_ROWS || gates == 0 || gates > 3 ||
+        task.items != gates * RW_GU_TILES || task.k != RW_GD_RANK || task.item_bytes != RW_GU_ITEM_BYTES ||
+        (task.flags & ~FLAG_NORM) != 0 || (norm && (gates != 1 || table->ptr[RW_GU_NORM] == 0 || (task.c & 3) != 0)) ||
+        dynamic_smem_bytes() < RW_SMEM_BYTES || (task.a & 7) != 0 || (task.b & 15) != 0 || (task.f & 3) != 0) {
+        __trap();
+    }
+    for (uint32_t i = 0; i < gates; ++i) {
+        if (table->ptr[RW_GU_A + i] == 0 || table->ptr[RW_GU_M + i] == 0 || table->ptr[RW_GU_U + i] == 0 ||
+            table->ptr[RW_GU_U_RF + i] == 0) {
+            __trap();
+        }
+    }
+    float* scratch = reinterpret_cast<float*>(mk_smem);
+    uint32_t* flag = reinterpret_cast<uint32_t*>(mk_smem + RW_SUM_FLOATS * 4);
+
+    const uint32_t gate = item / RW_GU_TILES;
+    const uint32_t tile = item % RW_GU_TILES;
+    const uint32_t warp = worker_id() >> 5;
+    const uint32_t lane = worker_id() & 31;
+    const uint32_t g = lane >> 2;
+    const uint32_t t = lane & 3;
+    const bool two_tiles = rows > 8;
+    const bool valid0 = g < rows;
+    const bool valid1 = g + 8 < rows;
+
+    const uint8_t* weights = reinterpret_cast<const uint8_t*>(task.b);
+    const uint64_t next = static_cast<uint64_t>(item) + gridDim.x;
+    if (worker_id() == 0 && next < task.items) {
+        bulk_prefetch_l2(weights + next * RW_GU_ITEM_BYTES, RW_GU_ITEM_BYTES);
+    }
+    const uint8_t* mine = weights + static_cast<uint64_t>(item) * RW_GU_ITEM_BYTES + (warp * 4 * 32 + lane) * 16;
+    const float* gin = reinterpret_cast<const float*>(task.a) + static_cast<uint64_t>(gate) * rows * RW_GD_RANK;
+    const float* row0 = gin + static_cast<uint64_t>(g) * RW_GD_RANK + 2 * t;
+    const float* row1 = row0 + 8 * RW_GD_RANK;
+
+    const uint32_t channel = tile * 64 + warp * 8 + g;
+    uint4 a[4];
+#pragma unroll
+    for (uint32_t s = 0; s < 4; ++s) {
+        a[s] = ld_global_nc_v4(mine + s * 512);
+    }
+    float acc[2][4] = {};
+#pragma unroll
+    for (uint32_t s = 0; s < 4; ++s) {
+        const uint32_t k0 = s * MM_K_STEP;
+        mm_step(acc[0], a[s], rw_load_x(row0 + k0, valid0), rw_load_x(row0 + k0 + 8, valid0));
+        if (two_tiles) {
+            mm_step(acc[1], a[s], rw_load_x(row1 + k0, valid1), rw_load_x(row1 + k0 + 8, valid1));
+        }
+    }
+
+    // The result of a lane: channel `channel`, the tokens `8 h + 2 t + c`. The forget is `acc[h][c]` and the gain is
+    // `acc[h][2 + c]`.
+    const float* hrow = reinterpret_cast<const float*>(table->ptr[RW_GU_A + gate]);
+    const float* mrow = reinterpret_cast<const float*>(table->ptr[RW_GU_M + gate]);
+    float* urow = reinterpret_cast<float*>(table->ptr[RW_GU_U + gate]);
+    float squares[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+#pragma unroll
+    for (uint32_t h = 0; h < 2; ++h) {
+#pragma unroll
+        for (uint32_t c = 0; c < 2; ++c) {
+            const uint32_t token = h * 8 + 2 * t + c;
+            if (token < rows) {
+                const float forget = tanhf(acc[h][c]);
+                const float gain = tanhf(acc[h][2 + c]);
+                const uint64_t at = static_cast<uint64_t>(token) * RW_HIDDEN + channel;
+                const float u = (1.0f - forget) * __ldcg(hrow + at) + gain * __ldcg(mrow + at);
+                __stcg(urow + at, u);
+                squares[h * 2 + c] = u * u;
+            }
+        }
+    }
+    // The sum over the 8 channels of a warp (the lanes with the same `t`), then over the 8 warps.
+#pragma unroll
+    for (uint32_t k = 0; k < 4; ++k) {
+#pragma unroll
+        for (uint32_t offset = 16; offset >= 4; offset >>= 1) {
+            squares[k] += __shfl_xor_sync(0xFFFFFFFFu, squares[k], offset);
+        }
+        if (g == 0) {
+            scratch[(k / 2 * 8 + 2 * t + k % 2) * RW_WARPS + warp] = squares[k];
+        }
+    }
+    worker_sync();
+    uint32_t* counter = reinterpret_cast<uint32_t*>(task.f) + gate;
+    float* partials = reinterpret_cast<float*>(task.f) + RW_GU_COUNTERS;
+    if (worker_id() < rows) {
+        __stcg(partials + static_cast<uint64_t>(item) * rows + worker_id(), rw_tree8(scratch + worker_id() * RW_WARPS));
+    }
+    if (!rw_finisher_arrive(counter, RW_GU_TILES, flag)) {
+        return;
+    }
+    // The last item of the gate does the work of the whole row.
+    float* factors = scratch;
+    if (worker_id() < rows) {
+        const float total =
+            rw_ordered_sum(partials + static_cast<uint64_t>(gate) * RW_GU_TILES * rows + worker_id(), RW_GU_TILES, rows);
+        const float rf = rw_factor(total, RW_HIDDEN);
+        reinterpret_cast<float*>(table->ptr[RW_GU_U_RF + gate])[worker_id()] = rf;
+        factors[worker_id()] = rf;
+    }
+    worker_sync();
+    if (norm) {
+        const float* w = reinterpret_cast<const float*>(table->ptr[RW_GU_NORM]);
+        float* out = reinterpret_cast<float*>(task.c);
+        for (uint32_t e = worker_id(); e < rows * RW_HIDDEN; e += MK_WORKERS) {
+            out[e] = __ldg(w + e % RW_HIDDEN) * (__ldcg(urow + e) * factors[e / RW_HIDDEN]);
+        }
+    }
 }
 
 // Reserved for wave B lane R (rows).

@@ -13,6 +13,7 @@ pub mod ptxas;
 pub mod repack;
 #[cfg(feature = "cuda")]
 pub mod ring;
+pub mod rows;
 pub mod safetensors;
 pub mod test_cards;
 
