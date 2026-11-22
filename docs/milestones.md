@@ -824,13 +824,13 @@ Do the steps in this order. Each step ends with the checks green.
 
 1. **GB10 probe fix.** Capture the real `dgx-spark` sysfs and procfs tree, and map `Model: Unknown` with PCI id
    `10de:2e12` to `NVIDIA GB10`. Done (`809d8514`).
-2. **Spec and ABI.** The GB10 binding in `docs/engine-abi.md`, and `AGENTS.md`. Done (`21b7dd9e`). Step 6 corrects
-   its rules of the activations.
+2. **Spec and ABI.** The GB10 binding in `docs/engine-abi.md`, and `AGENTS.md`. Done (`21b7dd9e`). Step 6 wrote
+   its rules of the activations again.
 3. **The shared CUDA interpreter (`nagaya-mk-cuda`).** The 64-byte task protocol, the safetensors reader, the Driver
    API wrapper, `megakernel.cu` compiled to an `sm_121a` cubin with `--fmad=false`, `%globaltimer` profiles and
    `tools/nvcc-stub`. Done (`594b1bc4`).
 4. **The host spec (`nagaya-mk-inkling2-sm121`).** The slot plan of 400K to 512K positions and the registration in
-   `nagaya` under `cuda`. Done (`bca25a29`, `c81e171e`). Its `quant.rs` does not follow vLLM: step 6 corrects it.
+   `nagaya` under `cuda`. Done (`bca25a29`, `c81e171e`). Step 6 wrote its `quant.rs` again.
 5. **GPU smoke gate.** `cuModuleLoadData` loads both cubins on the GB10. `OP_COPY` copies 16,384 values bit for bit
    over 48 blocks, and `MK_PROFILE` writes monotonic times. Done (`1fb96d0e`).
 6. **Corrections.** Make the work of steps 2 to 5 fit the rules of this milestone:
@@ -845,7 +845,7 @@ Do the steps in this order. Each step ends with the checks green.
      - One mutant survives. No row of the fixture decides the order of the reconstruction `(v × s) × outer`
        against `v × (s × outer)`. Add a row that decides it.
    - **The binding.** Write the rules of the activations again in `docs/engine-abi.md`, from the source of vLLM.
-     They stay **Proposed**.
+     They stay **Proposed**. Done (`53e26fa3`, merged in `ed82db6d`).
    - **A review** of steps 3 to 5 by a model of another family than the writer's (`docs/reviews.md`), against the
      design rules. Then run the full list of checks of `AGENTS.md` on sm121host.
      The review is done. Its findings are defects to fix in this step. A lane fixes them on a branch:
