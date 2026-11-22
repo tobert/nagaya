@@ -1747,8 +1747,23 @@ choice open.
 - **The memory terms.** The term `vision` holds the weights of the tower, 636,825,472 bytes. The term `work` adds
   the buffers of the tower, the patch rows, the taps and the projector rows of the largest image. It also adds the
   media rows of a block, 2,304 `f32` values for each position. For a block of 512 that is 1,870,588,096 bytes more.
-- **Open: the time of a large image.** The tower of an image of 10,609 tokens runs in the quantum of its first block.
-  A card test measures it later, against `max_quantum_ms`.
+- **The time of a large image.** The card gate `tests/xe_long.rs` measured an image of 4,096 by 4,096 px, 10,609
+  tokens, on 2026-11-21. Its tower takes about 56,780 ms in the pass of its first block, and a later block takes
+  843 ms. The bound `max_quantum_ms` is 2,000 ms (D8), and the watchdog stops a group with no beat for 30 s (spec
+  7.4). Thus such a pass breaks the bound, and in the process it can stop the process. This is a known defect, not
+  an exception to the bound.
+- **Proposed (ChatGPT through kaibo `gpt-plan`, 2026-11-21): the tower in quanta of its own.** The family keeps the
+  bound of 4,096 px. The tower runs in quanta before the pass that reads its rows. Each quantum fits
+  `max_quantum_ms`.
+  - The engine chooses the slices, and it keeps the state of a tower that is not done. A slice can be a few layers,
+    or the queries of one layer in parts. A slice must not cut the image, because the attention of the tower reads
+    the whole image.
+  - The scheduler runs each slice at the class of the job. A pass reads the projector rows only after the tower is
+    done. The state of a tower that is not done goes when its job ends. The result of `pass` does not change.
+  - Reason: a call that runs the whole tower still holds the card for 57 s. Slices let other ready quanta run
+    between them.
+  - Not built. The card gate of the change runs the largest image with no held rows. A test of the process checks
+    the order of the quanta and the end of a job.
 
 ### The first Inkling 2 binding
 
@@ -1863,8 +1878,9 @@ Opus 5.5, 2026-11-21).
   `OP_INKLING2_ATTN` for a block of 512 (`tasks::inkling2_attn_scratch_floats`).
 - **The other terms.** `kv` is the sum of the slots, on `device(0)`. `pinned` is host memory: the tasks, the
   statistics and a staging buffer of 64 MiB, as for LFM3.
-- **The limits.** One segment in each pass, and 16 logit rows. `max_quantum_ms` is 2,000, a budget that a card
-  test measures later. The capabilities are `parts`, `slots`, `coverage`, `close` and `cycles`.
+- **The limits.** One segment in each pass, and 16 logit rows. `max_quantum_ms` is 2,000. The slowest text pass of
+  the long gate took 1,768 ms, and the tower of a large image breaks the bound ("The time of a large image"). The
+  capabilities are `parts`, `slots`, `coverage`, `close` and `cycles`.
 - **Not declared.** `layer_loops`. A pass with a layer loop is refused. "The lab of Inkling 2" adds the taps,
   `control` and latent rows.
 
