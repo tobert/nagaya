@@ -1,5 +1,6 @@
 //! The routes of a device (spec 3.3b, "The release of a device"): `POST /nagaya/v1/devices/{id}/release` and
-//! `POST /nagaya/v1/devices/{id}/reclaim`.
+//! `POST /nagaya/v1/devices/{id}/reclaim`. `GET /nagaya/v1/devices/{id}/busy` shows the long pass that runs on the
+//! device (spec 7.4).
 //!
 //! A release unloads each loaded engine of the device, and the device takes no load until a reclaim. A reclaim loads
 //! the resident engines of the device again. Thus a card test runs on the device while the other devices serve.
@@ -11,7 +12,7 @@ use axum::Router;
 use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::response::Response;
-use axum::routing::post;
+use axum::routing::{get, post};
 use gogi_proto::error::ErrorType;
 use serde::Serialize;
 
@@ -19,7 +20,7 @@ use super::errors::Failure;
 use super::routes::json;
 use super::{Council, RequestId};
 use crate::council::error::ServiceError;
-use crate::process::DeviceReply;
+use crate::process::{DeviceReply, LongPass};
 use crate::reprofile::ProfileCall;
 
 /// The device routes. The caller adds the fallbacks.
@@ -27,6 +28,7 @@ pub(super) fn routes() -> Router<Arc<Council>> {
     Router::new()
         .route("/nagaya/v1/devices/{id}/release", post(release))
         .route("/nagaya/v1/devices/{id}/reclaim", post(reclaim))
+        .route("/nagaya/v1/devices/{id}/busy", get(busy))
 }
 
 /// The body of a 202 of a release: the engines that unload, in the order of the profile.
@@ -116,6 +118,59 @@ async fn ask(council: Arc<Council>, id: RequestId, device: String, release: bool
             &Already {
                 device,
                 status: if release { "released" } else { "in use" },
+            },
+        ),
+    }
+}
+
+/// The body of a `busy`: the device, and the long pass that runs on it, or `null` (spec 7.4).
+#[derive(Serialize)]
+struct Busy {
+    device: u32,
+    long_pass: Option<LongPass>,
+}
+
+/// Show the long pass that runs on the device of the path. The route reads only, so it waits for no group.
+async fn busy(
+    State(council): State<Arc<Council>>,
+    Extension(id): Extension<RequestId>,
+    Path(device): Path<String>,
+) -> Response {
+    let Ok(device) = device.parse::<u32>() else {
+        return not_found(format!(
+            "`{device}` is not a device id; send the number of a device, as the profile names it"
+        ))
+        .respond(&id);
+    };
+    let (Some(ports), Some(calls)) = (council.loads(), council.profile_calls()) else {
+        return Failure::new(
+            StatusCode::NOT_FOUND,
+            ErrorType::NotFound,
+            "this server has no devices to show; the device routes need a process",
+        )
+        .respond(&id);
+    };
+    let named = council
+        .call(move || {
+            let (reply, answer) = mpsc::channel();
+            calls
+                .send(ProfileCall::Get(reply))
+                .map_err(|_| ServiceError::Stopping)?;
+            let profile = answer.recv().map_err(|_| ServiceError::Stopping)?;
+            Ok(profile.engines.iter().any(|engine| engine.devices.contains(&device)))
+        })
+        .await;
+    match named {
+        Err(failure) => failure.respond(&id),
+        Ok(false) => not_found(format!(
+            "no engine of the profile names device {device}; the profile names the devices of each engine"
+        ))
+        .respond(&id),
+        Ok(true) => json(
+            StatusCode::OK,
+            &Busy {
+                device,
+                long_pass: ports.long_passes().on_device(device),
             },
         ),
     }

@@ -230,6 +230,9 @@ fn a_long_pass_past_its_deadline_stops_the_process_and_its_result_is_dropped() {
         .expect("the watchdog stops the process");
     assert_eq!(event, stalled(vec![0]));
     assert_eq!(event.exit_code(), Some(nagaya::exit::ExitCode::Crash));
+    // The pass still runs, past its bound of 50 ms.
+    let shown = process.ports().long_passes().on_device(0).expect("the pass runs");
+    assert!(shown.overdue && shown.elapsed_ms > 50, "{shown:?}");
     let result = results.recv_timeout(Duration::from_secs(2)).expect("the pass ends");
     let error = result.expect_err("a result past the deadline is not published");
     assert_eq!(error.kind, PassErrorKind::Ran(PassStatus::Timeout));
@@ -472,5 +475,93 @@ impl JobBody for Ending {
 
     fn unavailable(&mut self, engine: &str, state: nagaya::notify::EngineState) {
         panic!("engine `{engine}` is {}", state.as_str());
+    }
+}
+
+/// A council with the ports of `process`, and with a main loop that answers the active profile `profile`.
+fn council(process: &Process, profile: PlacementProfile) -> Arc<nagaya::http::Council> {
+    let (calls, asked) = mpsc::channel();
+    thread::spawn(move || {
+        while let Ok(call) = asked.recv() {
+            if let nagaya::reprofile::ProfileCall::Get(reply) = call {
+                let _ = reply.send(profile.clone());
+            }
+        }
+    });
+    let council = nagaya::http::Council::new(Vec::new(), None).unwrap();
+    Arc::new(council.with_loads(process.ports()).with_profile(calls))
+}
+
+fn get(council: &Arc<nagaya::http::Council>, path: &str) -> (axum::http::StatusCode, serde_json::Value) {
+    use tower::ServiceExt;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        let request = axum::http::Request::builder()
+            .method("GET")
+            .uri(path)
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = nagaya::http::router(Arc::clone(council))
+            .oneshot(request)
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    })
+}
+
+/// The route `busy` of a device shows its long pass while it runs, and `null` before and after. A device that no
+/// engine names is a 404 that names `id`. Falsified by a route that reads another device.
+#[test]
+fn the_route_busy_shows_the_long_pass_of_a_device() {
+    use axum::http::StatusCode;
+    let (process, _) = started(Plan {
+        ceiling: Some(1_000),
+        bound: Ok(Some(400)),
+        sleep: Duration::from_millis(250),
+    });
+    let profile = PlacementProfile {
+        engines: vec![placement("long", "long", &[0])],
+        budgets: budgets(&[0]),
+        store: None,
+    };
+    let council = council(&process, profile);
+    let path = "/nagaya/v1/devices/0/busy";
+    assert_eq!(
+        get(&council, path),
+        (StatusCode::OK, serde_json::json!({"device": 0, "long_pass": null}))
+    );
+    let results = pass(&process, vec![segment()]);
+    thread::sleep(Duration::from_millis(100));
+    let (status, body) = get(&council, path);
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let shown = &body["long_pass"];
+    assert_eq!(
+        (
+            &shown["group"],
+            &shown["devices"],
+            &shown["bound_ms"],
+            &shown["overdue"]
+        ),
+        (
+            &serde_json::json!(0),
+            &serde_json::json!([0]),
+            &serde_json::json!(400),
+            &serde_json::json!(false)
+        ),
+        "{body}"
+    );
+    let elapsed = shown["elapsed_ms"].as_u64().unwrap();
+    assert!((50..400).contains(&elapsed), "{body}");
+    results.recv_timeout(Duration::from_secs(2)).unwrap().unwrap();
+    assert_eq!(get(&council, path).1["long_pass"], serde_json::Value::Null);
+    for path in ["/nagaya/v1/devices/7/busy", "/nagaya/v1/devices/x/busy"] {
+        let (status, body) = get(&council, path);
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
+        assert_eq!(body["error"]["param"], "id", "{path}");
     }
 }
