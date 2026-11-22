@@ -60,6 +60,12 @@ define_u16_table! {
     OP_LAYERNORM = 47;
     OP_GELU = 48;
     OP_SCALE_ADD = 50;
+    // The quantizers and the expert ops of the GB10 (`kernels/quant.cuh` and `kernels/experts.cuh`). The numbers 51 to
+    // 69 are for them. Each has its own comment in its kernel file.
+    OP_QUANT_NVFP4 = 51;
+    OP_QUANT_MXFP8 = 52;
+    OP_EXPERT_NVFP4 = 53;
+    OP_EXPERT_MXFP8 = 54;
     OP_HALT = 255;
 
     // Inkling 2 opcodes (matching `docs/engine-abi.md` "Inkling 2").
@@ -139,6 +145,38 @@ pub const PROBE_MMA_CHAINS: usize = 8;
 /// stages, then one 8-byte barrier for each stage, rounded to 256 bytes.
 pub fn probe_smem_bytes(stages: usize) -> usize {
     (stages * PROBE_STAGE_BYTES + stages * 8).next_multiple_of(256)
+}
+
+/// The rows of the weight that one work item of an expert op covers: its column tile.
+pub const EXPERT_TILE_ROWS: usize = 64;
+
+/// The most rows that one expert takes in one pair: two `n8` tiles of the MMA.
+pub const EXPERT_MAX_ROWS: usize = 16;
+
+/// The values of K in one group of a repacked weight. A group is the unit of the layout and of the loop: 2 MMAs of
+/// `m16n8k64` for NVFP4, and 4 MMAs of `m16n8k32` for MXFP8. K is a multiple of this number.
+pub const EXPERT_K_GROUP: usize = 128;
+
+/// The bytes of one group record of an NVFP4 weight (16 rows by `EXPERT_K_GROUP` values): 2 tiles of 512 bytes, then
+/// the 128 bytes of the scales in the order of the scale fragment.
+pub const EXPERT_NVFP4_RECORD_BYTES: usize = 2 * 512 + 128;
+
+/// The bytes of one group record of an MXFP8 weight: 4 tiles of 512 bytes, then 64 bytes of scales.
+pub const EXPERT_MXFP8_RECORD_BYTES: usize = 4 * 512 + 64;
+
+/// The dynamic shared bytes that an expert op needs, at offset 0: the partial sums of the second half of K.
+pub const EXPERT_SMEM_BYTES: usize = 4 * 2 * 32 * 4 * 4;
+
+/// One pair of an expert op: an expert and the rows that it takes. `x_row[i]` is the row of the quantized rows that
+/// the row `i` of the expert reads, and `y_row[i]` is the row of the output that it writes. Only the first `count`
+/// entries count. The device reads the list through `f` of the descriptor.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExpertPair {
+    pub expert: u32,
+    pub count: u32,
+    pub x_row: [u16; EXPERT_MAX_ROWS],
+    pub y_row: [u16; EXPERT_MAX_ROWS],
 }
 
 define_u16_table! {
