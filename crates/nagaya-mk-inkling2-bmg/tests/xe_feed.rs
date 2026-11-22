@@ -22,6 +22,9 @@ const SPLIT_TOL: f64 = 1e-4;
 /// The largest gap of a logit from the host form, past the end of the rings. The card run of 2026-11-21 measured
 /// 1.5e-5 at most.
 const HOST_TOL: f64 = 1e-4;
+/// The host form runs the positions after this one from the state of the card at it, and the positions before it
+/// from position 0. The spill split ends a block here.
+const RESUME: usize = 1_536;
 
 /// The ids of the prompt "longer" of the oracle, 637 tokens of prose.
 fn longer() -> Vec<u32> {
@@ -223,6 +226,11 @@ fn a_slot_of_32768_follows_the_host_form_where_its_rings_wrap() {
             card::pass(&mut engine, 1, pos as u64, &[token], &[pos as u64]).remove(0),
         ));
     }
+    // At position 1,527 a route is at a near tie, and the card picks the other expert (`tests/xe_long.rs`, engine-abi
+    // "A route near a tie"). So the host form runs the blocks after 1,536 from the state of the card at 1,536.
+    card::clear(&mut engine, 1);
+    card::feed_split(&mut engine, 1, 0, &ids[..RESUME], &[512, 512, 512]);
+    let mut resumed = Some(card::host_context(&mut engine, 1, RESUME));
     drop(engine);
     let model = Model::open(&common::model_weights(Which::Mini)).unwrap();
     let mut ctx = Context::new(3);
@@ -230,6 +238,9 @@ fn a_slot_of_32768_follows_the_host_form_where_its_rings_wrap() {
     let mut at = 0;
     let mut want = Vec::new();
     for n in spill {
+        if at == RESUME {
+            ctx = resumed.take().expect("one block starts at the resume point");
+        }
         let rows: Vec<usize> = wanted
             .iter()
             .filter(|p| (at..at + n).contains(*p))

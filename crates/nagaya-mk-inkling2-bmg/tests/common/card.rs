@@ -5,7 +5,9 @@ use std::path::PathBuf;
 
 use nagaya_abi::{Engine, OutputsWanted, Segment, SegmentInputs, State};
 use nagaya_mk_inkling2_bmg::Inkling2Engine;
-use nagaya_mk_inkling2_bmg::spec::{Config, DEFAULT_EXTRA_RUNS};
+use nagaya_mk_inkling2_bmg::host::forward::{Context, DEFAULT_CYCLES, KV_WIDTH};
+use nagaya_mk_inkling2_bmg::host::ops::HIDDEN;
+use nagaya_mk_inkling2_bmg::spec::{self, CONV_ROW, CONV_ROWS, Config, DEFAULT_EXTRA_RUNS, Part};
 
 use super::Which;
 
@@ -149,4 +151,83 @@ pub fn gaps(logits: &[f32], prompt: &serde_json::Value) -> Gaps {
         top1: order[0] == ids[0],
         outside: ids.iter().filter(|i| !top.contains(i)).count(),
     }
+}
+
+/// The values of little-endian `f32` bytes.
+pub fn floats(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|b| f32::from_le_bytes(*b))
+        .collect()
+}
+
+/// The id of a part of state `s` in the part list of the engine.
+pub fn part_id(part: Part) -> usize {
+    spec::part_list(DEFAULT_EXTRA_RUNS)
+        .iter()
+        .position(|p| *p == part)
+        .expect("the part list holds each part of a state")
+}
+
+/// The rows of positions `from..to` of a row part of `slot`, in reads of at most 8,192 rows.
+pub fn read_rows(engine: &mut Inkling2Engine, slot: usize, part: Part, from: usize, to: usize) -> Vec<f32> {
+    let id = part_id(part);
+    let parts = engine.parts().unwrap();
+    let mut out = Vec::with_capacity((to - from) * KV_WIDTH);
+    let mut buf = Vec::new();
+    let mut at = from;
+    while at < to {
+        let n = (to - at).min(8_192);
+        buf.resize(n * spec::ROW_BYTES as usize, 0u8);
+        parts
+            .cells_read(State::Slot(slot as u32), id, at as u64, n as u64, &mut buf)
+            .unwrap_or_else(|e| panic!("a read of rows {at} to {} of {part:?}: {e:?}", at + n));
+        out.extend(floats(&buf));
+        at += n;
+    }
+    out
+}
+
+/// The host state of `slot` at position `at`, from the parts of the slot. A full run holds every row, and a sliding
+/// run the last 1,024. The conv part holds 3 rows of the four inputs, oldest first, and the host holds each input
+/// as 3 rows.
+pub fn host_context(engine: &mut Inkling2Engine, slot: usize, at: usize) -> Context {
+    let mut ctx = Context::new(DEFAULT_CYCLES);
+    ctx.position = at;
+    let runs = spec::runs(DEFAULT_CYCLES);
+    assert_eq!(runs.len(), ctx.runs.len(), "the card and the host run the same runs");
+    for (run, state) in runs.iter().zip(ctx.runs.iter_mut()) {
+        assert_eq!(
+            run.layer, state.layer,
+            "the card and the host run the layers in one order"
+        );
+        let first = state.keys.window.map_or(0, |w| at.saturating_sub(w));
+        state.keys.first = first;
+        state.keys.rows = read_rows(engine, slot, Part::K(run.state), first, at);
+        state.values.first = first;
+        state.values.rows = read_rows(engine, slot, Part::V(run.state), first, at);
+        let mut conv = vec![0u8; spec::CONV_BYTES as usize];
+        engine
+            .parts()
+            .unwrap()
+            .part_read(State::Slot(slot as u32), part_id(Part::Conv(run.state)), &mut conv)
+            .unwrap_or_else(|e| panic!("a read of the conv part of state {}: {e:?}", run.state));
+        let conv = floats(&conv);
+        let widths = [KV_WIDTH, KV_WIDTH, HIDDEN, HIDDEN];
+        let mut offset = 0;
+        for (input, width) in state.conv.iter_mut().zip(widths) {
+            *input = (0..CONV_ROWS)
+                .flat_map(|r| {
+                    conv[r * CONV_ROW + offset..r * CONV_ROW + offset + width]
+                        .iter()
+                        .copied()
+                })
+                .collect();
+            offset += width;
+        }
+        assert_eq!(offset, CONV_ROW, "the four inputs fill a conv row");
+    }
+    ctx
 }
