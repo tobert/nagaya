@@ -915,6 +915,8 @@ Do the steps in this order. Each step ends with the checks green.
      router with the plan and the gather, the expert sum and the clips. Fuse them as rule 7 says.
    - **Wave C, the attention.** The sliding layers, and the full layers over key chunks of a fixed size on all SMs,
      with a merge in a fixed order. The cache of a full run is contiguous for each head, so the reads stream.
+     The ops read the format of the cache as a parameter: `f32`, `float16` or `fp8_e4m3` (step 11). Build `f32` and
+     `fp8_e4m3` first, so that the gate of step 11 can compare them.
 10. **The pass.** The task ring of a decode step and of a prefill block, at 1 to 5 cycles. Gates: the oracle of
     step 8, and a row of a decode step gives the bits of its position in a block. Print the table of the ops, and
     compare each op with its budget.
