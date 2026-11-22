@@ -2169,10 +2169,79 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   The quantizers give bits, and the fixture tests them.
 - **Packed weights.** Expert weights stay packed in unified memory in their checkpoint formats (NVFP4 in layers 0
   to 19, MXFP8 in layers 20 to 23).
+- **The facts of the GB10.** The probe test `crates/nagaya-mk-cuda/tests/cuda_probe.rs` measured these facts
+  (milestone 37 step 7, substep 1). The device is an NVIDIA GB10, compute capability 12.1, CUDA driver 13.2. These
+  facts are measured, not **Proposed**. Rates use 1 GB = 10^9 bytes. Times come from `%globaltimer`, and the host
+  wall time agrees.
+
+  | Fact | Value | Unit |
+  |---|---|---|
+  | Streaming multiprocessors (SMs) | 48 | SMs |
+  | Threads for each block, for each SM | 1,024, 1,536 | threads |
+  | Blocks for each SM | 24 | blocks |
+  | Registers for each block, for each SM | 65,536 | registers |
+  | Shared memory for each block: default, opt-in | 49,152, 101,376 | B |
+  | Shared memory for each SM, reserved for each block | 102,400, 1,024 | B |
+  | Largest dynamic shared memory of the interpreter | 101,248 | B |
+  | L2 cache, largest persisting part | 25,165,824 (24 MiB), 18,874,368 | B |
+  | Cooperative launch, cluster launch, integrated | 1, 1, 1 | flag |
+  | Core clock, memory clock, bus | 2,418, 8,533, 256 | MHz, MHz, bit |
+  | Memory bandwidth by spec (8.533 GHz x 256 bit / 8) | 273 | GB/s |
+  | Read bandwidth, direct `ld.global.v4`, 1 GiB | 251 | GB/s |
+  | Read bandwidth, `ld.global.nc.L1::no_allocate.v4`, 256 threads | 254 | GB/s |
+  | Read bandwidth, best: `cp.async.bulk` to shared, 2 stages of 16 KB | 257.3 | GB/s |
+  | Read bandwidth with a deep bulk L2 prefetch (2 or 4 items ahead) | down to 200 | GB/s |
+  | L2 re-read, 1 to 16 MiB | 1.9 to 2.2 | TB/s |
+  | L2 re-read, 32 MiB, 64 MiB | 300, 230 | GB/s |
+  | Task boundary, 1,000 no-op tasks in a strict chain | 640 to 656 | ns |
+  | Part of a boundary that a block waits at the scoreboard | about 257 | ns |
+  | `%globaltimer`: smallest step, cost of a read | 32, about 15 | ns |
+  | MMA rate for each SM, for each kind | one MMA each 1.55 | ns |
+  | MMA rate of the GPU: `bf16`, NVFP4, MXFP8 | 127, 509, 254 | TFLOP/s |
+  | Probe kernel registers, spill | 56, 0 | registers, B |
+
+  - **The read peak.** Every variant of the read probe gives 250 to 257 GB/s, which is 92 to 94% of 273 GB/s.
+    Budgets use about 252 GB/s. Direct loads reach the peak with no prefetch and no shared memory.
+  - **The L2 knee.** The re-read rate falls between 16 and 32 MiB, which fits the 24 MiB of L2. L2 gives about 8
+    times the rate of DRAM.
+  - **The timer.** Spans under about 100 ns need the mean over many tasks.
+  - **The MMA forms.** All three assemble for `sm_121a` with `-cubin -arch=sm_121a`. The flag `-arch=sm_121a`
+    without `-cubin` fails in `ptxas`.
+
+    - `bf16`: `mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32` gives `HMMA.16816.F32.BF16`.
+    - NVFP4: `m16n8k64` with `kind::mxf4nvf4.block_scale.scale_vec::4X`, `e2m1` and `ue4m3` gives
+      `OMMA.SF.16864.F32.E2M1.E2M1.UE4M3.4X`.
+    - MXFP8: `m16n8k32` with `kind::mxf8f6f4.block_scale.scale_vec::1X`, `e4m3` and `ue8m0` gives
+      `QMMA.SF.16832.F32.E4M3.E4M3.E8`.
+
+  - **The bulk forms.** `cp.async.bulk`, `cp.async.bulk.prefetch.L2`, `mbarrier`, `prefetch.global.L2` and
+    `ld.global.nc.L1::no_allocate` all assemble for `sm_121a`. Their SASS is `UBLKCP`, `UBLKPF`, `SYNCS`,
+    `CCTL.E.PF2` and `LDG.E.NA.128.CONSTANT`.
+  - **The exactness.** On inputs whose sums are exact in `f32`, all three MMA kinds match an `f64` host sum bit for
+    bit. On wide ranges they do not: an MMA does not round as a sequence of `f32` adds. The largest error, as a
+    share of the sum of the absolute terms, is 1.24e-7 for `bf16`, 7.6e-8 for NVFP4 and 1.42e-7 for MXFP8. Each is
+    under 64 `f32` ulps, the bound of the test.
+  - **The fragment layout.** Let `g` be the lane divided by 4, and `t` the lane modulo 4.
+    - A word of operand A: `a0` is word `t` of row `g`. `a1` is word `t` of row `g + 8`. `a2` is word `t + 4` of
+      row `g`. `a3` is word `t + 4` of row `g + 8`.
+    - A word of operand B: `b0` is word `t` of column `g`. `b1` is word `t + 4` of column `g`.
+    - A word holds consecutive K values: 2 `bf16`, 8 `e2m1` (low nibble first) or 4 `e4m3`.
+    - The result: `d0` and `d1` are row `g`, columns `2t` and `2t + 1`. `d2` and `d3` are row `g + 8`.
+    - The scales of A: lane `4g` gives row `g`, and lane `4g + 1` gives row `g + 8`. The scale of B: lane `4n`
+      gives column `n`.
+    - An NVFP4 scale register holds 4 `ue4m3` bytes, one for each 16 values of K. An MXFP8 scale is byte 0, one
+      `ue8m0`.
+    - An A tile is 512 B for `bf16` and for NVFP4: one 16-byte vector for each lane for each MMA.
+  - **The MMA rate.** 8 warps with 8 chains each saturate the tensor pipes. The tensor cores could consume about
+    15.9 TB/s of weights, about 60 times the memory bandwidth. Thus the three `bf16` terms of design rule 9 cost no
+    time in a decode step.
+  - **The clusters.** The attribute of cluster launch is 1, so clusters exist. The design does not need them, and
+    no probe launched one.
+
 - **The CUDA interpreter.** The rules below design the persistent interpreter of `nagaya-mk-cuda` for milestone 37.
   Each rule is **Proposed** (Claude Opus 5.5, 2026-11-22). The code of step 3 has a 64-byte descriptor, one wait
-  for each task and no shared memory. Migration steps 2 to 6 of milestone 37 step 7 replace these. Each hardware
-  figure marked "to measure in step 7" is a guess until the probes run.
+  for each task and no shared memory. Migration steps 2 to 6 of milestone 37 step 7 replace these. The
+  facts of the GB10 above replace each hardware guess that this text had before the probes ran.
 
   **The core idea.** Two facts shape the design:
   - The bits of a sum depend only on the cut of an op into work items. The cut comes from the shapes. Thus the grid
@@ -2194,8 +2263,9 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     deadlock then. This needs every block resident (the cooperative launch).
   - The per-run scratch (`q`, `attn`, `act`) has two copies that alternate. This removes the write-after-read waits.
   - A wait changes the timing only. The bits come from the cut and from the merge order.
-  - A wait costs one L2 round trip after the last item, about 0.5 to 1 microsecond (to measure in step 7). The
-    projections `q`, `k`, `v` and gate read one norm output, so they run back to back with no barrier.
+  - A wait costs one L2 round trip after the last item. A task boundary measured 640 to 656 ns, and a block waits
+    about 257 ns of it at the scoreboard. The projections `q`, `k`, `v` and gate read one norm output,
+    so they run back to back with no barrier.
 
   **Work items and assignment.**
   - A work item is a column tile and a K slice, and for a prefill a row tile too. A column tile is 16 output
@@ -2230,13 +2300,15 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   - In a prefill, 1D `cp.async.bulk` copies go into a ring of shared memory with an `mbarrier`. No tensor map is
     needed.
   - An expert op prefetches only after the wait on the plan, because the plan names its experts.
-  - A bandwidth of 273 GB/s and a latency of about 600 ns give about 164 KB in flight. That is about 3.4 KB for each
-    SM (both to measure in step 7). An item is 24 KB, so one item ahead is enough.
-  - For a decode, the direct loads with L2 prefetch and the bulk copies into shared memory are two choices. The read
-    probe of step 7 decides.
-  - These PTX forms exist since `sm_90`. They are likely on `sm_121`, but a probe must show the bulk-copy
-    instructions in `cuobjdump -sass`. The GB10 has no clusters or multicast (to measure in step 7, through the
-    device attribute of cluster launch).
+  - A bandwidth of 252 GB/s and a latency of about 600 ns give about 150 KB in flight. That is about 3.1 KB for each
+    SM. An item is 24 KB, so one item ahead is enough.
+  - The read probe shows that direct loads reach the peak with no prefetch and no shared memory (251 to 254 GB/s).
+    Bulk copies into shared memory reach 257.3 GB/s at best. Thus the prefetch hides the wait at a task boundary,
+    not the stream of one op.
+  - A deep bulk L2 prefetch, 2 or 4 items ahead, loses bandwidth: it fell to 200 GB/s at 256 and 512 threads. Do not
+    default to one. Prefetch one item ahead.
+  - The probe shows these PTX forms in `cuobjdump -sass` for `sm_121a` (see "The facts of the GB10"). The device
+    attribute of cluster launch is 1, but the design uses no cluster and no multicast.
 
   **The descriptor** has 128 bytes, inline in the ring. An argument block would add one dependent load for each
   task. About 600 tasks take about 77 KB.
@@ -2255,7 +2327,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   | 96 | `u32` item_bytes, `u32` scale_bytes, `u32` pos0, `u32` layer |
   | 112 | `f32` p0 to p3 (epsilon, clip bound, log scale, factor) |
 
-  **Fusions** (design rule 7). A fusion removes a task boundary, and a boundary costs about 0.6 microsecond.
+  **Fusions** (design rule 7). A fusion removes a task boundary, and a boundary costs about 0.65 microsecond (measured).
   - The norm runs in the prologue. Each item computes the rms of its 16-row tile in a fixed tree. The tree is the
     same in every block. The norm weight is in `d`.
   - The clip, the gate and the residual run in the epilogue, through `e` and the merge group.
@@ -2271,11 +2343,12 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   **Blocks, threads and shared memory.**
   - One block runs on each SM, with 288 threads. Warp 0 is the producer. Warps 1 to 8 are consumers. Thus each
     thread has 224 registers (65,536 divided by 288).
-  - Each block has 96 KB of dynamic shared memory. It holds 4 weight stages of 16 KB and a 24 KB activation tile in
-    three `bf16` terms, in fragment order. It also holds 8 KB for partials, the `mbarrier` objects and the next
-    descriptor.
-  - The host sets `MAX_DYNAMIC_SHARED_SIZE_BYTES` and gives the size at the launch. The limit is to measure in step
-    7, through `MAX_SHARED_MEMORY_PER_BLOCK_OPTIN`.
+  - Each block has 96 KB (98,304 B) of dynamic shared memory. It holds 4 weight stages of 16 KB and a 24 KB
+    activation tile in three `bf16` terms, in fragment order. It also holds 8 KB for partials, the `mbarrier`
+    objects and the next descriptor.
+  - The host sets `MAX_DYNAMIC_SHARED_SIZE_BYTES` and gives the size at the launch. The limit is 101,248 B: the
+    opt-in size of 101,376 B (`MAX_SHARED_MEMORY_PER_BLOCK_OPTIN`) less 128 B of static shared memory. The driver
+    refuses 101,249 B. The plan of 96 KB fits, with about 5 KB to spare for static shared memory.
   - The producer warp owns the descriptor fetch, the waits, the prefetches and the bulk copies, one task ahead. The
     consumers start after a `bar.sync` with the producer, and they publish the signal.
   - Spill gate: each op must fit 224 registers. The build fails unless `-Xptxas -v` shows 0 bytes of spill.
@@ -2299,17 +2372,17 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   - A decode has 36 items of 64 columns for each of 8 experts: 288 items for the up op, and 288 for the down op.
   - In a prefill, one weight item stays in shared memory while the consumers loop over the row tiles. The bits are
     those of a decode.
-  - Three risks need a probe in step 7. The operand and scale layouts of the block-scaled MMA must match the host.
-    The `f32` accumulation of a tensor core may not round to nearest, so the gate must use a tolerance. Three terms
-    triple the MMA work of a prefill. It may become compute bound by a factor of 4 (to measure in step 7, in bf16
-    TFLOP/s).
+  - The probe settled three risks. The layouts of the operands and scales are in "The facts of the GB10". The
+    accumulation of an MMA does not round as `f32` adds, so a card gate of a dot product uses a tolerance. The
+    tensor cores run at 127 TFLOP/s in `bf16`, so the three terms cost no time in a decode step. A prefill may
+    still become compute bound, and a prefill gate measures it.
 
   **The profile and the engine identity.**
   - The profile records for each task and block: `t_desc`, `t_wait_done`, `t_first_item` and `t_end` from
     `%globaltimer`. It records for each item: the block, `t0`, `t1` and whether it merged.
   - The host derives the bytes from `item_bytes` and `scale_bytes`. Each op row then shows its GB/s and its share
-    of the measured peak. If `%globaltimer` is too coarse (to measure in step 7), add `clock64` for the durations
-    inside one SM.
+    of the measured peak. `%globaltimer` steps by 32 ns and a read costs about 15 ns. Thus it suits
+    spans of 100 ns or more. For a shorter span, take the mean over many tasks, or add `clock64` inside one SM.
   - The engine identity holds these members:
     - the descriptor version, the column tile and the table of `Kt`;
     - the warp count of the K split, and the reduction tree;
@@ -2320,7 +2393,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   - Three risks remain. The acquire of the producer must order before the reads of the consumers. A stress test of
     10^4 runs checks it.
   - One large switch over many ops can press the instruction cache.
-  - LPDDR5x may give well under 273 GB/s, so budgets use the measured peak.
+  - LPDDR5x gives about 252 GB/s, not 273 GB/s, so budgets use the measured peak.
 - **Identity and oracle.** Because expert activations are quantized to NVFP4 and MXFP8, this engine has its own
   quantized host oracle and engine identity. Its `numbers` hold `quant` (`nvfp4_fouroversix_mae+mxfp8_ue8m0`),
   `max_block`, `extra_runs`, `state` (`2`), the `nvcc` version, and the BLAKE3 of the `.cubin`.
