@@ -654,3 +654,44 @@ mod split_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod inkling2_join_tests {
+    use super::*;
+    use nagaya_abi::{OutputsWanted, SegmentInputs, State};
+    use nagaya_mk_inkling2_bmg::spec::{self, Config};
+
+    fn row(slot: u32, cycles: Option<u8>) -> Segment {
+        Segment {
+            control: Vec::new(),
+            state: State::Slot(slot),
+            inputs: SegmentInputs::Tokens(vec![1]),
+            positions: vec![40 + u64::from(slot)],
+            meta: Vec::new(),
+            outputs: OutputsWanted {
+                logit_rows: vec![40 + u64::from(slot)],
+            },
+            layer_loop: None,
+            cycles,
+        }
+    }
+
+    /// The decode rows of concurrent Inkling 2 contexts join in passes of up to 8 rows, and only rows of one count of
+    /// cycles share a pass (milestone 36 item 11, engine-abi "A batch of decode rows").
+    #[test]
+    fn inkling2_decode_rows_of_one_count_join_in_passes_of_8() {
+        let config = Config {
+            model_dir: std::path::PathBuf::from("unread"),
+            slots: vec![2_048; 12],
+            max_block: spec::DEFAULT_MAX_BLOCK,
+            extra_runs: spec::DEFAULT_EXTRA_RUNS,
+        };
+        let limits = spec::limits(&config, 18_880_455_680);
+        assert!(joins_decode(&limits), "the engine joins its decode rows");
+        let mut segments: Vec<Segment> = (0..10).map(|s| row(s, Some(3))).collect();
+        segments.push(row(10, Some(1)));
+        segments.push(row(11, Some(1)));
+        let groups = pass_groups(&segments, &limits);
+        assert_eq!(groups, [(0..8).collect::<Vec<_>>(), vec![8, 9], vec![10, 11]]);
+    }
+}

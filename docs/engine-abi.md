@@ -1994,10 +1994,11 @@ Opus 5.5, 2026-11-21).
   `OP_INKLING2_ATTN` for a block of 512 (`tasks::inkling2_attn_scratch_floats`).
 - **The other terms.** `kv` is the sum of the slots, on `device(0)`. `pinned` is host memory: the tasks, the
   statistics and a staging buffer of 64 MiB, as for LFM3.
-- **The limits.** One segment in each pass, and 16 logit rows. `max_quantum_ms` is 5,000 (D8, 2026-11-22). The slowest
-  text pass of the long gate took 1,768 ms. A block at 164,352 positions takes about 2,020 ms, from a line through
-  the measured blocks. The tower of a large image runs in a long pass ("The time of a large image"). The
-  capabilities are `parts`, `slots`, `coverage`, `close` and `cycles`.
+- **The limits.** One segment in each pass, or a batch of 2 to 8 ("A batch of decode rows"), and 16 logit rows.
+  `max_quantum_ms` is 5,000 (D8, 2026-11-22). The slowest text pass of the long gate took 1,768 ms. A block at
+  164,352 positions takes about 2,020 ms, from a line through the measured blocks. The tower of a large image runs
+  in a long pass ("The time of a large image"). The capabilities are `parts`, `slots`, `coverage`, `close` and
+  `cycles`.
 - **Not declared.** `layer_loops`. A pass with a layer loop is refused. "The lab of Inkling 2" adds the taps,
   `control` and latent rows.
 
@@ -2024,10 +2025,38 @@ Each rule is **Proposed** (Claude Opus 5.5, 2026-11-21).
 - **Launches.** The ring of a pass is a list of runs. A launch holds whole runs, at most 2,046 tasks, and the tasks
   before the first run and after the last. A pass of 3 cycles fits one launch: 1,635 tasks, or 1,715 when its
   block crosses the end of a ring.
-- **The bits of a decode step.** `OP_MATMUL` sums one token in another order than a block of 9 or more. Thus a
-  decode step does not give the bits of its position in a block. The card test counts the values that differ.
-  - The card run of 2026-11-21: 181,182 of the 200,058 logits of a decode step differ, by 9.1e-6 at most. The splits
-    `[300, 337]` and `[100, 412, 125]` gave the bits of `[512, 125]`.
+- **The bits of a decode step.** Each matmul of a pass carries `FLAG_TILED`, so one token sums in the order of 2 to
+  8 tokens (milestone 36 item 10). Thus a block of 1 to 8 tokens gives each token the bits of the same tokens decoded
+  one at a time. `OP_MATMUL` sums a block of 9 or more in another order. Thus a decode step does not give the bits of
+  its position in such a block. The card test `xe_feed` counts the values that differ.
+  - The card run of 2026-11-21 had no flag. Then 181,182 of the 200,058 logits of a decode step differed from the
+    block of 512, by 9.1e-6 at most. The splits `[300, 337]` and `[100, 412, 125]` gave the bits of `[512, 125]`.
+  - The card run of 2026-11-22, with the flag: 185,519 logits differ, by 1.24e-5 at most. The splits give the same
+    bits as before. The card test `xe_batch` gave equal bits for blocks of 2, 5 and 8 tokens and their decode steps.
+  - **Proposed** (Claude Opus 5.5, 2026-11-22): the flag on each matmul. Reason: a batch of decode rows needs the
+    bits of each row alone.
+- **A batch of decode rows** (milestone 36 item 11). A pass of 2 to 8 segments runs one decode token of each, each on
+  its own slot at its own position (`model::batch`). Reason: swarms and parallel contexts share the fixed costs of a
+  step. Each rule of this item is **Proposed** (Claude Opus 5.5, 2026-11-22).
+  - A segment of a batch is one token with no media, and it asks for the logits of its token. The segments are on
+    slots of their own, and they have one control list and one count of cycles. A batch names no tap. Any other
+    batch is refused before a slot changes (`Held::check_batch`).
+  - The ops of the weights run once over the rows. The matmuls take the tiled path, and each other op takes the
+    rows one at a time inside its task. The expert ops take the row path for 1 to 8 tokens.
+  - The ops of a slot run for each row on its own slot. They are the four convolutions, the clips of the key and the
+    value, and the log clips of a full layer.
+  - The rows share one attention task of each run, with `FLAG_ATTN_ROWS` (`tasks::Inkling2AttentionRows`). A table
+    gives each row its key plane, its position and the cells of its plane. The engine writes the table of each run
+    into the buffer `attention rows` before the pass.
+  - Each item of a row is the item of its pass alone. A row with fewer chunks or rounds than the others runs empty
+    rounds, which add exact zeros. Thus a row keeps the bits of its pass alone, and `xe_bits` keeps each hash.
+  - Thus a row gets the bits of its pass alone (spec 5.7). The card test `xe_batch` runs 8 contexts at other
+    positions in batches of 8, 4, 3, 2 and 1, at 3 cycles and at 1. Each row gave the bits of its pass alone.
+  - `max_segments` is 8, or `max_block` when it is less. Reason: a ninth row takes another path of `OP_MATMUL` and
+    of the expert ops.
+  - `segments_exact` stays false, because the engine has a feed rule (D11 rule 4). The process joins decode rows by
+    D11 rule 6, and it joins only rows of one count of cycles (`jobs::joins`).
+  - The terms do not change: the buffers of a block hold 512 rows, and a batch has at most 8.
 - **A route near a tie.** The eighth and the ninth key of the router can be near. There, a small gap of the card from
   the host form can choose another expert, and the rows after that position differ more.
   - The prose of the prompt "longer", repeated to 2,200 positions, flips a route at position 1,295. There the two keys

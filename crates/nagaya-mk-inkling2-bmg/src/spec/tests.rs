@@ -261,7 +261,13 @@ fn the_limits_hold_the_terms_the_taps_and_the_control_table_and_declare_no_loop(
     assert!(l.taps[1..].iter().all(|t| t.conditions.is_empty()));
     // Both models hold the tower, so both take the rows of images (engine-abi "The choices of the pass").
     assert_eq!(l.inputs, Inputs::TokensAndRows);
-    assert_eq!((l.max_segments, l.max_pass_inputs, l.max_logit_rows), (1, 512, 16));
+    // A pass holds a batch of 8 decode rows, and a batch fits the buffers of a block (milestone 36 item 11).
+    assert_eq!((l.max_segments, l.max_pass_inputs, l.max_logit_rows), (8, 512, 16));
+    let small = Config {
+        max_block: 4,
+        ..c.clone()
+    };
+    assert_eq!(limits(&small, 18_880_455_680).max_segments, 4);
     assert_eq!(l.feed, Some(FeedRule { block: 512 }));
     assert!(!l.segments_exact && l.checkpoint_grain.is_none());
     assert_eq!(l.determinism, Determinism::Always);
@@ -1131,4 +1137,80 @@ fn a_probe_is_checked_before_it_empties_its_slot() {
     // A slot past `u32` is not slot 0 of the probe segment.
     let e = held.check_probe(1 << 32, &[1], 512).unwrap_err();
     assert!(e.contains("the engine has 1 slots, not slot 4294967296"), "{e}");
+}
+
+/// A batch is 2 to 8 segments of one decode token each, on slots of their own, with one control list and one count
+/// of cycles (milestone 36 item 11, engine-abi "A batch of decode rows"). Each segment passes the checks of a pass
+/// alone. Any break is refused before a slot changes.
+#[test]
+fn a_batch_is_decode_rows_of_their_own_slots_with_one_count_and_one_list() {
+    let mut held = Held::new(&[64; 9], DEFAULT_EXTRA_RUNS);
+    held.n[0] = 3;
+    held.cycles[0] = Some(3);
+    held.n[1] = 5;
+    held.cycles[1] = Some(3);
+    let row = |slot: u32, at: u64| segment(slot, at, &[7], &[at]);
+    let blocks = held.check_batch(&[row(0, 3), row(1, 5), row(2, 0)], 512).unwrap();
+    let got: Vec<(usize, usize, Vec<usize>, usize)> = blocks
+        .iter()
+        .map(|b| (b.slot, b.pos0, b.logit_rows.clone(), b.cycles))
+        .collect();
+    assert_eq!(got, [(0, 3, vec![0], 3), (1, 5, vec![0], 3), (2, 0, vec![0], 3)]);
+    // A count of none is the default, so it joins a row that names 3.
+    let mut three = row(2, 0);
+    three.cycles = Some(3);
+    assert!(held.check_batch(&[row(0, 3), three], 512).is_ok());
+
+    let nine: Vec<Segment> = (0..9).map(|s| row(s, 0)).collect();
+    let mut one_cycle = row(2, 0);
+    one_cycle.cycles = Some(1);
+    let mut control = row(1, 5);
+    control.control = vec![ControlItem {
+        index: 0,
+        op: ControlOp::Add,
+        strength: 1.0,
+        layers: None,
+    }];
+    let rows = Segment {
+        inputs: SegmentInputs::TokensAndRows {
+            tokens: vec![7],
+            rows: vec![0; 16],
+        },
+        ..row(2, 0)
+    };
+    for (segments, max_block, why) in [
+        (nine.clone(), 512, "the pass has 9 segments; a batch has 2 to 8"),
+        (nine[..5].to_vec(), 4, "the pass has 5 segments; a batch has 2 to 4"),
+        (vec![row(0, 3)], 512, "the pass has 1 segments; a batch has 2 to 8"),
+        (vec![row(0, 3), row(0, 3)], 512, "segments 0 and 1 are both on slot 0"),
+        (
+            vec![row(0, 3), segment(1, 5, &[7, 8], &[5])],
+            512,
+            "segment 1 has 2 tokens",
+        ),
+        (
+            vec![row(0, 3), segment(1, 5, &[7], &[])],
+            512,
+            "segment 1 asks for 0 logit rows",
+        ),
+        (
+            vec![row(0, 3), control],
+            512,
+            "segment 1 has another control list than segment 0",
+        ),
+        (
+            vec![row(0, 3), one_cycle],
+            512,
+            "segment 1 runs 1 cycles, and segment 0 runs 3",
+        ),
+        (vec![row(0, 3), row(1, 4)], 512, "segment 1: slot 1 holds 5 tokens"),
+        (
+            vec![row(0, 3), rows],
+            512,
+            "segment 1: the segment has rows and no meta",
+        ),
+    ] {
+        let error = held.check_batch(&segments, max_block).unwrap_err();
+        assert!(error.contains(why), "{why}: {error}");
+    }
 }

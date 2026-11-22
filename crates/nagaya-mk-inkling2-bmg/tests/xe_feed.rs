@@ -17,7 +17,8 @@ use nagaya_mk_inkling2_bmg::model::LAUNCH_TASKS;
 use nagaya_mk_inkling2_bmg::spec::{DEFAULT_MAX_BLOCK, SLOT_TOKENS};
 
 /// The largest gap of a logit between two splits of the same tokens, or a decode step and a block. The card run of
-/// 2026-11-21 measured 9.1e-6 for a decode step, and the splits gave the same bits.
+/// 2026-11-21 measured 9.1e-6 for a decode step, and 1.24e-5 with `FLAG_TILED` on 2026-11-22. The splits gave the
+/// same bits.
 const SPLIT_TOL: f64 = 1e-4;
 /// The largest gap of a logit from the host form, past the end of the rings. The card run of 2026-11-21 measured
 /// 1.5e-5 at most.

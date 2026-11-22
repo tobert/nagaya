@@ -9,8 +9,8 @@
 //! The ring is a list of runs, so that a pass whose tasks do not fit one launch runs as several, cut between two runs
 //! (engine-abi "A pass in several launches"). The state of the block stays in the buffers between two launches.
 
-use nagaya_mk_bmg::protocol::{ControlOp, FLAG_SOFTCAP_30, MAX_TASKS_PER_CARD, MkTaskDescriptor};
-use nagaya_mk_bmg::tasks::{self, ConvTaps, HeadClip, Inkling2Attention};
+use nagaya_mk_bmg::protocol::{ControlOp, FLAG_SOFTCAP_30, FLAG_TILED, MAX_TASKS_PER_CARD, MkTaskDescriptor};
+use nagaya_mk_bmg::tasks::{self, ConvTaps, HeadClip, Inkling2Attention, Inkling2AttentionRows};
 
 use crate::host::ops::{D_REL, EPS, EXPERTS, HEAD_DIM, HEADS, HIDDEN, INTERMEDIATE, KV_HEADS, QK_CLIP, REL_CLIP};
 use crate::host::weights::{BLOCK, CYCLE_END, CYCLE_START, LAYERS, is_full};
@@ -95,6 +95,8 @@ pub struct Bufs {
     pub moe: u64,
     /// The logits of each logit row: `[16][200064]`.
     pub logits: u64,
+    /// The tables of the attention of a batch: one of `ROWS_TABLE_BYTES` for each run (`Inkling2AttentionRows`).
+    pub attn_rows: u64,
 }
 
 impl Bufs {
@@ -140,6 +142,7 @@ impl Bufs {
             slots: next("down rows"),
             moe: next("f"),
             logits: next("logits"),
+            attn_rows: next("attention rows"),
         }
     }
 
@@ -342,6 +345,8 @@ pub struct Pass {
     pub head: Vec<MkTaskDescriptor>,
     pub runs: Vec<Vec<MkTaskDescriptor>>,
     pub tail: Vec<MkTaskDescriptor>,
+    /// The bytes that the engine writes to the card before the pass: the tables of the attention of a batch.
+    pub writes: Vec<(u64, Vec<u8>)>,
 }
 
 impl Pass {
@@ -378,6 +383,13 @@ impl Pass {
     }
 }
 
+/// A matmul on the tiled path: one row sums in the order of 2 to 8 rows (`FLAG_TILED`). Thus a decode row gets the
+/// same bits in a batch of 1 to 8 rows (engine-abi "The first Inkling 2 binding", "The bits of a decode step").
+fn tiled(mut task: MkTaskDescriptor) -> MkTaskDescriptor {
+    task.flags |= FLAG_TILED;
+    task
+}
+
 /// The tasks of one pass. The ids are in `bufs.ids`. After the pass, `bufs.x` holds the residual after the runs that
 /// ran, `bufs.e_norm` the final norm, and row `i` of `bufs.logits` the logits of logit row `i` after the softcap.
 pub fn pass(w: &Weights, bufs: &Bufs, ring: TaskRing<'_>) -> Pass {
@@ -392,6 +404,112 @@ pub fn pass(w: &Weights, bufs: &Bufs, ring: TaskRing<'_>) -> Pass {
         control,
         taps,
     } = ring;
+    assert!(
+        n >= 1 && n <= bufs.max_block && pos0 + n <= slot.seq,
+        "positions {pos0} to {} do not fit a block of {} in a slot of {}; the engine checks the pass first",
+        pos0 + n,
+        bufs.max_block,
+        slot.seq
+    );
+    let place = Place { slot, pos0, n, row: 0 };
+    build(w, bufs, &[place], (runs, upto), logit_rows, after_embed, control, taps)
+}
+
+/// What a batch runs: one decode row on each of several slots, each at its own position, with one count of cycles and
+/// one control list for all of them (engine-abi "The first Inkling 2 binding", "A batch of decode rows"). The ids are
+/// in `bufs.ids`, one for each row.
+#[derive(Clone, Copy, Debug)]
+pub struct Batch<'a> {
+    /// The slot of each row and the position of its token.
+    pub rows: &'a [(&'a SlotMemory, usize)],
+    /// The runs of the pass, in order (`spec::runs`).
+    pub runs: &'a [Run],
+    pub control: &'a [Control],
+}
+
+/// The tasks of a batch. The ops of the weights run once over the rows: the matmuls on the tiled path, and the other
+/// ops one row at a time inside a task. Each row has its own convolutions, key and value rows, clips with the log
+/// scale, and attention on its own slot, as a pass of one row has. Thus a row gets the bits of a pass alone, and row
+/// `i` of `bufs.logits` holds the logits of row `i`.
+pub fn batch(w: &Weights, bufs: &Bufs, batch: Batch<'_>) -> Pass {
+    let Batch { rows, runs, control } = batch;
+    assert!(
+        (1..=MAX_BATCH_ROWS.min(bufs.max_block)).contains(&rows.len()),
+        "a batch has 1 to {} rows, not {}; the engine checks the pass first",
+        MAX_BATCH_ROWS.min(bufs.max_block),
+        rows.len()
+    );
+    let places: Vec<Place<'_>> = rows
+        .iter()
+        .enumerate()
+        .map(|(row, (slot, pos0))| {
+            assert!(
+                *pos0 < slot.seq,
+                "position {pos0} does not fit a slot of {}; the engine checks the pass first",
+                slot.seq
+            );
+            Place {
+                slot,
+                pos0: *pos0,
+                n: 1,
+                row,
+            }
+        })
+        .collect();
+    let logit_rows: Vec<usize> = (0..rows.len()).collect();
+    build(
+        w,
+        bufs,
+        &places,
+        (runs, runs.len()),
+        Some(&logit_rows),
+        &[],
+        control,
+        None,
+    )
+}
+
+/// The most runs of a pass: the layers and the largest reserve.
+pub const MAX_RUNS: usize = LAYERS + spec::MAX_EXTRA_RUNS;
+
+/// The bytes of the table of the attention of a batch, for one run: 4 words for each row.
+pub const ROWS_TABLE_BYTES: usize = MAX_BATCH_ROWS * 16;
+
+/// The most rows of a batch: the tiled path of `OP_MATMUL` takes 2 to 8 rows, and a row path of the experts takes 1
+/// to 8 tokens. A ninth row would take another path, with other bits.
+pub const MAX_BATCH_ROWS: usize = 8;
+
+/// One context of a ring: a block of `n` tokens at `pos0` of `slot`, in the rows `row..row + n` of the buffers.
+#[derive(Clone, Copy, Debug)]
+struct Place<'a> {
+    slot: &'a SlotMemory,
+    pos0: usize,
+    n: usize,
+    row: usize,
+}
+
+/// The tasks of a ring over the contexts `places`, which hold the rows of the buffers in order.
+#[allow(clippy::too_many_arguments)]
+fn build(
+    w: &Weights,
+    bufs: &Bufs,
+    places: &[Place<'_>],
+    (runs, upto): (&[Run], usize),
+    logit_rows: Option<&[usize]>,
+    after_embed: &[MkTaskDescriptor],
+    control: &[Control],
+    taps: Option<TapRing<'_>>,
+) -> Pass {
+    let n: usize = places.iter().map(|p| p.n).sum();
+    assert!(
+        places
+            .iter()
+            .enumerate()
+            .all(|(i, p)| p.row == places[..i].iter().map(|q| q.n).sum::<usize>())
+            && (1..=bufs.max_block).contains(&n),
+        "the contexts of a ring hold rows 0 to {n} of the buffers in order, in a block of {}",
+        bufs.max_block
+    );
     assert!(
         upto <= runs.len() && (upto == runs.len() || logit_rows.is_none()),
         "a ring gives logits only after every run"
@@ -409,13 +527,6 @@ pub fn pass(w: &Weights, bufs: &Bufs, ring: TaskRing<'_>) -> Pass {
             runs.len()
         );
     }
-    assert!(
-        n >= 1 && n <= bufs.max_block && pos0 + n <= slot.seq,
-        "positions {pos0} to {} do not fit a block of {} in a slot of {}; the engine checks the pass first",
-        pos0 + n,
-        bufs.max_block,
-        slot.seq
-    );
     let cycles = runs.iter().filter_map(|r| r.cycle).max().unwrap_or(1);
     let (n32, h32) = (n as u32, HIDDEN as u32);
     let mut embed = vec![
@@ -433,7 +544,8 @@ pub fn pass(w: &Weights, bufs: &Bufs, ring: TaskRing<'_>) -> Pass {
             taps: tapped,
             index: r,
         };
-        pass.runs.push(run_tasks(w, bufs, slot, pos0, n, *run, cycles, lab));
+        let tasks = run_tasks(w, bufs, places, n, *run, cycles, lab, &mut pass.writes);
+        pass.runs.push(tasks);
     }
     if let Some(rows) = logit_rows {
         assert!(
@@ -457,7 +569,7 @@ pub fn pass(w: &Weights, bufs: &Bufs, ring: TaskRing<'_>) -> Pass {
         // Each logit row is its own matmul of one row, so its bits do not depend on the other logit rows.
         for (i, row) in rows.iter().enumerate() {
             assert!(*row < n, "logit row {row} is outside the block of {n}");
-            let mut head = tasks::matmul(
+            let mut head = tiled(tasks::matmul(
                 bufs.e_norm + (row * HIDDEN * 4) as u64,
                 w.head,
                 bufs.logits + (i * HEAD_ROWS * 4) as u64,
@@ -465,7 +577,7 @@ pub fn pass(w: &Weights, bufs: &Bufs, ring: TaskRing<'_>) -> Pass {
                 HEAD_ROWS as u32,
                 h32,
                 false,
-            );
+            ));
             head.flags |= FLAG_SOFTCAP_30;
             t.push(head);
         }
@@ -506,17 +618,18 @@ fn tap_copies(
     }
 }
 
-/// The tasks of one run of one layer (engine-abi "The ring of one run").
+/// The tasks of one run of one layer over the `n` rows of `places` (engine-abi "The ring of one run"). The ops of the
+/// slots run for each context; the other ops run once over the rows.
 #[allow(clippy::too_many_arguments)]
 fn run_tasks(
     w: &Weights,
     bufs: &Bufs,
-    slot: &SlotMemory,
-    pos0: usize,
+    places: &[Place<'_>],
     n: usize,
     run: Run,
     cycles: usize,
     lab: Lab<'_>,
+    writes: &mut Vec<(u64, Vec<u8>)>,
 ) -> Vec<MkTaskDescriptor> {
     let Run {
         layer: l,
@@ -639,8 +752,8 @@ fn run_tasks(
     // 4. The projections. The sinks come out of rows of 32 into rows of 24.
     let kv_in = if full { DYNAMIC_ROW } else { KV_ROW } as u32;
     let q32 = Q_ROW as u32;
-    t.push(tasks::matmul(normed[0], lw.wq, bufs.q, n32, q32, h32, false));
-    t.push(tasks::matmul(
+    t.push(tiled(tasks::matmul(normed[0], lw.wq, bufs.q, n32, q32, h32, false)));
+    t.push(tiled(tasks::matmul(
         normed[0],
         lw.wr,
         bufs.rel,
@@ -648,8 +761,8 @@ fn run_tasks(
         (HEADS * D_REL) as u32,
         h32,
         false,
-    ));
-    t.push(tasks::matmul(
+    )));
+    t.push(tiled(tasks::matmul(
         normed[0],
         lw.sink,
         bufs.sinks32,
@@ -657,7 +770,7 @@ fn run_tasks(
         SINK_ROWS as u32,
         h32,
         false,
-    ));
+    )));
     t.push(tasks::embed(
         bufs.sink_ids,
         bufs.sinks32,
@@ -668,35 +781,55 @@ fn run_tasks(
         true,
         false,
     ));
-    t.push(tasks::matmul(normed[0], lw.gate_attn, bufs.gate, n32, q32, h32, false));
-    t.push(tasks::matmul(normed[1], lw.wk, bufs.k_in, n32, kv_in, h32, false));
-    t.push(tasks::matmul(normed[2], lw.wv, bufs.v_in, n32, kv_in, h32, false));
+    t.push(tiled(tasks::matmul(
+        normed[0],
+        lw.gate_attn,
+        bufs.gate,
+        n32,
+        q32,
+        h32,
+        false,
+    )));
+    t.push(tiled(tasks::matmul(
+        normed[1], lw.wk, bufs.k_in, n32, kv_in, h32, false,
+    )));
+    t.push(tiled(tasks::matmul(
+        normed[2], lw.wv, bufs.v_in, n32, kv_in, h32, false,
+    )));
     // 5. The clips with the log scale of a full layer, the convolutions, and the keys and values into the slot.
-    let log_p0 = full.then_some(pos0 as u32);
-    t.push(tasks::head_clip(
-        bufs.q,
-        bufs.q,
-        n32,
-        HEADS as u32,
-        HEAD_DIM as u32,
-        HeadClip::L2 {
-            scale: lw.q_scale,
-            bound: QK_CLIP,
-        },
-        log_p0,
-    ));
-    t.push(tasks::head_clip(
-        bufs.rel,
-        bufs.rel,
-        n32,
-        HEADS as u32,
-        D_REL as u32,
-        HeadClip::L2 {
-            scale: lw.rel_scale,
-            bound: REL_CLIP,
-        },
-        log_p0,
-    ));
+    // The log scale of a full layer reads the position, so each context gets its own clips there.
+    let whole = [Place { n, ..places[0] }];
+    for p in if full { places } else { &whole[..] } {
+        let log_p0 = full.then_some(p.pos0 as u32);
+        let (q, rel) = (
+            bufs.q + (p.row * Q_ROW * 4) as u64,
+            bufs.rel + (p.row * HEADS * D_REL * 4) as u64,
+        );
+        t.push(tasks::head_clip(
+            q,
+            q,
+            p.n as u32,
+            HEADS as u32,
+            HEAD_DIM as u32,
+            HeadClip::L2 {
+                scale: lw.q_scale,
+                bound: QK_CLIP,
+            },
+            log_p0,
+        ));
+        t.push(tasks::head_clip(
+            rel,
+            rel,
+            p.n as u32,
+            HEADS as u32,
+            D_REL as u32,
+            HeadClip::L2 {
+                scale: lw.rel_scale,
+                bound: REL_CLIP,
+            },
+            log_p0,
+        ));
+    }
     let taps = |at: u64| {
         if full {
             ConvTaps::Dynamic(at)
@@ -704,97 +837,140 @@ fn run_tasks(
             ConvTaps::Fixed(at)
         }
     };
-    let conv = slot.conv[s];
-    let column = |c: usize| conv + (c * 4) as u64;
     let (kv32, row) = (KV_ROW as u32, CONV_ROW as u32);
-    t.push(tasks::residual_conv(
-        bufs.k_in,
-        kv_in,
-        taps(lw.k_conv),
-        column(CONV_KEY),
-        row,
-        bufs.k_conv,
-        n32,
-        kv32,
-        pos0 as u32,
-        false,
-    ));
-    t.push(tasks::head_clip(
-        bufs.k_conv,
-        slot.row(s, false, pos0),
-        n32,
-        KV_HEADS as u32,
-        HEAD_DIM as u32,
-        HeadClip::L2 {
-            scale: 0,
-            bound: QK_CLIP,
-        },
-        None,
-    ));
-    t.push(tasks::residual_conv(
-        bufs.v_in,
-        kv_in,
-        taps(lw.v_conv),
-        column(CONV_VALUE),
-        row,
-        bufs.v_conv,
-        n32,
-        kv32,
-        pos0 as u32,
-        false,
-    ));
-    t.push(tasks::head_clip(
-        bufs.v_conv,
-        slot.row(s, true, pos0),
-        n32,
-        KV_HEADS as u32,
-        HEAD_DIM as u32,
-        HeadClip::Rms,
-        None,
-    ));
-    // The rows past the end of a ring move to its start, bit for bit, before the attention reads them.
-    let ring = slot.ring(s);
-    if ring > 0 && pos0 % ring + n > ring {
-        let spill = words(pos0 % ring + n - ring, KV_ROW);
-        for value in [false, true] {
-            let start = slot.row(s, value, 0);
-            let past = start + (ring * KV_ROW * 4) as u64;
-            t.push(tasks::copy(past, start, spill));
+    // The conv part of state `s` of a context, from column `c`.
+    let column = |p: &Place<'_>, c: usize| p.slot.conv[s] + (c * 4) as u64;
+    // Row `r` of a buffer of rows of `width` values.
+    let at_row = |at: u64, r: usize, width: usize| at + (r * width * 4) as u64;
+    for p in places {
+        let (slot, pos0, pn) = (p.slot, p.pos0, p.n as u32);
+        t.push(tasks::residual_conv(
+            at_row(bufs.k_in, p.row, kv_in as usize),
+            kv_in,
+            taps(lw.k_conv),
+            column(p, CONV_KEY),
+            row,
+            at_row(bufs.k_conv, p.row, KV_ROW),
+            pn,
+            kv32,
+            pos0 as u32,
+            false,
+        ));
+        t.push(tasks::head_clip(
+            at_row(bufs.k_conv, p.row, KV_ROW),
+            slot.row(s, false, pos0),
+            pn,
+            KV_HEADS as u32,
+            HEAD_DIM as u32,
+            HeadClip::L2 {
+                scale: 0,
+                bound: QK_CLIP,
+            },
+            None,
+        ));
+        t.push(tasks::residual_conv(
+            at_row(bufs.v_in, p.row, kv_in as usize),
+            kv_in,
+            taps(lw.v_conv),
+            column(p, CONV_VALUE),
+            row,
+            at_row(bufs.v_conv, p.row, KV_ROW),
+            pn,
+            kv32,
+            pos0 as u32,
+            false,
+        ));
+        t.push(tasks::head_clip(
+            at_row(bufs.v_conv, p.row, KV_ROW),
+            slot.row(s, true, pos0),
+            pn,
+            KV_HEADS as u32,
+            HEAD_DIM as u32,
+            HeadClip::Rms,
+            None,
+        ));
+        // The rows past the end of a ring move to its start, bit for bit, before the attention reads them.
+        let ring = slot.ring(s);
+        if ring > 0 && pos0 % ring + p.n > ring {
+            let spill = words(pos0 % ring + p.n - ring, KV_ROW);
+            for value in [false, true] {
+                let start = slot.row(s, value, 0);
+                let past = start + (ring * KV_ROW * 4) as u64;
+                t.push(tasks::copy(past, start, spill));
+            }
         }
     }
-    // 6. The attention, the output gate, the output projection and the convolution after the attention.
-    let attention = Inkling2Attention {
-        q: bufs.q,
-        kv: slot.planes[s],
-        rel: bufs.rel,
-        proj: lw.rel_proj,
-        sinks: bufs.sinks,
-        out: bufs.attn,
-        n: n32,
-        p0: pos0 as u32,
-        max_seq: slot.seq as u32,
-        ring: ring as u32,
-        chunk_keys: tasks::inkling2_chunk_keys(ring as u32),
-    };
-    t.extend(attention.tasks());
+    // 6. The attention, the output gate, the output projection and the convolution after the attention. The contexts
+    // of a batch share one attention task, which gives each the bits of its pass alone.
+    if places.len() > 1 {
+        let ring = places[0].slot.ring(s);
+        assert!(lab.index < MAX_RUNS, "a pass has at most {MAX_RUNS} runs");
+        let attention = Inkling2AttentionRows {
+            q: bufs.q,
+            rel: bufs.rel,
+            proj: lw.rel_proj,
+            sinks: bufs.sinks,
+            out: bufs.attn,
+            table: bufs.attn_rows + (lab.index * ROWS_TABLE_BYTES) as u64,
+            rows: places
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    assert!(
+                        p.n == 1 && p.row == i && p.slot.ring(s) == ring,
+                        "a context of a batch is one row, in order, with the ring of the others"
+                    );
+                    (p.slot.planes[s], p.pos0 as u32, p.slot.seq as u32)
+                })
+                .collect(),
+            ring: ring as u32,
+            chunk_keys: tasks::inkling2_chunk_keys(ring as u32),
+        };
+        let longest = places.iter().map(|p| p.slot.seq).max().unwrap();
+        assert!(
+            attention.scratch_floats() <= tasks::inkling2_attn_scratch_floats(bufs.max_block, longest),
+            "the attention of a batch fits the scratch of a block"
+        );
+        writes.push((attention.table, attention.table()));
+        t.extend(attention.tasks());
+    }
+    for p in places.iter().filter(|_| places.len() == 1) {
+        let ring = p.slot.ring(s);
+        let attention = Inkling2Attention {
+            q: at_row(bufs.q, p.row, Q_ROW),
+            kv: p.slot.planes[s],
+            rel: at_row(bufs.rel, p.row, HEADS * D_REL),
+            proj: lw.rel_proj,
+            sinks: at_row(bufs.sinks, p.row, HEADS),
+            out: at_row(bufs.attn, p.row, Q_ROW),
+            n: p.n as u32,
+            p0: p.pos0 as u32,
+            max_seq: p.slot.seq as u32,
+            ring: ring as u32,
+            chunk_keys: tasks::inkling2_chunk_keys(ring as u32),
+        };
+        t.extend(attention.tasks());
+    }
     t.push(tasks::output_gate(bufs.attn, bufs.gate, bufs.attn, n32, q32));
-    t.push(tasks::matmul(bufs.attn, lw.wo, bufs.o, n32, h32, q32, false));
+    t.push(tiled(tasks::matmul(bufs.attn, lw.wo, bufs.o, n32, h32, q32, false)));
     // 7. On the first layer of a block, `x` is a new block output and `r = o`. Else `r = x + o`.
     if first_of_block {
         t.push(tasks::copy(bufs.x, hidden_plane(bufs.blocks, block), words(n, HIDDEN)));
     }
-    t.push(tasks::residual_conv(
-        bufs.o,
-        h32,
-        ConvTaps::Fixed(lw.attn_conv),
-        column(CONV_ATTN),
-        row,
-        bufs.x,
-        n32,
-        h32,
-        pos0 as u32,
-        !first_of_block,
-    ));
+    for p in places {
+        t.push(tasks::residual_conv(
+            at_row(bufs.o, p.row, HIDDEN),
+            h32,
+            ConvTaps::Fixed(lw.attn_conv),
+            column(p, CONV_ATTN),
+            row,
+            at_row(bufs.x, p.row, HIDDEN),
+            p.n as u32,
+            h32,
+            p.pos0 as u32,
+            !first_of_block,
+        ));
+    }
     // 8. The expert input, its gate, the norm, the router, the experts and the convolution after them: `x = r + f`.
     t.push(tasks::attn_residual(
         bufs.blocks,
@@ -832,7 +1008,7 @@ fn run_tasks(
         }
     }
     t.push(tasks::rmsnorm(bufs.e, lw.mlp_norm, bufs.e_norm, n32, h32, EPS, false));
-    t.push(tasks::matmul(
+    t.push(tiled(tasks::matmul(
         bufs.e_norm,
         lw.router,
         bufs.router,
@@ -840,7 +1016,7 @@ fn run_tasks(
         EXPERTS as u32,
         h32,
         false,
-    ));
+    )));
     t.push(tasks::sigmoid_router(
         bufs.router,
         lw.router_bias,
@@ -875,18 +1051,20 @@ fn run_tasks(
         bufs.act, lw.w2, bufs.slots, bufs.plan, h32, i32_, lw.mxfp8,
     ));
     t.push(tasks::expert_sum(bufs.slots, bufs.moe, n32, h32));
-    t.push(tasks::residual_conv(
-        bufs.moe,
-        h32,
-        ConvTaps::Fixed(lw.mlp_conv),
-        column(CONV_MLP),
-        row,
-        bufs.x,
-        n32,
-        h32,
-        pos0 as u32,
-        true,
-    ));
+    for p in places {
+        t.push(tasks::residual_conv(
+            at_row(bufs.moe, p.row, HIDDEN),
+            h32,
+            ConvTaps::Fixed(lw.mlp_conv),
+            column(p, CONV_MLP),
+            row,
+            at_row(bufs.x, p.row, HIDDEN),
+            p.n as u32,
+            h32,
+            p.pos0 as u32,
+            true,
+        ));
+    }
     // The control items change the row before a later run or a copy reads it. An add or an ablate of strength 0
     // changes no bit, so it gets no task (engine-abi "Control vectors").
     let layer_vector = (l * HIDDEN * 4) as u64;

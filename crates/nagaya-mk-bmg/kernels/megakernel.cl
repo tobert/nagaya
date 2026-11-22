@@ -46,9 +46,11 @@
 #define FLAG_ROPE_GLOBAL    8u   // theta 1e6, proportional RoPE with partial_rotary_factor 0.25
 #define FLAG_ROPE           32u  // OP_RMSNORM on head rows: rotate each normalized row; see there
 // OP_MATMUL, OP_GEGLU: one row takes the path of 2 to 8 rows, so its bits do not change with the count of rows (a
-// batched decode). Only the LFM3 binary reads it, so the other binaries keep their bytes.
+// batched decode). Only the LFM3 and Inkling 2 binaries read it, so the other binaries keep their bytes.
 #define FLAG_TILED          16384u
-#ifdef MK_LFM3
+// OP_INKLING2_ATTN, OP_INKLING2_ATTN_SUM: the task is a batch of contexts of one position each, from a table.
+#define FLAG_ATTN_ROWS      2u
+#if defined(MK_LFM3) || defined(MK_INKLING2)
 #define ONE_ROW_PATH(flags) (((flags) & FLAG_TILED) == 0)
 #else
 #define ONE_ROW_PATH(flags) true

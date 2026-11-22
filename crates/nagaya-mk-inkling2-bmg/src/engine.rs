@@ -21,7 +21,7 @@ use crate::device::{Device, OnCard};
 use crate::host::ops::HIDDEN;
 use crate::host::weights::LOGITS;
 use crate::media::{Grid, HeldRows};
-use crate::model::{self, Bufs, LAUNCH_TASKS, SlotMemory, TapBufs, TapRing, TaskRing};
+use crate::model::{self, Batch, Bufs, LAUNCH_TASKS, SlotMemory, TapBufs, TapRing, TaskRing};
 use crate::profile::Launch;
 use crate::spec::{self, Block, Config, FAMILY, HEAD_ROWS, Held, Model, Part, ROUTE_WORDS, Run, Source, Taps};
 use crate::vision::{self, PassBufs};
@@ -606,6 +606,70 @@ impl Inkling2Engine {
         self.run(&launches);
     }
 
+    /// Run one decode row on the slot of each block in one ring (engine-abi "A batch of decode rows"). The caller
+    /// checked the blocks.
+    fn forward_batch(&mut self, blocks: &[Block], control: &[model::Control]) {
+        let cycles = blocks[0].cycles;
+        let rows: Vec<(&SlotMemory, usize)> = blocks.iter().map(|b| (&self.slots[b.slot], b.pos0)).collect();
+        let pass = model::batch(
+            &self.weights,
+            &self.bufs,
+            Batch {
+                rows: &rows,
+                runs: self.runs_of(cycles),
+                control,
+            },
+        );
+        let launches = pass.launches(self.launch_tasks);
+        self.last_launches = launches.len();
+        for block in blocks {
+            if block.zero_conv() {
+                self.zero_conv(block.slot);
+            }
+        }
+        let bytes: Vec<u8> = blocks.iter().flat_map(|b| b.tokens[0].to_le_bytes()).collect();
+        self.device.write(self.card(), self.bufs.ids, &bytes);
+        // The tables of the attention of the batch.
+        for (at, bytes) in &pass.writes {
+            self.device.write(self.card(), *at, bytes);
+        }
+        self.run(&launches);
+    }
+
+    /// A pass of several segments: one decode row on each slot, in one ring. A pass with a tap has one segment.
+    fn pass_batch(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
+        if !taps.is_empty() {
+            return Err(self.fail(refused(format!(
+                "nothing ran: a batch of {} segments names a tap; a pass with a tap has one segment",
+                segments.len()
+            ))));
+        }
+        let blocks = match self.held.check_batch(segments, self.config.max_block) {
+            Ok(blocks) => blocks,
+            Err(why) => return Err(self.fail(refused(format!("nothing ran: {why}")))),
+        };
+        let control = self.control_of(&blocks[0]);
+        let start = Instant::now();
+        self.forward_batch(&blocks, &control);
+        let outputs: Vec<Output> = (0..blocks.len())
+            .map(|i| Output {
+                name: "logits".to_owned(),
+                dtype: Dtype::F32,
+                bytes: self
+                    .device
+                    .read(self.card(), self.bufs.logits + (i * HEAD_ROWS * 4) as u64, LOGITS * 4),
+            })
+            .collect();
+        for block in &blocks {
+            self.held.ran(block);
+        }
+        Ok(PassOut {
+            status: PassStatus::Ok,
+            ms: start.elapsed().as_millis() as u64,
+            outputs,
+        })
+    }
+
     fn read_f32(&self, at: u64, n: usize) -> Vec<f32> {
         weights_f32(&self.device.read(self.card(), at, n * 4))
     }
@@ -811,6 +875,9 @@ impl Engine for Inkling2Engine {
 
     fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
         self.last_error = None;
+        if segments.len() > 1 {
+            return self.pass_batch(segments, taps);
+        }
         let (block, named) = match self.check_block(segments, taps) {
             Ok(found) => found,
             Err(error) => return Err(self.fail(error)),
