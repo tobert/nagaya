@@ -1,23 +1,24 @@
 # The SHA-256 of the bits of the logits of each case of tests/xe_bits.rs, on a B70 card. Written 2026-11-22 from
-# main ef74d83. A change of bits changes the engine identity (spec 12.1).
+# the branch inkling2-batch on main 66833af: FLAG_TILED moved the bits of the decode steps (milestone 36 item 10).
+# A change of bits changes the engine identity (spec 12.1).
 cycles-1-block-row-0 sha256:1727eed2bc87f7a39ef70fa91bd45d1025a653acb23cd842ec2f1347c025cb93
 cycles-1-block-row-255 sha256:50178384908554ebe265ad0299db8b23ef0684e687d53ef1bc53dbbf78c31eac
 cycles-1-block-row-511 sha256:9c9b470d59a7fff8af2cfaea1be291e6838727ef606079721ab27d71598e3197
-cycles-1-step-0 sha256:dbc71f944f44e1d49c4e2620d167a50a18569a88ea45e0c1ca2f085202f281d4
-cycles-1-step-1 sha256:909b238da319e8acb54c1c2b779727c69dd7bbfe75ba54e901adfbc01e77d0a9
-cycles-1-step-2 sha256:246afa78153705e600e1bec737d4c30b9a030e6186868d82cfe1c7a525a5fec8
-cycles-1-step-3 sha256:e4f4f2c47038a3bd2271be0e3ec53e7c1e38ed4d64ff30eed1f5b0fbe505c136
+cycles-1-step-0 sha256:7e78d2e873a1f55b5d167ee4e287ef2147767cdb7b1290736fa1118d86d20e90
+cycles-1-step-1 sha256:fc293375d7d8041f9149f1bcdc36d68aabdf1018da1bb8eb2f0d488dadc5873e
+cycles-1-step-2 sha256:1ca086b87465dfdd00c73fed83fc3dd019dd494f484e60372716c29efb14548c
+cycles-1-step-3 sha256:e29a58ef3cec25d49a51c3ee1fc9c688b18f37fdbcf5b9a50ab25d2752a51a9e
 cycles-3-block-row-0 sha256:22d05be3d73815b235a48068e4dacc57476433ce54e4bf2b9fda85ddd4908b28
 cycles-3-block-row-255 sha256:df15a744ba0bf7dc6bfd8b2e976ad53c534d4af50435f3189c8437300ec94ba8
 cycles-3-block-row-511 sha256:1a6757ef2d3decbdb81ffe85d3b7e1913ac64798519307735a9ee86faa4b365a
-cycles-3-step-0 sha256:715c5077926e8415f0ce316fc464d7f3ccd84c24c73ad58f92baab3031752c01
-cycles-3-step-1 sha256:0d417823bec0bb0e44fc4739239da95492d7dcb496fcc46d3c14a9ec21fe646e
-cycles-3-step-2 sha256:312fe0a8b79397ae5e300ea47351b4ecaabff1120b9f04744baad298bce23e51
-cycles-3-step-3 sha256:e01f821af3638ebf82f6039105b0ca0690e6b24cd1d8c2408065a3f45348c1cb
+cycles-3-step-0 sha256:69c0513f062cd5e47b2b57e1bce99e66f6f4ce143b88eadb255e6f7ca563a26c
+cycles-3-step-1 sha256:5246548783fd4ffe7f4c1732355c77dccef5e572e210fa7a0d27a9a4cd6ff50d
+cycles-3-step-2 sha256:acc78efa3160e798ab82bc864eab148d8f47fcf45fe905c6c93a54e549081eab
+cycles-3-step-3 sha256:a2dcdb96359aa8ce0e28f0e42fd8df88b7737b358031c8ccc951821b63558b8d
 cycles-5-block-row-0 sha256:3e4f6781ba61a996b23f4aaf0aa922f6c35ff478a5b3fa1b50ced2f2c4e6aa6c
 cycles-5-block-row-255 sha256:3b1ee8e3c6ffae1189f643afd128ab1963a0816c4e2863341e110364f74b08fd
 cycles-5-block-row-511 sha256:a43634850fd7c7697d74884b0f2fc1665e6489c698d1a5ffaa61e71d92df6405
-cycles-5-step-0 sha256:6c940207fb65ca1de24f5eba713429dd4693539b005fe25ecb7ac193383d168e
-cycles-5-step-1 sha256:096861a52e67d8a54389153b65fc530836f9ad50dfed5acc8f6037613700217a
-cycles-5-step-2 sha256:77e76deee2a40f16711891c54243e0be885fceed8fca704f8868e34ad3251b9b
-cycles-5-step-3 sha256:e2a0269d2ab934e847ab022ca566d282d7cf8736814e498fe272c35b54823451
+cycles-5-step-0 sha256:124a4e288b1d34dc0285bf5c4133624d6455123e18fae74fe0072e47c66354fc
+cycles-5-step-1 sha256:7161ef95567f939ef5fa9920f55aab86ed29b8fff8673cef0bfabc83ab4bda59
+cycles-5-step-2 sha256:9f09e1e4424a6e7561e3fcebc6f930d1f07cc1bbe45898badbc628379831f6ee
+cycles-5-step-3 sha256:fa0251e722c176f2c6d58b589c10054c82f11f9770c04ac8f1cbe96a1e2002a0

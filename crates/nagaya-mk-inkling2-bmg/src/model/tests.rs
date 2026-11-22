@@ -684,3 +684,23 @@ fn a_control_item_acts_after_each_run_of_its_layers() {
         .collect();
     assert_eq!(acts, [(8, 3.0), (8, 3.0), (8, 3.0), (20, -1.0)]);
 }
+
+/// Each matmul of a pass takes the tiled path, so a row of one token sums in the order of 2 to 8 rows (milestone 36
+/// item 10). Then a decode row gets the same bits in a batch of 1 to 8 rows.
+#[test]
+fn each_matmul_of_a_pass_takes_the_tiled_path() {
+    let f = fixture(32_768);
+    for n in [1, 8, 512] {
+        let p = f.pass(0, n, Some(&[0]));
+        let all: Vec<&MkTaskDescriptor> = p.head.iter().chain(p.runs.iter().flatten()).chain(&p.tail).collect();
+        let matmuls: Vec<&&MkTaskDescriptor> = all.iter().filter(|t| t.opcode == OP_MATMUL).collect();
+        assert_eq!(
+            matmuls.len(),
+            48 * 8 + 1,
+            "a block of {n}: 8 matmuls in each run, and one head"
+        );
+        for t in matmuls {
+            assert_ne!(t.flags & FLAG_TILED, 0, "a block of {n}: a matmul of {} rows", t.m);
+        }
+    }
+}

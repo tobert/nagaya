@@ -2012,10 +2012,16 @@ Each rule is **Proposed** (Claude Opus 5.5, 2026-11-21).
 - **Launches.** The ring of a pass is a list of runs. A launch holds whole runs, at most 2,046 tasks, and the tasks
   before the first run and after the last. A pass of 3 cycles fits one launch: 1,635 tasks, or 1,715 when its
   block crosses the end of a ring.
-- **The bits of a decode step.** `OP_MATMUL` sums one token in another order than a block of 9 or more. Thus a
-  decode step does not give the bits of its position in a block. The card test counts the values that differ.
-  - The card run of 2026-11-21: 181,182 of the 200,058 logits of a decode step differ, by 9.1e-6 at most. The splits
-    `[300, 337]` and `[100, 412, 125]` gave the bits of `[512, 125]`.
+- **The bits of a decode step.** Each matmul of a pass carries `FLAG_TILED`, so one token sums in the order of 2 to
+  8 tokens (milestone 36 item 10). Thus a block of 1 to 8 tokens gives each token the bits of the same tokens decoded
+  one at a time. `OP_MATMUL` sums a block of 9 or more in another order. Thus a decode step does not give the bits of
+  its position in such a block. The card test `xe_feed` counts the values that differ.
+  - The card run of 2026-11-21 had no flag. Then 181,182 of the 200,058 logits of a decode step differed from the
+    block of 512, by 9.1e-6 at most. The splits `[300, 337]` and `[100, 412, 125]` gave the bits of `[512, 125]`.
+  - The card run of 2026-11-22, with the flag: 185,519 logits differ, by 1.24e-5 at most. The splits give the same
+    bits as before. The card test `xe_batch` gave equal bits for blocks of 2, 5 and 8 tokens and their decode steps.
+  - **Proposed** (Claude Opus 5.5, 2026-11-22): the flag on each matmul. Reason: a batch of decode rows needs the
+    bits of each row alone.
 - **A route near a tie.** The eighth and the ninth key of the router can be near. There, a small gap of the card from
   the host form can choose another expert, and the rows after that position differ more.
   - The prose of the prompt "longer", repeated to 2,200 positions, flips a route at position 1,295. There the two keys

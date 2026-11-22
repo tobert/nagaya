@@ -9,7 +9,7 @@
 //! The ring is a list of runs, so that a pass whose tasks do not fit one launch runs as several, cut between two runs
 //! (engine-abi "A pass in several launches"). The state of the block stays in the buffers between two launches.
 
-use nagaya_mk_bmg::protocol::{ControlOp, FLAG_SOFTCAP_30, MAX_TASKS_PER_CARD, MkTaskDescriptor};
+use nagaya_mk_bmg::protocol::{ControlOp, FLAG_SOFTCAP_30, FLAG_TILED, MAX_TASKS_PER_CARD, MkTaskDescriptor};
 use nagaya_mk_bmg::tasks::{self, ConvTaps, HeadClip, Inkling2Attention};
 
 use crate::host::ops::{D_REL, EPS, EXPERTS, HEAD_DIM, HEADS, HIDDEN, INTERMEDIATE, KV_HEADS, QK_CLIP, REL_CLIP};
@@ -378,6 +378,13 @@ impl Pass {
     }
 }
 
+/// A matmul on the tiled path: one row sums in the order of 2 to 8 rows (`FLAG_TILED`). Thus a decode row gets the
+/// same bits in a batch of 1 to 8 rows (engine-abi "The first Inkling 2 binding", "The bits of a decode step").
+fn tiled(mut task: MkTaskDescriptor) -> MkTaskDescriptor {
+    task.flags |= FLAG_TILED;
+    task
+}
+
 /// The tasks of one pass. The ids are in `bufs.ids`. After the pass, `bufs.x` holds the residual after the runs that
 /// ran, `bufs.e_norm` the final norm, and row `i` of `bufs.logits` the logits of logit row `i` after the softcap.
 pub fn pass(w: &Weights, bufs: &Bufs, ring: TaskRing<'_>) -> Pass {
@@ -457,7 +464,7 @@ pub fn pass(w: &Weights, bufs: &Bufs, ring: TaskRing<'_>) -> Pass {
         // Each logit row is its own matmul of one row, so its bits do not depend on the other logit rows.
         for (i, row) in rows.iter().enumerate() {
             assert!(*row < n, "logit row {row} is outside the block of {n}");
-            let mut head = tasks::matmul(
+            let mut head = tiled(tasks::matmul(
                 bufs.e_norm + (row * HIDDEN * 4) as u64,
                 w.head,
                 bufs.logits + (i * HEAD_ROWS * 4) as u64,
@@ -465,7 +472,7 @@ pub fn pass(w: &Weights, bufs: &Bufs, ring: TaskRing<'_>) -> Pass {
                 HEAD_ROWS as u32,
                 h32,
                 false,
-            );
+            ));
             head.flags |= FLAG_SOFTCAP_30;
             t.push(head);
         }
@@ -639,8 +646,8 @@ fn run_tasks(
     // 4. The projections. The sinks come out of rows of 32 into rows of 24.
     let kv_in = if full { DYNAMIC_ROW } else { KV_ROW } as u32;
     let q32 = Q_ROW as u32;
-    t.push(tasks::matmul(normed[0], lw.wq, bufs.q, n32, q32, h32, false));
-    t.push(tasks::matmul(
+    t.push(tiled(tasks::matmul(normed[0], lw.wq, bufs.q, n32, q32, h32, false)));
+    t.push(tiled(tasks::matmul(
         normed[0],
         lw.wr,
         bufs.rel,
@@ -648,8 +655,8 @@ fn run_tasks(
         (HEADS * D_REL) as u32,
         h32,
         false,
-    ));
-    t.push(tasks::matmul(
+    )));
+    t.push(tiled(tasks::matmul(
         normed[0],
         lw.sink,
         bufs.sinks32,
@@ -657,7 +664,7 @@ fn run_tasks(
         SINK_ROWS as u32,
         h32,
         false,
-    ));
+    )));
     t.push(tasks::embed(
         bufs.sink_ids,
         bufs.sinks32,
@@ -668,9 +675,21 @@ fn run_tasks(
         true,
         false,
     ));
-    t.push(tasks::matmul(normed[0], lw.gate_attn, bufs.gate, n32, q32, h32, false));
-    t.push(tasks::matmul(normed[1], lw.wk, bufs.k_in, n32, kv_in, h32, false));
-    t.push(tasks::matmul(normed[2], lw.wv, bufs.v_in, n32, kv_in, h32, false));
+    t.push(tiled(tasks::matmul(
+        normed[0],
+        lw.gate_attn,
+        bufs.gate,
+        n32,
+        q32,
+        h32,
+        false,
+    )));
+    t.push(tiled(tasks::matmul(
+        normed[1], lw.wk, bufs.k_in, n32, kv_in, h32, false,
+    )));
+    t.push(tiled(tasks::matmul(
+        normed[2], lw.wv, bufs.v_in, n32, kv_in, h32, false,
+    )));
     // 5. The clips with the log scale of a full layer, the convolutions, and the keys and values into the slot.
     let log_p0 = full.then_some(pos0 as u32);
     t.push(tasks::head_clip(
@@ -778,7 +797,7 @@ fn run_tasks(
     };
     t.extend(attention.tasks());
     t.push(tasks::output_gate(bufs.attn, bufs.gate, bufs.attn, n32, q32));
-    t.push(tasks::matmul(bufs.attn, lw.wo, bufs.o, n32, h32, q32, false));
+    t.push(tiled(tasks::matmul(bufs.attn, lw.wo, bufs.o, n32, h32, q32, false)));
     // 7. On the first layer of a block, `x` is a new block output and `r = o`. Else `r = x + o`.
     if first_of_block {
         t.push(tasks::copy(bufs.x, hidden_plane(bufs.blocks, block), words(n, HIDDEN)));
@@ -832,7 +851,7 @@ fn run_tasks(
         }
     }
     t.push(tasks::rmsnorm(bufs.e, lw.mlp_norm, bufs.e_norm, n32, h32, EPS, false));
-    t.push(tasks::matmul(
+    t.push(tiled(tasks::matmul(
         bufs.e_norm,
         lw.router,
         bufs.router,
@@ -840,7 +859,7 @@ fn run_tasks(
         EXPERTS as u32,
         h32,
         false,
-    ));
+    )));
     t.push(tasks::sigmoid_router(
         bufs.router,
         lw.router_bias,
