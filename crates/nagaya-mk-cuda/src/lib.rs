@@ -9,6 +9,7 @@ pub mod driver;
 pub mod experts;
 pub mod graph;
 pub mod mma_model;
+pub mod proj;
 pub mod protocol;
 pub mod ptxas;
 pub mod repack;

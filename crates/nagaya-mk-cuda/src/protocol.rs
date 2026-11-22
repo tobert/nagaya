@@ -61,8 +61,9 @@ define_u16_table! {
     // (`MatmulShape::scratch_floats`), `n`, `k`, `kt`, `rows`, `items` and `group_items` as `repack.rs` gives them.
     // The head of the model is this op with `FLAG_NORM` and `FLAG_SOFTCAP_30`, so it has no opcode of its own.
     OP_MATMUL_BF16 = 40;
-    // `OP_PROJ`: the joined matmul of the q, relative, sink, gate, k and v rows, with a norm prologue and an epilogue
-    // for each segment (reserved for lane D).
+    // `OP_PROJ`: the joined matmul of the q, relative, sink, gate, k and v rows (and the taps of the dynamic
+    // convolutions on a full layer), with a norm prologue and an epilogue for each segment. The rows of the matrix are
+    // in `src/proj.rs`, and the fields of the descriptor and the slots of the table are in `kernels/ops_dense.cuh`.
     OP_PROJ = 44;
     // `OP_OUT_MIX`: the output matmul, its short convolution, the residual and the row finisher (reserved for lane D).
     OP_OUT_MIX = 45;
@@ -248,6 +249,21 @@ pub const DENSE_CONSTANTS: &[(&str, usize)] = &[
     ("MATMUL_MAX_ROWS", MATMUL_MAX_ROWS),
     // The slot of the pointer to the norm weight (`bf16`, `k` values) in the table of a matmul with `FLAG_NORM`.
     ("MATMUL_TABLE_NORM_WEIGHT", MATMUL_TABLE_NORM_WEIGHT),
+    ("PROJ_TABLE_NORM_Q", PROJ_TABLE_NORM_Q),
+    ("PROJ_TABLE_NORM_K", PROJ_TABLE_NORM_K),
+    ("PROJ_TABLE_NORM_V", PROJ_TABLE_NORM_V),
+    ("PROJ_TABLE_X_K", PROJ_TABLE_X_K),
+    ("PROJ_TABLE_X_V", PROJ_TABLE_X_V),
+    ("PROJ_TABLE_RF_K", PROJ_TABLE_RF_K),
+    ("PROJ_TABLE_RF_V", PROJ_TABLE_RF_V),
+    ("PROJ_TABLE_Q_SCALE", PROJ_TABLE_Q_SCALE),
+    ("PROJ_TABLE_REL_SCALE", PROJ_TABLE_REL_SCALE),
+    ("PROJ_TABLE_K_CONV", PROJ_TABLE_K_CONV),
+    ("PROJ_TABLE_V_CONV", PROJ_TABLE_V_CONV),
+    ("PROJ_TABLE_K_STATE", PROJ_TABLE_K_STATE),
+    ("PROJ_TABLE_V_STATE", PROJ_TABLE_V_STATE),
+    ("PROJ_TABLE_K_OUT", PROJ_TABLE_K_OUT),
+    ("PROJ_TABLE_V_OUT", PROJ_TABLE_V_OUT),
 ];
 
 /// The most rows of one `OP_MATMUL_BF16` task. The op loops over tiles of 16 rows.
@@ -255,6 +271,31 @@ pub const MATMUL_MAX_ROWS: usize = 512;
 
 /// The slot of the table of `OP_MATMUL_BF16` that holds the norm weight.
 pub const MATMUL_TABLE_NORM_WEIGHT: usize = 0;
+
+// The slots of the table of `OP_PROJ`. All 15 are pointers of the op, and no slot may be 0. A sliding layer has one input
+// row and one norm weight, so it gives the same pointer for q, k and v. The first input is `a` of the descriptor and its
+// row factors are `e`.
+/// The norm weights (`bf16`, 2304 values) of the q, rel, sink and gate rows, of the k rows and of the v rows.
+pub const PROJ_TABLE_NORM_Q: usize = MATMUL_TABLE_NORM_WEIGHT;
+pub const PROJ_TABLE_NORM_K: usize = 1;
+pub const PROJ_TABLE_NORM_V: usize = 2;
+/// The input rows (`f32`) of the k rows and of the v rows, and their row factors (`f32`, one for each row).
+pub const PROJ_TABLE_X_K: usize = 3;
+pub const PROJ_TABLE_X_V: usize = 4;
+pub const PROJ_TABLE_RF_K: usize = 5;
+pub const PROJ_TABLE_RF_V: usize = 6;
+/// The scale of the query (`bf16`, `[24][128]`) and of the relative state (`bf16`, `[24][16]`).
+pub const PROJ_TABLE_Q_SCALE: usize = 7;
+pub const PROJ_TABLE_REL_SCALE: usize = 8;
+/// The convolution weights (`bf16`): `[1024][4]` on a sliding layer, `[4][1024]` on a full layer.
+pub const PROJ_TABLE_K_CONV: usize = 9;
+pub const PROJ_TABLE_V_CONV: usize = 10;
+/// The conv states (`f32`, `[3][1024]`, the oldest row first). The op reads them and writes them after the block.
+pub const PROJ_TABLE_K_STATE: usize = 11;
+pub const PROJ_TABLE_V_STATE: usize = 12;
+/// The slot rows of the key and of the value (`f32`, 1024 values for each position).
+pub const PROJ_TABLE_K_OUT: usize = 13;
+pub const PROJ_TABLE_V_OUT: usize = 14;
 
 define_u16_table! {
     FLAGS;
@@ -272,6 +313,8 @@ define_u16_table! {
     FLAG_UP = 1 << 6;
     FLAG_DOWN = 1 << 7;
     FLAG_F32 = 1 << 8;
+    // `OP_PROJ` of a full layer: the dynamic taps of the convolutions, and the log scale of the query.
+    FLAG_FULL_LAYER = 1 << 9;
     FLAG_MXFP8 = 1 << 15;
 }
 

@@ -36,9 +36,9 @@ constexpr uint32_t MM_WARPS = 8;        // consumer warps: the K split of an ite
 constexpr uint32_t MM_BATCH = 6;        // k16 steps whose weights a warp loads before it computes
 constexpr uint32_t MM_ROW_TILE = 16;
 constexpr uint32_t MM_MAX_ROWS = MK_MATMUL_MAX_ROWS;
-// Dynamic shared memory of the op: the partial of each warp for each of the 256 results, then the merge flag.
+// Dynamic shared memory of the op: the partial of each warp for each of the 256 results, then 16 words of flags.
 constexpr uint32_t MM_TREE_FLOATS = MM_WARPS * 2 * 32 * 4;
-constexpr uint32_t MM_SMEM_BYTES = MM_TREE_FLOATS * 4 + 16;
+constexpr uint32_t MM_SMEM_BYTES = MM_TREE_FLOATS * 4 + 64;
 
 // Two f32 values to two bf16 values in one register, rounded to nearest even. `e0` goes to the low half.
 __device__ __forceinline__ uint32_t mm_pack_bf16(float e0, float e1) {
@@ -141,7 +141,9 @@ __device__ __forceinline__ void mm_item_partials(const MkTaskDescriptor& task, u
 
     // When the steps of a warp fit in one batch, the A fragments stay in registers for all the row tiles.
     const bool resident = steps_per_warp <= MM_BATCH;
-    uint4 a[MM_BATCH];
+    // Zero first: a fragment that only some paths load must not look live from the item before, or the registers of all
+    // the fragments stay taken through every op of the kernel.
+    uint4 a[MM_BATCH] = {};
     const uint32_t row_tiles = (rows + MM_ROW_TILE - 1) / MM_ROW_TILE;
     for (uint32_t rt = 0; rt < row_tiles; ++rt) {
         const uint32_t base = rt * MM_ROW_TILE;
