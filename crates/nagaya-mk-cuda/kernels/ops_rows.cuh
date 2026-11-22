@@ -201,12 +201,130 @@ __device__ __forceinline__ void op_embed(const MkTaskDescriptor& task, const MkT
     }
 }
 
-// Reserved for wave B lane R (rows).
+// The slots of the task table of OP_MIX and OP_MIX_OUT.
+constexpr uint32_t RW_MIX_STACK = 0;     // slots 0 to 4: the rows of the stack (f32, `rows` rows each)
+constexpr uint32_t RW_MIX_STACK_RF = 5;  // slots 5 to 9: their row factors
+constexpr uint32_t RW_MIX_MSG = 10;      // slots 10, 11: the stack of the message mix
+constexpr uint32_t RW_MIX_MSG_RF = 12;   // slots 12, 13: its row factors
+constexpr uint32_t RW_MIX_QUERIES = 14;  // the queries of the attention mix (f32, `n` rows of 2304)
+constexpr uint32_t RW_MIX_MSG_QUERIES = 15;  // the queries of the message mix (f32, `kt` rows of 2304)
+constexpr uint32_t RW_MAX_STACK = 5;
+
+// One mix item: `out = sum_s softmax_s(q . normed(stack_s) * scaling) * normed(stack_s)`, then the row factor of `out`.
+// The stack is `depth` rows, each `ptr[s] + row * 2304` with the factor `rf[s][row]`.
+__device__ __forceinline__ void rw_mix_item(const MkTaskTable* table, uint32_t stack0, uint32_t rf0, uint32_t depth,
+                                            const float* query, uint32_t row, float scaling, float* out,
+                                            float* out_rf) {
+    float* scratch = reinterpret_cast<float*>(mk_smem);
+    const float* planes[RW_MAX_STACK];
+    float factor[RW_MAX_STACK];
+#pragma unroll
+    for (uint32_t s = 0; s < RW_MAX_STACK; ++s) {
+        planes[s] = nullptr;
+        factor[s] = 0.0f;
+        if (s < depth) {
+            planes[s] = reinterpret_cast<const float*>(table->ptr[stack0 + s]) + static_cast<uint64_t>(row) * RW_HIDDEN;
+            factor[s] = __ldcg(reinterpret_cast<const float*>(table->ptr[rf0 + s]) + row);
+        }
+    }
+    // Pass 1: the score of each row of the stack. The rows are read again in pass 2, from L1 or L2, so that the
+    // block holds few registers (the kernel has a bound).
+    float score[RW_MAX_STACK];
+#pragma unroll
+    for (uint32_t s = 0; s < RW_MAX_STACK; ++s) {
+        score[s] = 0.0f;
+    }
+#pragma unroll
+    for (uint32_t j = 0; j < RW_PER_THREAD; ++j) {
+        const float q = __ldg(query + worker_id() + j * MK_WORKERS);
+#pragma unroll
+        for (uint32_t s = 0; s < RW_MAX_STACK; ++s) {
+            if (s < depth) {
+                score[s] += q * (__ldcg(planes[s] + worker_id() + j * MK_WORKERS) * factor[s]);
+            }
+        }
+    }
+    rw_block_sum(score, scratch);
+    // The softmax of the rows of the stack, in the order of the host form.
+    float top = -INFINITY;
+#pragma unroll
+    for (uint32_t s = 0; s < RW_MAX_STACK; ++s) {
+        if (s < depth) {
+            score[s] *= scaling;
+            top = fmaxf(top, score[s]);
+        }
+    }
+    float weight[RW_MAX_STACK];
+    float total = 0.0f;
+#pragma unroll
+    for (uint32_t s = 0; s < RW_MAX_STACK; ++s) {
+        weight[s] = 0.0f;
+        if (s < depth) {
+            weight[s] = expf(score[s] - top);
+            total += weight[s];
+        }
+    }
+#pragma unroll
+    for (uint32_t s = 0; s < RW_MAX_STACK; ++s) {
+        weight[s] = weight[s] / total;
+    }
+    // Pass 2: the mixed row and the sum of its squares.
+    float squares[1] = {0.0f};
+#pragma unroll
+    for (uint32_t j = 0; j < RW_PER_THREAD; ++j) {
+        float acc = 0.0f;
+#pragma unroll
+        for (uint32_t s = 0; s < RW_MAX_STACK; ++s) {
+            if (s < depth) {
+                acc += weight[s] * (__ldcg(planes[s] + worker_id() + j * MK_WORKERS) * factor[s]);
+            }
+        }
+        out[worker_id() + j * MK_WORKERS] = acc;
+        squares[0] += acc * acc;
+    }
+    rw_block_sum(squares, scratch);
+    if (worker_id() == 0) {
+        *out_rf = rw_factor(squares[0], RW_HIDDEN);
+    }
+}
+
+// OP_MIX: the attention residual of `n` queries over a stack of `k` rows, and the message mix of `kt` queries over a
+// stack of `group_items` rows. Item `i` is one (query, row): the first `n * rows` items are the attention mix, in
+// order of query then row, and the rest are the message mix. `a` = the outputs of the attention mix (f32, `n` x `rows`
+// rows), `b` = their row factors, `c` = the outputs of the message mix (`kt` x `rows` rows), `e` = their row factors,
+// `p0` = the scaling `2304^-0.5`. The table names the rows (RW_MIX_*).
+__device__ __forceinline__ void rw_mix_dispatch(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item,
+                                                uint32_t queries, uint32_t depth, uint32_t message_queries,
+                                                uint32_t message_depth) {
+    const uint32_t rows = task.rows;
+    if (worker_count() != MK_WORKERS || table == nullptr || dynamic_smem_bytes() < RW_SMEM_BYTES || rows == 0 ||
+        queries + message_queries == 0 || task.items != rows * (queries + message_queries) ||
+        (queries != 0 && (depth < 1 || depth > RW_MAX_STACK || table->ptr[RW_MIX_QUERIES] == 0 || (task.a & 15) != 0)) ||
+        (message_queries != 0 &&
+         (message_depth < 1 || message_depth > 2 || table->ptr[RW_MIX_MSG_QUERIES] == 0 || (task.c & 15) != 0)) ||
+        !(task.p0 > 0.0f)) {
+        __trap();
+    }
+    if (item < rows * queries) {
+        const uint32_t q = item / rows;
+        const uint32_t row = item % rows;
+        rw_mix_item(table, RW_MIX_STACK, RW_MIX_STACK_RF, depth,
+                    reinterpret_cast<const float*>(table->ptr[RW_MIX_QUERIES]) + static_cast<uint64_t>(q) * RW_HIDDEN, row,
+                    task.p0, reinterpret_cast<float*>(task.a) + (static_cast<uint64_t>(q) * rows + row) * RW_HIDDEN,
+                    reinterpret_cast<float*>(task.b) + q * rows + row);
+    } else {
+        const uint32_t j = item - rows * queries;
+        const uint32_t q = j / rows;
+        const uint32_t row = j % rows;
+        rw_mix_item(table, RW_MIX_MSG, RW_MIX_MSG_RF, message_depth,
+                    reinterpret_cast<const float*>(table->ptr[RW_MIX_MSG_QUERIES]) + static_cast<uint64_t>(q) * RW_HIDDEN,
+                    row, task.p0, reinterpret_cast<float*>(task.c) + (static_cast<uint64_t>(q) * rows + row) * RW_HIDDEN,
+                    reinterpret_cast<float*>(task.e) + q * rows + row);
+    }
+}
+
 __device__ __forceinline__ void op_mix(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
-    (void)task;
-    (void)table;
-    (void)item;
-    __trap();
+    rw_mix_dispatch(task, table, item, task.n, task.k, task.kt, task.group_items);
 }
 
 // Reserved for wave B lane R (rows).
