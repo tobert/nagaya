@@ -107,11 +107,11 @@ impl MatmulShape {
         self.kt / K_STEP
     }
 
-    /// Floats of scratch (`f` of the descriptor) that a launch with `rows` tokens needs: one partial of
-    /// `rows * COLUMN_TILE` floats for each item, then one counter for each merge group. The counters must be 0 at
-    /// the first launch. The op leaves them at 0.
+    /// Floats of scratch (`f` of the descriptor) that a launch with `rows` tokens needs: one counter for each merge
+    /// group, then one partial of `rows * COLUMN_TILE` floats for each item. The counters come first, so that their
+    /// place does not depend on `rows`. They must be 0 at the first launch, and the op leaves them at 0.
     pub fn scratch_floats(&self, rows: usize) -> usize {
-        self.items() * rows * COLUMN_TILE + self.tiles()
+        self.tiles() + self.items() * rows * COLUMN_TILE
     }
 
     /// The byte offset in the repacked weight of the 32-bit word that holds `W[col][kk]` and `W[col][kk + 1]`, with
@@ -130,7 +130,7 @@ impl MatmulShape {
 
     /// The descriptor of one `OP_MATMUL_BF16` task. The pointers are device addresses: `x` holds `rows` rows of `k`
     /// floats, `packed` is the repacked weight, `y` receives `rows` rows of `n` floats, and `scratch` holds
-    /// `scratch_floats(rows)` floats with the counters at 0. The builder of the ring sets the waits and the signal.
+    /// `scratch_floats(rows)` floats, the counters at 0. The builder of the ring sets the waits and the signal.
     pub fn descriptor(
         &self,
         rows: usize,
@@ -276,7 +276,7 @@ mod tests {
         let head = MatmulShape::new(201_024, 2304).unwrap();
         assert_eq!((head.tiles(), head.items()), (12_564, 37_692));
         assert_eq!(head.packed_bytes(), 201_024 * 2304 * 2);
-        assert_eq!(head.scratch_floats(1), 37_692 * 16 + 12_564);
+        assert_eq!(head.scratch_floats(1), 12_564 + 37_692 * 16);
         let error = MatmulShape::new(100, 2304).unwrap_err();
         assert!(error.contains("N = 100") && error.contains("Pad"), "{error}");
     }
