@@ -56,6 +56,11 @@ define_u16_table! {
     OP_MOE_GATHER = 20;
     OP_COPY = 21;
     OP_EMBED = 41;
+    // `OP_MATMUL_BF16`: `y[r, n] = sum_k x[r, k] * W[n, k]` for 1 to 16 rows. `a` = `x` (`f32`, `rows` rows of `k`),
+    // `b` = `W` repacked by `repack.rs`, `c` = `y` (`f32`, `rows` rows of `n`), `f` = merge counters, then partials
+    // (`MatmulShape::scratch_floats`), `n`, `k`, `kt`, `rows`, `items` and `group_items` as `repack.rs` gives them.
+    // The opcodes 40 to 49 are for the dense matmuls.
+    OP_MATMUL_BF16 = 40;
     OP_BIAS = 43;
     OP_LAYERNORM = 47;
     OP_GELU = 48;
