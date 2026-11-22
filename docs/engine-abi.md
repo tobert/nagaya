@@ -1619,6 +1619,21 @@ of cells and 10 rings.
   - Thus a profile names a slot of at most 164,352 positions at 3 cycles.
   - A budget of the usable memory of the card, not of its 32 GiB, lets the ledger refuse such a profile first. The
     owner chooses the budget of the profile.
+- **The limits of the check.** The check is a heuristic over the memory of the whole process on the card. It
+  cannot tell the bytes of this open from the bytes of another engine of the process.
+  - A free on the card during the open can make it refuse an open that fits. An allocation on the card during
+    the open can hide a shortfall.
+  - Another card adds nothing, because the sum reads only the fds of this card.
+  - The engines of one card share one group thread, so the opens and unloads of a swap run one after the other.
+    Thus no other engine of the card allocates or frees during an open.
+  - It is still useful. It refused the slot of 262,144 positions, and its second case sees a buffer that the
+    driver moved to system memory. The ledger sees neither, because it holds targets, not a measurement (4.1).
+- **A refused open in a swap stops the process.** The swap does not expect an open to fail, so it panics
+  (`crates/nagaya/src/process/staged.rs:1864`). The factory of Inkling 2 keeps the default `open_problem`,
+  which answers none (`crates/nagaya/src/admission.rs:150`). Thus the load route cannot refuse such a load first
+  (spec 3.3b).
+  - Milestone 34 step 1 holds the repair: the load route refuses a load that the memory check of the engine
+    refuses. It is built for the Qwen3.8 engine. An `open_problem` of the factory of Inkling 2 is still to do.
 
 **Positions.** The model has no rotary embedding.
 
