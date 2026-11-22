@@ -466,25 +466,41 @@ impl FileProbe {
                 .find_map(|line| line.strip_prefix("Model:"))
                 .map(|model| model.trim().to_owned())
                 .ok_or_else(|| fail(format!("`{}` has no Model line", self.path(&information).display())))?;
-            if !UNIFIED_NVIDIA_MODELS.contains(&model.as_str()) {
+            let lower_address = address.to_lowercase();
+            let (vendor, id) = self.pci_id(&format!("sys/bus/pci/devices/{lower_address}"))?;
+            let pci_id = format!("{vendor:04x}:{id:04x}");
+            let name = if UNIFIED_NVIDIA_MODELS.contains(&model.as_str()) {
+                model
+            } else if model == "Unknown" {
+                UNIFIED_NVIDIA_PCI_IDS
+                    .iter()
+                    .find_map(|(known_id, known_name)| (*known_id == pci_id).then_some(*known_name))
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        fail(format!(
+                            "NVIDIA GPU {address} has the model `{model}` and PCI id `{pci_id}`. The file probe does \
+                             not know how much memory this device has: it needs NVML. Add `{pci_id}` to \
+                             UNIFIED_NVIDIA_PCI_IDS if its memory is unified"
+                        ))
+                    })?
+            } else {
                 return Err(fail(format!(
-                    "NVIDIA GPU {address} has the model `{model}`. The file probe does not know how much memory \
-                     this model has: it needs NVML. Add the model to UNIFIED_NVIDIA_MODELS if its memory is unified"
+                    "NVIDIA GPU {address} has the model `{model}` and PCI id `{pci_id}`. The file probe does not \
+                     know how much memory this model has: it needs NVML. Add the model to UNIFIED_NVIDIA_MODELS if \
+                     its memory is unified"
                 )));
-            }
-            let address = address.to_lowercase();
-            let (vendor, id) = self.pci_id(&format!("sys/bus/pci/devices/{address}"))?;
+            };
             devices.push(DeviceFacts {
                 device: Device {
                     id: 0,
-                    name: model,
-                    pci_address: address,
+                    name,
+                    pci_address: lower_address,
                     memory_bytes: host_bytes,
                     unified: true,
                     ignored: false,
                 },
                 vendor: Vendor::Nvidia,
-                pci_id: format!("{vendor:04x}:{id:04x}"),
+                pci_id,
             });
         }
         Ok(devices)
@@ -514,6 +530,9 @@ const IORESOURCE_PREFETCH: u64 = 0x2000;
 
 /// The NVIDIA models whose memory is the host memory. The file probe cannot read the memory of any other model.
 const UNIFIED_NVIDIA_MODELS: [&str; 1] = ["NVIDIA GB10"];
+
+/// The PCI vendor and device ids of unified NVIDIA models whose driver reports `Model: Unknown`.
+const UNIFIED_NVIDIA_PCI_IDS: [(&str, &str); 1] = [("10de:2e12", "NVIDIA GB10")];
 
 /// The `KEY=value` lines of a `uevent` file.
 struct Uevent {

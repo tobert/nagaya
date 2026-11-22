@@ -162,7 +162,7 @@ fn the_b70_machine_has_two_xe_cards_with_32_gib_each() {
 #[test]
 fn the_gb10_machine_has_one_unified_gb10_that_uses_the_host_memory() {
     let machine = machine("dgx-spark");
-    let host_bytes = 124_538_176 * 1024;
+    let host_bytes = 127_598_640 * 1024;
     assert_eq!(
         machine.devices,
         vec![facts(
@@ -179,13 +179,17 @@ fn the_gb10_machine_has_one_unified_gb10_that_uses_the_host_memory() {
     assert_eq!(machine.cpus, (0..20).collect::<Vec<u32>>());
     assert_eq!(
         machine.nvme,
-        vec![nvme("nvme0n1", "Samsung SSD 990 PRO 4TB", 7_814_037_168)]
+        vec![nvme("nvme0n1", "SAMSUNG MZALC4T0HBL1-00B07", 8_001_573_552)]
     );
     assert_eq!(
         machine.nics,
         vec![
-            nic("enP7s7", "r8127", "10ec:8127", Some(10_000)),
-            nic("enp1s0f0np0", "mlx5_core", "15b3:1021", Some(200_000)),
+            nic("enP2p1s0f0np0", "mlx5_core", "15b3:1021", None),
+            nic("enP2p1s0f1np1", "mlx5_core", "15b3:1021", None),
+            nic("enP7s7", "r8127", "10ec:8127", Some(1_000)),
+            nic("enp1s0f0np0", "mlx5_core", "15b3:1021", None),
+            nic("enp1s0f1np1", "mlx5_core", "15b3:1021", None),
+            nic("wlP9s9", "mt7925e", "14c3:7925", None),
         ]
     );
 }
@@ -303,12 +307,29 @@ fn an_xe_card_with_a_small_bar_is_an_error() {
 fn an_nvidia_model_that_the_probe_does_not_know_is_an_error() {
     let (_dir, root) = broken_copy("dgx-spark");
     let path = root.join("proc/driver/nvidia/gpus/000f:01:00.0/information");
-    let text = fs::read_to_string(&path)
-        .unwrap()
-        .replace("NVIDIA GB10", "NVIDIA RTX 9000");
+    let text = fs::read_to_string(&path).unwrap().replace("Unknown", "NVIDIA RTX 9000");
     fs::write(path, text).unwrap();
     let message = probe_error(&root);
     assert!(message.contains("NVIDIA RTX 9000"), "{message}");
+}
+
+#[test]
+fn an_unknown_nvidia_model_with_an_unknown_pci_id_is_an_error() {
+    let (_dir, root) = broken_copy("dgx-spark");
+    fs::write(root.join("sys/bus/pci/devices/000f:01:00.0/device"), "0x9999\n").unwrap();
+    let message = probe_error(&root);
+    assert!(message.contains("Unknown"), "{message}");
+    assert!(message.contains("10de:9999"), "{message}");
+}
+
+#[test]
+fn a_named_unified_nvidia_model_is_still_accepted() {
+    let (_dir, root) = broken_copy("dgx-spark");
+    let path = root.join("proc/driver/nvidia/gpus/000f:01:00.0/information");
+    let text = fs::read_to_string(&path).unwrap().replace("Unknown", "NVIDIA GB10");
+    fs::write(path, text).unwrap();
+    let machine = FileProbe::new(&root).machine().unwrap();
+    assert_eq!(machine.devices[0].device.name, "NVIDIA GB10");
 }
 
 #[test]
