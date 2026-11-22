@@ -1606,8 +1606,10 @@ run of a cycle has its own row, and the lab compares the cycles. A control item 
 that its vector holds. "The lab of Inkling 2" gives the other taps: the block outputs, the messages, the gates and
 the routes.
 
-**Not covered yet.** The drafts of the MTP head, which wait (milestone 35 step 10). The images come in step 9
-("The images of Inkling 2").
+**Inputs.** A segment holds tokens, or tokens with the rows of their image and latent spans (`tokens+rows`, "The
+images of Inkling 2", "The lab of Inkling 2"). A segment of rows with no tokens is refused.
+
+**Not covered yet.** The drafts of the MTP head, which wait (milestone 35 step 10).
 
 ### The images of Inkling 2
 
