@@ -2150,6 +2150,18 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   - A raw scale of `2^-127` or less gives the byte 0. The byte stops at 254. The byte 255 is an error.
   - The inverse is the exact reciprocal of the scale, and `2^127` for the byte 0.
   - Each value is `v × inverse`, clamped to ±448, then rounded to `e4m3` nearest even.
+- **Flips of discrete choices.** Measured with the quantized reference (`dc574559`, `7015d894`). Two choices of a
+  pass change when a sum changes in its last bit, so two orders of the same sums can give other logits.
+  - A code of the quantizer flips. On Inkling 2 Mini, 13 to 18 rows of a decode of 8 tokens flipped between the
+    cache run and the run with no cache. On a tiny model, one flip moved a logit by up to 8.
+  - The slot order of the router changes. transformers takes the top 8 with `sorted=False`, so two experts with
+    equal scores to the last bits swap slots.
+  - The reference replays the route and the codes of the cache run in the run with no cache. Then the gap is about
+    2e-5 on both models, and the limit of the check is 1e-3.
+  - **The rules of the engine.** **Proposed** (Claude Opus 5.5, 2026-11-22). The slot order of a token is the
+    ascending order of the expert ids. A tie of scores at the eighth place picks the lower id. Thus the slots do not
+    depend on the order of a sum. The codes of a row depend on its sums, so rule 4 of milestone 37 keeps them
+    consistent inside the engine.
 - **The rows that the experts quantize.** The GB10 path of vLLM quantizes two kinds of rows (`ops/moe.py`,
   `ops/activation.py` and `moe.py` of `vllm/models/inkling2/nvidia/`):
   - The input of gate and up: one row of 2,304 values for each token. All experts of the token share it. The router
