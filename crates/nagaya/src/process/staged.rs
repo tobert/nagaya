@@ -37,6 +37,7 @@ use tracing::Span;
 
 use super::in_place::{self, Exit, Member, Plan, Unloaded};
 use super::loads::{self, Ask};
+use super::long_pass::LongLinks;
 use super::{
     Event, GroupJob, GroupLinks, GroupMessage, LedgerMessage, OpenBeat, OpenedEngine, ParkProgress, ParkReport,
     WatchMessage, guard, handoff, park, park_group, pin, spawn_named,
@@ -240,6 +241,7 @@ impl StageThreads {
             let events = links.events.clone();
             let done = links.own.clone();
             let heartbeats = links.heartbeats.clone();
+            let long = links.long.clone();
             let cpus = links.sets.as_ref().map(|sets| sets.device(device).to_vec());
             let _ = heartbeats.send(WatchMessage::StartStage {
                 group,
@@ -250,7 +252,7 @@ impl StageThreads {
                 guard("stage", &events, || {
                     // A device thread takes the CPUs of its card (spec 3.2b).
                     pin("stage", cpus.as_deref());
-                    stage_thread(group, place, work_rx, done, heartbeats, interval);
+                    stage_thread(group, place, work_rx, done, heartbeats, interval, long);
                 });
             });
             senders.push(work_tx);
@@ -324,6 +326,7 @@ fn stage_thread(
     done: Sender<GroupMessage>,
     heartbeats: Sender<WatchMessage>,
     interval: Duration,
+    long: LongLinks,
 ) {
     let stage = place;
     let beat = || WatchMessage::BeatStage {
@@ -369,7 +372,7 @@ fn stage_thread(
             }) => {
                 // The open blocks this thread for seconds, so a helper beats for it (spec 7.4).
                 let beat_guard = OpenBeat::stage(group, stage, heartbeats.clone(), interval);
-                let opened = in_place::open(&mut job, fd_store.as_ref());
+                let opened = in_place::open(&mut job, fd_store.as_ref(), (group, Some(place)), &long);
                 drop(beat_guard);
                 let answer = match opened {
                     Ok((engine, handles, opened)) => {

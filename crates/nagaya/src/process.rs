@@ -33,10 +33,13 @@ use crate::signal::SignalFlag;
 use in_place::{Exit, Member, Unloaded};
 use loads::Ask;
 pub use loads::{DeviceReply, EngineStates, LoadError, LoadReply};
+use long_pass::{LongLinks, WatchKey};
+pub use long_pass::{LongPass, LongPasses};
 
 mod handoff;
 mod in_place;
 mod loads;
+mod long_pass;
 mod staged;
 
 /// The default watchdog timeout. Three times the longest declared quantum bound (the Qwen3.8 engine: 10 s).
@@ -1146,6 +1149,7 @@ impl Start {
         }
 
         let accepting = Arc::new(AtomicBool::new(true));
+        let long_passes = LongPasses::default();
         // A resident engine loads at start, and an on-demand engine waits for a load (spec 3.3a).
         let states = EngineStates::default();
         for placement in &profile.engines {
@@ -1177,6 +1181,12 @@ impl Start {
             let group_fd_store = fd_store.clone();
             let group_ledger = ledger_tx.clone();
             let group_states = states.clone();
+            let group_long = LongLinks {
+                heartbeats: watch_tx.clone(),
+                passes: long_passes.clone(),
+                timeout,
+                interval: heartbeat,
+            };
             let handle = spawn_named(format!("nagaya-group-{index}"), move || {
                 guard("group", &group_guard, || {
                     pin("group", group_cpus.as_deref());
@@ -1192,6 +1202,7 @@ impl Start {
                         fd_store: group_fd_store,
                         ledger: group_ledger,
                         states: group_states,
+                        long: group_long,
                     };
                     group_thread(index, jobs, links, heartbeat);
                 });
@@ -1226,6 +1237,7 @@ impl Start {
             failure: Arc::new(Mutex::new(None)),
             states,
             released: Released::default(),
+            long_passes,
             stopped: false,
         })
     }
@@ -1306,6 +1318,8 @@ struct GroupLinks {
     ledger: Sender<LedgerMessage>,
     /// The state of each engine. The group writes the states of its own engines (spec 3.3b).
     states: EngineStates,
+    /// The links of the long passes of the engines that the group opens (engine-abi D8).
+    long: LongLinks,
 }
 
 fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: Duration) {
@@ -1344,7 +1358,12 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
             later.push(index);
             continue;
         }
-        match in_place::open(&mut members[index].job, links.fd_store.as_ref()) {
+        match in_place::open(
+            &mut members[index].job,
+            links.fd_store.as_ref(),
+            (group, None),
+            &links.long,
+        ) {
             Ok((engine, handles, info)) => {
                 engines[index] = engine;
                 members[index].handles = handles;
@@ -1437,6 +1456,7 @@ fn group_thread(group: usize, jobs: Vec<GroupJob>, links: GroupLinks, interval: 
                     ledger: &links.ledger,
                     fd_store: links.fd_store.as_ref(),
                     states: &links.states,
+                    long: &links.long,
                 };
                 in_place::swap(group, &mut members, &mut engines, plan, swap_links, interval);
                 if links
@@ -1701,6 +1721,7 @@ fn watchdog(messages: Receiver<WatchMessage>, events: Sender<Event>, timeout: Du
                     Watch {
                         devices,
                         last: Instant::now(),
+                        long: None,
                     },
                 );
             }
@@ -1710,6 +1731,7 @@ fn watchdog(messages: Receiver<WatchMessage>, events: Sender<Event>, timeout: Du
                     Watch {
                         devices,
                         last: Instant::now(),
+                        long: None,
                     },
                 );
             }
@@ -1726,13 +1748,66 @@ fn watchdog(messages: Receiver<WatchMessage>, events: Sender<Event>, timeout: Du
             Ok(WatchMessage::StopStage { group, stage }) => {
                 watches.remove(&(group, Some(stage)));
             }
+            Ok(WatchMessage::LongStart {
+                key,
+                dispatch,
+                started,
+                bound,
+                deadline,
+            }) => {
+                if let Some(watch) = watches.get_mut(&key) {
+                    assert!(
+                        watch.long.is_none(),
+                        "watch {key:?} starts a long pass while another one runs"
+                    );
+                    watch.long = Some(LongWatch {
+                        dispatch,
+                        started,
+                        bound,
+                        deadline,
+                        reported: false,
+                    });
+                }
+            }
+            Ok(WatchMessage::LongEnd { key, dispatch, at }) => {
+                // A pass that returned past its deadline stays armed, so the check below stops the process.
+                if let Some(watch) = watches.get_mut(&key)
+                    && watch
+                        .long
+                        .as_ref()
+                        .is_some_and(|long| long.dispatch == dispatch && at <= long.deadline)
+                {
+                    watch.long = None;
+                    watch.last = at;
+                }
+            }
             Ok(WatchMessage::Stop) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => {}
         }
         let now = Instant::now();
+        // A long pass gives one report when it runs past its bound (engine-abi D8).
+        for (key, watch) in &mut watches {
+            if let Some(long) = watch.long.as_mut()
+                && !long.reported
+                && now.duration_since(long.started) > Duration::from_millis(u64::from(long.bound.get()))
+            {
+                long.reported = true;
+                tracing::warn!(
+                    group = key.0,
+                    bound_ms = long.bound.get(),
+                    "a long pass runs past the bound that its engine declared; at its deadline the process stops \
+                     (spec 7.4)"
+                );
+            }
+        }
+        // A watch with a long pass reads its deadline, and a beat does not change it. Any other watch reads the
+        // timeout (spec 7.4).
         let stalled: Vec<(usize, Option<usize>)> = watches
             .iter()
-            .filter(|(_, watch)| now.duration_since(watch.last) > timeout)
+            .filter(|(_, watch)| match &watch.long {
+                Some(long) => now > long.deadline,
+                None => now.duration_since(watch.last) > timeout,
+            })
             .map(|(key, _)| *key)
             .collect();
         for key in stalled {
@@ -1749,6 +1824,18 @@ fn watchdog(messages: Receiver<WatchMessage>, events: Sender<Event>, timeout: Du
 struct Watch {
     devices: Vec<DeviceId>,
     last: Instant,
+    /// The long pass that runs on the thread now, if one runs.
+    long: Option<LongWatch>,
+}
+
+/// The deadline of one long pass (engine-abi D8).
+struct LongWatch {
+    dispatch: u64,
+    started: Instant,
+    bound: std::num::NonZeroU32,
+    deadline: Instant,
+    /// True after the report of a pass past its bound.
+    reported: bool,
 }
 
 enum WatchMessage {
@@ -1775,6 +1862,21 @@ enum WatchMessage {
     StopStage {
         group: usize,
         stage: usize,
+    },
+    /// A long pass starts on the thread of `key`. Until its end, the watch reads its deadline and not the timeout
+    /// (engine-abi D8).
+    LongStart {
+        key: WatchKey,
+        dispatch: u64,
+        started: Instant,
+        bound: std::num::NonZeroU32,
+        deadline: Instant,
+    },
+    /// The long pass `dispatch` of `key` returned at `at`. Only its own end clears it, and only before its deadline.
+    LongEnd {
+        key: WatchKey,
+        dispatch: u64,
+        at: Instant,
     },
     Stop,
 }
@@ -1912,6 +2014,8 @@ pub struct Ports {
     states: EngineStates,
     /// The released devices, each with the engines that it holds (spec 3.3b, "The release of a device").
     released: Released,
+    /// The long passes that run now (engine-abi D8, spec 7.4).
+    long_passes: LongPasses,
 }
 
 impl Ports {
@@ -1928,6 +2032,11 @@ impl Ports {
             tracing::error!("{message}; the process stops (spec 8.5)");
             *failure = Some(message);
         }
+    }
+
+    /// The long passes that run now, which the route `busy` of a device shows (spec 7.4).
+    pub fn long_passes(&self) -> LongPasses {
+        self.long_passes.clone()
     }
 
     /// The first failure that a service saw outside a call, or `None`.
@@ -2277,6 +2386,8 @@ pub struct Process {
     states: EngineStates,
     /// The released devices. The process keeps them in memory only, so a start releases none (spec 3.3b).
     released: Released,
+    /// The long passes that run now (engine-abi D8).
+    long_passes: LongPasses,
     stopped: bool,
 }
 
@@ -2328,6 +2439,7 @@ impl Process {
             failure: Arc::clone(&self.failure),
             states: self.states.clone(),
             released: Arc::clone(&self.released),
+            long_passes: self.long_passes.clone(),
         }
     }
 

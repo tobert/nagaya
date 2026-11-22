@@ -14,6 +14,7 @@ use nagaya_ledger::LedgerError;
 use nagaya_telemetry::{EngineState, instruments};
 
 use super::loads::{EngineStates, LoadError};
+use super::long_pass::{LongLinks, WatchKey, Watched};
 
 use super::{Event, GroupJob, LedgerMessage, OpenBeat, OpenedEngine, ParkReport, WatchMessage, handoff, park};
 use crate::admission::{AdmitError, OpenErrorKind};
@@ -237,6 +238,7 @@ pub(super) struct SwapLinks<'a> {
     pub(super) store: Option<&'a Sender<StoreMessage>>,
     pub(super) fd_store: Option<&'a FdStore>,
     pub(super) states: &'a EngineStates,
+    pub(super) long: &'a LongLinks,
 }
 
 /// Run a swap on the group thread (spec 3.3a). A failure is a crash, because the group no longer has a known set of
@@ -296,7 +298,7 @@ pub(super) fn swap(
     for &index in &plan.load {
         let name = members[index].name().to_owned();
         links.states.record(&name, EngineState::Loading);
-        let (engine, handles, opened) = open(&mut members[index].job, links.fd_store)
+        let (engine, handles, opened) = open(&mut members[index].job, links.fd_store, (group, None), links.long)
             .unwrap_or_else(|(_, message)| panic!("the swap cannot open engine `{name}`: {message}"));
         engines[index] = engine;
         members[index].handles = handles;
@@ -366,7 +368,14 @@ pub(super) fn unload(
 ///
 /// An engine with stages gives its stage handles here: the process runs an engine of two stages, with one handle for
 /// each stage (engine-abi D1).
-pub(super) fn open(job: &mut GroupJob, fd_store: Option<&FdStore>) -> Result<Open, (OpenErrorKind, String)> {
+/// Open the engine of `job`, which runs on the thread of `key`. The group gets it inside the watch of its long passes
+/// (engine-abi D8).
+pub(super) fn open(
+    job: &mut GroupJob,
+    fd_store: Option<&FdStore>,
+    key: WatchKey,
+    long: &LongLinks,
+) -> Result<Open, (OpenErrorKind, String)> {
     let (mut engine, handoff) = handoff::open(job, fd_store).map_err(|error| (error.kind, error.to_string()))?;
     let opened_limits = engine.limits();
     if opened_limits != job.limits {
@@ -420,5 +429,7 @@ pub(super) fn open(job: &mut GroupJob, fd_store: Option<&FdStore>) -> Result<Ope
         limits: opened_limits,
         handoff,
     };
+    let devices = job.devices.iter().map(|device| device.id).collect();
+    let engine = Watched::boxed(engine, job.limits.clone(), key, devices, long.clone());
     Ok((engine, handles, opened))
 }
