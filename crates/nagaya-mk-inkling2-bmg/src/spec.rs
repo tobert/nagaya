@@ -800,6 +800,7 @@ pub fn limits(config: &Config, weights: u64) -> Limits {
         max_logit_rows: MAX_LOGIT_ROWS as u32,
         slots: slot_limits(&config.seqs(), config.extra_runs),
         max_quantum_ms: MAX_QUANTUM_MS,
+        max_long_quantum_ms: None,
         memory: MemoryLimits {
             mandatory: vec![
                 term("weights", Tier::Device(0), weights),

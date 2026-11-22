@@ -233,6 +233,7 @@ pub fn limits(config: &Config, weights: [u64; 2]) -> Limits {
         max_logit_rows: MAX_LOGIT_ROWS as u32,
         slots: slot_limits(&config.slots),
         max_quantum_ms: MAX_QUANTUM_MS,
+        max_long_quantum_ms: None,
         memory: MemoryLimits {
             mandatory,
             elastic: Vec::new(),

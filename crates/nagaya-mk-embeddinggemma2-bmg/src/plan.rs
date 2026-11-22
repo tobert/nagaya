@@ -58,6 +58,7 @@ pub fn limits(weights: u64) -> Limits {
         // The engine holds no state: no part, no slot and no context (engine-abi "Embedding").
         slots: Vec::new(),
         max_quantum_ms: MAX_QUANTUM_MS,
+        max_long_quantum_ms: None,
         memory: MemoryLimits {
             mandatory: vec![
                 term("weights", Tier::Device(0), weights),

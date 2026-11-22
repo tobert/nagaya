@@ -687,6 +687,7 @@ impl Engine for CellsOnlyConstantRead {
                 tokens: 4096,
             }],
             max_quantum_ms: 10,
+            max_long_quantum_ms: None,
             memory: MemoryLimits::default(),
             chain: ChainLimits {
                 max_depth: 0,
@@ -1348,6 +1349,7 @@ impl NanAfterAPass {
                 },
             ],
             max_quantum_ms: 10,
+            max_long_quantum_ms: None,
             memory: MemoryLimits::default(),
             chain: ChainLimits {
                 max_depth: 0,
@@ -1503,6 +1505,7 @@ fn limits_with(mandatory_bytes: u64) -> Limits {
         max_logit_rows: 0,
         slots: Vec::new(),
         max_quantum_ms: 0,
+        max_long_quantum_ms: None,
         memory: MemoryLimits {
             mandatory: vec![MandatoryTerm {
                 name: "gate".to_owned(),

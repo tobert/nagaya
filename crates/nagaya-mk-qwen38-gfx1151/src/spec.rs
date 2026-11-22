@@ -434,6 +434,7 @@ pub fn limits(arena_bytes: u64) -> Limits {
             })
             .collect(),
         max_quantum_ms: MAX_QUANTUM_MS,
+        max_long_quantum_ms: None,
         memory: MemoryLimits {
             mandatory: vec![
                 MandatoryTerm {
