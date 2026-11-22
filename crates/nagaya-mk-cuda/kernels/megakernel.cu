@@ -385,6 +385,10 @@ __device__ __forceinline__ void run_op(const MkTaskDescriptor& task, const MkTas
             op_mix_out(task, table, item);
             break;
 
+        case OP_ROWS_PROBE:
+            op_rows_probe(task, table, item);
+            break;
+
         case OP_ATTN:
             op_attn(task, table, item);
             break;

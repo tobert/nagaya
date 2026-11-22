@@ -1348,6 +1348,7 @@ dependencies = [
  "blake3",
  "nagaya-abi",
  "nagaya-mk-cuda",
+ "nagaya-mk-inkling2-bmg",
  "serde_json",
 ]
 
