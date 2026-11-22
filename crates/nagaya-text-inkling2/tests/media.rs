@@ -438,17 +438,9 @@ fn an_image_that_the_family_cannot_read_is_a_400_that_names_its_part() {
     assert!(message.contains("no objects"), "{message}");
 }
 
-#[test]
-fn a_decision_with_an_image_is_a_400_until_the_reads_take_media() {
-    if absent() {
-        return;
-    }
-    let fam = family_with(&[(SMALL, png_of(213, 118))]);
-    let ctx = context(
-        json!({"thinking": false, "messages": [{"role": "user", "content": [image(SMALL, "image/png"), {"type": "text", "text": "What is it?"}]}]}),
-    );
-    let rendering = fam.render(&ctx, false).unwrap();
-    let spec = gogi_proto::spec::parse_spec(
+/// The spec of the decision tests: one choice question about a photo.
+fn photo_spec() -> gogi_proto::spec::Spec {
+    gogi_proto::spec::parse_spec(
         &json!({
             "name": "g",
             "instructions": "Pick one.",
@@ -462,26 +454,285 @@ fn a_decision_with_an_image_is_a_400_until_the_reads_take_media() {
         }),
         &gogi_proto::spec::SpecRules::default(),
     )
-    .unwrap();
-    let asked = [nagaya_council::family::Asked {
+    .unwrap()
+}
+
+fn asked() -> [nagaya_council::family::Asked; 1] {
+    [nagaya_council::family::Asked {
         question: 0,
         options: vec![0, 1],
-    }];
+    }]
+}
+
+fn objects(list: &[(&str, &str)]) -> Vec<gogi_proto::objects::ObjectRef> {
+    list.iter()
+        .map(|(id, mime)| serde_json::from_value(json!({"id": id, "mime": mime})).unwrap())
+        .collect()
+}
+
+/// A plan, its first step, and the rendered hash after it.
+struct Read {
+    prefix: Vec<u32>,
+    head: bool,
+    media: Vec<nagaya_council::family::MediaInput>,
+    feed: Vec<u32>,
+    hash: String,
+}
+
+fn read(fam: &Inkling2Family, input: &DecisionInput<'_>, case_media: &[(&str, &str)]) -> Read {
+    let mut plan = fam.decision_read_with_media(input, &objects(case_media)).unwrap();
+    let nagaya_council::family::Advance::Step(step) = plan.advance(None).unwrap() else {
+        panic!("expected a step");
+    };
+    let nagaya_council::family::Advance::Done(done) = plan.advance(Some(&[-0.1, -2.0])).unwrap() else {
+        panic!("expected the end");
+    };
+    Read {
+        prefix: plan.prefix().to_vec(),
+        head: plan.prefix_is_head(),
+        media: plan.media(),
+        feed: step.feed,
+        hash: done.rendered_hash,
+    }
+}
+
+/// spec 11.18, "Reads": the case turn holds each image of `case_media` in its order, then the text of the case. Each
+/// image becomes its placeholders, and the plan gives its record and its rows at its position in the whole read.
+#[test]
+fn a_decision_with_case_media_holds_each_image_in_the_case_turn_in_its_order() {
+    if absent() {
+        return;
+    }
+    let (a, b) = (png_of(213, 118), png_of(80, 41));
+    let fam = family_with(&[(IMAGE0, a.clone()), (IMAGE1, b.clone())]);
+    let ctx = context(json!({"thinking": false, "messages": [{"role": "user", "content": "Look at the case."}]}));
+    let rendering = fam.render(&ctx, false).unwrap();
+    let spec = photo_spec();
+    let asked = asked();
     let input = DecisionInput {
         context: Some((&ctx, &rendering)),
         spec: &spec,
         case: "the case",
         asked: &asked,
     };
-    match fam.decision_read(&input) {
-        Err(FamilyError::Client(e)) => assert_eq!(e.param.as_deref(), Some("messages[0].content[0]")),
-        other => panic!("expected a client error, got {:?}", other.err()),
+    let ab = read(&fam, &input, &[(IMAGE0, "image/png"), (IMAGE1, "image/png")]);
+    // 213 x 118 px is 3 by 6 tokens, and 80 x 41 px is 2 by 2 tokens.
+    let counts: Vec<usize> = ab.media.iter().map(|m| m.span.count).collect();
+    assert_eq!(counts, [18, 4]);
+    let ids: Vec<&str> = ab.media.iter().map(|m| m.span.id.as_str()).collect();
+    assert_eq!(ids, [IMAGE0, IMAGE1]);
+    assert!(ab.head, "the prefix ends at the end of the case turn");
+    let whole: Vec<u32> = rendering.tokens[..rendering.end]
+        .iter()
+        .chain(&ab.prefix)
+        .copied()
+        .collect();
+    for (m, png) in ab.media.iter().zip([&a, &b]) {
+        assert!(m.span.first >= rendering.end, "a span of the case is after the context");
+        assert!(whole[m.span.positions()].iter().all(|t| *t == IMAGE_TOKEN));
+        let rows = media::prepare(png, "image/png").unwrap();
+        assert_eq!(m.meta, rows.record(m.span.first));
+        assert_eq!(&*m.rows, rows.bytes());
+        assert_eq!(m.span.mime, "image/png");
     }
-    let object: gogi_proto::objects::ObjectRef =
-        serde_json::from_value(json!({"id": SMALL, "mime": "image/png"})).unwrap();
-    let text_only = DecisionInput { context: None, ..input };
-    match fam.decision_read_with_media(&text_only, &[object]) {
-        Err(FamilyError::Client(e)) => assert_eq!(e.param.as_deref(), Some("case_media[0]")),
-        other => panic!("expected a client error, got {:?}", other.err()),
+    assert_eq!(ab.media[1].span.first, ab.media[0].span.first + 18 + 3);
+    assert_eq!(ab.prefix.iter().filter(|t| **t == IMAGE_TOKEN).count(), 22);
+    let text = fam.tokenizer().decode_lossy(&ab.prefix).unwrap();
+    let image = format!("<|content_image|>{}<|end_message|>", "<|unused_200054|>".repeat(18));
+    assert!(
+        text.starts_with(&format!("<|message_user|>{image}<|message_user|><|content_image|>")),
+        "{text}"
+    );
+    assert!(
+        text.ends_with("<|message_user|><|content_text|>photo:\nthe case<|end_message|>"),
+        "{text}"
+    );
+    let feed = fam.tokenizer().decode_lossy(&ab.feed).unwrap();
+    assert!(feed.starts_with("<|message_user|><|content_text|>Pick one."), "{feed}");
+    assert!(
+        feed.ends_with("<|end_message|><|message_model|><|content_text|>Answer:"),
+        "{feed}"
+    );
+    assert!(!ab.feed.contains(&IMAGE_TOKEN));
+
+    // The other order gives the spans in that order, and another hash.
+    let ba = read(&fam, &input, &[(IMAGE1, "image/png"), (IMAGE0, "image/png")]);
+    let ids: Vec<&str> = ba.media.iter().map(|m| m.span.id.as_str()).collect();
+    assert_eq!(ids, [IMAGE1, IMAGE0]);
+    assert_eq!(ba.media[1].span.first, ba.media[0].span.first + 4 + 3);
+    assert_ne!(ab.hash, ba.hash, "the hash covers the order of the case media");
+    assert_eq!(
+        ab.hash,
+        read(&fam, &input, &[(IMAGE0, "image/png"), (IMAGE1, "image/png")]).hash
+    );
+    // Two copies of one image are two images of the case.
+    let aa = read(&fam, &input, &[(IMAGE0, "image/png"), (IMAGE0, "image/png")]);
+    assert_eq!(aa.media.len(), 2);
+    assert_ne!(aa.hash, ab.hash);
+    // With no media the case turn is text, and the hash is another.
+    let none = read(&fam, &input, &[]);
+    assert!(none.media.is_empty());
+    assert!(!none.prefix.contains(&IMAGE_TOKEN));
+    assert_ne!(none.hash, ab.hash);
+    assert_eq!(none.feed, ab.feed, "the question turn is the same after any case turn");
+    assert_eq!(read(&fam, &input, &[]).hash, fam_read_hash(&fam, &input));
+}
+
+/// The hash of a read through `decision_read`, which names no case media.
+fn fam_read_hash(fam: &Inkling2Family, input: &DecisionInput<'_>) -> String {
+    let mut plan = fam.decision_read(input).unwrap();
+    plan.advance(None).unwrap();
+    match plan.advance(Some(&[-0.1, -2.0])).unwrap() {
+        nagaya_council::family::Advance::Done(done) => done.rendered_hash,
+        other => panic!("expected the end, got {other:?}"),
     }
+}
+
+/// The images of a decision context are the build's. The plan gives the rows of the case only, after them, and the
+/// hash covers the id of each image of the read.
+#[test]
+fn a_decision_reads_the_images_of_its_context_and_of_its_case() {
+    if absent() {
+        return;
+    }
+    let fam = family_with(&[
+        (IMAGE0, png_of(213, 118)),
+        (IMAGE1, png_of(80, 41)),
+        (SMALL, png_of(40, 40)),
+    ]);
+    let ctx = |id: &str| {
+        context(json!({"thinking": false, "messages": [
+            {"role": "user", "content": [image(id, "image/png"), {"type": "text", "text": "What is it?"}]}
+        ]}))
+    };
+    let spec = photo_spec();
+    let asked = asked();
+    let (c0, c1) = (ctx(IMAGE0), ctx(SMALL));
+    let (r0, r1) = (fam.render(&c0, false).unwrap(), fam.render(&c1, false).unwrap());
+    let input = |c, r| DecisionInput {
+        context: Some((c, r)),
+        spec: &spec,
+        case: "the case",
+        asked: &asked,
+    };
+    let with = read(&fam, &input(&c0, &r0), &[(IMAGE1, "image/png")]);
+    assert_eq!(with.media.len(), 1);
+    assert_eq!(with.media[0].span.id, IMAGE1);
+    assert!(with.media[0].span.first > r0.media[0].first + r0.media[0].count);
+    assert!(with.media[0].span.first >= r0.end);
+    assert_eq!(with.prefix.iter().filter(|t| **t == IMAGE_TOKEN).count(), 4);
+    let text = read(&fam, &input(&c0, &r0), &[]);
+    assert!(text.media.is_empty());
+    assert_ne!(text.hash, with.hash);
+    // Another image in the context is another read, though the text of the read is the same.
+    let other = read(&fam, &input(&c1, &r1), &[]);
+    assert_ne!(text.hash, other.hash);
+    assert_eq!(text.prefix, other.prefix);
+}
+
+/// A case of a refusal: what it is, its case media, the member that the error names, and words of the message.
+type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a str, &'a str);
+
+/// Each refusal of a case image names `case_media[i]`, and a queue read refuses each image (spec 11.18, "Reads").
+#[test]
+fn a_case_image_that_the_family_cannot_read_is_a_400_that_names_it() {
+    if absent() {
+        return;
+    }
+    let fam = family_with(&[
+        (SMALL, png_of(213, 118)),
+        (WIDE, png_of(4097, 40)),
+        (JUNK, b"not a png".to_vec()),
+    ]);
+    let spec = photo_spec();
+    let asked = asked();
+    let input = DecisionInput {
+        context: None,
+        spec: &spec,
+        case: "the case",
+        asked: &asked,
+    };
+    let refused = |fam: &Inkling2Family, input: &DecisionInput<'_>, media: &[(&str, &str)]| match fam
+        .decision_read_with_media(input, &objects(media))
+    {
+        Err(FamilyError::Client(e)) => (e.param.unwrap_or_default(), e.message),
+        Err(other) => panic!("expected a client error, got {other:?}"),
+        Ok(_) => panic!("expected a client error, got a plan"),
+    };
+    let cases: [Case; 5] = [
+        (
+            "a side of 4,097 px",
+            &[(SMALL, "image/png"), (WIDE, "image/png")],
+            "case_media[1]",
+            "1 to 4096 px",
+        ),
+        (
+            "bytes that are no PNG",
+            &[(JUNK, "image/png")],
+            "case_media[0]",
+            "Send a PNG or a JPEG",
+        ),
+        (
+            "a GIF",
+            &[(SMALL, "image/png"), (SMALL, "image/gif")],
+            "case_media[1]",
+            "image/png and image/jpeg",
+        ),
+        (
+            "an absent object",
+            &[(ABSENT, "image/png")],
+            "case_media[0]",
+            "is not on this server",
+        ),
+        (
+            "an absent second object",
+            &[(SMALL, "image/png"), (ABSENT, "image/png")],
+            "case_media[1]",
+            ABSENT,
+        ),
+    ];
+    for (what, media, param, says) in cases {
+        let (p, message) = refused(&fam, &input, media);
+        assert_eq!(p, param, "{what}: {message}");
+        assert!(message.contains(says), "{what}: {message}");
+        assert!(message.starts_with("nothing ran"), "{what}: {message}");
+    }
+    let bare = Inkling2Family::from_dir(&mini_dir()).unwrap();
+    let (p, message) = refused(&bare, &input, &[(SMALL, "image/png")]);
+    assert_eq!(p, "case_media[0]");
+    assert!(message.contains("no objects"), "{message}");
+
+    // A queue read holds no image: not in its case, and not in its context.
+    let queue = |content: Value| {
+        context(json!({
+            "thinking": false,
+            "queue": "next",
+            "tools": [{"name": "next", "input_schema": {"type": "object", "properties": {"answers": {
+                "type": "object", "properties": {"v": {"type": "string", "enum": ["A", "B"]}}
+            }}}}],
+            "messages": [
+                {"role": "user", "content": content},
+                {"role": "assistant", "tool_calls": [{"id": "c0", "name": "next", "input": {}}]}
+            ]
+        }))
+    };
+    let text = queue(json!("go"));
+    let r = fam.render(&text, false).unwrap();
+    let q = DecisionInput {
+        context: Some((&text, &r)),
+        ..input
+    };
+    let (p, message) = refused(&fam, &q, &[(SMALL, "image/png")]);
+    assert_eq!(p, "case_media[0]");
+    assert!(message.contains("queue read"), "{message}");
+    assert!(fam.decision_read_with_media(&q, &[]).is_ok());
+    let pictured = queue(json!([{"type": "text", "text": "go"}, image(SMALL, "image/png")]));
+    let r = fam.render(&pictured, false).unwrap();
+    let q = DecisionInput {
+        context: Some((&pictured, &r)),
+        ..input
+    };
+    let (p, message) = refused(&fam, &q, &[]);
+    assert_eq!(p, "messages[0].content[1]");
+    assert!(message.contains("queue read"), "{message}");
 }

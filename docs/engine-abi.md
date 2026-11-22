@@ -1558,6 +1558,20 @@ of cells and 10 rings.
 - A ring holds more rows than the window of 1,024. Reason: a block of 512 writes its keys before its attention
   reads them. Its first query still needs the key 1,023 positions before it. The keys of one block can span
   1,535 positions (review by ChatGPT through kaibo, 2026-11-21).
+- Each position of the longest slot also adds 3,120 bytes to the term `work`: the scratch of the attention for a
+  block of 512. Thus a position costs 68,656 bytes at 3 cycles, and 101,424 bytes at up to 5.
+- **The largest slot, as measured.** The card run of 2026-11-21 measured one slot on one B70 card, with a feed
+  block of 512 (milestone 35 step 11). Each size is the largest slot whose buffers all stay in the memory of the card:
+  - With `extra_runs` 24: 164,352 positions. The term `kv` is 11,781,439,488 bytes, and the process holds
+    33,374,960 KiB of the card. At 164,864 positions, 130,732 KiB go to system memory.
+  - With `extra_runs` 48: 106,496 positions. The term `kv` is 11,984,683,008 bytes. At 107,008 positions, a part
+    goes to system memory.
+- **No refusal past the card.** The open does not refuse a slot that does not fit. The driver puts the buffers that
+  do not fit in system memory. A slot of 262,144 positions opens, and its terms plan about 40.6 GB on a card of
+  34.4 GB. Then a block of 512 from position 0 takes 4.0 to 5.0 s, where it takes 0.78 s on the card.
+- The ledger does not stop it either. The budget of a card in the B70 example is 32 GiB. With it, the ledger admits
+  up to 170,585 positions at 24 and 110,533 at 48. The driver and the kernels take about 0.24 GB more than the terms.
+  Thus a profile names a slot of at most 164,352 positions at 3 cycles.
 
 **Positions.** The model has no rotary embedding.
 
@@ -1650,8 +1664,9 @@ family library. It is the oracle of the family and of the device ops.
   each text part is a block of its own, as in the reference. A message of text parts only stays one block.
 - **Roles.** An image part of a `system` or an `assistant` message is a 400 that names the part. The template
   refuses such a part too.
-- **Decisions.** A decision whose context holds an image part, or that names `case_media`, is a 400 that names the
-  member. A later step adds media to the reads.
+- **Decisions.** A plain read holds the images of its context and of its `case_media` (spec 11.18, "Reads"). The
+  case turn holds each object of `case_media` in its order, then the text of the case. An error of a case image
+  names `case_media[i]`. A queue read refuses each image with a 400 that names it.
 - **Objects.** The process gives the family a reader of the objects of this machine, as for LFM3. A family with no
   reader refuses an image part with a 400 that names the part.
 
@@ -1851,7 +1866,18 @@ Each rule is **Proposed** (Claude Opus 5.5, 2026-11-21).
   the host form can choose another expert, and the rows after that position differ more.
   - The prose of the prompt "longer", repeated to 2,200 positions, flips a route at position 1,295. There the two keys
     of layer 11 differ by 4.4e-6 in the host form. The logits after it differ by up to 1.3.
-  - Thus the gate of a ring that wraps feeds ids from a seeded generator, which flip no route.
+  - Thus the gate of a ring that wraps feeds ids from a seeded generator, which flip no route in 2,200 positions.
+  - Seeded ids also flip a route in a longer context. At position 1,527 of the long gate (`tests/xe_long.rs`), the
+    route of layer 17 in cycle 2 is at a near tie. In the host form its eighth key is 0.253102571 (expert 0), and
+    its ninth key is 0.253102511 (expert 96): a gap of 6.0e-8. The card picks expert 96. The logits differ by 0.56
+    at that position and by 0.055 at the next. Later they differ by about 2e-3 to 9e-3, and the argmax agrees.
+  - The host form with sums of `f32` in its attention picked expert 96 there too. Its first flip was at 4,846, in
+    layer 7 of cycle 2. There the keys were 0.172177047 (expert 74) and 0.172176898 (expert 17), a gap of 1.5e-7.
+    Thus a gap below about 2e-7 can go either way.
+  - Thus a long gate compares the host form from position 0 only before the first flip. After it, the host form
+    runs each checked block from the state that the card read.
+  - The host form sums its attention in `f64`. Sums of `f32` in key order drift with the count of keys. From one
+    state at 130,048 positions, they moved the logits by up to 1.6e-2.
 - **The identity.** The engine names `inkling2-mini` or `inkling2-varloop`. The tokenizer hash and the template
   come from `nagaya-text-inkling2` (`spec::text_facts`). Thus the hash is `sha256:` of the whole `tokenizer.json`,
   and the check of the registry at the start compares like with like (spec 11.3).

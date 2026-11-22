@@ -4,17 +4,21 @@ use std::collections::HashSet;
 
 use gogi_proto::context::Context;
 use gogi_proto::decision::{check_queue_schema, queue_call, queue_tool};
+use gogi_proto::objects::ObjectRef;
 use gogi_proto::spec::{QuestionKind, Spec};
 use nagaya_council::family::{
-    Advance, Asked, Continues, ControlHit, DecisionInput, FamilyError, RawRead, ReadDone, ReadPlan, ReadStep, Rendering,
+    Advance, Asked, Continues, ControlHit, DecisionInput, FamilyError, MediaInput, RawRead, ReadDone, ReadPlan,
+    ReadStep, Rendering,
 };
+use nagaya_jinja::Json;
 
-use super::Inkling2Family;
-use super::messages::{messages_json, tools_json};
+use super::messages::{ImagePart, case_json, messages_json, tools_json};
 use super::refusal;
+use super::{Inkling2Family, expand};
 use crate::tokenizer::{Tokenizer, check_text};
 
-const ANSWER: &str = "Answer:";
+/// The end of a question turn: the turn of the model, and the words before the letter (spec 11.18, "Reads").
+const ANSWER_TURN: &str = "<|message_model|><|content_text|>Answer:";
 
 pub(crate) fn raw_read(
     family: &Inkling2Family,
@@ -227,14 +231,30 @@ impl Cursor {
 pub(crate) fn decision_read(
     family: &Inkling2Family,
     input: &DecisionInput<'_>,
+    case_media: &[ObjectRef],
 ) -> Result<Box<dyn ReadPlan>, FamilyError> {
     check_asked(family, input.spec, input.asked)?;
     if let Some((context, rendering)) = input.context
         && queue_call(context).is_some()
     {
+        // spec 11.18, "Reads": the case of a queue read is the result of its call, so the read holds no image.
+        if let Some(part) = family.image_parts(context)?.first() {
+            return Err(FamilyError::client_param(
+                part.param(),
+                "nothing ran: a queue read of Inkling 2 holds no image. Send the decision with a context that is not \
+                 a queue.",
+            ));
+        }
+        if !case_media.is_empty() {
+            return Err(FamilyError::client_param(
+                "case_media[0]",
+                "nothing ran: the case of a queue read is the result of its call, which holds no image. Send the \
+                 decision with no case_media, or with a context that is not a queue.",
+            ));
+        }
         return queue_read(family, context, rendering, input.spec, input.case, input.asked);
     }
-    plain_read(family, input)
+    plain_read(family, input, case_media)
 }
 
 struct PlainStep {
@@ -242,21 +262,35 @@ struct PlainStep {
     letters: Vec<u32>,
 }
 
+/// A read with no queue: the case turn is the prefix, and each question has a turn of its own after it (spec 11.18,
+/// "Reads").
 struct PlainPlan {
+    prefix: Vec<u32>,
     control_text: Vec<ControlHit>,
     steps: Vec<PlainStep>,
     cursor: Cursor,
     rendered_hash: String,
     room: usize,
+    /// The record and the rows of each image of the case.
+    media: Vec<MediaInput>,
 }
 
 impl ReadPlan for PlainPlan {
     fn prefix(&self) -> &[u32] {
-        &[]
+        &self.prefix
     }
 
     fn control_text(&self) -> &[ControlHit] {
         &self.control_text
+    }
+
+    fn media(&self) -> Vec<MediaInput> {
+        self.media.clone()
+    }
+
+    /// The case turn holds no text of the spec, so the store can hold a head at its end.
+    fn prefix_is_head(&self) -> bool {
+        true
     }
 
     fn room(&self) -> usize {
@@ -284,65 +318,160 @@ impl ReadPlan for PlainPlan {
     }
 }
 
-fn plain_read(family: &Inkling2Family, input: &DecisionInput<'_>) -> Result<Box<dyn ReadPlan>, FamilyError> {
-    let mut base_escaped = String::new();
-    let base_tokens = match input.context {
-        Some((ctx, rendering)) => {
-            let msgs = messages_json(&ctx.messages)?;
-            let tools = tools_json(&ctx.tools);
-            let rendered = family.run(&msgs, &tools, ctx.thinking)?;
-            if !rendered.tokens.starts_with(&rendering.tokens[..rendering.end]) {
-                return Err(FamilyError::internal(
-                    "the context rendering does not match the context tokens; render the context again",
+/// The image parts of the case turn at message `message`, one for each object of `case_media`, in order. An object
+/// of a media type that the family does not read is a client error that names it.
+fn case_parts(message: usize, case_media: &[ObjectRef]) -> Result<Vec<ImagePart>, FamilyError> {
+    case_media
+        .iter()
+        .enumerate()
+        .map(|(i, object)| {
+            if !crate::media::MEDIA_INPUTS.contains(&object.mime.as_str()) {
+                return Err(FamilyError::client_param(
+                    case_param(i),
+                    format!(
+                        "nothing ran: Inkling 2 reads {}, not {}. Send one of those.",
+                        crate::media::MEDIA_INPUTS.join(" and "),
+                        object.mime
+                    ),
                 ));
             }
-            base_escaped = rendered.escaped;
-            rendered.tokens
-        }
-        None => Vec::new(),
+            Ok(ImagePart {
+                message,
+                part: i,
+                id: object.id.clone(),
+                mime: object.mime.clone(),
+            })
+        })
+        .collect()
+}
+
+fn case_param(i: usize) -> String {
+    format!("case_media[{i}]")
+}
+
+fn plain_read(
+    family: &Inkling2Family,
+    input: &DecisionInput<'_>,
+    case_media: &[ObjectRef],
+) -> Result<Box<dyn ReadPlan>, FamilyError> {
+    // spec 11.18, "Reads": the effort of the context, or thinking off with no context.
+    let (mut msgs, tools, thinking, mut parts, context) = match input.context {
+        Some((ctx, rendering)) => (
+            messages_json(&ctx.messages)?,
+            tools_json(&ctx.tools),
+            ctx.thinking,
+            family.image_parts(ctx)?,
+            &rendering.tokens[..rendering.end],
+        ),
+        None => (Vec::new(), Vec::new(), false, Vec::new(), &[][..]),
     };
     let mut control_text = Vec::new();
     if !input.spec.instructions.is_empty() {
         control_text.extend(family.hits("spec", &input.spec.instructions));
     }
     control_text.extend(family.hits("spec", &input.spec.input_label));
-    control_text.extend(family.hits("case", input.case));
 
-    let escaped_case = family.escaped(input.case)?;
-    let escaped_label = family.escaped(&input.spec.input_label)?;
+    let case_text = format!("{}:\n{}", input.spec.input_label, input.case);
+    let case_index = msgs.len();
+    let case = case_parts(case_index, case_media)?;
+    msgs.push(case_json(&case_text, case.len()));
+    let case_turn = family.run(&msgs, &tools, thinking)?;
+    let objects: Vec<String> = parts.iter().chain(&case).map(|p| p.id.clone()).collect();
+    let context_parts = parts.len();
+    parts.extend(case);
+    let (prefix, media) = expand_read(family, &case_turn.tokens, context, &parts, context_parts)?;
+
     let mut steps = Vec::with_capacity(input.asked.len());
     let mut max_feed = 0usize;
-    let mut hash_text = String::new();
+    let mut read_text = case_turn.escaped.clone();
     for asked in input.asked {
         let q = question_layer(input.spec, asked.question)?;
         control_text.extend(hits_of(family, "spec", &q.question_client));
-        let escaped_q = family.escaped(&q.text)?;
-        let step_escaped = format!(
-            "<|message_user|><|content_text|>{escaped_q}<|end_message|><|message_model|><|content_text|>{escaped_label}:\n{escaped_case}<|end_message|><|message_model|><|content_text|>{ANSWER}"
-        );
-        let full_escaped = format!("{base_escaped}{step_escaped}");
-        let full_tokens = family.encode(&full_escaped)?;
-        if !full_tokens.starts_with(&base_tokens) {
+        let mut with = msgs.clone();
+        with.push(Json::Object(vec![
+            ("role".to_string(), Json::Str("user".to_string())),
+            ("content".to_string(), Json::Str(q.text)),
+        ]));
+        let escaped = format!("{}{ANSWER_TURN}", family.run(&with, &tools, thinking)?.escaped);
+        let ids = family.encode(&escaped)?;
+        // Each question goes on from the tokens of the case turn, so the model state is the same.
+        let Some(turn) = escaped
+            .strip_prefix(case_turn.escaped.as_str())
+            .filter(|_| ids.starts_with(&case_turn.tokens))
+        else {
             return Err(FamilyError::internal(
-                "the question turn changed a token border of the context; check the context rendering",
+                "the question turn changes the tokens of the case turn. The rendering has a token border it cannot \
+                 keep.",
             ));
-        }
-        let feed = full_tokens[base_tokens.len()..].to_vec();
+        };
+        read_text.push_str(turn);
+        let feed = ids[case_turn.tokens.len()..].to_vec();
         max_feed = max_feed.max(feed.len());
         let letters: Vec<u32> = asked.options.iter().map(|&opt| family.letters[opt]).collect();
         steps.push(PlainStep { feed, letters });
-        if hash_text.is_empty() {
-            hash_text = full_escaped;
-        }
     }
-    let rendered_hash = hash_of_escaped(family.tokenizer(), &hash_text)?;
+    control_text.extend(family.hits("case", input.case));
+    // spec 11.11, "Media in a decision": the hash covers the text, then the id of each image of the read in order.
+    let mut text = family.tokenizer().unescape(&read_text).map_err(refusal)?;
+    for id in &objects {
+        text.push('\n');
+        text.push_str(id);
+    }
     Ok(Box::new(PlainPlan {
+        prefix,
         control_text,
         steps,
         cursor: Cursor::new(),
-        rendered_hash,
+        rendered_hash: gogi_proto::canon::content_id(text.as_bytes()),
         room: max_feed + 1,
+        media,
     }))
+}
+
+/// The prefix of a plain read in the token space of the engine, and the record and the rows of each image of the
+/// case. `tokens` holds one placeholder for each part of `parts`: the context's `context_parts` first, then the case's.
+/// Each becomes the count of its image, as in a rendering. The expanded tokens must begin with `context`.
+fn expand_read(
+    family: &Inkling2Family,
+    tokens: &[u32],
+    context: &[u32],
+    parts: &[ImagePart],
+    context_parts: usize,
+) -> Result<(Vec<u32>, Vec<MediaInput>), FamilyError> {
+    let param = |i: usize, part: &ImagePart| match i.checked_sub(context_parts) {
+        Some(j) => case_param(j),
+        None => part.param(),
+    };
+    let grids = parts
+        .iter()
+        .enumerate()
+        .map(|(i, part)| family.grid_named(part, &param(i, part)))
+        .collect::<Result<Vec<_>, FamilyError>>()?;
+    let placeholders = Rendering {
+        tokens: tokens.to_vec(),
+        end: tokens.len(),
+        boundaries: Vec::new(),
+        control_text: Vec::new(),
+        media: Vec::new(),
+    };
+    let expanded = expand(placeholders, parts, &grids)?;
+    if !expanded.tokens.starts_with(context) {
+        return Err(FamilyError::internal(
+            "the read does not extend the rendering of its context. The rendering is not the context's.",
+        ));
+    }
+    let case_spans = &expanded.media[context_parts..];
+    if case_spans.iter().any(|span| span.first < context.len()) {
+        return Err(FamilyError::internal(
+            "an image of the case is inside the tokens of the context. The rendering is not the context's.",
+        ));
+    }
+    let media = case_spans
+        .iter()
+        .enumerate()
+        .map(|(j, span)| family.media_input_named(span, &case_param(j)))
+        .collect::<Result<Vec<_>, FamilyError>>()?;
+    Ok((expanded.tokens[context.len()..].to_vec(), media))
 }
 
 struct QueuePlan {

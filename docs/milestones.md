@@ -400,6 +400,7 @@ Do the steps in this order. Each step ends with the checks green.
      the family of LFM3 needs its table. Thus `lfm3` stays resident, and `inkling2-mini` is on demand on card 0. A
      load names `lfm3` in `unload` and takes about 15 s, and the engine stays until another load. Its family reads
      `INKLING2_MODEL_DIR` from the unit. Live: a chat and the counts 1 and 5 gave replies.
+   - The gogi suite through the live process on `inkling2-mini`, build `b803170`: 500 ok, 0 FAIL, 19 skip.
 7. **Cycles in a call.** The context member `cycles` chooses 1 to 5 cycles. Card gate: the research model against
    the reference at each count. Mini takes the same counts, out of the range of its training.
    - The engine is done (`xe_cycles.rs`, 2026-11-21). With a reserve of 48 runs, it runs 1 to 5 cycles. A pass of 4
@@ -421,13 +422,57 @@ Do the steps in this order. Each step ends with the checks green.
      positions, in one block, in a cut inside image 1, and in blocks of 64. Each split gives the top-64 logits
      within 2.1e-5 of the oracle and the logsumexp within 3.8e-6. The three splits give the same bits, and the same
      split twice too. The tower runs once for each image, also for image 1 in 4 blocks. One block takes 523 ms.
-   - Open: the time of the tower for an image of 10,609 tokens, against `max_quantum_ms`.
+   - The largest image is 4,096 by 4,096 px, 10,609 tokens. Its tower takes about 56,780 ms in the pass of its first
+     block (`tests/xe_long.rs`, 2026-11-21). That is 28 times `max_quantum_ms` of 2,000 ms. A later block of
+     the image takes 843 ms. A second feed of the same image reads the held rows, and its tower does not run.
    - Each side of an image is 1 to 4,096 px, so an image has at most 10,609 tokens. Amy, 2026-11-21: "yep, match
      the model card. use the 4096 rule". A side below 40 px pads, as the reference does. Amy chose it the same day,
      when the gogi suite sent an image of 8 by 8 px. The council never resizes an image.
 10. **Drafts.** The MTP head drafts tokens, and a pass checks them. This step waits (question 3).
 11. **Long contexts.** The model reads up to 1,048,576 positions. Measure the ledger cost and the speed at 256K.
+    - The cost of a slot is measured on 2026-11-21 (engine-abi "The cost of a slot"). One card holds a slot of
+      164,352 positions at 3 cycles, and 106,496 at up to 5. A position costs 68,656 bytes at 3 cycles.
+    - The open and the ledger do not refuse a slot that does not fit the card. A slot of 262,144 positions opens,
+      and the driver puts a part of it in system memory. Then a block takes 4.0 to 5.0 s, not 0.78 s. Thus 256K
+      does not run on one card at the speed of the card.
+    - The card gate `tests/xe_long.rs` feeds 130,560 seeded ids into a slot of 131,072, in blocks of 512, and
+      decodes 8 steps after them. The host form runs from position 0 up to 1,536. At 1,527 a route flips at a near
+      tie (engine-abi "A route near a tie"). Thus later, the host form runs each checked block from the state that
+      the card read. There are 8 such blocks, from 512 to 130,048.
+    - The gate passed on 2026-11-21. Its 57 rows are within 2.0e-5 of the host form, and each argmax agrees. The
+      rows from position 0, the rows of the 8 blocks and the 8 decode steps each stay within 2.0e-5. The gate takes
+      about 20 minutes, most of it in the host form.
+    - The gate found a defect of the host form: it summed the attention in `f32`, and that sum drifts with the
+      count of keys. Its logits moved by 4.8e-2 at a decode step after 130,560 positions. The host form sums in
+      `f64` now (`acbccb2`).
+    - The time of a block of 512 tokens at each position:
+
+      | Position | 0 | 8,192 | 33,280 | 66,048 | 130,048 |
+      |---|---|---|---|---|---|
+      | Block | 790 ms | 848 ms | 1,027 ms | 1,279 ms | 1,761 ms |
+      | Tokens each second | 648 | 604 | 499 | 400 | 291 |
+
+      The feed of 130,568 positions took 339 s. The slowest pass took 1,768 ms, within `max_quantum_ms` of 2,000 ms.
+    - The time of a decode step, the median of 8 steps:
+
+      | Position | 1,024 | 8,704 | 32,768 | 65,536 | 130,560 |
+      |---|---|---|---|---|---|
+      | Step | 69.1 ms | 71.7 ms | 73.9 ms | 82.6 ms | 97.9 ms |
 12. **Trial and review.** A trial with Amy, and a kaibo review round with a cast of another model family.
+    - Round 1 ran on 2026-11-21 with DeepSeek, Gemini and ChatGPT (`gpt-plan`). The cast `gpt` had no credits.
+    - Not taken: Gemini said the window reads 2,048 keys and the block outputs overflow. The window is 1,024
+      (`inkling2_attn_helpers.cl:24`), `BLOCK` is 6 (`host/weights.rs:22`), and the card gates of the window and
+      of the 24 messages pass.
+    - To fix, after step 8 merges, with a test each:
+      - `extra_runs` changes the parts of a state but not the identity, so two reserves share one recipe.
+      - The plan checks the shape of a few tensors only, and the load panics on a tensor that is not there.
+      - A snapshot holds the stale rows of the reserve that a count does not reach. Thus one recipe can get two
+        content ids. A restore loses the count of the slot, so its first pass can run at another count.
+      - The probe of the oracle clears a slot before it checks the probe. `last_error` is never cleared.
+      - The ABI still says that a pass with rows is refused, and that images come in step 9.
+      - The family's template is not compared with the template of the identity, and the template id does not
+        cover the placeholders of an image.
+      - The tower of an image of 10,609 tokens takes about 56,780 ms, and `max_quantum_ms` is 2,000 ms (step 9).
 
 **Speed.** Each finding about the speed of the engine goes into milestone 36, not into this milestone.
 
@@ -510,10 +555,17 @@ contexts I think; we can focus on other perf gains first". Thus the items of the
 5. **The chunk size of the attention.** It is 256 keys on a sliding layer and 2,048 on a full layer (Proposed in
    the binding). Measure other sizes for a decode step and for a prefill. A new size changes bits.
 6. **The tower of an image** (milestone 35 step 9). An image of 4,096 by 4,096 px has 42,436 patches, and its
-   attention reads every pair. Measure it first; then decide between a flash form of that attention and a limit.
-7. **Long contexts.** A slot of one card holds about 200K positions at 3 cycles. The keys and values in `bf16` would
-   hold about twice as many, but they change bits: a new identity and a new gap. Two cards could hold the keys of
-   the full layers on the second card.
+   attention reads every pair. Its tower takes about 56,780 ms in one pass, 28 times `max_quantum_ms` (milestone 35
+   step 11). Decide between a flash form of that attention, a tower in several quanta, and a limit.
+7. **Long contexts.** A slot of one card holds 164,352 positions at 3 cycles, and 106,496 at up to 5 (milestone 35
+   step 11). The keys and values in `bf16` would hold about twice as many, but they change bits: a new identity and a
+   new gap. Two cards could hold the keys of the full layers on the second card.
+   - The attention of a block grows with the count of keys. A block of 512 at 130,048 takes 971 ms more than at
+     position 0. The 8 full runs then do about 3.3 TFLOP of `f32` sums, so the op runs at about 3.4 TFLOP/s.
+   - Extended in a line, a block at 164,352 takes about 2,020 ms, past `max_quantum_ms`. A slot of that length needs
+     a faster attention or a smaller feed block.
+   - A decode step at 130,560 takes 28.8 ms more than at 1,024. It reads the keys and values of 8 full runs: about
+     8.6 GB. At 608 GB/s that sets a floor near 14 ms, so the op reads at about half of the bandwidth.
 
 **Then the batch of decode rows** (Amy's order: after the items above).
 

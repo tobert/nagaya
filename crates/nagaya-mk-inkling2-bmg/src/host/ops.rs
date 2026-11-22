@@ -224,13 +224,18 @@ pub fn attend(q: &[f32], keys: &[&[f32]], values: &[&[f32]], bias: &[f32], sink:
     let scores: Vec<f32> = keys.iter().zip(bias).map(|(k, b)| dot(q, k) * scaling + b).collect();
     let max = scores.iter().copied().fold(sink, f32::max);
     let weights: Vec<f32> = scores.iter().map(|s| (s - max).exp()).collect();
-    let total = weights.iter().sum::<f32>() + (sink - max).exp();
-    out.fill(0.0);
+    // The sums are `f64`. Sums of `f32` in key order drift with the count of keys: at 65,024 positions the logits
+    // moved by 3.5e-4, and at 130,560 by 4.8e-2 (milestone 35 step 11).
+    let total = weights.iter().map(|w| *w as f64).sum::<f64>() + (sink - max).exp() as f64;
+    let mut sums = vec![0f64; out.len()];
     for (w, v) in weights.iter().zip(values) {
-        let p = w / total;
-        for (o, x) in out.iter_mut().zip(v.iter()) {
-            *o += p * x;
+        let p = *w as f64 / total;
+        for (s, x) in sums.iter_mut().zip(v.iter()) {
+            *s += p * *x as f64;
         }
+    }
+    for (o, s) in out.iter_mut().zip(&sums) {
+        *o = *s as f32;
     }
 }
 
@@ -466,6 +471,43 @@ mod tests {
 
     fn close(a: f32, b: f32, tol: f32) -> bool {
         (a - b).abs() <= tol * (1.0 + b.abs())
+    }
+
+    /// The attention over 131,072 keys gives the sums of `f64` to 1e-6. Sums of `f32` in key order drift by more at
+    /// such a length (milestone 35 step 11).
+    #[test]
+    fn the_attention_over_131072_keys_keeps_its_sums_exact() {
+        let n = 131_072;
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            ((state >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0
+        };
+        let bias: Vec<f32> = (0..n).map(|_| 2.0 * next()).collect();
+        let rows: Vec<Vec<f32>> = (0..n)
+            .map(|_| (0..HEAD_DIM).map(|_| 0.5 + 0.5 * next()).collect())
+            .collect();
+        let keys = vec![0f32; HEAD_DIM];
+        let key_refs: Vec<&[f32]> = (0..n).map(|_| keys.as_slice()).collect();
+        let value_refs: Vec<&[f32]> = rows.iter().map(|r| r.as_slice()).collect();
+        let q = vec![0f32; HEAD_DIM];
+        let mut out = vec![0f32; HEAD_DIM];
+        attend(&q, &key_refs, &value_refs, &bias, 0.0, &mut out);
+        let max = bias.iter().copied().fold(0.0f32, f32::max) as f64;
+        let weights: Vec<f64> = bias.iter().map(|b| ((*b - max as f32).exp()) as f64).collect();
+        let total: f64 = weights.iter().sum::<f64>() + (-max).exp();
+        let worst = (0..HEAD_DIM)
+            .map(|d| {
+                let want: f64 = weights.iter().zip(&rows).map(|(w, r)| w * r[d] as f64).sum::<f64>() / total;
+                (out[d] as f64 - want).abs()
+            })
+            .fold(0.0, f64::max);
+        assert!(
+            worst < 1e-6,
+            "the attention over {n} keys differs from the sums of f64 by {worst:.3e}"
+        );
     }
 
     #[test]
