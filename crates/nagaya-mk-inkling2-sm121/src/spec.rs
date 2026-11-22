@@ -481,6 +481,8 @@ pub fn identity_numbers(config: &Config) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
     map.insert("quant".to_owned(), QUANT_MODE.to_owned());
     map.insert("max_block".to_owned(), config.max_block.to_string());
+    map.insert("ring_rows".to_owned(), RING_ROWS.to_string());
+    map.insert("cycles".to_owned(), DEFAULT_CYCLES.to_string());
     map.insert("extra_runs".to_owned(), config.extra_runs.to_string());
     map.insert("state".to_owned(), STATE_LAYOUT.to_string());
     #[cfg(feature = "cuda")]
@@ -685,5 +687,35 @@ mod tests {
         );
         let cycles = lim.cycles.unwrap();
         assert_eq!((cycles.min, cycles.max, cycles.default), (1, 3, 3));
+    }
+
+    #[test]
+    fn the_identity_holds_each_number_that_moves_the_bits() {
+        let cfg = Config {
+            model_dir: PathBuf::from("unused"),
+            slots: vec![SLOT_TOKENS],
+            max_block: 256,
+            extra_runs: 36,
+        };
+        let nums = identity_numbers(&cfg);
+        let host: Vec<(&str, &str)> = nums
+            .iter()
+            .filter(|(key, _)| !matches!(key.as_str(), "nvcc" | "cubin_blake3"))
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect();
+        // The B70 identity holds the same keys, except `quant`, which only this engine has.
+        assert_eq!(
+            host,
+            vec![
+                ("cycles", "3"),
+                ("extra_runs", "36"),
+                ("max_block", "256"),
+                ("quant", QUANT_MODE),
+                ("ring_rows", "2048"),
+                ("state", "2"),
+            ]
+        );
+        assert_eq!(nums.contains_key("nvcc"), cfg!(feature = "cuda"));
+        assert_eq!(nums.contains_key("cubin_blake3"), cfg!(feature = "cuda"));
     }
 }
