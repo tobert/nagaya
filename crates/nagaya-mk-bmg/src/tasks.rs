@@ -1416,6 +1416,10 @@ pub fn attn_residual(
             && disjoint(&outputs, &rows_span(partial, n, k, k)),
         "OP_ATTN_RESIDUAL: the outputs overlap the block outputs or the partial rows"
     );
+    assert!(
+        [block_rows, partial, queries, out].iter().all(|a| a.is_multiple_of(16)),
+        "OP_ATTN_RESIDUAL reads its rows in blocks, so each address must be a multiple of 16 bytes"
+    );
     MkTaskDescriptor {
         a: block_rows,
         b: partial,
@@ -1430,10 +1434,13 @@ pub fn attn_residual(
     }
 }
 
-/// The message gate of `n` positions of `k` values (`OP_MESSAGE_GATE`, host `message_gate`): `y = (1 - tanh(F g)) *
-/// h + tanh(G g) * m`, with `g = D [norm(h), norm(m)]`. `weights` holds the `bf16` matrices of the gate one after
-/// the other: `D [64][2k]`, `F [k][64]` and `G [k][64]`. `y` may be `h`.
-pub fn message_gate(h: u64, m: u64, weights: u64, y: u64, n: u32, k: u32) -> MkTaskDescriptor {
+/// The message gate of `n` positions of `k` values (host `message_gate`): `y = (1 - tanh(F g)) * h + tanh(G g) * m`,
+/// with `g = D [norm(h), norm(m)]`. `weights` holds the `bf16` matrices of the gate one after the other: `D [64][2k]`,
+/// `F [k][64]` and `G [k][64]`. `y` may be `h`. `g` holds `[n][64]` `f32` values between the two tasks.
+///
+/// The first task (`OP_MESSAGE_GATE_DOWN`) writes `g`, and the second (`OP_MESSAGE_GATE`) the output. Thus each task
+/// spreads over all work-groups, and each sum keeps the order of the host `dot`.
+pub fn message_gate(h: u64, m: u64, weights: u64, y: u64, g: u64, n: u32, k: u32) -> [MkTaskDescriptor; 2] {
     assert!(n >= 1, "OP_MESSAGE_GATE takes at least one position");
     assert!(
         k >= 16 && k.is_multiple_of(16),
@@ -1441,23 +1448,48 @@ pub fn message_gate(h: u64, m: u64, weights: u64, y: u64, n: u32, k: u32) -> MkT
     );
     let out = rows_span(y, n, k, k);
     let weight_bytes = 2 * (64 * 2 * k as u64 + 2 * k as u64 * 64);
+    let weight_span = weights..weights + weight_bytes;
     assert!(
         y == h || disjoint(&out, &rows_span(h, n, k, k)),
         "OP_MESSAGE_GATE: the output overlaps the rows h, and it is not h"
     );
     assert!(
-        disjoint(&out, &rows_span(m, n, k, k)) && disjoint(&out, &(weights..weights + weight_bytes)),
+        disjoint(&out, &rows_span(m, n, k, k)) && disjoint(&out, &weight_span),
         "OP_MESSAGE_GATE: the output overlaps the messages or the weights"
     );
-    MkTaskDescriptor {
-        a: h,
-        b: m,
-        c: y,
-        x: weights,
-        n,
-        k,
-        ..task(OP_MESSAGE_GATE)
-    }
+    let gs = rows_span(g, n, 64, 64);
+    assert!(
+        [rows_span(h, n, k, k), rows_span(m, n, k, k), out, weight_span]
+            .iter()
+            .all(|r| disjoint(&gs, r)),
+        "OP_MESSAGE_GATE: the rows g overlap h, the messages, the output or the weights"
+    );
+    assert!(
+        [h, m, weights, y, g].iter().all(|a| a.is_multiple_of(16)),
+        "OP_MESSAGE_GATE reads its rows in blocks, so each address must be a multiple of 16 bytes"
+    );
+    [
+        MkTaskDescriptor {
+            a: h,
+            b: m,
+            c: g,
+            x: weights,
+            n,
+            k,
+            ..task(OP_MESSAGE_GATE_DOWN)
+        },
+        MkTaskDescriptor {
+            a: h,
+            b: m,
+            c: y,
+            x: weights,
+            n,
+            k,
+            p0: g as u32,
+            layer: (g >> 32) as u32,
+            ..task(OP_MESSAGE_GATE)
+        },
+    ]
 }
 
 /// What [`head_clip`] does to each head.

@@ -1,0 +1,9 @@
+# The SHA-256 of the bits of each check of the attention residual and the message gate in tests/xe_layer_ops.rs, on a
+# B70 card. Written 2026-11-22 from main ef74d83. A change of bits changes the engine identity (spec 12.1).
+the attention residual of 1 blocks and 1 queries: sha256:20073123aecdb3b536a7c3549176df48c395b18c67850776960b081d76f48bfe
+the attention residual of 2 blocks and 1 queries: sha256:7c2d0ae51633db6f2aaf4dc91fd3d5f18010040b0af296b748ae62c9be5c1efe
+the attention residual of 1 blocks and 3 queries: sha256:efbb0e0d5caec01a3ed7ca8d01d86fede09ca78adbe014a88ec2870c560d5780
+the attention residual of 1 blocks and 4 queries: sha256:f5ed9fb4f0c4160ff7cb964ead998a7300a7b424c3086923e36ffbe030832fd0
+the attention residual of 4 blocks and 4 queries: sha256:d7a476fc429592026f742223d78dacdf099bf643eda747fd5ad35f1753698add
+the attention residual of 0 blocks and 1 queries: sha256:c7bb77dec92db23986d3feec8f49d06305d174cf1ebb8dd755cf28ab956a945f
+the message gate: sha256:107a52fc481729ba5ab318b2db496773c01402733ba0e152ac70c297f5afe632

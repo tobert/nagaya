@@ -14,8 +14,11 @@
             // a = the block outputs, plane j at a + j * p0 * k; b = the partial rows [n][k]; x = the queries, f32
             // [queries][k]; c = the outputs, plane q at c + q * p0 * k. m = blocks (0 to 4) | queries (1 to 4) << 16.
             // n = positions, k = the width (a multiple of 16), p0 = the rows of a plane, layer = the bits of k^-0.5.
-            // A work-group takes a position: subgroup j takes the norm of row j, then subgroup q * rows + j the
-            // score of query q on row j, then each work item some values of each output.
+            // Each row is 16-byte aligned.
+            // A team of queries * rows subgroups takes a position, and a work-group takes a chunk of `per` positions.
+            // Subgroup (q, j) of a team takes the norm of row j, then the score of query q on that row. When a block
+            // has fewer chunks than work-groups, `splits` work-groups take each chunk. Each one takes the scores
+            // again and writes its part of the outputs. Each value has one order of its sums wherever it runs.
             __global const float* Bo = (__global const float*)task.a;
             __global const float* Xp = (__global const float*)task.b;
             __global const float* Qr = (__global const float*)task.x;
@@ -23,89 +26,239 @@
             uint K = task.k, nb = task.m & 0xFFFFu, nq = task.m >> 16, rows = nb + 1u;
             ulong plane = (ulong)task.p0 * K;
             float scaling = as_float(task.layer);
-            for (uint t = wg_id; t < task.n; t += num_wgs) {
-                for (uint j = sg_id; j < rows; j += num_sgs) {
+            uint team = nq * rows, per = num_sgs / team;
+            uint chunks = (task.n + per - 1u) / per;
+            uint splits = chunks >= num_wgs ? 1u : num_wgs / chunks;
+            uint groups = num_wgs / splits, group = wg_id / splits, part = wg_id % splits;
+            // slm_reduce holds the norm factors [per][rows], and slm_reduce2 the scores, then the weights,
+            // [per][nq][rows].
+            // A chunk of one position first copies its rows and the queries into local memory, when they fit, with
+            // block reads of all subgroups: then each sum waits for local memory, not for global memory.
+            __local float* rs = &slm_part[0][0];
+            uint bpr = K / INKLING2_BLOCK;
+            bool staged = K % INKLING2_BLOCK == 0u && (rows + nq) * K <= INKLING2_SLM_FLOATS;
+            for (uint ch = group; group < groups && ch < chunks; ch += groups) {
+                uint t0 = ch * per, tn = min(per, task.n - t0);
+                bool one = tn == 1u && staged;
+                if (one) {
+                    uint nblk = (rows + nq) * bpr;
+                    for (uint b0 = sg_id; b0 < nblk; b0 += INKLING2_STAGE * num_sgs) {
+                        uint8 v[INKLING2_STAGE];
+#pragma unroll
+                        for (uint u = 0; u < INKLING2_STAGE; u++) {
+                            uint b = min(b0 + u * num_sgs, nblk - 1u), j = b / bpr;
+                            __global const float* src = j < nb    ? Bo + j * plane + (ulong)t0 * K
+                                                        : j == nb ? Xp + (ulong)t0 * K
+                                                                  : Qr + (ulong)(j - rows) * K;
+                            src += (b % bpr) * INKLING2_BLOCK;
+                            v[u] = intel_sub_group_block_read8((__global const uint*)src);
+                        }
+#pragma unroll
+                        for (uint u = 0; u < INKLING2_STAGE; u++) {
+                            uint b = b0 + u * num_sgs;
+                            if (b < nblk) intel_sub_group_block_write8((__local uint*)(rs + b * INKLING2_BLOCK), v[u]);
+                        }
+                    }
+                    barrier(CLK_LOCAL_MEM_FENCE);
+                    if (sg_id < team) {
+                        uint q = sg_id / rows, j = sg_id % rows;
+                        __local const float* r = rs + j * K;
+                        float f = inkling2_rms_factor_block_slm(r, K, lane);
+                        float acc = inkling2_scaled_dot_block_slm(0.0f, rs + (rows + q) * K, true, r, f, K, lane);
+                        acc = inkling2_lane_sum(acc);
+                        if (lane == 0) {
+                            if (q == 0) slm_reduce[j] = f;
+                            slm_reduce2[q * rows + j] = acc * scaling;
+                        }
+                    }
+                } else if (sg_id < tn * team) {
+                    uint p = sg_id / team, s = sg_id % team, q = s / rows, j = s % rows, t = t0 + p;
                     __global const float* r = j < nb ? Bo + j * plane + (ulong)t * K : Xp + (ulong)t * K;
-                    float f = inkling2_sg_rms_factor(r, K, lane);
-                    if (lane == 0) slm_reduce[j] = f;
-                }
-                barrier(CLK_LOCAL_MEM_FENCE);
-                for (uint s = sg_id; s < nq * rows; s += num_sgs) {
-                    uint q = s / rows, j = s % rows;
-                    __global const float* r = j < nb ? Bo + j * plane + (ulong)t * K : Xp + (ulong)t * K;
-                    __global const float* qv = Qr + (ulong)q * K;
-                    float f = slm_reduce[j];
-                    float acc = 0.0f;
-                    for (uint i = lane; i < K; i += 16u) acc = acc + qv[i] * (r[i] * f);
+                    float f = inkling2_rms_factor_block(r, K, lane);
+                    float acc = inkling2_scaled_dot_block(0.0f, Qr + (ulong)q * K, true, r, f, K, lane);
                     acc = inkling2_lane_sum(acc);
-                    if (lane == 0) slm_reduce2[s] = acc * scaling;
+                    if (lane == 0) {
+                        if (q == 0) slm_reduce[p * rows + j] = f;
+                        slm_reduce2[(p * nq + q) * rows + j] = acc * scaling;
+                    }
                 }
                 barrier(CLK_LOCAL_MEM_FENCE);
-                for (uint q = 0; q < nq; q++) {
-                    // Each work item computes the same softmax, so each has the same weights.
-                    float p[5];
+                // The softmax of each query of each position: one work item each.
+                if (lid < tn * nq) {
+                    __local float* sc = slm_reduce2 + lid * rows;
+                    float pr[5];
                     float top = -INFINITY;
-                    for (uint j = 0; j < rows; j++) top = fmax(top, slm_reduce2[q * rows + j]);
+                    for (uint j = 0; j < rows; j++) top = fmax(top, sc[j]);
                     float total = 0.0f;
                     for (uint j = 0; j < rows; j++) {
-                        p[j] = exp(slm_reduce2[q * rows + j] - top);
-                        total = total + p[j];
+                        pr[j] = exp(sc[j] - top);
+                        total = total + pr[j];
                     }
-                    for (uint j = 0; j < rows; j++) p[j] = p[j] / total;
-                    __global float* o = C + q * plane + (ulong)t * K;
-                    for (uint i = lid; i < K; i += lsize) {
-                        float v = 0.0f;
+                    for (uint j = 0; j < rows; j++) sc[j] = pr[j] / total;
+                }
+                barrier(CLK_LOCAL_MEM_FENCE);
+                uint values = tn * nq * K;
+                for (uint e = part * lsize + lid; e < values; e += splits * lsize) {
+                    uint i = e % K, pq = e / K, p = pq / nq, q = pq % nq, t = t0 + p;
+                    __local const float* wq = slm_reduce2 + pq * rows;
+                    float v = 0.0f;
+                    if (one) {
+                        for (uint j = 0; j < rows; j++) v = v + wq[j] * (rs[j * K + i] * slm_reduce[j]);
+                    } else {
                         for (uint j = 0; j < rows; j++) {
                             __global const float* r = j < nb ? Bo + j * plane + (ulong)t * K : Xp + (ulong)t * K;
-                            v = v + p[j] * (r[i] * slm_reduce[j]);
+                            v = v + wq[j] * (r[i] * slm_reduce[p * rows + j]);
                         }
-                        o[i] = v;
                     }
+                    C[q * plane + (ulong)t * K + i] = v;
+                }
+                barrier(CLK_LOCAL_MEM_FENCE);
+            }
+        }
+        else if (op == OP_MESSAGE_GATE_DOWN) {
+#pragma OPENCL FP_CONTRACT OFF
+            // The first step of the message gate (host `message_gate`): g = D [norm(h), norm(m)] of each position,
+            // with the RMS norm of no weight. a = h [n][k]; b = the messages m [n][k]; x = the bf16 weights D
+            // [64][2k]; c = g, f32 [n][64]. n = positions, k = the width (a multiple of 16). Each row is 16-byte
+            // aligned.
+            // A work-group takes a tile of INKLING2_GATE_TILE positions: subgroup 2p + 0 or 1 takes the norm of h or
+            // m of position p, then the rows of D for each position. When a block has fewer tiles than work-groups,
+            // `splits` work-groups share each tile. Each one takes the norms again and a part of the rows.
+            __global const float* Hh = (__global const float*)task.a;
+            __global const float* Mm = (__global const float*)task.b;
+            __global const ushort* Wd = (__global const ushort*)task.x;
+            __global float* Gs = (__global float*)task.c;
+            uint K = task.k, K2 = 2u * K;
+            uint tiles = (task.n + INKLING2_GATE_TILE - 1u) / INKLING2_GATE_TILE;
+            uint splits = tiles >= num_wgs ? 1u : min(num_wgs / tiles, (uint)INKLING2_GATE_RANK);
+            uint groups = num_wgs / splits, group = wg_id / splits, part = wg_id % splits;
+            // A tile of one position first copies h, m and the rows of D of its work-group into local memory with
+            // block reads of all subgroups: then each sum waits for local memory, not for global memory.
+            uint mine = (INKLING2_GATE_RANK - part + splits - 1u) / splits, bpr = K / INKLING2_BLOCK;
+            bool fits = K % INKLING2_BLOCK == 0u && (2u + mine) * K <= INKLING2_SLM_FLOATS;
+            __local float* xs = &slm_part[0][0];
+            __local const ushort* ws = (__local const ushort*)(xs + K2);
+            for (uint tile = group; group < groups && tile < tiles; tile += groups) {
+                uint t0 = tile * INKLING2_GATE_TILE, tn = min((uint)INKLING2_GATE_TILE, task.n - t0);
+                if (tn == 1u && fits) {
+                    // Blocks 0 to 2 bpr - 1 are h and m; then each row of D is bpr blocks of 256 bf16 values.
+                    uint nblk = (2u + mine) * bpr;
+                    for (uint b0 = sg_id; b0 < nblk; b0 += INKLING2_STAGE * num_sgs) {
+                        uint8 v[INKLING2_STAGE];
+#pragma unroll
+                        for (uint u = 0; u < INKLING2_STAGE; u++) {
+                            uint b = min(b0 + u * num_sgs, nblk - 1u), j = b / bpr, o = (b % bpr) * INKLING2_BLOCK;
+                            __global const uint* src = j == 0u ? (__global const uint*)(Hh + (ulong)t0 * K)
+                                : j == 1u ? (__global const uint*)(Mm + (ulong)t0 * K)
+                                          : (__global const uint*)(Wd + (ulong)(part + splits * (j - 2u)) * K2);
+                            v[u] = intel_sub_group_block_read8(src + o);
+                        }
+#pragma unroll
+                        for (uint u = 0; u < INKLING2_STAGE; u++) {
+                            uint b = b0 + u * num_sgs;
+                            if (b < nblk) intel_sub_group_block_write8((__local uint*)xs + b * INKLING2_BLOCK, v[u]);
+                        }
+                    }
+                    barrier(CLK_LOCAL_MEM_FENCE);
+                    if (sg_id < 2u) {
+                        float f = inkling2_rms_factor_block_slm(xs + sg_id * K, K, lane);
+                        if (lane == 0) slm_reduce[sg_id] = f;
+                    }
+                    barrier(CLK_LOCAL_MEM_FENCE);
+                    for (uint j = sg_id; j < mine; j += num_sgs) {
+                        // The values of h, then those of m: the order of the host over [norm(h), norm(m)].
+                        __local const ushort* w = ws + j * K2;
+                        float acc = inkling2_scaled_dot_block_slm(0.0f, w, false, xs, slm_reduce[0], K, lane);
+                        acc = inkling2_scaled_dot_block_slm(acc, w + K, false, xs + K, slm_reduce[1], K, lane);
+                        acc = inkling2_lane_sum(acc);
+                        if (lane == 0) Gs[(ulong)t0 * INKLING2_GATE_RANK + part + splits * j] = acc;
+                    }
+                    barrier(CLK_LOCAL_MEM_FENCE);
+                    continue;
+                }
+                if (sg_id < 2u * tn) {
+                    __global const float* x = (sg_id & 1u ? Mm : Hh) + (ulong)(t0 + sg_id / 2u) * K;
+                    float f = inkling2_rms_factor_block(x, K, lane);
+                    if (lane == 0) slm_reduce[sg_id] = f;
+                }
+                barrier(CLK_LOCAL_MEM_FENCE);
+                // Subgroup (r, p) takes row r of D for position p; the values of h come first, then those of m, as
+                // in the host. A tile reads each row of D once for each of its positions, mostly from the cache.
+                uint items = (INKLING2_GATE_RANK - part + splits - 1u) / splits * tn;
+                for (uint it = sg_id; it < items; it += num_sgs) {
+                    uint r = part + splits * (it / tn), p = it % tn;
+                    __global const ushort* w = Wd + (ulong)r * K2;
+                    ulong row = (ulong)(t0 + p) * K;
+                    float acc = inkling2_scaled_dot_block(0.0f, w, false, Hh + row, slm_reduce[2u * p], K, lane);
+                    acc = inkling2_scaled_dot_block(acc, w + K, false, Mm + row, slm_reduce[2u * p + 1u], K, lane);
+                    acc = inkling2_lane_sum(acc);
+                    if (lane == 0) Gs[(ulong)(t0 + p) * INKLING2_GATE_RANK + r] = acc;
                 }
                 barrier(CLK_LOCAL_MEM_FENCE);
             }
         }
         else if (op == OP_MESSAGE_GATE) {
 #pragma OPENCL FP_CONTRACT OFF
-            // The message gate of each position (host `message_gate`): c = (1 - tanh(F g)) * h + tanh(G g) * m, with
-            // g = D [norm(h), norm(m)] and the RMS norm of no weight. a = h [n][k]; b = the messages m [n][k]; c =
-            // [n][k], which may be a. x = the bf16 weights of the gate, one after the other: D [64][2k], F [k][64]
-            // and G [k][64]. n = positions, k = the width (a multiple of 16). A work-group takes a position:
-            // subgroups 0 and 1 take the two norms, subgroup r the value g[r], and each work item some outputs.
+            // The second step of the message gate (host `message_gate`): c = (1 - tanh(F g)) * h + tanh(G g) * m,
+            // with g from OP_MESSAGE_GATE_DOWN. a = h [n][k]; b = the messages m [n][k]; c = [n][k], which may be a.
+            // x = the bf16 weights of the gate, one after the other: D [64][2k], F [k][64] and G [k][64]. g is f32
+            // [n][64] at p0 | layer << 32. n = positions, k = the width (a multiple of 16). Each row is 16-byte
+            // aligned.
+            // A subgroup takes the output i of a tile of up to INKLING2_GATE_TILE2 positions. Lane l holds the values
+            // l, l + 16, l + 32 and l + 48 of row i of F and of G, so each sum has the order of the host `dot`. Lane
+            // p then takes the output of position p.
             __global const float* Hh = (__global const float*)task.a;
             __global const float* Mm = (__global const float*)task.b;
             __global float* C = (__global float*)task.c;
             uint K = task.k;
-            __global const ushort* Wd = (__global const ushort*)task.x;
-            __global const ushort* Wf = Wd + (ulong)64 * 2 * K;
-            __global const ushort* Wg = Wf + (ulong)K * 64;
-            for (uint t = wg_id; t < task.n; t += num_wgs) {
-                __global const float* h = Hh + (ulong)t * K;
-                __global const float* mm = Mm + (ulong)t * K;
-                if (sg_id < 2u) {
-                    float f = inkling2_sg_rms_factor(sg_id == 0 ? h : mm, K, lane);
-                    if (lane == 0) slm_reduce[sg_id] = f;
-                }
+            __global const ushort* Wf = (__global const ushort*)task.x + (ulong)INKLING2_GATE_RANK * 2 * K;
+            __global const ushort* Wg = Wf + (ulong)K * INKLING2_GATE_RANK;
+            __global const float* Gs = (__global const float*)((ulong)task.p0 | (ulong)task.layer << 32);
+            if (task.n < INKLING2_GATE_TILE2) {
+                // A few positions: work item (t, i) takes output i of position t. g goes to local memory first, and
+                // inkling2_serial_dot gives each sum the order of the host `dot` (measured faster here than a sum
+                // over the lanes in a decode step: 6.2 us against 9.7 us, 2026-11-22).
+                __local float* gl = &slm_part[0][0];
+                for (uint e = lid; e < task.n * INKLING2_GATE_RANK; e += lsize) gl[e] = Gs[e];
                 barrier(CLK_LOCAL_MEM_FENCE);
-                float fh = slm_reduce[0], fm = slm_reduce[1];
-                for (uint r = sg_id; r < 64u; r += num_sgs) {
-                    __global const ushort* w = Wd + (ulong)r * 2 * K;
-                    float s = 0.0f;
-                    for (uint i = lane; i < 2u * K; i += 16u) {
-                        float v = i < K ? h[i] * fh : mm[i - K] * fm;
-                        s = s + bf16_to_f32(w[i]) * v;
+                for (uint e = gsg * 16u + lane; e < task.n * K; e += n_gsg * 16u) {
+                    uint t = e / K, i = e % K;
+                    __local const float* g = gl + t * INKLING2_GATE_RANK;
+                    float forget = tanh(inkling2_serial_dot(Wf + (ulong)i * INKLING2_GATE_RANK, g, INKLING2_GATE_RANK));
+                    float gain = tanh(inkling2_serial_dot(Wg + (ulong)i * INKLING2_GATE_RANK, g, INKLING2_GATE_RANK));
+                    C[e] = (1.0f - forget) * Hh[e] + gain * Mm[e];
+                }
+            }
+            uint tiles = task.n < INKLING2_GATE_TILE2 ? 0u : (task.n + INKLING2_GATE_TILE2 - 1u) / INKLING2_GATE_TILE2;
+            for (uint item = gsg; item < K * tiles; item += n_gsg) {
+                uint i = item % K, t0 = (item / K) * INKLING2_GATE_TILE2;
+                uint tn = min((uint)INKLING2_GATE_TILE2, task.n - t0);
+                ulong wrow = (ulong)i * INKLING2_GATE_RANK;
+                float4 wf = as_float4(convert_uint4(intel_sub_group_block_read_us4(Wf + wrow)) << 16);
+                float4 wg = as_float4(convert_uint4(intel_sub_group_block_read_us4(Wg + wrow)) << 16);
+                float mine_f = 0.0f, mine_g = 0.0f;
+                for (uint p = 0; p < tn; p++) {
+                    float4 gv = as_float4(intel_sub_group_block_read4(
+                        (__global const uint*)(Gs + (ulong)(t0 + p) * INKLING2_GATE_RANK)));
+                    float fs = 0.0f, gs = 0.0f;
+#pragma unroll
+                    for (uint u = 0; u < 4u; u++) {
+                        fs = fs + wf[u] * gv[u];
+                        gs = gs + wg[u] * gv[u];
                     }
-                    s = inkling2_lane_sum(s);
-                    if (lane == 0) slm_reduce2[r] = s;
+                    fs = inkling2_lane_sum(fs);
+                    gs = inkling2_lane_sum(gs);
+                    if (lane == p) {
+                        mine_f = fs;
+                        mine_g = gs;
+                    }
                 }
-                barrier(CLK_LOCAL_MEM_FENCE);
-                __global float* o = C + (ulong)t * K;
-                for (uint i = lid; i < K; i += lsize) {
-                    float forget = tanh(inkling2_serial_dot(Wf + (ulong)i * 64, slm_reduce2, 64u));
-                    float gain = tanh(inkling2_serial_dot(Wg + (ulong)i * 64, slm_reduce2, 64u));
-                    o[i] = (1.0f - forget) * h[i] + gain * mm[i];
+                if (lane < tn) {
+                    ulong at = (ulong)(t0 + lane) * K + i;
+                    float forget = tanh(mine_f);
+                    float gain = tanh(mine_g);
+                    C[at] = (1.0f - forget) * Hh[at] + gain * Mm[at];
                 }
-                barrier(CLK_LOCAL_MEM_FENCE);
             }
         }
         else if (op == OP_HEAD_CLIP) {

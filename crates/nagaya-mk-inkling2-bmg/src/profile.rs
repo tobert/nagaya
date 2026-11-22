@@ -129,6 +129,7 @@ pub fn op_name(op: u16) -> String {
         p::OP_OUTPUT_GATE => "OUTPUT_GATE",
         p::OP_RESIDUAL_CONV => "RESIDUAL_CONV",
         p::OP_SIGMOID_ROUTER => "SIGMOID_ROUTER",
+        p::OP_MESSAGE_GATE_DOWN => "MESSAGE_GATE_DOWN",
         p::OP_INKLING2_ATTN => "INKLING2_ATTN",
         p::OP_INKLING2_ATTN_SUM => "INKLING2_ATTN_SUM",
         p::OP_EXPAND_NVFP4 => "EXPAND_NVFP4",
