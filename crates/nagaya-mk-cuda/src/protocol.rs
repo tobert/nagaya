@@ -16,6 +16,14 @@ pub const RING_DEV_BYTES: usize = MAX_TASKS_PER_CARD * 128;
 /// `t_start`, `t_after_wait`, and `t_end` from `%globaltimer` (nanoseconds).
 pub const PROFILE_WORDS: usize = 3;
 
+/// Threads in a block of the producer shape: warp 0 is the producer, and warps 1 to 8 are the consumers. A block of
+/// this width runs the producer shape. A block of another width runs the flat shape, where every thread is a
+/// consumer. Only the probes use the flat shape.
+pub const PRODUCER_BLOCK_THREADS: u32 = 288;
+
+/// The consumers of a block of the producer shape. They do the work of the items.
+pub const CONSUMER_THREADS: u32 = 256;
+
 /// Event sentinel meaning "do not wait" or "do not signal".
 pub const NO_EVENT: u32 = u32::MAX;
 

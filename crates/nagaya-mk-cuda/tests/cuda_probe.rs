@@ -12,10 +12,10 @@ use std::time::Instant;
 
 use nagaya_mk_cuda::driver::{CUdeviceptr, CudaDevice, REPORTED_ATTRIBUTES};
 use nagaya_mk_cuda::protocol::{
-    MkTaskDescriptor, OP_NOP, OP_PROBE_L2, OP_PROBE_MMA_RATE, OP_PROBE_MMA_TILE, OP_PROBE_READ, OP_PROBE_TIMER,
-    PROBE_ITEM_BYTES, PROBE_MMA_BF16, PROBE_MMA_CHAINS, PROBE_MMA_MXFP8, PROBE_MMA_NVFP4, PROBE_READ_NC,
-    PROBE_READ_PLAIN, PROBE_READ_PREFETCH_BULK, PROBE_READ_PREFETCH_LINE, PROBE_READ_SMEM_BULK, PROFILE_WORDS,
-    probe_smem_bytes,
+    CONSUMER_THREADS, MkTaskDescriptor, OP_NOP, OP_PROBE_L2, OP_PROBE_MMA_RATE, OP_PROBE_MMA_TILE, OP_PROBE_READ,
+    OP_PROBE_TIMER, PROBE_ITEM_BYTES, PROBE_MMA_BF16, PROBE_MMA_CHAINS, PROBE_MMA_MXFP8, PROBE_MMA_NVFP4,
+    PROBE_READ_NC, PROBE_READ_PLAIN, PROBE_READ_PREFETCH_BULK, PROBE_READ_PREFETCH_LINE, PROBE_READ_SMEM_BULK,
+    PRODUCER_BLOCK_THREADS, PROFILE_WORDS, probe_smem_bytes,
 };
 use nagaya_mk_cuda::ring::{Ring, chained};
 use nagaya_mk_cuda::{INKLING2_CUBIN, INKLING2_PROFILE_CUBIN, test_cards};
@@ -243,6 +243,100 @@ fn probe_read_bandwidth() {
     dev.free_device(buffer).unwrap();
 }
 
+/// The producer shape reads at the peak (Milestone 37 step 7, substep 6). The gate is 85% of the best read rate of the
+/// flat shape, which is the measured peak. The producer warp does not read. In the last case it prefetches the
+/// first item of each block into L2 before the consumers start.
+#[test]
+fn probe_read_bandwidth_in_the_producer_shape() {
+    const GATE: f64 = 0.85;
+    let dev = open();
+    let blocks = dev.sm_count() as usize;
+    let items = READ_BYTES / PROBE_ITEM_BYTES;
+    let host: Vec<u32> = (0..(READ_BYTES / 4) as u64).map(pattern).collect();
+    let item_sums: Vec<u32> = host
+        .chunks(PROBE_ITEM_BYTES / 4)
+        .map(|c| c.iter().fold(0u32, |s, w| s.wrapping_add(*w)))
+        .collect();
+    let expected: Vec<u32> = (0..blocks)
+        .map(|b| {
+            (b..items)
+                .step_by(blocks)
+                .fold(0u32, |s, i| s.wrapping_add(item_sums[i]))
+        })
+        .collect();
+    let buffer = upload(&dev, &host);
+    drop(host);
+    let max_shared = dev.max_dynamic_shared_bytes().unwrap();
+
+    // (name, threads, shared bytes, prefetch the first item of each block)
+    let cases: [(&str, u32, u32, bool); 5] = [
+        ("flat, 256 threads, nc", 256, 0, false),
+        ("flat, 512 threads, nc", 512, 0, false),
+        ("producer shape, no shared memory", PRODUCER_BLOCK_THREADS, 0, false),
+        (
+            "producer shape, most shared memory",
+            PRODUCER_BLOCK_THREADS,
+            max_shared,
+            false,
+        ),
+        (
+            "producer shape, most shared memory, first item prefetched",
+            PRODUCER_BLOCK_THREADS,
+            max_shared,
+            true,
+        ),
+    ];
+    let mut rates: Vec<(f64, bool)> = Vec::new();
+    for (name, threads, shared, prefetch) in cases {
+        let checks = dev.alloc_device(READ_TASKS * blocks * 4).unwrap();
+        dev.memset_zero(checks, READ_TASKS * blocks * 4).unwrap();
+        let mut ring = Ring::new(&dev, 1024, true).unwrap();
+        ring.zero_device().unwrap();
+        let tasks: Vec<MkTaskDescriptor> = (0..READ_TASKS)
+            .map(|t| MkTaskDescriptor {
+                opcode: OP_PROBE_READ,
+                a: buffer,
+                b: buffer,
+                c: checks + (t * blocks * 4) as u64,
+                n: items as u32,
+                k: u32::from(PROBE_READ_NC),
+                item_bytes: if prefetch { PROBE_ITEM_BYTES as u32 } else { 0 },
+                ..Default::default()
+            })
+            .collect();
+        ring.set(&chained(&tasks));
+        unsafe { ring.run_shaped(threads, shared).unwrap() };
+        let profile = ring.read_profile().unwrap();
+        let spans: Vec<u64> = (1..READ_TASKS).map(|t| task_ns(&profile, blocks, t)).collect();
+        let got: Vec<u32> = download(&dev, checks, READ_TASKS * blocks);
+        for t in 0..READ_TASKS {
+            assert_eq!(
+                &got[t * blocks..(t + 1) * blocks],
+                &expected[..],
+                "{name}: the checksums of task {t}"
+            );
+        }
+        let rate = gb_per_s(READ_BYTES as u64, median(spans));
+        eprintln!("probe read, producer shape: {name:<58} {rate:>6.1} GB/s");
+        rates.push((rate, threads == PRODUCER_BLOCK_THREADS));
+        ring.free().unwrap();
+        dev.free_device(checks).unwrap();
+    }
+    let peak = rates.iter().filter(|r| !r.1).map(|r| r.0).fold(0.0, f64::max);
+    for &(rate, producer) in rates.iter().filter(|r| r.1) {
+        eprintln!(
+            "probe read, producer shape: {:.1}% of the flat peak {peak:.1} GB/s",
+            rate / peak * 100.0
+        );
+        assert!(
+            producer && rate >= GATE * peak,
+            "the producer shape reads {rate:.1} GB/s, under {:.0}% of the peak {peak:.1} GB/s",
+            GATE * 100.0
+        );
+    }
+    dev.free_device(buffer).unwrap();
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // 3. The knee of L2
 // ---------------------------------------------------------------------------------------------------------------
@@ -315,11 +409,15 @@ fn probe_l2_knee() {
 // 4. The cost of a task boundary
 // ---------------------------------------------------------------------------------------------------------------
 
+/// The cost of a task boundary, in the flat shape and in the producer shape. A strict chain of no-op tasks has each
+/// task wait for the whole task before it, so the period of the chain is the cost of one boundary.
 #[test]
 fn probe_task_boundary() {
-    let dev = open();
-    let blocks = dev.sm_count() as usize;
     const TASKS: usize = 1000;
+    let shapes = [
+        ("flat, 256 threads", 256u32),
+        ("producer shape, 288 threads", PRODUCER_BLOCK_THREADS),
+    ];
     let nops = vec![
         MkTaskDescriptor {
             opcode: OP_NOP,
@@ -327,87 +425,93 @@ fn probe_task_boundary() {
         };
         TASKS
     ];
-    let mut ring = Ring::new(&dev, 1024, true).unwrap();
-    ring.zero_device().unwrap();
-    ring.set(&chained(&nops));
-    let mut walls = Vec::new();
-    for _ in 0..5 {
-        let start = Instant::now();
-        unsafe { ring.run().unwrap() };
-        walls.push(start.elapsed().as_nanos() as u64);
+    let dev = open();
+    let blocks = dev.sm_count() as usize;
+    for (name, threads) in shapes {
+        let mut ring = Ring::new(&dev, 1024, true).unwrap();
+        ring.zero_device().unwrap();
+        ring.set(&chained(&nops));
+        let mut walls = Vec::new();
+        for _ in 0..5 {
+            let start = Instant::now();
+            unsafe { ring.run_shaped(threads, 0).unwrap() };
+            walls.push(start.elapsed().as_nanos() as u64);
+        }
+        // The period of the chain: the time from the end of the last block of task k - 1 to that of task k.
+        let profile = ring.read_profile().unwrap();
+        let ends: Vec<u64> = (0..TASKS)
+            .map(|t| {
+                profile[t * blocks * PROFILE_WORDS..(t + 1) * blocks * PROFILE_WORDS]
+                    .chunks(PROFILE_WORDS)
+                    .map(|s| s[2])
+                    .max()
+                    .unwrap()
+            })
+            .collect();
+        let periods: Vec<u64> = ends.windows(2).map(|w| w[1] - w[0]).collect();
+        let mean = periods.iter().sum::<u64>() as f64 / periods.len() as f64;
+        let stats = ring.read_stats().unwrap();
+        let tasks_run: Vec<u32> = stats.iter().map(|s| s.tasks_run).collect();
+        assert!(
+            tasks_run.iter().all(|&n| n as usize == TASKS),
+            "{name}: each block runs {TASKS} tasks: {tasks_run:?}"
+        );
+        let mean_wait = stats.iter().map(|s| s.wait_ns).sum::<u64>() as f64 / blocks as f64 / TASKS as f64;
+        eprintln!("probe boundary, {name}: ring of {TASKS} no-op tasks, strict chain, {blocks} blocks");
+        eprintln!(
+            "probe boundary, {name}: profile period, mean {mean:.0} ns, median {} ns, min {} ns, max {} ns",
+            median(periods.clone()),
+            periods.iter().min().unwrap(),
+            periods.iter().max().unwrap()
+        );
+        eprintln!("probe boundary, {name}: mean wait of a block per task {mean_wait:.0} ns (stats)");
+        eprintln!(
+            "probe boundary, {name}: host wall time of the whole run, min of 5: {} us (includes the upload and the launch)",
+            walls.iter().min().unwrap() / 1000
+        );
+        assert!(mean > 0.0 && mean < 1.0e6, "a boundary of {mean} ns is not credible");
+        ring.free().unwrap();
     }
-    // The period of the chain: the time from the end of the last block of task k - 1 to that of task k.
-    let profile = ring.read_profile().unwrap();
-    let ends: Vec<u64> = (0..TASKS)
-        .map(|t| {
-            profile[t * blocks * PROFILE_WORDS..(t + 1) * blocks * PROFILE_WORDS]
-                .chunks(PROFILE_WORDS)
-                .map(|s| s[2])
-                .max()
-                .unwrap()
-        })
-        .collect();
-    let periods: Vec<u64> = ends.windows(2).map(|w| w[1] - w[0]).collect();
-    let mean = periods.iter().sum::<u64>() as f64 / periods.len() as f64;
-    let stats = ring.read_stats().unwrap();
-    let tasks_run: Vec<u32> = stats.iter().map(|s| s.tasks_run).collect();
-    assert!(
-        tasks_run.iter().all(|&n| n as usize == TASKS),
-        "each block runs {TASKS} tasks: {tasks_run:?}"
-    );
-    let mean_wait = stats.iter().map(|s| s.wait_ns).sum::<u64>() as f64 / blocks as f64 / TASKS as f64;
-    eprintln!("probe boundary: ring of {TASKS} no-op tasks, strict chain, {blocks} blocks of 256 threads");
-    eprintln!(
-        "probe boundary: profile period, mean {mean:.0} ns, median {} ns, min {} ns, max {} ns",
-        median(periods.clone()),
-        periods.iter().min().unwrap(),
-        periods.iter().max().unwrap()
-    );
-    eprintln!("probe boundary: mean wait of a block per task {mean_wait:.0} ns (stats)");
-    eprintln!(
-        "probe boundary: host wall time of the whole run, min of 5: {} us (includes the upload and the launch)",
-        walls.iter().min().unwrap() / 1000
-    );
-    assert!(mean > 0.0 && mean < 1.0e6, "a boundary of {mean} ns is not credible");
-    ring.free().unwrap();
     drop(dev);
 
     // The cubin with no profile writes no timestamps, so the host wall time of two rings gives the boundary that an
     // engine sees: the difference of the two times, over the difference of the task counts.
     let plain =
         CudaDevice::open_by_pci(&test_cards::card(), INKLING2_CUBIN).expect("open the GPU with the plain cubin");
-    let wall_min = |tasks: usize| -> u64 {
-        let mut ring = Ring::new(&plain, 1024, false).unwrap();
-        ring.zero_device().unwrap();
-        ring.set(&chained(&vec![
-            MkTaskDescriptor {
-                opcode: OP_NOP,
-                ..Default::default()
-            };
-            tasks
-        ]));
-        let best = (0..20)
-            .map(|_| {
-                let start = Instant::now();
-                unsafe { ring.run().unwrap() };
-                start.elapsed().as_nanos() as u64
-            })
-            .min()
-            .unwrap();
-        ring.free().unwrap();
-        best
-    };
-    let (long, short) = (wall_min(TASKS), wall_min(10));
-    let boundary = (long - short) as f64 / (TASKS - 10) as f64;
-    eprintln!(
-        "probe boundary: cubin with no profile: wall {} us for {TASKS} tasks, {} us for 10 tasks (min of 20): {boundary:.0} ns for each boundary",
-        long / 1000,
-        short / 1000
-    );
-    assert!(
-        boundary > 0.0 && boundary < 1.0e6,
-        "a boundary of {boundary} ns is not credible"
-    );
+    for (name, threads) in shapes {
+        let wall_min = |tasks: usize| -> u64 {
+            let mut ring = Ring::new(&plain, 1024, false).unwrap();
+            ring.zero_device().unwrap();
+            ring.set(&chained(&vec![
+                MkTaskDescriptor {
+                    opcode: OP_NOP,
+                    ..Default::default()
+                };
+                tasks
+            ]));
+            let best = (0..20)
+                .map(|_| {
+                    let start = Instant::now();
+                    unsafe { ring.run_shaped(threads, 0).unwrap() };
+                    start.elapsed().as_nanos() as u64
+                })
+                .min()
+                .unwrap();
+            ring.free().unwrap();
+            best
+        };
+        let (long, short) = (wall_min(TASKS), wall_min(10));
+        let boundary = (long - short) as f64 / (TASKS - 10) as f64;
+        eprintln!(
+            "probe boundary, {name}: cubin with no profile: wall {} us for {TASKS} tasks, {} us for 10 tasks (min of 20): {boundary:.0} ns for each boundary",
+            long / 1000,
+            short / 1000
+        );
+        assert!(
+            boundary > 0.0 && boundary < 1.0e6,
+            "a boundary of {boundary} ns is not credible"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -693,8 +797,14 @@ fn probe_mma_rate() {
         let b_byte = a_byte[..256].to_vec();
         let (a, b, s) = (upload(&dev, &a_byte), upload(&dev, &b_byte), upload(&dev, &scale_a));
         for threads in [256u32, 288, 512] {
-            let warps = threads as usize / 32;
-            let words = blocks * threads as usize * PROBE_MMA_CHAINS * 4;
+            // A block of 288 threads has a producer warp, and only the consumers run MMAs.
+            let workers = if threads == PRODUCER_BLOCK_THREADS {
+                CONSUMER_THREADS as usize
+            } else {
+                threads as usize
+            };
+            let warps = workers / 32;
+            let words = blocks * workers * PROBE_MMA_CHAINS * 4;
             let out = dev.alloc_device(2 * words * 4).unwrap();
             dev.memset_zero(out, 2 * words * 4).unwrap();
             let mut ring = Ring::new(&dev, 1024, true).unwrap();

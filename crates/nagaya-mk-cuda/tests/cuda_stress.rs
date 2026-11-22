@@ -2,7 +2,8 @@
 //! release add. A chain of copy stages, each one reading data that blocks of the stage before wrote, runs many
 //! times at three grid widths. Every result must be exact, and each event must hold the items of its task.
 //!
-//! The runs for each grid come from `NAGAYA_STRESS_RUNS` (default 10,000).
+//! The runs for each grid come from `NAGAYA_STRESS_RUNS` (default 10,000), in the producer shape. The flat shape of the
+//! probes runs a tenth of that.
 //! `NAGAYA_TEST_CARDS=<pci address> cargo test -p nagaya-mk-cuda --features cuda --test cuda_stress -- --test-threads=1`
 
 #![cfg(feature = "cuda")]
@@ -13,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use nagaya_mk_cuda::driver::{CUdeviceptr, CudaDevice};
 use nagaya_mk_cuda::protocol::{MkTaskDescriptor, OP_COPY};
-use nagaya_mk_cuda::ring::{Ring, Task};
+use nagaya_mk_cuda::ring::{DEFAULT_BLOCK_THREADS, Ring, Task};
 use nagaya_mk_cuda::{INKLING2_CUBIN, test_cards};
 
 /// The grid widths of the gate: every SM of the GB10, half of them, and a count that divides no count of items.
@@ -28,6 +29,16 @@ const FIRST_ITEMS: u32 = 400;
 const STAGES: u32 = 300;
 /// A run of the whole ring must end within this time, or the test ends the process.
 const WATCHDOG: Duration = Duration::from_secs(20);
+
+/// Stops the watchdog when the test ends, also when it ends with a panic. Without this, a failed check would wait for
+/// the watchdog to end the process.
+struct StopWatchdog<'a>(&'a AtomicBool);
+
+impl Drop for StopWatchdog<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
 
 fn items_of(stage: u32) -> u32 {
     FIRST_ITEMS - stage
@@ -104,8 +115,11 @@ fn a_chain_of_stages_is_exact_at_each_grid_and_each_event_counts_its_items() {
                 }
             }
         });
+        let _stop = StopWatchdog(&finished);
         let started = Instant::now();
-        for &grid in &GRIDS {
+        let shared = dev.max_dynamic_shared_bytes().unwrap();
+        let shapes = [(DEFAULT_BLOCK_THREADS, shared, runs), (256, 0, runs / 10)];
+        for ((threads, shared, runs), &grid) in shapes.into_iter().flat_map(|s| GRIDS.iter().map(move |g| (s, g))) {
             for run in 0..runs {
                 unsafe { dev.copy_htod(buffers[0], input.as_ptr().cast::<c_void>(), input.len() * 4) }.unwrap();
                 // A stage that reads before its producer wrote reads zeros, so a wrong order shows in the result.
@@ -113,13 +127,13 @@ fn a_chain_of_stages_is_exact_at_each_grid_and_each_event_counts_its_items() {
                     dev.memset_zero(buffer, (words_of(stage as u32) + SHIFT_WORDS as usize) * 4)
                         .unwrap();
                 }
-                unsafe { ring.run_grid(grid, 256, 0).unwrap() };
+                unsafe { ring.run_grid(grid, threads, shared).unwrap() };
                 progress.fetch_add(1, Ordering::SeqCst);
 
                 let got = download(&dev, buffers[STAGES as usize], want_last.len());
                 if let Some(at) = got.iter().zip(&want_last).position(|(g, w)| g != w) {
                     panic!(
-                        "grid {grid}, run {run}: the last stage is wrong at word {at}: {:#x}, wanted {:#x}",
+                        "grid {grid}, {threads} threads, run {run}: the last stage is wrong at word {at}: {:#x}, wanted {:#x}",
                         got[at], want_last[at]
                     );
                 }
@@ -129,16 +143,15 @@ fn a_chain_of_stages_is_exact_at_each_grid_and_each_event_counts_its_items() {
                     assert_eq!(
                         events[s as usize - 1],
                         items_of(s),
-                        "grid {grid}, run {run}: the event of stage {s}"
+                        "grid {grid}, {threads} threads, run {run}: the event of stage {s}"
                     );
                 }
             }
             eprintln!(
-                "cuda_stress: grid {grid}: {runs} runs of {STAGES} stages are exact ({:.1} s so far)",
+                "cuda_stress: grid {grid}, {threads} threads: {runs} runs of {STAGES} stages are exact ({:.1} s so far)",
                 started.elapsed().as_secs_f64()
             );
         }
-        finished.store(true, Ordering::SeqCst);
     });
 
     ring.free().unwrap();

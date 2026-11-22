@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use nagaya_mk_cuda::driver::{CUdeviceptr, CudaDevice};
 use nagaya_mk_cuda::graph::signals;
 use nagaya_mk_cuda::protocol::{MkTaskDescriptor, OP_COPY, OP_SELFTEST_CHECK, OP_SELFTEST_FILL};
-use nagaya_mk_cuda::ring::{Ring, Task};
+use nagaya_mk_cuda::ring::{DEFAULT_BLOCK_THREADS, Ring, Task};
 use nagaya_mk_cuda::{INKLING2_CUBIN, test_cards};
 
 /// The grid widths of the gate. 48 is every SM of the GB10, and 7 does not divide any count of items.
@@ -20,8 +20,16 @@ const GRIDS: [u32; 4] = [48, 24, 7, 1];
 const FLOATS: usize = 100_000;
 const BYTES: usize = FLOATS * 4;
 
+/// The shapes of a block: the flat shape of the probes, and the producer shape with the most dynamic shared memory.
+fn shapes(dev: &CudaDevice) -> [(u32, u32); 2] {
+    [
+        (256, 0),
+        (DEFAULT_BLOCK_THREADS, dev.max_dynamic_shared_bytes().unwrap()),
+    ]
+}
+
 /// Run the ring in a thread with a watchdog, so that a hang fails the test.
-fn run_with_watchdog(ring: &Ring<'_>, grid: u32) {
+fn run_with_watchdog(ring: &Ring<'_>, grid: u32, threads: u32, shared: u32) {
     let done = AtomicBool::new(false);
     std::thread::scope(|scope| {
         scope.spawn(|| {
@@ -34,7 +42,7 @@ fn run_with_watchdog(ring: &Ring<'_>, grid: u32) {
             eprintln!("cuda_grid: the ring did not finish within 30 s at grid {grid}; it hangs");
             std::process::exit(2);
         });
-        unsafe { ring.run_grid(grid, 256, 0).unwrap() };
+        unsafe { ring.run_grid(grid, threads, shared).unwrap() };
         done.store(true, Ordering::SeqCst);
     });
 }
@@ -120,14 +128,18 @@ fn the_bits_of_a_ring_do_not_depend_on_the_grid_and_each_event_counts_its_items(
     ];
     ring.set(&tasks);
 
-    let mut results: Vec<(u32, Vec<Vec<u32>>)> = Vec::new();
-    for &grid in &GRIDS {
+    let mut results: Vec<(String, Vec<Vec<u32>>)> = Vec::new();
+    for ((threads, shared), &grid) in shapes(&dev)
+        .into_iter()
+        .flat_map(|shape| GRIDS.iter().map(move |g| (shape, g)))
+    {
+        let label = format!("{threads} threads, grid {grid}");
         for ptr in [x, y, z, w, out] {
             dev.memset_zero(ptr, BYTES).unwrap();
         }
         dev.memset_zero(wrong, GRIDS[0] as usize * 4).unwrap();
         dev.memset_zero(fill_buf, fill_bytes).unwrap();
-        run_with_watchdog(&ring, grid);
+        run_with_watchdog(&ring, grid, threads, shared);
 
         // Each event counts the items of its task, and a per-block task has one item for each block.
         let planned = ring.planned(grid);
@@ -138,36 +150,36 @@ fn the_bits_of_a_ring_do_not_depend_on_the_grid_and_each_event_counts_its_items(
                 Some(t) => t.desc.items,
                 None => 1,
             };
-            assert_eq!(scoreboard[index], want, "grid {grid}: event {index}");
-            assert_eq!(want, signals(task.items), "grid {grid}: event {index} against the plan");
+            assert_eq!(scoreboard[index], want, "{label}: event {index}");
+            assert_eq!(want, signals(task.items), "{label}: event {index} against the plan");
         }
         // The stats: each block walked every task.
         let stats = ring.read_stats().unwrap();
         assert_eq!(stats.len(), grid as usize);
         assert!(
             stats.iter().all(|s| s.tasks_run as usize == planned.len()),
-            "grid {grid}: {stats:?}"
+            "{label}: {stats:?}"
         );
 
         let counts = download(&dev, wrong, grid as usize);
-        assert!(counts.iter().all(|&c| c == 0), "grid {grid}: wrong words {counts:?}");
-        results.push((grid, [x, y, z, w, out].map(|p| download(&dev, p, FLOATS)).to_vec()));
+        assert!(counts.iter().all(|&c| c == 0), "{label}: wrong words {counts:?}");
+        results.push((label, [x, y, z, w, out].map(|p| download(&dev, p, FLOATS)).to_vec()));
     }
 
     // The values: x and y copy a, z copies b up to 99,900 floats, w copies y up to 99,999, out copies w.
-    let (first_grid, first) = &results[0];
+    let (first_label, first) = &results[0];
     assert_eq!(first[0], src_a, "x");
     assert_eq!(first[1], src_a, "y");
     assert_eq!(&first[2][..99_900], &src_b[..99_900], "z");
     assert!(first[2][99_900..].iter().all(|&v| v == 0), "z writes only its items");
     assert_eq!(&first[3][..99_999], &src_a[..99_999], "w");
     assert_eq!(&first[4][..99_999], &src_a[..99_999], "out");
-    for (grid, got) in &results[1..] {
+    for (label, got) in &results[1..] {
         for (name, (a, b)) in ["x", "y", "z", "w", "out"].iter().zip(first.iter().zip(got)) {
-            assert_eq!(a, b, "{name} differs between the grids {first_grid} and {grid}");
+            assert_eq!(a, b, "{name} differs between ({first_label}) and ({label})");
         }
     }
-    eprintln!("cuda_grid: the bits of 5 buffers are equal at the grids {GRIDS:?}");
+    eprintln!("cuda_grid: the bits of 5 buffers are equal at the grids {GRIDS:?}, in both shapes of a block");
 
     ring.free().unwrap();
     for ptr in [sa, sb, x, y, z, w, out, fill_buf, wrong] {
@@ -182,10 +194,10 @@ fn a_grid_outside_the_range_of_the_ring_is_refused() {
     ring.set(&[Task::per_block(MkTaskDescriptor::default())]);
     let capacity = ring.grid_blocks();
     for grid in [0, capacity + 1] {
-        let error = unsafe { ring.run_grid(grid, 256, 0) }.expect_err("the grid is refused");
+        let error = unsafe { ring.run_width(grid) }.expect_err("the grid is refused");
         assert!(error.contains(&format!("a grid of {grid} blocks")), "{error}");
         assert!(error.contains(&format!("from 1 to {capacity}")), "{error}");
     }
-    unsafe { ring.run_grid(1, 256, 0).unwrap() };
-    unsafe { ring.run_grid(capacity, 256, 0).unwrap() };
+    unsafe { ring.run_width(1).unwrap() };
+    unsafe { ring.run_width(capacity).unwrap() };
 }

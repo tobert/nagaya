@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use nagaya_mk_cuda::driver::{CUdeviceptr, CudaDevice};
 use nagaya_mk_cuda::protocol::{MkTaskDescriptor, OP_COPY, OP_REDUCE_PROBE};
-use nagaya_mk_cuda::ring::{Ring, Task};
+use nagaya_mk_cuda::ring::{DEFAULT_BLOCK_THREADS, Ring, Task};
 use nagaya_mk_cuda::{INKLING2_CUBIN, test_cards};
 
 /// The grid widths of the gate. 7 and 24 divide no group size below.
@@ -54,12 +54,12 @@ const SHAPES: [Shape; 3] = [
 ];
 
 /// Run the ring in a thread with a watchdog, so that a hang fails the test.
-fn run_with_watchdog(ring: &Ring<'_>, grid: u32) {
+fn run_with_watchdog(ring: &Ring<'_>, grid: u32, threads: u32, shared: u32) {
     let done = AtomicBool::new(false);
     std::thread::scope(|scope| {
         scope.spawn(|| {
-            for _ in 0..300 {
-                std::thread::sleep(std::time::Duration::from_millis(100));
+            for _ in 0..3000 {
+                std::thread::sleep(std::time::Duration::from_millis(10));
                 if done.load(Ordering::SeqCst) {
                     return;
                 }
@@ -67,7 +67,7 @@ fn run_with_watchdog(ring: &Ring<'_>, grid: u32) {
             eprintln!("cuda_merge: the ring did not finish within 30 s at grid {grid}; it hangs");
             std::process::exit(2);
         });
-        unsafe { ring.run_grid(grid, 256, 0).unwrap() };
+        unsafe { ring.run_grid(grid, threads, shared).unwrap() };
         done.store(true, Ordering::SeqCst);
     });
 }
@@ -162,20 +162,25 @@ fn the_merge_of_k_slices_gives_the_bits_of_the_fixed_order_at_each_grid() {
         .writes(copy, shape.groups * 4);
         ring.set(&[reduce, after]);
 
-        for &grid in &GRIDS {
+        // The flat shape of the probes, and the producer shape with the most dynamic shared memory.
+        let shapes = [
+            (256u32, 0u32),
+            (DEFAULT_BLOCK_THREADS, dev.max_dynamic_shared_bytes().unwrap()),
+        ];
+        for ((threads, shared), &grid) in shapes.into_iter().flat_map(|s| GRIDS.iter().map(move |g| (s, g))) {
             for run in 0..RUNS {
                 dev.memset_zero(out, shape.groups * 4).unwrap();
                 dev.memset_zero(copy, shape.groups * 4).unwrap();
                 // The counters of the groups start at 0.
                 ring.zero_device().unwrap();
-                run_with_watchdog(&ring, grid);
+                run_with_watchdog(&ring, grid, threads, shared);
                 for (name, ptr) in [("the merged sums", out), ("the copy of the sums", copy)] {
                     let got = download_f32(&dev, ptr, shape.groups);
                     for (g, (got, want)) in got.iter().zip(&want).enumerate() {
                         assert_eq!(
                             got.to_bits(),
                             want.to_bits(),
-                            "{name}: group {g} of {} items at grid {grid}, run {run}: got {got:e}, wanted {want:e}",
+                            "{name}: group {g} of {} items at grid {grid}, {threads} threads, run {run}: got {got:e}, wanted {want:e}",
                             shape.slices()
                         );
                     }
@@ -183,7 +188,7 @@ fn the_merge_of_k_slices_gives_the_bits_of_the_fixed_order_at_each_grid() {
             }
         }
         eprintln!(
-            "cuda_merge: {} groups of {} items: the bits equal the host at the grids {GRIDS:?}, {RUNS} runs each",
+            "cuda_merge: {} groups of {} items: the bits equal the host at the grids {GRIDS:?}, in both shapes, {RUNS} runs each",
             shape.groups,
             shape.slices()
         );
