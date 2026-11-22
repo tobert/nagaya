@@ -699,39 +699,158 @@ The experts take 33.2 ms, 11 times their floor of about 3 ms. Two small ops run 
 
 ## Milestone 37: Inkling 2 on GB10 (`sm_121`)
 
-The first NVIDIA engine of the nagaya runs Inkling 2 Mini on a GB10 (`sm_121`) with 121 GB of unified memory.
-The target context is 400K to 512K positions. This milestone started on 2026-11-22.
+The first NVIDIA engine of the nagaya runs Inkling 2 Mini on one GB10 (`sm_121`) of a DGX Spark. The machine has
+121 GB of memory, unified with the GPU. The target context is 400K to 512K positions. This milestone started on
+2026-11-22.
+
+This engine is the exemplar of a CUDA engine in the nagaya. A stranger reads it to learn how we build one. Thus it
+must be clean, and its speed must come from its structure. A later optimization is a tweak, not a new design.
+The B70 engine shows the cost of the other way: milestone 36 lists changes that are new designs of its ops.
+
+### The decisions
 
 The decisions of 2026-11-22:
 
-- **Crates and build.** `nagaya-mk-cuda` holds the shared CUDA persistent interpreter and Driver API wrapper.
+- **Crates and build.** `nagaya-mk-cuda` holds the shared CUDA persistent interpreter and the Driver API wrapper.
   `nagaya-mk-inkling2-sm121` holds the Inkling 2 engine. `build.rs` calls `nvcc` under the feature `cuda`.
-- **Expert numerics.** Use native NVFP4 (`fouroversix_mae`) and MXFP8 (`ue8m0`) activations from day one. This engine
-  has a quantized host oracle and an engine identity of its own.
-- **Kernels.** Write clean-room CUDA C++ kernels with PTX intrinsics, ported from our B70 Inkling 2 ops. Add no
-  external C++ dependency.
-- **Long context.** Target 400K to 512K positions (`model_max_length` 1,048,576). At 3 cycles in `f32`, 400K takes
-  about 28.1 GB and 512K takes about 36.0 GB. The weights take about 19.5 GB.
+- **Expert numerics.** The experts quantize their activations to NVFP4 and MXFP8, as the checkpoint requires
+  (`hf_quant_config.json`). This engine has a quantized host oracle and an engine identity of its own.
+- **The source of the activation rules.** transformers at `046bdb8cc2` expands the experts to `bf16` and quantizes
+  no activation. The Inkling 2 path of vLLM (Apache-2.0, `vllm/models/inkling2/nvidia/ops/`) holds the rules that
+  ship: `nvfp4.py`, `mxfp8.py`, `moe.py` and `moe_sm120.py`. Our oracle follows them.
+- **The trunk is `f32`.** vLLM runs the trunk in `bf16`. Our oracle keeps every row and every sum outside the
+  experts in `f32`, and it quantizes the `f32` rows. A `bf16` trunk is a later choice, if a measure asks for it.
+- **The rule of the port.** Follow the model card, unless a change gives a clear gain of bandwidth.
+- **Kernels.** Clean-room CUDA C++ with inline PTX. No external C++ dependency. The source of vLLM informs a
+  numeric rule; we do not copy its code.
+- **Long context.** Target 400K to 512K positions (`model_max_length` 1,048,576). At 3 cycles in `f32`, 400K
+  positions take about 28.1 GB and 512K take about 36.0 GB. The weights take 19.5 GB.
+- **The machine.** sm121host serves only the nagaya. The vLLM of k8s goes for good. The control plane of the cluster
+  scales it to 0 replicas.
+
+### The byte budget of a decode step
+
+A decode step at batch 1 is bound by memory bandwidth. These counts come from the checkpoint header, at 3 cycles,
+with each weight in its checkpoint format:
+
+| part | read for each token |
+|---|---:|
+| dense weights of the 48 runs (`bf16`): attention, gates, controllers | 2.79 GB |
+| experts, 8 of 128 in each run (NVFP4 in layers 0 to 19, MXFP8 in 20 to 23) | 1.84 GB |
+| the head (`bf16`, 200,064 rows) | 0.93 GB |
+| sum | 5.56 GB |
+
+- NVIDIA gives the GB10 273 GB/s of memory bandwidth. At that rate, the floor of a decode step is about 20 ms, or
+  about 49 tokens each second. Step 7 measures the real peak.
+- The dense weights take half of the bytes. Thus a matmul of one row is as important as an expert op.
+- A weight in memory stays in its checkpoint format. An expansion to `f32` in memory doubles the dense bytes.
+- The keys and values of a full run take 8 KB of each position in `f32`. Full runs are layers 5 and 23 once, and
+  layers 11 and 17 at each cycle: 8 runs. At 400K positions, a decode step reads about 26 GB of them, about 96 ms.
+  Thus at a long context the cache sets the speed, not the weights. Its format is a decision for Amy (step 11).
+
+**More rows on each read.** The rows of one pass share each read of the dense weights and the head. A row adds only
+its own experts until all 128 run. These estimates are the reason for design rule 3:
+
+- A pass of 16 rows picks about 81 experts in each run. It reads about 22 GB: about 195 tokens each second in all.
+- A pass of 64 rows reads about 33 GB: about 530 tokens each second in all.
+- A block of a prefill and the drafts of the MTP head (milestone 35 step 10) gain the same way.
+
+### The design rules
+
+Each op follows these rules from its first commit. A review checks each rule.
+
+1. **Measure bandwidth.** Each op knows the bytes that it reads. Its card gate prints its GB/s and its share of the
+   measured peak. A step of the pass prints a table of each op, in the form of milestone 36 item 0.
+2. **Keep the checkpoint formats.** A weight stays `bf16`, NVFP4 or MXFP8 in memory. The load can repack it into the
+   fragment order of the MMA, so that each warp reads whole 16-byte vectors. A repack changes no value. Each value
+   expands in registers.
+3. **One path for 1 to 16 rows.** A matmul or expert op runs tiles of 16 rows on the tensor cores at each count of
+   rows. A tile pads its unused rows. At one row the MMA work is free, because the op waits on memory.
+4. **The bits of a row do not depend on the count of rows.** The order of each sum is a function of the shapes only.
+   Thus a decode step gives the bits of its position in a block, and a batch gives the bits of each row alone. The
+   B70 engine has no such rule (milestone 36 item 10).
+5. **Each op uses each SM.** No op runs in one block of threads. A row of 2,304 values splits over the SMs by output
+   columns or by key chunks. The split comes from constants of the shapes, not from the count of SMs, so the bits
+   stay the same on another GB10.
+6. **Fetch the next weights early.** A weight does not depend on the task before it. While a block waits at the
+   scoreboard, it starts the reads of its next weights into L2 or shared memory. This hides the task boundary.
+7. **Fuse at the design, not later.** A norm runs in the prologue of the matmul that reads it. Clips, gates and the
+   residual add run in the epilogue. The quantizer of an expert input runs in the epilogue of the op that writes the
+   row. The router, the plan and the gather are one op. Count the tasks of a step, and keep the count low.
+8. **No race in a sum.** No sum uses an atomic add. Each reduction has a fixed tree. Each split constant is part of
+   the engine identity.
+9. **The `f32` trunk on tensor cores.** Each `f32` activation splits into three `bf16` terms, and the MMA multiplies
+   each term by the `bf16` weight. The three terms hold the 24 bits of an `f32` mantissa. Thus each product is
+   exact, and the MMA sums in `f32`. **Proposed** (Claude Opus 5.5, 2026-11-22): the work triples, but a decode step
+   waits on memory. Step 9 measures the cost in a prefill. The other form is CUDA-core sums.
+10. **One owner of the GPU.** One session at a time runs on the GPU. It runs every card gate and every mutation.
+
+### The steps
 
 Do the steps in this order. Each step ends with the checks green.
 
 1. **GB10 probe fix.** Capture the real `dgx-spark` sysfs and procfs tree, and map `Model: Unknown` with PCI id
    `10de:2e12` to `NVIDIA GB10`. Done (`809d8514`).
-2. **Spec and ABI.** Write the GB10 Inkling 2 binding in `docs/engine-abi.md` with **Proposed** rules for
-   `fouroversix_mae` NVFP4, `ue8m0` MXFP8, and the CUDA interpreter. Update `AGENTS.md`.
-3. **The shared CUDA interpreter (`nagaya-mk-cuda`).** Build the 64-byte task protocol, safetensors reader, Driver
-   API wrapper (`libcuda`), persistent `megakernel.cu` compiled to `sm_121a` `.cubin` with `--fmad=false`,
-   `%globaltimer` profiling, and `tools/nvcc-stub`.
-4. **Quantized host oracle and spec (`nagaya-mk-inkling2-sm121`).** Implement `fouroversix_mae` NVFP4 and `ue8m0`
-   MXFP8 activation quantization and block-scaled dot products in Rust. Build the host spec, 512K slot planning, and
-   `nagaya` factory registration under `cuda`.
-5. **GPU smoke gate.** Verify `cuModuleLoadData` loads the `sm_121a` `.cubin` on the GB10 driver. Run `OP_NOP`,
-   `OP_COPY`, `OP_HALT`, and `%globaltimer` profiling on GPU 0.
-6. **Quantized reference oracle.** Generate the quantized Inkling 2 Mini oracle fixture and measure its logit gap
-   against the `f32` reference.
-7. **Device ops.** Port each op with a card gate against the host oracle. Include native `sm_121a` block-scaled NVFP4
-   (`m16n8k64`) and MXFP8 (`m16n8k32`) MoE expert ops and Flash-style Inkling 2 attention.
-8. **Text engine and long context.** Implement `Engine`, cycles 1 to 5, snapshots, conformance gates, and 400K to
-   512K latency and accuracy gates.
-9. **Vision, lab and batches.** Port the vision tower, taps, control vectors, and batched decode.
-10. **Deploy and review.** Add `deploy/dgx-spark/`, run `gogi-conformance`, and run kaibo review rounds.
+2. **Spec and ABI.** The GB10 binding in `docs/engine-abi.md`, and `AGENTS.md`. Done (`21b7dd9e`). Step 6 corrects
+   its rules of the activations.
+3. **The shared CUDA interpreter (`nagaya-mk-cuda`).** The 64-byte task protocol, the safetensors reader, the Driver
+   API wrapper, `megakernel.cu` compiled to an `sm_121a` cubin with `--fmad=false`, `%globaltimer` profiles and
+   `tools/nvcc-stub`. Done (`594b1bc4`).
+4. **The host spec (`nagaya-mk-inkling2-sm121`).** The slot plan of 400K to 512K positions and the registration in
+   `nagaya` under `cuda`. Done (`bca25a29`, `c81e171e`). Its `quant.rs` does not follow vLLM: step 6 corrects it.
+5. **GPU smoke gate.** `cuModuleLoadData` loads both cubins on the GB10. `OP_COPY` copies 16,384 values bit for bit
+   over 48 blocks, and `MK_PROFILE` writes monotonic times. Done (`1fb96d0e`).
+6. **Corrections.** Make the work of steps 2 to 5 fit the rules of this milestone:
+   - **A fixture from the kernel that ships.** Run `nvfp4_quantize` and `mxfp8_quantize` of vLLM on the GB10, from
+     the vLLM image that the node holds. The rows hold ties, zero rows, zero blocks, saturation and a tiny `amax`.
+     Each row goes in as `bf16` values, so that the `f32` rows of the fixture are exact.
+   - **`quant.rs`** follows the rules of vLLM. The global scale is `amax / 1536`. The order of each operation is
+     vLLM's. The error is a pairwise sum. The UE8M0 scale rounds up by the bits. Write the test first, against the
+     fixture.
+   - **The binding.** Write the rules of the activations again in `docs/engine-abi.md`, from the source of vLLM.
+     They stay **Proposed**.
+   - **A review** of steps 3 to 5 by a model of another family than the writer's (`docs/reviews.md`), against the
+     design rules. Then run the full list of checks of `AGENTS.md` on sm121host.
+7. **The facts of the GPU.** Measure them with ops of the interpreter. They are the peak read bandwidth and the size
+   of L2. They are also the cost of a task boundary and the time of each kind of MMA tile. Write them in the
+   binding. Then write the budget of each op of a decode step from the table above. The budget is the target of
+   each card gate.
+8. **The host oracle.** The B70 crate has a host form of each op in `f32` (`nagaya-mk-inkling2-bmg/src/host/`).
+   **Proposed** (Claude Opus 5.5, 2026-11-22): move the host forms into a crate with no GPU code, and both engines
+   use it. Its name follows the rules of "Layout"; Amy chooses it. Then:
+   - Add the quantized expert op, with `quant.rs`, as a host form.
+   - Make a reference venv with transformers at `046bdb8cc2`. Add a mode to `tools/inkling2_reference.py` that
+     quantizes the inputs of each expert by the rules of `quant.rs`. Its Python must match the fixture of step 6.
+   - Write the golden files of both modes. Measure the logit gap between the quantized oracle and the `f32` oracle.
+9. **The device ops.** Each op has a card gate against its host form, and the gate prints its GB/s. Do them in
+   waves:
+   - **Wave A, the matmul core.** The dense `bf16` matmul of 1 to 16 rows, with the `f32` split of rule 9. Then the
+     NVFP4 quantizer and the NVFP4 expert op with the block-scaled MMA (`m16n8k64`). Then the MXFP8 expert op
+     (`m16n8k32`). The head is a matmul of 200,064 rows.
+   - **Wave B, the layer.** The norms, the short convolutions, the attention residual, the message gates, the
+     router with the plan and the gather, the expert sum and the clips. Fuse them as rule 7 says.
+   - **Wave C, the attention.** The sliding layers, and the full layers over key chunks of a fixed size on all SMs,
+     with a merge in a fixed order. The cache of a full run is contiguous for each head, so the reads stream.
+10. **The pass.** The task ring of a decode step and of a prefill block, at 1 to 5 cycles. Gates: the oracle of
+    step 8, and a row of a decode step gives the bits of its position in a block. Print the table of the ops, and
+    compare each op with its budget.
+11. **The engine and the long context.** The `Engine` trait, cycles 1 to 5, snapshots and the conformance suite.
+    Slots of 400K to 512K positions, with gates of latency and accuracy. Amy decides the format of the cache: `f32`,
+    or a format of fewer bytes with an identity of its own.
+12. **Rows.** A ring of several slots, as LFM3's `model::batch`. The ops take 16 rows from wave A, so this step is
+    work of the ring and the scheduler. Measure tokens each second at 1, 2, 4, 8 and 16 rows. The MTP head waits
+    for Amy's word (milestone 35 step 10).
+13. **Vision and the lab.** The vision tower, the taps and the control vectors.
+14. **Deploy and review.** Add `deploy/dgx-spark/` and a `nagaya.service` on sm121host. Run `gogi-conformance`. Run
+    kaibo review rounds with a cast of another model family.
+
+### The lanes
+
+- The lead session plans, reviews each diff, and owns the GPU (rule 10). Subagents write the code: Sonnet where a
+  name or a design needs judgment, Haiku for a mechanical class with an exact list.
+- Each lane has its own worktree and target directory: `~/src/wt/nagaya-gb10-<lane>`.
+- Each brief names the files that the lane must not touch, the checks, and "do not pipe a check". It tells the lane
+  to stop at a choice with two meanings.
+- The waves of step 9 can run in parallel lanes. One lane writes the ring of the pass and merges the ops.
+- The B70 engine lives on b70host. Read its ops and milestone 36 before you write an op here. Its code for the
+  Xe cards is not a model for this engine.
