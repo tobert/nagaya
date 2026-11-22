@@ -162,7 +162,7 @@ fn sm_count_from(raw: c_int) -> Result<u32, String> {
     }
 }
 
-/// Normalize a CUDA PCI bus id (`0000000f:01:00.0` or `000f:01:00.0`) to `dddd:bb:dd.f` lowercase.
+/// Normalize a CUDA PCI bus id (`00000000:0a:00.0` or `0000:0a:00.0`) to `dddd:bb:dd.f` lowercase.
 fn normalize_pci(raw: &str) -> String {
     let lower = raw.trim().to_ascii_lowercase();
     if let Some((domain, rest)) = lower.split_once(':')

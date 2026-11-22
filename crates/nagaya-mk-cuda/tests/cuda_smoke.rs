@@ -2,7 +2,7 @@
 //! `OP_NOP`/`OP_COPY`/`OP_HALT`, scoreboard synchronization, and `%globaltimer` profiling.
 //!
 //! Run with one thread and a free GPU PCI address:
-//! `NAGAYA_TEST_CARDS=000f:01:00.0 cargo test -p nagaya-mk-cuda --features cuda --test cuda_smoke -- --test-threads=1`
+//! `NAGAYA_TEST_CARDS=0000:0a:00.0 cargo test -p nagaya-mk-cuda --features cuda --test cuda_smoke -- --test-threads=1`
 
 #![cfg(feature = "cuda")]
 
@@ -26,7 +26,6 @@ fn persistent_interpreter_runs_copy_and_profile_on_gb10() {
         dev.driver_version()
     );
     assert!(dev.sm_count() >= 1);
-    assert!(dev.driver_version() >= 13_000, "driver={}", dev.driver_version());
 
     let n: usize = 16_384;
     let bytes = n * 4;

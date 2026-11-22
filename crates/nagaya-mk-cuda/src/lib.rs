@@ -15,11 +15,11 @@ pub mod test_cards;
 /// Entry point of every CUDA persistent megakernel `.cubin`.
 pub const KERNEL_ENTRY: &str = "mk_persistent_interpreter";
 
-/// Compiled `sm_121a` `.cubin` for the Inkling 2 engine (`MK_INKLING2`).
+/// Compiled `sm_121a` `.cubin` for the Inkling 2 engine.
 #[cfg(feature = "cuda")]
 pub const INKLING2_CUBIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_inkling2_sm121.cubin"));
 
-/// Compiled `sm_121a` `.cubin` for Inkling 2 profiling (`MK_INKLING2`, `MK_PROFILE`).
+/// Compiled `sm_121a` `.cubin` for Inkling 2 profiling (`MK_PROFILE`).
 #[cfg(feature = "cuda")]
 pub const INKLING2_PROFILE_CUBIN: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_inkling2_profile_sm121.cubin"));
@@ -127,9 +127,9 @@ mod tests {
 
     #[test]
     fn match_addresses_maps_case_insensitively_and_refuses_duplicates_and_missing() {
-        let cards = vec!["000f:01:00.0".to_owned(), "0000:08:00.0".to_owned()];
-        assert_eq!(match_addresses(&cards, &["000F:01:00.0".to_owned()]).unwrap(), vec![0]);
-        let dup = match_addresses(&cards, &["000f:01:00.0".to_owned(), "000F:01:00.0".to_owned()]).unwrap_err();
+        let cards = vec!["0000:0a:00.0".to_owned(), "0000:08:00.0".to_owned()];
+        assert_eq!(match_addresses(&cards, &["0000:0A:00.0".to_owned()]).unwrap(), vec![0]);
+        let dup = match_addresses(&cards, &["0000:0a:00.0".to_owned(), "0000:0A:00.0".to_owned()]).unwrap_err();
         assert!(dup.contains("twice"), "{dup}");
         let missing = match_addresses(&cards, &["0000:99:00.0".to_owned()]).unwrap_err();
         assert!(missing.contains("0000:99:00.0"), "{missing}");
@@ -139,11 +139,11 @@ mod tests {
     fn test_cards_parser_checks_format_duplicates_and_count() {
         assert!(test_cards::parse(None, 1).is_err());
         assert!(test_cards::parse(Some("not-a-pci"), 1).is_err());
-        assert!(test_cards::parse(Some("000f:01:00.0,000f:01:00.0"), 2).is_err());
-        assert!(test_cards::parse(Some("000f:01:00.0"), 2).is_err());
+        assert!(test_cards::parse(Some("0000:0a:00.0,0000:0a:00.0"), 2).is_err());
+        assert!(test_cards::parse(Some("0000:0a:00.0"), 2).is_err());
         assert_eq!(
-            test_cards::parse(Some("000F:01:00.0"), 1).unwrap(),
-            vec!["000f:01:00.0".to_owned()]
+            test_cards::parse(Some("0000:0A:00.0"), 1).unwrap(),
+            vec!["0000:0a:00.0".to_owned()]
         );
     }
 

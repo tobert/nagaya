@@ -91,7 +91,7 @@ fn protocol_header() -> String {
 }
 
 fn main() {
-    println!("cargo:rerun-if-changed=kernels/megakernel.cu");
+    println!("cargo:rerun-if-changed=kernels");
     println!("cargo:rerun-if-changed=src/protocol.rs");
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"));
     std::fs::write(out_dir.join("mk_protocol.h"), protocol_header())
@@ -125,21 +125,14 @@ fn main() {
     let kernels = manifest.join("kernels");
     let source = kernels.join("megakernel.cu");
 
-    compile_cubin(
-        &nvcc,
-        &source,
-        &kernels,
-        &out,
-        "megakernel_inkling2_sm121.cubin",
-        &["MK_INKLING2"],
-    );
+    compile_cubin(&nvcc, &source, &kernels, &out, "megakernel_inkling2_sm121.cubin", &[]);
     compile_cubin(
         &nvcc,
         &source,
         &kernels,
         &out,
         "megakernel_inkling2_profile_sm121.cubin",
-        &["MK_INKLING2", "MK_PROFILE"],
+        &["MK_PROFILE"],
     );
     // A cubin with a small spin limit, so that a test can prove that a wait that never ends traps.
     compile_cubin(
@@ -148,7 +141,7 @@ fn main() {
         &kernels,
         &out,
         "megakernel_inkling2_spin_test_sm121.cubin",
-        &["MK_INKLING2", "MK_SPIN_LIMIT=65536ull"],
+        &["MK_SPIN_LIMIT=65536ull"],
     );
     println!("cargo:rustc-link-lib=cuda");
 }
