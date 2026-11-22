@@ -1,0 +1,13 @@
+[package]
+name = "nagaya-mk-cuda"
+version = "0.1.0"
+edition = "2024"
+
+# The feature `cuda` compiles the CUDA C++ kernels with `nvcc` and links the CUDA Driver API (`libcuda`).
+# With no feature, the crate needs no GPU and no CUDA toolkit.
+[features]
+cuda = []
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["float_roundtrip", "preserve_order"] }

@@ -1284,6 +1284,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nagaya-mk-cuda"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nagaya-mk-embeddinggemma2-bmg"
 version = "0.1.0"
 dependencies = [
