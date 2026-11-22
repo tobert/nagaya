@@ -1341,6 +1341,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nagaya-mk-inkling2-sm121"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "nagaya-abi",
+ "nagaya-mk-cuda",
+ "serde_json",
+]
+
+[[package]]
 name = "nagaya-mk-lfm3-bmg"
 version = "0.1.0"
 dependencies = [
