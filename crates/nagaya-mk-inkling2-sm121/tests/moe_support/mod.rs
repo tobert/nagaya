@@ -4,6 +4,8 @@
 #![allow(dead_code)]
 #![cfg(feature = "cuda")]
 
+pub mod expert;
+
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
@@ -153,4 +155,17 @@ pub fn download_pairs(dev: &CudaDevice, list: CUdeviceptr, capacity: usize) -> V
             pair
         })
         .collect()
+}
+
+/// Open the GPU with the profile cubin. `MOE_CUBIN` names another profile cubin to measure, for example one that is cut
+/// short at a stage of an op.
+pub fn open_profile_or_env() -> CudaDevice {
+    match std::env::var("MOE_CUBIN") {
+        Ok(path) => CudaDevice::open_by_pci(
+            &nagaya_mk_cuda::test_cards::card(),
+            &std::fs::read(&path).unwrap_or_else(|e| panic!("cannot read {path}: {e}")),
+        )
+        .expect("open the GPU"),
+        Err(_) => super::common::gpu::open_profile(),
+    }
 }

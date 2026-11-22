@@ -80,18 +80,10 @@ __device__ __forceinline__ float ue8m0_inverse(uint32_t byte) {
     return 1.0f / __uint_as_float(byte << 23);
 }
 
-// The largest magnitude of the row, in every thread. A value that is not finite is an error: the op traps (spec 8.5).
-// The max does not depend on the order, so the tree does not matter.
-__device__ __forceinline__ float quant_row_max_abs(const float* x, uint32_t k) {
+// The largest of one value of each consumer thread, in every thread. The max does not depend on the order, so the tree
+// does not matter.
+__device__ __forceinline__ float quant_reduce_max(float m) {
     __shared__ float part[MK_CONSUMER_THREADS / 32];
-    float m = 0.0f;
-    for (uint32_t i = worker_id(); i < k; i += worker_count()) {
-        const float v = fabsf(x[i]);
-        if (!(v <= FLT_MAX)) {
-            __trap();
-        }
-        m = fmaxf(m, v);
-    }
     for (uint32_t offset = 16; offset > 0; offset >>= 1) {
         m = fmaxf(m, __shfl_xor_sync(0xffffffffu, m, offset));
     }
@@ -127,22 +119,54 @@ __device__ __forceinline__ float nvfp4_candidate(float value, float scale, float
     return tree_sum16_lanes(error);
 }
 
+// The most blocks of 16 values that a half-warp holds in registers: a row of 2,304 values has 144 blocks for 16 half-warps.
+constexpr uint32_t QUANT_MAX_BLOCKS_PER_HALF_WARP = 9;
+// The finisher of the up op quantizes rows of 1,152 values: 72 blocks for 16 half-warps hold 5 blocks each.
+constexpr uint32_t QUANT_FINISH_BLOCKS_PER_HALF_WARP = 5;
+
 // Quantize one row of `k` floats to NVFP4 with `fouroversix_mae` (`quantize_nvfp4_fouroversix_mae`). A half-warp
 // takes a block of 16 values: one lane for each value.
-__device__ __forceinline__ void quant_nvfp4_row(const float* x, uint32_t k, uint8_t* codes, uint8_t* scales, float* amax_out) {
-    const float amax = quant_row_max_abs(x, k);
-    const float encoder = fminf(1536.0f / amax, FLT_MAX);
-    const float decoder = 1.0f / encoder;
-    const float outer = amax * quant_const(QUANT_RECIP_1536_BITS);
-    const float encoder6 = encoder * quant_const(QUANT_RECIP_6_BITS);
-    const float encoder4 = encoder * 0.25f;
+template <uint32_t MAXB>
+__device__ __forceinline__ void quant_nvfp4_row_inline(const float* x, uint32_t k, uint8_t* codes, uint8_t* scales, float* amax_out) {
     const uint32_t lane = worker_id() & 31;
     const uint32_t half = lane >> 4;
     const uint32_t element = lane & 15;
     const uint32_t first = (worker_id() >> 5) * 2 + half;
     const uint32_t stride = (worker_count() >> 5) * 2;
-    for (uint32_t block = first; block < k / 16; block += stride) {
-        const float value = x[block * 16 + element];
+    const uint32_t blocks = k / 16;
+    if (blocks > stride * MAXB) {
+        __trap();  // The row holds more blocks than the registers of a half-warp.
+    }
+    // A half-warp loads its values once, and keeps them for the max and for the blocks. A value that is not finite is an
+    // error: the op traps (spec 8.5).
+    float values[MAXB];
+    float local_max = 0.0f;
+#pragma unroll
+    for (uint32_t m = 0; m < MAXB; ++m) {
+        values[m] = 0.0f;
+        const uint32_t block = first + m * stride;
+        if (block < blocks) {
+            values[m] = __ldcg(x + block * 16 + element);
+            const float magnitude = fabsf(values[m]);
+            if (!(magnitude <= FLT_MAX)) {
+                __trap();
+            }
+            local_max = fmaxf(local_max, magnitude);
+        }
+    }
+    const float amax = quant_reduce_max(local_max);
+    const float encoder = fminf(1536.0f / amax, FLT_MAX);
+    const float decoder = 1.0f / encoder;
+    const float outer = amax * quant_const(QUANT_RECIP_1536_BITS);
+    const float encoder6 = encoder * quant_const(QUANT_RECIP_6_BITS);
+    const float encoder4 = encoder * 0.25f;
+#pragma unroll
+    for (uint32_t m = 0; m < MAXB; ++m) {
+        const uint32_t block = first + m * stride;
+        if (block >= blocks) {
+            break;
+        }
+        const float value = values[m];
         float block_max = fabsf(value);
         for (uint32_t offset = 8; offset > 0; offset >>= 1) {
             block_max = fmaxf(block_max, __shfl_xor_sync(0xffffffffu, block_max, offset));
@@ -170,10 +194,10 @@ __device__ __forceinline__ void quant_nvfp4_row(const float* x, uint32_t k, uint
 
 // Quantize one row of `k` floats to MXFP8 with `ue8m0` scales (`quantize_mxfp8_ue8m0`). A warp takes a block of 32
 // values: one lane for each value.
-__device__ __forceinline__ void quant_mxfp8_row(const float* x, uint32_t k, uint8_t* codes, uint8_t* scales) {
+__device__ __forceinline__ void quant_mxfp8_row_inline(const float* x, uint32_t k, uint8_t* codes, uint8_t* scales) {
     const uint32_t lane = worker_id() & 31;
     for (uint32_t block = worker_id() >> 5; block < k / 32; block += worker_count() >> 5) {
-        const float value = x[block * 32 + lane];
+        const float value = __ldcg(x + block * 32 + lane);
         float block_max = fabsf(value);
         if (!(block_max <= FLT_MAX)) {
             __trap();
@@ -190,6 +214,25 @@ __device__ __forceinline__ void quant_mxfp8_row(const float* x, uint32_t k, uint
     }
 }
 
+// The quantizers as functions, with one copy of each in the kernel. The quantizer op and the finisher of the up op both
+// call them. The kernel has 168 registers and no room: a second inlined copy of a quantizer adds calls to the slow path
+// of the division, and each such call makes the compiler save the live registers of the whole interpreter loop, which
+// the build reports as a spill.
+__device__ __noinline__ void quant_nvfp4_row(const float* x, uint32_t k, uint8_t* codes, uint8_t* scales, float* amax_out) {
+    quant_nvfp4_row_inline<QUANT_MAX_BLOCKS_PER_HALF_WARP>(x, k, codes, scales, amax_out);
+}
+
+__device__ __noinline__ void quant_nvfp4_row_short(const float* x, uint32_t k, uint8_t* codes, uint8_t* scales, float* amax_out) {
+    quant_nvfp4_row_inline<QUANT_FINISH_BLOCKS_PER_HALF_WARP>(x, k, codes, scales, amax_out);
+}
+
+__device__ __noinline__ void quant_mxfp8_row(const float* x, uint32_t k, uint8_t* codes, uint8_t* scales) {
+    quant_mxfp8_row_inline(x, k, codes, scales);
+}
+
+// The rows of `x` come from an earlier task or from another block (the finisher of the up op), so every read of them skips
+// L1 (`__ldcg`). The bits do not change.
+//
 // The input rows are `a` (`const float*`, `k` floats in each). The output is the buffer of quantized rows at `c`, with
 // room for `rows` rows. Item `i` quantizes the row `i`. `items` is the count of rows to quantize, and it is at most
 // `rows`. A row that this op does not write keeps its bytes.
