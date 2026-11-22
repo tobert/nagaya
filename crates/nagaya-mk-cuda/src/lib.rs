@@ -216,6 +216,31 @@ mod tests {
     }
 
     #[test]
+    fn each_flag_is_one_bit_and_no_two_flags_share_a_bit() {
+        let mut seen = 0u16;
+        for (name, value) in protocol::FLAGS {
+            assert_eq!(value.count_ones(), 1, "{name} = {value:#x} is not one bit");
+            assert_eq!(seen & value, 0, "{name} = {value:#x} shares a bit with an earlier flag");
+            seen |= value;
+        }
+        for name in [
+            "FLAG_NORM",
+            "FLAG_NORM_UNWEIGHTED",
+            "FLAG_PAIRS",
+            "FLAG_UP",
+            "FLAG_DOWN",
+        ] {
+            assert!(
+                protocol::FLAGS.iter().any(|(known, _)| *known == name),
+                "{name} is not in the table"
+            );
+        }
+        assert_eq!(protocol::FLAG_NORM, 1 << 3);
+        assert_eq!(protocol::FLAG_NORM_UNWEIGHTED, 1 << 4);
+        assert_eq!(protocol::FLAG_PAIRS, 1 << 5);
+    }
+
+    #[test]
     fn match_addresses_maps_case_insensitively_and_refuses_duplicates_and_missing() {
         let cards = vec!["0000:0a:00.0".to_owned(), "0000:08:00.0".to_owned()];
         assert_eq!(match_addresses(&cards, &["0000:0A:00.0".to_owned()]).unwrap(), vec![0]);

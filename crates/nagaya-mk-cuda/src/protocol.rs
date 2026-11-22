@@ -191,8 +191,19 @@ pub struct ExpertPair {
 
 define_u16_table! {
     FLAGS;
+    // Each flag is one bit, and no two flags share a bit. An op reads the flags that it knows, and it traps on a flag
+    // that it does not know.
     FLAG_ACCUMULATE = 1 << 0;
     FLAG_SOFTCAP_30 = 1 << 2;
+    // A matmul applies a norm to the rows of `x` while it loads them: `w * (v * rf)`, with the row factor `rf` that
+    // the task before it wrote. `FLAG_NORM_UNWEIGHTED` leaves out the weight `w`.
+    FLAG_NORM = 1 << 3;
+    FLAG_NORM_UNWEIGHTED = 1 << 4;
+    // The pair list of the task is in `e`, and the count of its items is a bound (see `expert_pair_bound`).
+    FLAG_PAIRS = 1 << 5;
+    // An expert op does the up matmul of the experts (`FLAG_UP`) or the down matmul (`FLAG_DOWN`).
+    FLAG_UP = 1 << 6;
+    FLAG_DOWN = 1 << 7;
     FLAG_F32 = 1 << 8;
     FLAG_MXFP8 = 1 << 15;
 }
