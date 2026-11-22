@@ -1530,6 +1530,10 @@ engine declares no `layer_loops`.
   - The rows of an active part follow the rules of "The host spec". An inactive part must hold zeros, else
     `set_n` is refused, and the error names the part.
   - `set_n` takes the count with the positions. The rings start at the first restored row of an active ring.
+  - The active rings must start at one position, else `set_n` is refused, and the error names two of them.
+    Reason: the base of a ring is one position for each slot (`Held::base`). A later start would hide the rows
+    of the other rings before it from each read after the restore. Each snapshot that the engine reads has one
+    start, so the rule refuses only a snapshot from another source.
 - Reason: a fixed part keeps `limits().parts` static and the ABI as it is. Zeros on a read cost no write to the
   card. A snapshot of 1 cycle still holds the reserve rows, as zeros (review by ChatGPT through kaibo `gpt-plan`).
 - The identity names `state` 2, the layout of these parts. Thus a snapshot of the parts before `cycles` does not
@@ -1596,6 +1600,15 @@ of cells and 10 rings.
   by 31,220,137,984 bytes of 31,279,353,476. The scratch of the ring, 105,252 KiB, had no memory yet. After
   the first pass, it was on the card. The card gate `tests/xe_fit_deferred.rs` sets the debug keys of Level Zero
   that defer each buffer, and it opens the same slots.
+- The card fills its own two buffers at its open: the device copy of the tasks and the wake buffer (`open_card`).
+  The check counts them with the scratch and the scoreboard, as the term `work` does (`spec::ring_device_bytes`).
+- The driver also places the state of a launch at the first launch. Thus an open that passes the check runs the
+  halt alone, and then it checks again. The first check comes first, because the launch of an open that the
+  card does not hold fails with no device memory.
+- Before review round 2, the first pass took more memory of the card after the check. With deferred memory it
+  took 983,040 bytes: the device copy of the tasks and the state of a launch. The gate now checks that the first
+  pass takes no memory. Without deferred memory, the open of 164,352 positions now holds 67,186,688 bytes more,
+  and it still passes (`tests/xe_fit.rs`).
 - The card gate `tests/xe_fit.rs` ran on 2026-11-21. A slot of 262,144 positions asks for 40,679,296,644 bytes.
   The driver puts 34,031,300,608 of them on the card, and the open is refused. Then a slot of 164,352 opens, and it
   holds 34,016,722,944 bytes of the card.
@@ -1606,6 +1619,21 @@ of cells and 10 rings.
   - Thus a profile names a slot of at most 164,352 positions at 3 cycles.
   - A budget of the usable memory of the card, not of its 32 GiB, lets the ledger refuse such a profile first. The
     owner chooses the budget of the profile.
+- **The limits of the check.** The check is a heuristic over the memory of the whole process on the card. It
+  cannot tell the bytes of this open from the bytes of another engine of the process.
+  - A free on the card during the open can make it refuse an open that fits. An allocation on the card during
+    the open can hide a shortfall.
+  - Another card adds nothing, because the sum reads only the fds of this card.
+  - The engines of one card share one group thread, so the opens and unloads of a swap run one after the other.
+    Thus no other engine of the card allocates or frees during an open.
+  - It is still useful. It refused the slot of 262,144 positions, and its second case sees a buffer that the
+    driver moved to system memory. The ledger sees neither, because it holds targets, not a measurement (4.1).
+- **A refused open in a swap stops the process.** The swap does not expect an open to fail, so it panics
+  (`crates/nagaya/src/process/staged.rs:1864`). The factory of Inkling 2 keeps the default `open_problem`,
+  which answers none (`crates/nagaya/src/admission.rs:150`). Thus the load route cannot refuse such a load first
+  (spec 3.3b).
+  - Milestone 34 step 1 holds the repair: the load route refuses a load that the memory check of the engine
+    refuses. It is built for the Qwen3.8 engine. An `open_problem` of the factory of Inkling 2 is still to do.
 
 **Positions.** The model has no rotary embedding.
 
@@ -1866,8 +1894,12 @@ Opus 5.5, 2026-11-21).
 - **A restore of a ring part** must hold the last 1,024 positions, the window of a sliding layer.
 - **The probe of the oracle** (8.3) runs from position 0 of a slot that it empties. Its check comes first, so a probe
   that the check refuses changes nothing (`Held::check_probe`).
-- **`last_error`** gives the failure of the last call. Each call that can fail clears it first, so a call that does
-  not fail leaves `None`.
+- **`last_error`** gives the failure of the last call that returns a status (D5): `pass`, the part calls,
+  `set_n`, `slot_clear` and `control_write`. Each of them clears it first, so a call that does not fail leaves
+  `None`. A call that returns its own message changes nothing in it: `fits`, which reads only, and the probe
+  `residual`.
+- **The slot of a probe** is checked before the probe segment names it as `u32`. Thus slot 2^32 is refused, and
+  it is not slot 0.
 - **Tokens.** A token id of 200,058 or more is refused. Reason: the rows past the unpadded vocabulary are padding
   of the head and the embedding.
 - **The term `weights`.** The plan counts the bytes of the header, and it reads no weight bytes (spec 2.4).
@@ -1881,7 +1913,10 @@ Opus 5.5, 2026-11-21).
   - Each allocation rounds up to 64 bytes. Mini gives 18,881,368,064 bytes.
   - The plan checks the name, the dtype and the shape of each tensor that the load reads (`spec::text_tensors`).
     A missing tensor, or one of another dtype or shape, is an error that names it. Thus the load never meets a
-    missing tensor. Another tensor of `model.llm.` is refused too. `vision::load` checks the tensors of `model.visual.`.
+    missing tensor. Another tensor of `model.llm.` is refused too.
+  - The plan also checks the 422 tensors of `model.visual.` (`vision::tensors`), and `vision::load` runs the same
+    check (`vision::check_tensors`). They are the term `vision`, so they add no bytes to `weights`. Another tensor
+    of `model.visual.` is refused.
 - **The term `work`.** It is the buffers of a block (`spec::block_buffers`), the logits and the ring of the card.
   The list of buffers is the list of `model::Bufs`, and the ring builder names its use. The scratch is the scratch of
   `OP_INKLING2_ATTN` for a block of 512 (`tasks::inkling2_attn_scratch_floats`).

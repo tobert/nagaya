@@ -66,6 +66,24 @@ fn template_id_changes_when_the_tokens_of_an_image_change() {
     assert_ne!(council(base), council(edit));
 }
 
+/// A template that renders text but refuses an image part fails the build of the family with an error. It does not
+/// panic, because a caller such as the family opener of the process reports the error (spec 8.5).
+#[test]
+fn a_template_that_refuses_the_test_image_is_an_error() {
+    if absent() {
+        return;
+    }
+    let mut files = Files::read(&mini_dir()).unwrap();
+    let image = "{{- rtok ~ \"<|content_image|><|unused_200054|><|end_message|>\" -}}";
+    assert!(files.template.contains(image));
+    files.template = files.template.replace(image, "{{- raise_exception(\"no images\") -}}");
+    let Err(e) = Inkling2Family::from_files(files) else {
+        panic!("a family whose template refuses images was built");
+    };
+    let e = e.to_string();
+    assert!(e.contains("test render") && e.contains("no images"), "{e}");
+}
+
 #[test]
 fn council_render_decisions_and_raw_read_work() {
     if absent() {

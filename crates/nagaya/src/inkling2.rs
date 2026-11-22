@@ -170,11 +170,12 @@ pub fn open_family_with(
     objects: Option<&crate::serving::ObjectReader>,
 ) -> Result<OpenedFamily, String> {
     let dir = family_dir(table)?;
-    let mut family = nagaya_text_inkling2::Inkling2Family::from_dir(&dir)
-        .map_err(|error| format!("cannot build the Inkling 2 family from `{}`: {error}", dir.display()))?;
+    let files = nagaya_text_inkling2::Files::read(&dir)
+        .map_err(|error| format!("cannot read the Inkling 2 family from `{}`: {error}", dir.display()))?;
     // The family can read another folder than the engine, so its template must be the template of the identity
-    // (spec 11.3). The registry compares the tokenizer hash.
-    if family.template() != identity.template {
+    // (spec 11.3). The text is compared before the build renders it, so another template gives this error first.
+    // The registry compares the tokenizer hash.
+    if files.template != identity.template {
         return Err(format!(
             "the chat template of the family in `{}` is not the template of the engine `{}`; give the family the \
              folder of the engine's model",
@@ -182,6 +183,8 @@ pub fn open_family_with(
             identity.model
         ));
     }
+    let mut family = nagaya_text_inkling2::Inkling2Family::from_files(files)
+        .map_err(|error| format!("cannot build the Inkling 2 family from `{}`: {error}", dir.display()))?;
     if let Some(objects) = objects {
         family = family.with_objects(Arc::new(StoreObjects::new(Arc::clone(objects))));
     }

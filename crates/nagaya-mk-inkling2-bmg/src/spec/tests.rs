@@ -830,11 +830,13 @@ fn the_identity_numbers_name_the_reserve_and_the_block() {
     }
 }
 
-/// A header of the tensors of `text_tensors`, with no bytes: each tensor takes the bytes of its dtype and shape.
+/// A header of the tensors of `text_tensors` and `vision::tensors`, with no bytes: each tensor takes the bytes of its
+/// dtype and shape.
 fn table_header() -> HashMap<String, TensorMeta> {
     let mut at = 0;
     text_tensors()
         .into_iter()
+        .chain(crate::vision::tensors())
         .map(|(name, dtype, shape)| {
             let bytes = shape.iter().product::<usize>() * dtype.size_bytes();
             let meta = TensorMeta {
@@ -881,6 +883,41 @@ fn the_plan_checks_each_tensor_of_the_text_model() {
         let e = weights_bytes_of(&other).unwrap_err();
         assert!(e.contains(&format!("the tensor {name} is")), "{e}");
     }
+}
+
+/// The plan checks each tensor of the tower too, so the open of the tower never meets a missing tensor. The tensors
+/// of the tower add no bytes to the term `weights`, and an unknown tensor of `model.visual.` is refused.
+#[test]
+fn the_plan_checks_each_tensor_of_the_tower() {
+    let header = table_header();
+    assert_eq!(crate::vision::tensors().len(), 422);
+    let names = [
+        "model.visual.backbone.embeddings.class_embedding",
+        "model.visual.backbone.embeddings.position_embedding",
+        "model.visual.backbone.ln_pre.bias",
+        "model.visual.backbone.layers.22.mlp.c_proj.weight",
+        "model.visual.backbone.layers.0.ls_2.gamma",
+        "model.visual.proj_out.weight",
+    ];
+    for name in names {
+        let mut missing = header.clone();
+        missing.remove(name).unwrap();
+        let e = weights_bytes_of(&missing).unwrap_err();
+        assert!(e.contains(&format!("holds no tensor {name}")), "{e}");
+        let mut other = header.clone();
+        other.get_mut(name).unwrap().dtype = safetensors::Dtype::F32;
+        let e = weights_bytes_of(&other).unwrap_err();
+        assert!(e.contains(&format!("the tensor {name} is F32")), "{e}");
+    }
+    let mut extra = header.clone();
+    let mut meta = header["model.visual.backbone.ln_pre.bias"].clone();
+    meta.name = "model.visual.backbone.ln_post.bias".to_owned();
+    extra.insert(meta.name.clone(), meta);
+    let e = weights_bytes_of(&extra).unwrap_err();
+    assert!(
+        e.contains("model.visual.backbone.ln_post.bias, which the Inkling 2 engine does not know"),
+        "{e}"
+    );
 }
 
 /// The part `cycles`: the last part of a state, `u32 [1]`.
@@ -979,6 +1016,32 @@ fn restore(held: &mut Held, n: u64, cycles: u32) {
     }
 }
 
+/// The active rings of a restore start at one position, so the base of the slot is the start of each of them. A ring
+/// that starts later would hide rows of the others from the reads after the restore (engine-abi "Inkling 2", "A
+/// restore").
+#[test]
+fn the_active_rings_of_a_restore_start_at_one_position() {
+    let state = State::Slot(0);
+    let mut held = Held::new(&[4096], DEFAULT_EXTRA_RUNS);
+    restore(&mut held, 3000, 1);
+    // Each ring alone fits: 1976 is the start of the window of 1,024 positions before 3000.
+    held.wrote(0, RING, Some(1976..3000), false);
+    let e = held.check_set_n(state, 3000).unwrap_err();
+    assert!(
+        e.contains("the active rings of a restore must start at one position")
+            && e.contains("1976")
+            && e.contains("952"),
+        "{e}"
+    );
+    // An inactive ring holds zeros, and its start does not count.
+    let mut inactive = Held::new(&[4096], DEFAULT_EXTRA_RUNS);
+    restore(&mut inactive, 3000, 1);
+    inactive.wrote(0, RESERVE_RING, Some(1976..3000), true);
+    assert_eq!(inactive.check_set_n(state, 3000), Ok(0));
+    inactive.set_n(0, 3000);
+    assert_eq!(inactive.base(0, 4), 952);
+}
+
 /// A restore writes the count, and `set_n` takes it with the positions. An inactive part must hold zeros (engine-abi
 /// "Inkling 2", "A restore").
 #[test]
@@ -1060,4 +1123,7 @@ fn a_probe_is_checked_before_it_empties_its_slot() {
     let e = held.check_probe(1, &[1], 512).unwrap_err();
     assert!(e.contains("the engine has 1 slots"), "{e}");
     assert!(held.check_probe(0, &vec![1; 513], 512).is_err());
+    // A slot past `u32` is not slot 0 of the probe segment.
+    let e = held.check_probe(1 << 32, &[1], 512).unwrap_err();
+    assert!(e.contains("the engine has 1 slots, not slot 4294967296"), "{e}");
 }

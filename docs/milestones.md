@@ -482,6 +482,18 @@ Do the steps in this order. Each step ends with the checks green.
     - Not fixed: the tower of an image of 10,609 tokens takes about 56,780 ms, and `max_quantum_ms` is 2,000 ms. The
       watchdog of the process stops a group with no beat for 30 s. The ABI holds a **Proposed** rule: the tower in
       quanta of its own (`dc37002`, engine-abi "The time of a large image").
+    - Round 2 ran on 2026-11-22 with ChatGPT (`gpt-plan`), on the changes `46a1551..cffa0a5`. It gave 6
+      findings, and each was true. The fixes, each with a test and its mutations (branch `inkling2-review2`):
+      - The open fills the two buffers of the card and launches the halt before a second check (`337ffbf`).
+        Before, the first pass took 983,040 bytes of the card after the check, with deferred memory.
+      - The active rings of a restore start at one position (`0d9e7ef`).
+      - The plan checks each tensor of the tower (`29c637e`).
+      - The family compares its template before it renders, and a failed test render is an error (`3083900`).
+      - The probe checks its slot before the cast to `u32` (`beabc39`). The ABI says which calls set
+        `last_error`.
+    - Not changed in round 2: the memory check reads the whole process on the card. The ABI states its limits
+      (`07739d2`). A refused open in a swap still stops the process. An `open_problem` of the factory of
+      Inkling 2 waits, on the route of milestone 34 step 1.
 
 **Speed.** Each finding about the speed of the engine goes into milestone 36, not into this milestone.
 

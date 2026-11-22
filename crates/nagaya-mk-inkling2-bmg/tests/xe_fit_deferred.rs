@@ -31,7 +31,8 @@ fn config(slots: Vec<usize>) -> Config {
 
 /// The open of the profile of the service passes when the driver defers each buffer, and a slot past the card is still
 /// refused. Before the open, the process holds the memory of the driver, as the service does after the unload of
-/// another engine.
+/// another engine. The open uses each buffer that it places, so the first pass adds no memory of the card: the check
+/// of the open saw all of it.
 #[test]
 fn an_open_that_fits_passes_when_the_driver_defers_the_memory_of_its_buffers() {
     if common::model_absent(Which::Mini) {
@@ -56,11 +57,18 @@ fn an_open_that_fits_passes_when_the_driver_defers_the_memory_of_its_buffers() {
     let start = nagaya_mk_bmg::vram::card_memory(&pci).unwrap();
     eprintln!("the driver holds {start:?}");
     let opened = Inkling2Engine::open(config(vec![32_768, 32_768]), &pci);
-    eprintln!("with the engine: {:?}", nagaya_mk_bmg::vram::card_memory(&pci).unwrap());
-    match opened {
-        Ok(engine) => drop(engine),
-        Err(e) => panic!("the open of the profile of the service with deferred memory: {e}"),
-    }
+    let open = nagaya_mk_bmg::vram::card_memory(&pci).unwrap();
+    eprintln!("with the engine: {open:?}");
+    let mut engine =
+        opened.unwrap_or_else(|e| panic!("the open of the profile of the service with deferred memory: {e}"));
+    card::pass(&mut engine, 0, 0, &[1, 2, 3], &[2]);
+    let passed = nagaya_mk_bmg::vram::card_memory(&pci).unwrap();
+    eprintln!("after a pass: {passed:?}");
+    assert_eq!(
+        passed, open,
+        "the first pass gave memory of the card to a buffer that the open did not use"
+    );
+    drop(engine);
     let Err(e) = Inkling2Engine::open(config(vec![262_144]), &pci) else {
         panic!("a slot of 262,144 positions opened on one card with deferred memory");
     };

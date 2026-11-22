@@ -1018,8 +1018,12 @@ fn open_card(
             module,
             kernel,
         };
-        card.wake_buf = card.alloc_device_usm::<u8>(128);
-        card.ring_dev = card.alloc_device_usm::<u8>(crate::protocol::MAX_TASKS_PER_CARD * 64);
+        card.wake_buf = card.alloc_device_usm::<u8>(crate::protocol::WAKE_BYTES);
+        card.ring_dev = card.alloc_device_usm::<u8>(crate::protocol::RING_DEV_BYTES);
+        // Under memory pressure, the driver gives a buffer its memory only at its first use. The fill uses both
+        // buffers now, so the memory check of an open sees them (engine-abi "Inkling 2", "The cost of a slot").
+        card.fill_zero_sync(card.wake_buf as *mut c_void, crate::protocol::WAKE_BYTES);
+        card.fill_zero_sync(card.ring_dev as *mut c_void, crate::protocol::RING_DEV_BYTES);
         card
     }
 }

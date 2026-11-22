@@ -14,7 +14,7 @@ use nagaya_abi::{
     FeedRule, Inputs, Kind, Lifetime, Limits, MandatoryTerm, MemoryLimits, PartId, PartKind, PartLimits, Segment,
     SegmentInputs, SlotLimit, State, Tap, TapLimit, Tier,
 };
-use nagaya_mk_bmg::protocol::{MAX_TASKS_PER_CARD, NUM_SCOREBOARD_EVENTS};
+use nagaya_mk_bmg::protocol::{MAX_TASKS_PER_CARD, NUM_SCOREBOARD_EVENTS, RING_DEV_BYTES, WAKE_BYTES};
 use nagaya_mk_bmg::safetensors::{self, MappedSafeTensors, TensorMeta};
 use nagaya_mk_bmg::tasks;
 
@@ -753,7 +753,7 @@ pub fn scratch_floats(max_seq: usize) -> usize {
 /// The device bytes of the ring of one card: the scoreboard, the scratch, the wake buffer and the device copy of the
 /// tasks.
 pub(crate) fn ring_device_bytes(max_seq: usize) -> u64 {
-    (NUM_SCOREBOARD_EVENTS * 4 + scratch_floats(max_seq) * 4 + 128 + MAX_TASKS_PER_CARD * 64) as u64
+    (NUM_SCOREBOARD_EVENTS * 4 + scratch_floats(max_seq).max(1) * 4 + WAKE_BYTES + RING_DEV_BYTES) as u64
 }
 
 /// The host bytes of the ring and of the copies: the tasks, the statistics and the staging buffer.
@@ -854,7 +854,7 @@ pub fn expert_slab_bytes(experts: usize, rows: usize, cols: usize, mx: bool) -> 
 }
 
 /// The tensor `name` of the header, which must have `dtype` and `shape`.
-fn tensor<'a>(
+pub(crate) fn tensor<'a>(
     tensors: &'a HashMap<String, TensorMeta>,
     name: &str,
     dtype: safetensors::Dtype,
@@ -966,10 +966,12 @@ pub fn text_tensors() -> Vec<(String, safetensors::Dtype, Vec<usize>)> {
 /// The device bytes of the weights from the table of tensors of the checkpoint. Each tensor of `text_tensors` must be
 /// there with its dtype and shape. Each expert matrix is one slab, the embedding keeps its first `LOGITS` rows, the
 /// head holds `HEAD_ROWS` rows, each sink projection `SINK_ROWS` rows, and each other tensor keeps its bytes. The
-/// tensors of `model.visual.` are the term `vision`, which `vision::load` checks. Any other tensor is refused.
+/// tensors of `vision::tensors` are the term `vision`: the plan checks them as `vision::load` does, and they add no
+/// bytes here. Any other tensor is refused.
 pub fn weights_bytes_of(tensors: &HashMap<String, TensorMeta>) -> Result<u64, String> {
     let mut total = 0usize;
-    let mut read: HashSet<String> = HashSet::new();
+    vision::check_tensors(tensors)?;
+    let mut read: HashSet<String> = vision::tensors().into_iter().map(|(name, _, _)| name).collect();
     for (name, dtype, shape) in text_tensors() {
         let meta = tensor(tensors, &name, dtype, &shape)?;
         total += if let Some(rest) = name.strip_suffix("_weight")
@@ -1002,10 +1004,7 @@ pub fn weights_bytes_of(tensors: &HashMap<String, TensorMeta>) -> Result<u64, St
     }
     let mut names: Vec<&String> = tensors.keys().collect();
     names.sort();
-    if let Some(name) = names
-        .into_iter()
-        .find(|name| !read.contains(*name) && !name.starts_with("model.visual."))
-    {
+    if let Some(name) = names.into_iter().find(|name| !read.contains(*name)) {
         return Err(format!(
             "the checkpoint holds the tensor {name}, which the Inkling 2 engine does not know. The file is not \
              Inkling 2"
@@ -1291,10 +1290,12 @@ impl Held {
     /// Check a probe of the oracle (8.3): `ids` from position 0 of `slot` at the default count, as if the slot were
     /// empty. It changes nothing, so the caller empties the slot only after the check passes.
     pub fn check_probe(&self, slot: usize, ids: &[u32], max_block: usize) -> Result<Block, String> {
-        let mut empty = self.clone();
-        if slot < empty.n.len() {
-            empty.clear(slot);
+        // The probe segment names the slot as `u32`, so the check of the slot comes before that cast.
+        if slot >= self.n.len() {
+            return Err(format!("the engine has {} slots, not slot {slot}", self.n.len()));
         }
+        let mut empty = self.clone();
+        empty.clear(slot);
         empty.check_pass(&[probe_segment(slot, ids)], max_block)
     }
 
@@ -1517,11 +1518,33 @@ impl Held {
                 }
             }
         }
+        // The base of a slot is one position for all its active rings, so they must start at one position.
+        let mut ring_start: Option<(PartId, u64)> = None;
+        for (id, part) in self.list.iter().enumerate() {
+            let write = &writes[&id];
+            if let (Part::K(s) | Part::V(s), Some(rows)) = (part, &write.rows)
+                && n > 0
+                && ringed(seq, *s)
+                && runs_at(cycles, *s)
+            {
+                match ring_start {
+                    None => ring_start = Some((id, rows.start)),
+                    Some((first, start)) if start != rows.start => {
+                        return Err(format!(
+                            "the active rings of a restore must start at one position: part {first} starts at \
+                             {start}, and part {id} at {}. Restore a snapshot that the engine read",
+                            rows.start
+                        ));
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
         Ok(slot)
     }
 
     /// Take a count that `check_set_n` passed. After writes, the slot takes the restored count of cycles, and the
-    /// rings hold the positions from the latest start of the rows of an active ring part.
+    /// rings hold the positions from the start of the rows of the active ring parts, which `check_set_n` found equal.
     pub fn set_n(&mut self, slot: usize, n: u64) {
         let seq = self.seqs[slot];
         let restored = (!self.writes[slot].is_empty() && n > 0).then(|| self.pending[slot].unwrap_or(0) as usize);
