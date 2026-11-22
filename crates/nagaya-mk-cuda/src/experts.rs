@@ -72,6 +72,13 @@ pub const ROUTE_TABLE_ROW_FACTOR: usize = 2;
 /// the table are the same in `kernels/experts.cuh`. The slot 0 is `EXPERT_TABLE_AMAX`.
 pub const EXPERT_TABLE_QACT: usize = 1;
 
+/// The slots of the table of a down op (`FLAG_DOWN`): the residual, the weights of `mlp_conv`, the state of the
+/// convolution, and the output.
+pub const EXPERT_TABLE_RESIDUAL: usize = 2;
+pub const EXPERT_TABLE_CONV_WEIGHT: usize = 3;
+pub const EXPERT_TABLE_CONV_STATE: usize = 4;
+pub const EXPERT_TABLE_OUT: usize = 5;
+
 /// The rows that one row tile of `OP_ROUTE` takes.
 pub const ROUTE_ROW_TILE: usize = 16;
 
