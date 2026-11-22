@@ -1782,7 +1782,9 @@ that is longer than `max_quantum_ms`. Then the watchdog keeps a deadline for tha
 - The deadline is the start of the pass plus the larger of the timeout and the bound plus the beat interval. A beat
   does not change it.
 - Only the return of that pass clears the deadline, and only a return before it. Then the watch reads the timeout
-  again.
+  again, and the return counts as a beat.
+- Whether the pass ended in time is one decision, under the lock of the table of long passes. The return of the pass
+  and the watchdog each read the clock under that lock, and the first one decides.
 - A pass past its bound gives one warning in the log. A pass past its deadline stops the process with code 1, as a
   stall does.
 - A pass that returns past its deadline gives no result. The pass gives the error `Timeout`, the engine runs no more
@@ -1794,7 +1796,8 @@ that is longer than `max_quantum_ms`. Then the watchdog keeps a deadline for tha
 pass holds the device for minutes, and another client must see why. The route reads only, and it waits for no group.
 
 - The reply is a 200 with `{"device", "long_pass"}`. `long_pass` is `null` when no long pass runs on the device.
-- Otherwise it is `{"group", "devices", "bound_ms", "elapsed_ms", "overdue"}`. `devices` holds the machine devices of
+- Otherwise it is `{"group", "devices", "bound_ms", "elapsed_ms", "overdue"}`. A pass past its deadline leaves the
+  route, because the process stops. `devices` holds the machine devices of
   the engine. `overdue` is true when `elapsed_ms` is more than `bound_ms`.
 - A device that no engine of the profile names is a 404 `not_found` that names `id`, as for a release (3.3b).
 

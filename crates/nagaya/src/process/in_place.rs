@@ -430,6 +430,13 @@ pub(super) fn open(
         handoff,
     };
     let devices = job.devices.iter().map(|device| device.id).collect();
-    let engine = Watched::boxed(engine, job.limits.clone(), key, devices, long.clone());
+    let engine = Watched::boxed(
+        engine,
+        job.placement.name.clone(),
+        job.limits.clone(),
+        key,
+        devices,
+        long.clone(),
+    );
     Ok((engine, handles, opened))
 }

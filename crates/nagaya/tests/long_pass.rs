@@ -218,25 +218,43 @@ fn a_long_pass_that_ends_after_the_timeout_and_before_its_deadline_is_not_a_stal
 /// Falsified by a deadline that grows with each beat, or by a watchdog that never reads the deadline.
 #[test]
 fn a_long_pass_past_its_deadline_stops_the_process_and_its_result_is_dropped() {
-    // The deadline is the start plus the timeout, 100 ms, because 50 + 10 ms is less. The pass ends at 400 ms.
+    // The deadline is the start plus the timeout, 100 ms, because 20 + 10 ms is less. The pass ends at 400 ms.
     let (process, _) = started(Plan {
         ceiling: Some(1_000),
-        bound: Ok(Some(50)),
+        bound: Ok(Some(20)),
         sleep: Duration::from_millis(400),
     });
     let results = pass(&process, vec![segment()]);
+    // Past its bound and before its deadline, the pass shows as overdue.
+    thread::sleep(Duration::from_millis(60));
+    let shown = process.ports().long_passes().on_device(0).expect("the pass runs");
+    assert!(shown.overdue && shown.elapsed_ms > 20, "{shown:?}");
     let event = process
         .recv(Duration::from_secs(2))
         .expect("the watchdog stops the process");
     assert_eq!(event, stalled(vec![0]));
     assert_eq!(event.exit_code(), Some(nagaya::exit::ExitCode::Crash));
-    // The pass still runs, past its bound of 50 ms.
-    let shown = process.ports().long_passes().on_device(0).expect("the pass runs");
-    assert!(shown.overdue && shown.elapsed_ms > 50, "{shown:?}");
+    // The pass past its deadline leaves the table, so the route does not show it as running.
+    assert_eq!(process.ports().long_passes().on_device(0), None);
     let result = results.recv_timeout(Duration::from_secs(2)).expect("the pass ends");
     let error = result.expect_err("a result past the deadline is not published");
     assert_eq!(error.kind, PassErrorKind::Ran(PassStatus::Timeout));
-    assert!(error.message.contains("past its deadline"), "{}", error.message);
+    assert!(
+        error.message.contains("engine `long`") && error.message.contains("send the request again"),
+        "{}",
+        error.message
+    );
+    // The engine runs no more passes, and the refusal says why and what to do.
+    let error = pass(&process, vec![segment()])
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .expect_err("the engine runs no more passes");
+    assert_eq!(error.kind, PassErrorKind::Refused);
+    assert!(
+        error.message.contains("engine `long`") && error.message.contains("after the restart"),
+        "{}",
+        error.message
+    );
 }
 
 /// Falsified by a group that arms a deadline for a pass with no bound.

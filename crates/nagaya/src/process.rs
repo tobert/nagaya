@@ -33,7 +33,7 @@ use crate::signal::SignalFlag;
 use in_place::{Exit, Member, Unloaded};
 use loads::Ask;
 pub use loads::{DeviceReply, EngineStates, LoadError, LoadReply};
-use long_pass::{LongLinks, WatchKey};
+use long_pass::LongLinks;
 pub use long_pass::{LongPass, LongPasses};
 
 mod handoff;
@@ -1045,12 +1045,14 @@ impl Start {
         });
 
         // The watchdog thread. It watches the group threads from outside (spec 3.2, 7.4).
+        let long_passes = LongPasses::default();
+        let watchdog_passes = long_passes.clone();
         let watchdog_events = events_tx.clone();
         let watchdog_body = watchdog_events.clone();
         let watchdog_thread = spawn_named("nagaya-watchdog".to_owned(), move || {
             guard("watchdog", &watchdog_events, || {
                 pin("watchdog", housekeeping.as_deref());
-                watchdog(watch_rx, watchdog_body, timeout);
+                watchdog(watch_rx, watchdog_body, timeout, watchdog_passes);
             });
         });
 
@@ -1149,7 +1151,6 @@ impl Start {
         }
 
         let accepting = Arc::new(AtomicBool::new(true));
-        let long_passes = LongPasses::default();
         // A resident engine loads at start, and an on-demand engine waits for a load (spec 3.3a).
         let states = EngineStates::default();
         for placement in &profile.engines {
@@ -1182,7 +1183,6 @@ impl Start {
             let group_ledger = ledger_tx.clone();
             let group_states = states.clone();
             let group_long = LongLinks {
-                heartbeats: watch_tx.clone(),
                 passes: long_passes.clone(),
                 timeout,
                 interval: heartbeat,
@@ -1709,7 +1709,7 @@ fn park_group(names: &[String], engines: &mut [Box<dyn Engine>], store: Option<&
     report
 }
 
-fn watchdog(messages: Receiver<WatchMessage>, events: Sender<Event>, timeout: Duration) {
+fn watchdog(messages: Receiver<WatchMessage>, events: Sender<Event>, timeout: Duration, passes: LongPasses) {
     // The key is the group, and the stage for a stage thread.
     let mut watches: BTreeMap<(usize, Option<usize>), Watch> = BTreeMap::new();
     let poll = (timeout / 4).clamp(Duration::from_millis(5), Duration::from_millis(250));
@@ -1721,7 +1721,6 @@ fn watchdog(messages: Receiver<WatchMessage>, events: Sender<Event>, timeout: Du
                     Watch {
                         devices,
                         last: Instant::now(),
-                        long: None,
                     },
                 );
             }
@@ -1731,7 +1730,6 @@ fn watchdog(messages: Receiver<WatchMessage>, events: Sender<Event>, timeout: Du
                     Watch {
                         devices,
                         last: Instant::now(),
-                        long: None,
                     },
                 );
             }
@@ -1748,68 +1746,35 @@ fn watchdog(messages: Receiver<WatchMessage>, events: Sender<Event>, timeout: Du
             Ok(WatchMessage::StopStage { group, stage }) => {
                 watches.remove(&(group, Some(stage)));
             }
-            Ok(WatchMessage::LongStart {
-                key,
-                dispatch,
-                started,
-                bound,
-                deadline,
-            }) => {
-                if let Some(watch) = watches.get_mut(&key) {
-                    assert!(
-                        watch.long.is_none(),
-                        "watch {key:?} starts a long pass while another one runs"
-                    );
-                    watch.long = Some(LongWatch {
-                        dispatch,
-                        started,
-                        bound,
-                        deadline,
-                        reported: false,
-                    });
-                }
-            }
-            Ok(WatchMessage::LongEnd { key, dispatch, at }) => {
-                // A pass that returned past its deadline stays armed, so the check below stops the process.
-                if let Some(watch) = watches.get_mut(&key)
-                    && watch
-                        .long
-                        .as_ref()
-                        .is_some_and(|long| long.dispatch == dispatch && at <= long.deadline)
-                {
-                    watch.long = None;
-                    watch.last = at;
-                }
-            }
             Ok(WatchMessage::Stop) | Err(RecvTimeoutError::Disconnected) => break,
             Err(RecvTimeoutError::Timeout) => {}
         }
         let now = Instant::now();
-        // A long pass gives one report when it runs past its bound (engine-abi D8).
-        for (key, watch) in &mut watches {
-            if let Some(long) = watch.long.as_mut()
-                && !long.reported
-                && now.duration_since(long.started) > Duration::from_millis(u64::from(long.bound.get()))
-            {
-                long.reported = true;
-                tracing::warn!(
-                    group = key.0,
-                    bound_ms = long.bound.get(),
-                    "a long pass runs past the bound that its engine declared; at its deadline the process stops \
-                     (spec 7.4)"
-                );
-            }
+        // The table of long passes decides for each watch with a long pass. A pass past its bound gives one
+        // report (engine-abi D8).
+        let judged = passes.judge(now);
+        for ((group, _), bound_ms) in &judged.over_bound {
+            tracing::warn!(
+                group,
+                bound_ms,
+                "a long pass runs past the bound that its engine declared; at its deadline the process stops \
+                 (spec 7.4)"
+            );
         }
-        // A watch with a long pass reads its deadline, and a beat does not change it. Any other watch reads the
-        // timeout (spec 7.4).
-        let stalled: Vec<(usize, Option<usize>)> = watches
+        // A watch with a long pass in time does not read its beats. The end of a long pass in time is a beat. Any
+        // other watch reads the timeout (spec 7.4).
+        let mut stalled: Vec<(usize, Option<usize>)> = watches
             .iter()
-            .filter(|(_, watch)| match &watch.long {
-                Some(long) => now > long.deadline,
-                None => now.duration_since(watch.last) > timeout,
+            .filter(|(key, watch)| {
+                if judged.running.contains(key) {
+                    return false;
+                }
+                let last = judged.ended.get(key).map_or(watch.last, |ended| watch.last.max(*ended));
+                now.duration_since(last) > timeout
             })
             .map(|(key, _)| *key)
             .collect();
+        stalled.extend(judged.late.iter().copied());
         for key in stalled {
             if let Some(watch) = watches.remove(&key) {
                 let _ = events.send(Event::Stalled {
@@ -1824,18 +1789,6 @@ fn watchdog(messages: Receiver<WatchMessage>, events: Sender<Event>, timeout: Du
 struct Watch {
     devices: Vec<DeviceId>,
     last: Instant,
-    /// The long pass that runs on the thread now, if one runs.
-    long: Option<LongWatch>,
-}
-
-/// The deadline of one long pass (engine-abi D8).
-struct LongWatch {
-    dispatch: u64,
-    started: Instant,
-    bound: std::num::NonZeroU32,
-    deadline: Instant,
-    /// True after the report of a pass past its bound.
-    reported: bool,
 }
 
 enum WatchMessage {
@@ -1862,21 +1815,6 @@ enum WatchMessage {
     StopStage {
         group: usize,
         stage: usize,
-    },
-    /// A long pass starts on the thread of `key`. Until its end, the watch reads its deadline and not the timeout
-    /// (engine-abi D8).
-    LongStart {
-        key: WatchKey,
-        dispatch: u64,
-        started: Instant,
-        bound: std::num::NonZeroU32,
-        deadline: Instant,
-    },
-    /// The long pass `dispatch` of `key` returned at `at`. Only its own end clears it, and only before its deadline.
-    LongEnd {
-        key: WatchKey,
-        dispatch: u64,
-        at: Instant,
     },
     Stop,
 }
