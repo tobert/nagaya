@@ -142,12 +142,63 @@ __device__ __forceinline__ void op_rows_probe(const MkTaskDescriptor& task, cons
     }
 }
 
-// Reserved for wave B lane R (rows).
+// ---------------------------------------------------------------------------------------------------------------
+// OP_EMBED, OP_MIX and OP_MIX_OUT.
+// ---------------------------------------------------------------------------------------------------------------
+
+constexpr uint32_t RW_PER_THREAD = RW_HIDDEN / MK_WORKERS;  // 9 values of a row for each worker
+static_assert(RW_HIDDEN % MK_WORKERS == 0, "a row must divide over the workers");
+
+// The slots of the task table of OP_EMBED.
+constexpr uint32_t RW_EMBED_NORM = 0;     // the weight of the embedding norm (f32, 2304)
+constexpr uint32_t RW_EMBED_PLANE0 = 1;   // the first plane of the attention residual, B[0] (f32 rows)
+constexpr uint32_t RW_EMBED_PLANE0_RF = 2;  // the row factors of B[0]
+
+// OP_EMBED: item `r` is the row `r`. a = ids (u32, `rows`), b = the embedding (bf16, `n` rows of 2304), c = x (f32,
+// `rows` rows), e = the row factors of x, n = the count of rows of the embedding. It writes the normed row
+// `w * (v * f)` to x and to B[0], with `f` the factor of the raw row. Then it writes the row factor of x to `e` and
+// to the factors of B[0].
 __device__ __forceinline__ void op_embed(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
-    (void)task;
-    (void)table;
-    (void)item;
-    __trap();
+    float* scratch = reinterpret_cast<float*>(mk_smem);
+    if (worker_count() != MK_WORKERS || table == nullptr || task.items != task.rows || item >= task.rows ||
+        dynamic_smem_bytes() < RW_SMEM_BYTES || task.n == 0 || (task.a & 3) != 0 || (task.b & 1) != 0 ||
+        (task.c & 15) != 0 || (task.e & 3) != 0 || table->ptr[RW_EMBED_NORM] == 0 ||
+        table->ptr[RW_EMBED_PLANE0] == 0 || table->ptr[RW_EMBED_PLANE0_RF] == 0) {
+        __trap();
+    }
+    const uint32_t id = __ldg(reinterpret_cast<const uint32_t*>(task.a) + item);
+    if (id >= task.n) {
+        __trap();  // The token is not in the vocabulary. The host checks it, so this is a defect.
+    }
+    const uint16_t* row = reinterpret_cast<const uint16_t*>(task.b) + static_cast<uint64_t>(id) * RW_HIDDEN;
+    const float* w = reinterpret_cast<const float*>(table->ptr[RW_EMBED_NORM]);
+    float v[RW_PER_THREAD];
+    float sum[1] = {0.0f};
+#pragma unroll
+    for (uint32_t j = 0; j < RW_PER_THREAD; ++j) {
+        v[j] = __uint_as_float(static_cast<uint32_t>(__ldg(row + worker_id() + j * MK_WORKERS)) << 16);
+        sum[0] += v[j] * v[j];
+    }
+    rw_block_sum(sum, scratch);
+    const float rf_raw = rw_factor(sum[0], RW_HIDDEN);
+    float* x = reinterpret_cast<float*>(task.c) + static_cast<uint64_t>(item) * RW_HIDDEN;
+    float* plane0 = reinterpret_cast<float*>(table->ptr[RW_EMBED_PLANE0]) + static_cast<uint64_t>(item) * RW_HIDDEN;
+    float squares[1] = {0.0f};
+#pragma unroll
+    for (uint32_t j = 0; j < RW_PER_THREAD; ++j) {
+        const uint32_t e = worker_id() + j * MK_WORKERS;
+        const float out = __ldg(w + e) * (v[j] * rf_raw);
+        x[e] = out;
+        plane0[e] = out;
+        squares[0] += out * out;
+    }
+    // The row factor that the next task reads is the factor of the row that it wrote: the normed row.
+    rw_block_sum(squares, scratch);
+    if (worker_id() == 0) {
+        const float rf = rw_factor(squares[0], RW_HIDDEN);
+        reinterpret_cast<float*>(task.e)[item] = rf;
+        reinterpret_cast<float*>(table->ptr[RW_EMBED_PLANE0_RF])[item] = rf;
+    }
 }
 
 // Reserved for wave B lane R (rows).
