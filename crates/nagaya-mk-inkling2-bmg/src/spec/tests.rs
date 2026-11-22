@@ -979,6 +979,32 @@ fn restore(held: &mut Held, n: u64, cycles: u32) {
     }
 }
 
+/// The active rings of a restore start at one position, so the base of the slot is the start of each of them. A ring
+/// that starts later would hide rows of the others from the reads after the restore (engine-abi "Inkling 2", "A
+/// restore").
+#[test]
+fn the_active_rings_of_a_restore_start_at_one_position() {
+    let state = State::Slot(0);
+    let mut held = Held::new(&[4096], DEFAULT_EXTRA_RUNS);
+    restore(&mut held, 3000, 1);
+    // Each ring alone fits: 1976 is the start of the window of 1,024 positions before 3000.
+    held.wrote(0, RING, Some(1976..3000), false);
+    let e = held.check_set_n(state, 3000).unwrap_err();
+    assert!(
+        e.contains("the active rings of a restore must start at one position")
+            && e.contains("1976")
+            && e.contains("952"),
+        "{e}"
+    );
+    // An inactive ring holds zeros, and its start does not count.
+    let mut inactive = Held::new(&[4096], DEFAULT_EXTRA_RUNS);
+    restore(&mut inactive, 3000, 1);
+    inactive.wrote(0, RESERVE_RING, Some(1976..3000), true);
+    assert_eq!(inactive.check_set_n(state, 3000), Ok(0));
+    inactive.set_n(0, 3000);
+    assert_eq!(inactive.base(0, 4), 952);
+}
+
 /// A restore writes the count, and `set_n` takes it with the positions. An inactive part must hold zeros (engine-abi
 /// "Inkling 2", "A restore").
 #[test]

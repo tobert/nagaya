@@ -1519,11 +1519,33 @@ impl Held {
                 }
             }
         }
+        // The base of a slot is one position for all its active rings, so they must start at one position.
+        let mut ring_start: Option<(PartId, u64)> = None;
+        for (id, part) in self.list.iter().enumerate() {
+            let write = &writes[&id];
+            if let (Part::K(s) | Part::V(s), Some(rows)) = (part, &write.rows)
+                && n > 0
+                && ringed(seq, *s)
+                && runs_at(cycles, *s)
+            {
+                match ring_start {
+                    None => ring_start = Some((id, rows.start)),
+                    Some((first, start)) if start != rows.start => {
+                        return Err(format!(
+                            "the active rings of a restore must start at one position: part {first} starts at \
+                             {start}, and part {id} at {}. Restore a snapshot that the engine read",
+                            rows.start
+                        ));
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
         Ok(slot)
     }
 
     /// Take a count that `check_set_n` passed. After writes, the slot takes the restored count of cycles, and the
-    /// rings hold the positions from the latest start of the rows of an active ring part.
+    /// rings hold the positions from the start of the rows of the active ring parts, which `check_set_n` found equal.
     pub fn set_n(&mut self, slot: usize, n: u64) {
         let seq = self.seqs[slot];
         let restored = (!self.writes[slot].is_empty() && n > 0).then(|| self.pending[slot].unwrap_or(0) as usize);

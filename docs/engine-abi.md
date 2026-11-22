@@ -1530,6 +1530,10 @@ engine declares no `layer_loops`.
   - The rows of an active part follow the rules of "The host spec". An inactive part must hold zeros, else
     `set_n` is refused, and the error names the part.
   - `set_n` takes the count with the positions. The rings start at the first restored row of an active ring.
+  - The active rings must start at one position, else `set_n` is refused, and the error names two of them.
+    Reason: the base of a ring is one position for each slot (`Held::base`). A later start would hide the rows
+    of the other rings before it from each read after the restore. Each snapshot that the engine reads has one
+    start, so the rule refuses only a snapshot from another source.
 - Reason: a fixed part keeps `limits().parts` static and the ABI as it is. Zeros on a read cost no write to the
   card. A snapshot of 1 cycle still holds the reserve rows, as zeros (review by ChatGPT through kaibo `gpt-plan`).
 - The identity names `state` 2, the layout of these parts. Thus a snapshot of the parts before `cycles` does not
