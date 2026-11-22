@@ -642,11 +642,23 @@ The experts take 33.2 ms, 11 times their floor of about 3 ms. Two small ops run 
 
 **The findings, first the gains of one row.**
 
-1. **A decode path in the expert ops: 33.2 ms of a decode step.** `OP_EXPERT_UP` and `OP_EXPERT_DOWN` always take
-   the XMX path. With one token, 15 of the 16 rows of each dpas are idle. A path of SIMD dot products for one token
-   can read the packed planes as fast with less work. The review of the binding by ChatGPT asked to measure both.
-   - An up task reads about 24 MB in 507 us, about 47 GB/s. A down task reads about 12 MB in 184 us.
-   - At half of 608 GB/s, the two ops take about 6 ms. Thus the gain is about 27 ms of a step.
+1. **A decode path in the expert ops: done on 2026-11-22.** `OP_EXPERT_UP` and `OP_EXPERT_DOWN` took the XMX path
+   for any count. With one token, 15 of the 16 rows of each dpas were idle. Now a block of 1 to 8 tokens takes the
+   row path (engine-abi "The experts on the card"), and a block of 9 or more keeps the XMX path.
+   - A decode step at position 1,024 at 3 cycles, on top of item 2: the tasks take 34.39 ms, from 59.81 ms. The
+     expert ops take 8.77 ms, from 34.02 ms. `EXPERT_UP` takes 118 us, from 518 us, and `EXPERT_DOWN` 64 us, from
+     191 us.
+   - `xe_feed`: a decode step takes 32.0 ms (31.2 tokens each second), from 58.0 ms (17.3 tokens each second).
+   - A pair of up and down of one token reads 210 GB/s of the NVFP4 planes and 385 GB/s of the MXFP8 planes. The
+     op is bound by its arithmetic: a read with no expansion reaches about 340 GB/s for NVFP4.
+   - The row path is also faster for 2 to 8 tokens. A pair for 8 tokens takes 1,084 us, and for 9 tokens on the
+     XMX path 2,014 us.
+   - Bits move for a block of 1 to 8 tokens, and the engine identity changes. The gaps against the oracle stay
+     within the gates, and most get smaller: the decode of Mini 2.86e-5, from 3.34e-5.
+   - A prefill block of 512 takes 653.1 ms in the profile, from 647.9 ms, with the same bits. The XMX down op takes
+     5% more in this binary. `xe_feed` gives 660 ms for both.
+   - Open: a cheaper expansion of NVFP4. A step costs about 200 instructions for 16 values. Each instruction of 16
+     lanes takes about 2 cycles, so the op takes about twice its read time.
 2. **Wider ops of the residual and the gates: done on 2026-11-22.** `OP_ATTN_RESIDUAL` and `OP_MESSAGE_GATE` took
    one work-group for each position, and one load for each step of a sum. They now spread over all 32 work-groups,
    and each sum keeps the order of the host `dot`. Thus the bits and the engine identity did not change.
