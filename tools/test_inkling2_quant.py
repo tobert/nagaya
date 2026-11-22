@@ -218,7 +218,7 @@ class ExpertCall(unittest.TestCase):
         reference.ExpertCalls.formats = None
 
 
-def tiny_model(seed, quantized):
+def tiny_model(seed, quantized, near_tie=None):
     """A tiny Inkling 2 text model: 6 layers, 3 cycles of the layers 2 and 3, 8 experts, hidden size 64.
 
     With `quantized`, the layers 0 to 3 use NVFP4 and the layers 4 and 5 use MXFP8, as the layers of Mini do in two
@@ -257,6 +257,12 @@ def tiny_model(seed, quantized):
     for name, parameter in model.named_parameters():
         if parameter.dim() > 1:
             parameter.data = torch.randn_like(parameter) * (0.5 if ".experts." in name else 0.3)
+    if near_tie:
+        with torch.no_grad():
+            for layer in model.model.layers:
+                router = layer.mlp.gate.weight
+                for first in range(0, 8, 2):
+                    router[first + 1] = router[first] + near_tie * torch.randn_like(router[first])
     modeling.Inkling2LoopExperts.forward = reference.ExpertCalls.forward
     formats = ["nvfp4"] * 4 + ["mxfp8"] * 2
     for index, layer in enumerate(model.model.layers):
@@ -279,8 +285,22 @@ class DecodeWithCache(unittest.TestCase):
         reference.ExpertCalls.formats = None
         reference.ExpertCalls.tape = None
 
-    def compare(self, seed, quantized):
-        model, config = tiny_model(seed, quantized)
+    def free_gap(self, seed, near_tie=None):
+        """The gap of the free comparison: the run with no cache quantizes and routes by itself."""
+        model, config = tiny_model(seed, True, near_tie)
+        generator = torch.Generator().manual_seed(100 + seed)
+        ids = torch.randint(0, 90, (12,), generator=generator).tolist()
+        with torch.no_grad():
+            out = model.generate(
+                input_ids=torch.tensor([ids]), max_new_tokens=6, do_sample=False, output_logits=True,
+                return_dict_in_generate=True,
+            )
+        cached = torch.stack([row[0].float() for row in out.logits])
+        whole = reference.forward(model, ids + out.sequences[0, 12:-1].tolist())[11:]
+        return (cached - whole).abs().max().item()
+
+    def compare(self, seed, quantized, near_tie=None):
+        model, config = tiny_model(seed, quantized, near_tie)
         generator = torch.Generator().manual_seed(100 + seed)
         ids = torch.randint(0, 90, (12,), generator=generator).tolist()
         tokens, cached, whole, flips = reference.decode_compare(model, ids, 6, config.total_num_hidden_layers)
@@ -293,15 +313,25 @@ class DecodeWithCache(unittest.TestCase):
         self.assertEqual(flips, 0)
 
     def test_the_quantized_model_gives_the_same_logits_with_the_cache_when_a_code_flips(self):
-        # In the seeds 7 and 29 the run with no cache flips a code, and a free comparison gives a large gap.
-        for seed in (7, 29):
-            gap, flips = self.compare(seed, True)
-            self.assertGreater(flips, 0, f"seed {seed}: the test must meet a flip")
+        # In the seeds 1 and 7 the run with no cache flips a code, and a free comparison gives a large gap.
+        for seed in (1, 7):
+            self.assertGreater(self.free_gap(seed), 0.1, f"seed {seed}: the test must meet a flip")
+            gap, _flips = self.compare(seed, True)
+            self.assertLess(gap, 1e-3, f"seed {seed}")
+
+    def test_the_quantized_model_gives_the_same_logits_with_the_cache_when_routes_tie(self):
+        # A router with pairs of experts that tie to 1e-7 gives the same experts in another order of slots, or another
+        # expert, when the sums change. The research model of Inkling 2 with a variable loop did this: 2247 rows
+        # differed and the gap was 33.5. The tape must replay the route of each token, not only the quantized rows.
+        for seed in (0, 1, 2):
+            gap, flips = self.compare(seed, True, near_tie=1e-7)
+            self.assertGreater(flips, 0, f"seed {seed}: the replay must change the route of a row")
             self.assertLess(gap, 1e-3, f"seed {seed}")
 
     def test_the_quantized_model_gives_the_same_logits_with_the_cache_when_no_code_flips(self):
-        gap, flips = self.compare(1, True)
-        self.assertEqual(flips, 0, "seed 1 has no flip")
+        self.assertLess(self.free_gap(0), 1e-3, "seed 0 has no flip")
+        gap, flips = self.compare(0, True)
+        self.assertEqual(flips, 0)
         self.assertLess(gap, 1e-3)
 
 
