@@ -936,10 +936,9 @@ Before this rule, the watchdog did not read `max_quantum_ms`. It stopped the pro
   stops the process, as a stall does. A result that returns after its deadline is never published.
 - The read-only route `GET /nagaya/v1/devices/{id}/busy` shows the long pass to other clients: the group, the devices,
   `bound_ms`, `elapsed_ms` and `overdue`.
-- **Not built, for Amy to decide:** "the scheduler gets the bound before it chooses a quantum". The bound comes from
-  the segments, and the body of a job builds them in its quantum, after the choice. A bound before the choice needs
-  that work before the choice, and no rule of the scheduler reads the bound today. The order of classes holds
-  without it.
+- The scheduler does not read the bound. It chooses by the order of classes, as for each quantum. The bound comes
+  from the segments, and the body of a job builds them in its quantum, after the choice. Decided 2026-11-22. Amy:
+  "if I want to prioritize interactive work, the thing should be scheduled as batch in the first place".
 - Not in the first version: a long stage quantum, and beats from the device while a pass runs.
 - Reason: a group timeout that grows with the largest bound slows the detection of a real hang in every pass. A
   bound for each kind of pass cannot tell a short feed block from a long one. A declared bound for each pass keeps
