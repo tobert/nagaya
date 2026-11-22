@@ -5,14 +5,11 @@
 // gridDim.x using GPU-scope acquire loads; after each task, thread 0 signals scoreboard[signal_event]
 // using GPU-scope release atomics.
 
+#include <stddef.h>
 #include <stdint.h>
 
-// Opcodes (must match src/protocol.rs).
-#define OP_NOP   0u
-#define OP_COPY  21u
-#define OP_HALT  255u
-
-#define NO_EVENT 0xFFFFFFFFu
+// The opcodes, the flags, the sizes and the offsets come from src/protocol.rs. `build.rs` writes this header.
+#include "mk_protocol.h"
 
 // A block that polls a scoreboard event this many times traps. A normal run never reaches the limit, so the bits do
 // not change. The limit turns a lost signal into an error of the launch, not a hang. At about 100 ns for each poll,
@@ -37,8 +34,24 @@ struct alignas(64) MkTaskDescriptor {
     uint32_t p3;
 };
 
-static_assert(sizeof(MkTaskDescriptor) == 64, "MkTaskDescriptor must be 64 bytes");
-static_assert(alignof(MkTaskDescriptor) == 64, "MkTaskDescriptor must be 64-byte aligned");
+#define MK_CHECK_OFFSET(type, field, offset) \
+    static_assert(offsetof(type, field) == (offset), #type "::" #field " is not where src/protocol.rs puts it")
+
+static_assert(sizeof(MkTaskDescriptor) == MK_DESC_BYTES, "MkTaskDescriptor differs in size from src/protocol.rs");
+static_assert(alignof(MkTaskDescriptor) == MK_DESC_ALIGN, "MkTaskDescriptor differs in alignment from src/protocol.rs");
+MK_CHECK_OFFSET(MkTaskDescriptor, opcode, MK_DESC_OFF_opcode);
+MK_CHECK_OFFSET(MkTaskDescriptor, flags, MK_DESC_OFF_flags);
+MK_CHECK_OFFSET(MkTaskDescriptor, layer, MK_DESC_OFF_layer);
+MK_CHECK_OFFSET(MkTaskDescriptor, wait_event, MK_DESC_OFF_wait_event);
+MK_CHECK_OFFSET(MkTaskDescriptor, signal_event, MK_DESC_OFF_signal_event);
+MK_CHECK_OFFSET(MkTaskDescriptor, a, MK_DESC_OFF_a);
+MK_CHECK_OFFSET(MkTaskDescriptor, b, MK_DESC_OFF_b);
+MK_CHECK_OFFSET(MkTaskDescriptor, c, MK_DESC_OFF_c);
+MK_CHECK_OFFSET(MkTaskDescriptor, d, MK_DESC_OFF_d);
+MK_CHECK_OFFSET(MkTaskDescriptor, p0, MK_DESC_OFF_p0);
+MK_CHECK_OFFSET(MkTaskDescriptor, p1, MK_DESC_OFF_p1);
+MK_CHECK_OFFSET(MkTaskDescriptor, p2, MK_DESC_OFF_p2);
+MK_CHECK_OFFSET(MkTaskDescriptor, p3, MK_DESC_OFF_p3);
 
 struct BlockStats {
     uint32_t tasks_run;
@@ -47,7 +60,11 @@ struct BlockStats {
     uint64_t exec_ns;
 };
 
-static_assert(sizeof(BlockStats) == 24, "BlockStats must be 24 bytes");
+static_assert(sizeof(BlockStats) == MK_STATS_BYTES, "BlockStats differs in size from src/protocol.rs");
+MK_CHECK_OFFSET(BlockStats, tasks_run, MK_STATS_OFF_tasks_run);
+MK_CHECK_OFFSET(BlockStats, pad, MK_STATS_OFF_pad);
+MK_CHECK_OFFSET(BlockStats, wait_ns, MK_STATS_OFF_wait_ns);
+MK_CHECK_OFFSET(BlockStats, exec_ns, MK_STATS_OFF_exec_ns);
 
 __device__ __forceinline__ uint64_t globaltimer_ns() {
     uint64_t t;
@@ -124,7 +141,7 @@ extern "C" __global__ void mk_persistent_interpreter(
                 exec_ns += (t_end - t_after_wait);
 #ifdef MK_PROFILE
                 if (profile != nullptr) {
-                    uint64_t* slot = profile + ((static_cast<uint64_t>(idx) * grid + bid) * 3u);
+                    uint64_t* slot = profile + ((static_cast<uint64_t>(idx) * grid + bid) * MK_PROFILE_WORDS);
                     slot[0] = t_start;
                     slot[1] = t_after_wait;
                     slot[2] = t_end;
@@ -153,7 +170,7 @@ extern "C" __global__ void mk_persistent_interpreter(
             tasks_run += 1;
 #ifdef MK_PROFILE
             if (profile != nullptr) {
-                uint64_t* slot = profile + ((static_cast<uint64_t>(idx) * grid + bid) * 3u);
+                uint64_t* slot = profile + ((static_cast<uint64_t>(idx) * grid + bid) * MK_PROFILE_WORDS);
                 slot[0] = t_start;
                 slot[1] = t_after_wait;
                 slot[2] = t_end;

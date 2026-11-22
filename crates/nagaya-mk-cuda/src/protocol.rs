@@ -1,6 +1,7 @@
 //! Task descriptors and opcodes shared between the Rust host and `kernels/megakernel.cu`.
-
-#![allow(dead_code)]
+//!
+//! `build.rs` includes this file and writes `mk_protocol.h` from it: the opcodes, the flags, the sizes and the offset
+//! of each field. The kernel includes that header and checks its own structs against it.
 
 /// Maximum tasks in one ring, including the trailing `OP_HALT`.
 pub const MAX_TASKS_PER_CARD: usize = 2048;
@@ -27,42 +28,57 @@ pub const MAX_PLAN_TOKENS: usize = 1024;
 /// then `MAX_PLAN_TOKENS * TOP_K` slots and weights.
 pub const MOE_PLAN_BYTES: usize = (NUM_EXPERTS + NUM_EXPERTS + 1 + 1 + NUM_EXPERTS) * 4 + MAX_PLAN_TOKENS * TOP_K * 8;
 
-// Core opcodes (must match `kernels/megakernel.cu`).
-pub const OP_NOP: u16 = 0;
-pub const OP_RMSNORM: u16 = 1;
-pub const OP_MATMUL: u16 = 2;
-pub const OP_MOE_PLAN: u16 = 7;
-pub const OP_MOE_GATHER: u16 = 20;
-pub const OP_COPY: u16 = 21;
-pub const OP_EMBED: u16 = 41;
-pub const OP_BIAS: u16 = 43;
-pub const OP_LAYERNORM: u16 = 47;
-pub const OP_GELU: u16 = 48;
-pub const OP_SCALE_ADD: u16 = 50;
-pub const OP_HALT: u16 = 255;
+/// Define `u16` constants and a table of their names and values. `build.rs` writes the table into the header that
+/// `kernels/megakernel.cu` includes, so the opcodes and the flags have one source.
+macro_rules! define_u16_table {
+    ($table:ident; $($(#[$meta:meta])* $name:ident = $value:expr;)*) => {
+        $($(#[$meta])* pub const $name: u16 = $value;)*
+        /// The name and the value of each constant above.
+        pub const $table: &[(&str, u16)] = &[$((stringify!($name), $name)),*];
+    };
+}
 
-// Inkling 2 opcodes (matching `docs/engine-abi.md` "Inkling 2").
-pub const OP_EXPERT_UP: u16 = 142;
-pub const OP_EXPERT_DOWN: u16 = 143;
-pub const OP_EXPERT_SUM: u16 = 144;
-pub const OP_ATTN_RESIDUAL: u16 = 150;
-pub const OP_MESSAGE_GATE: u16 = 151;
-pub const OP_HEAD_CLIP: u16 = 152;
-pub const OP_OUTPUT_GATE: u16 = 153;
-pub const OP_RESIDUAL_CONV: u16 = 154;
-pub const OP_SIGMOID_ROUTER: u16 = 155;
-pub const OP_INKLING2_ATTN: u16 = 160;
-pub const OP_INKLING2_ATTN_SUM: u16 = 161;
-pub const OP_INKLING2_VISION_EMBED: u16 = 180;
-pub const OP_INKLING2_VISION_ROPE: u16 = 181;
-pub const OP_INKLING2_VISION_ATTN: u16 = 182;
-pub const OP_INKLING2_CONTROL: u16 = 190;
+define_u16_table! {
+    OPCODES;
+    // Core opcodes.
+    OP_NOP = 0;
+    OP_RMSNORM = 1;
+    OP_MATMUL = 2;
+    OP_MOE_PLAN = 7;
+    OP_MOE_GATHER = 20;
+    OP_COPY = 21;
+    OP_EMBED = 41;
+    OP_BIAS = 43;
+    OP_LAYERNORM = 47;
+    OP_GELU = 48;
+    OP_SCALE_ADD = 50;
+    OP_HALT = 255;
 
-// Flags.
-pub const FLAG_ACCUMULATE: u16 = 1 << 0;
-pub const FLAG_SOFTCAP_30: u16 = 1 << 2;
-pub const FLAG_F32: u16 = 1 << 8;
-pub const FLAG_MXFP8: u16 = 1 << 15;
+    // Inkling 2 opcodes (matching `docs/engine-abi.md` "Inkling 2").
+    OP_EXPERT_UP = 142;
+    OP_EXPERT_DOWN = 143;
+    OP_EXPERT_SUM = 144;
+    OP_ATTN_RESIDUAL = 150;
+    OP_MESSAGE_GATE = 151;
+    OP_HEAD_CLIP = 152;
+    OP_OUTPUT_GATE = 153;
+    OP_RESIDUAL_CONV = 154;
+    OP_SIGMOID_ROUTER = 155;
+    OP_INKLING2_ATTN = 160;
+    OP_INKLING2_ATTN_SUM = 161;
+    OP_INKLING2_VISION_EMBED = 180;
+    OP_INKLING2_VISION_ROPE = 181;
+    OP_INKLING2_VISION_ATTN = 182;
+    OP_INKLING2_CONTROL = 190;
+}
+
+define_u16_table! {
+    FLAGS;
+    FLAG_ACCUMULATE = 1 << 0;
+    FLAG_SOFTCAP_30 = 1 << 2;
+    FLAG_F32 = 1 << 8;
+    FLAG_MXFP8 = 1 << 15;
+}
 
 /// 64-byte task descriptor shared with `kernels/megakernel.cu`.
 #[repr(C, align(64))]
