@@ -120,16 +120,16 @@ __device__ __forceinline__ uint32_t atom_release_gpu_add_u32(uint32_t* ptr, uint
 // The dynamic shared memory of the block. The launch gives its size. Only the probe ops use it for now.
 extern __shared__ __align__(128) uint8_t mk_smem[];
 
-__device__ __forceinline__ void op_copy(const MkTaskDescriptor& task) {
-    // a = dst (float*), b = src (const float*), p0 = count of floats.
+// Item `item` copies `n` floats: the floats from `item * n` up to `(item + 1) * n`. The task covers `items * n` floats.
+// The cut comes from the shape of the task, not from the grid, so the bits do not depend on which block runs an item.
+// a = dst (float*), b = src (const float*), n = floats in each item.
+__device__ __forceinline__ void op_copy(const MkTaskDescriptor& task, uint32_t item) {
     float* dst = reinterpret_cast<float*>(task.a);
     const float* src = reinterpret_cast<const float*>(task.b);
-    // The index is 64 bits: with a 32-bit index, `i += stride` wraps for a count near 2^32 and the loop never ends.
-    const uint64_t n = task.n;
-    const uint64_t tid = static_cast<uint64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-    const uint64_t stride = static_cast<uint64_t>(gridDim.x) * blockDim.x;
-    for (uint64_t i = tid; i < n; i += stride) {
-        dst[i] = src[i];
+    // The offsets are 64 bits: a task can cover more than 2^32 floats.
+    const uint64_t first = static_cast<uint64_t>(item) * task.n;
+    for (uint32_t i = threadIdx.x; i < task.n; i += blockDim.x) {
+        dst[first + i] = src[first + i];
     }
 }
 
@@ -187,13 +187,14 @@ __device__ __forceinline__ void wait_for_event(const uint32_t* event, uint32_t t
     }
 }
 
-// Run one work item of the task. Each op for now is one item for each block, and it reads blockIdx.x.
-__device__ __forceinline__ void run_op(const MkTaskDescriptor& task) {
+// Run work item `item` of the task. A per-item op uses `item`. The probe and test ops run once in each block, so their
+// item is blockIdx.x, and they read that.
+__device__ __forceinline__ void run_op(const MkTaskDescriptor& task, uint32_t item) {
     switch (task.opcode) {
         case OP_NOP:
             break;
         case OP_COPY:
-            op_copy(task);
+            op_copy(task, item);
             break;
         case OP_SELFTEST_FILL:
             op_selftest_fill(task);
@@ -286,7 +287,7 @@ extern "C" __global__ void mk_persistent_interpreter(
         // Block b runs the items b, b + G, b + 2G and so on. After each item it adds 1 to the event of the task.
         for (uint32_t item = bid; item < count; item += grid) {
             if (task.items != 0) {
-                run_op(task);
+                run_op(task, item);
             }
             __syncthreads();
             if (threadIdx.x == 0 && task.signal != NO_EVENT) {

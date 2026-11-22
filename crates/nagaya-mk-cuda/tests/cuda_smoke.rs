@@ -42,23 +42,20 @@ fn persistent_interpreter_runs_copy_and_profile_on_gb10() {
 
     let mut ring = Ring::new(&dev, 1024, false).unwrap();
     ring.zero_device().unwrap();
-    ring.set(&chained(&[
-        MkTaskDescriptor {
-            opcode: OP_NOP,
-            ..Default::default()
-        },
-        MkTaskDescriptor {
+    // 16 items of 1,024 floats. The items run on whatever blocks the assignment gives.
+    ring.set(&[
+        Task::per_block(MkTaskDescriptor::default()),
+        Task::with_items(MkTaskDescriptor {
             opcode: OP_COPY,
+            items: 16,
             a: dev_dst,
             b: dev_src,
-            n: n as u32,
+            n: 1024,
             ..Default::default()
-        },
-        MkTaskDescriptor {
-            opcode: OP_NOP,
-            ..Default::default()
-        },
-    ]));
+        })
+        .after(0),
+        Task::per_block(MkTaskDescriptor::default()).after(1),
+    ]);
     unsafe { ring.run().unwrap() };
     unsafe {
         dev.copy_dtoh(host_dst.as_mut_ptr().cast::<c_void>(), dev_dst, bytes)

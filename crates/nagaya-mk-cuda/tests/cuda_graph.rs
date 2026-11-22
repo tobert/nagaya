@@ -21,8 +21,10 @@ const SLOW_BLOCK: u32 = 0;
 const DELAY_NS: u32 = 1_200_000;
 /// The delay of the fill of chain C in ns.
 const DELAY_C_NS: u32 = 400_000;
-/// Floats in each buffer of a copy.
-const FLOATS: usize = 4096;
+/// Floats in each buffer of a copy: `COPY_ITEMS` items of `ITEM_FLOATS` floats.
+const COPY_ITEMS: u32 = 16;
+const ITEM_FLOATS: u32 = 256;
+const FLOATS: usize = (COPY_ITEMS * ITEM_FLOATS) as usize;
 const BYTES: usize = FLOATS * 4;
 
 /// Run the ring in a thread with a watchdog, so that a hang fails the test.
@@ -45,11 +47,12 @@ fn run_with_watchdog(ring: &Ring<'_>) {
 }
 
 fn copy(dst: CUdeviceptr, src: CUdeviceptr) -> Task {
-    Task::per_block(MkTaskDescriptor {
+    Task::with_items(MkTaskDescriptor {
         opcode: OP_COPY,
+        items: COPY_ITEMS,
         a: dst,
         b: src,
-        n: FLOATS as u32,
+        n: ITEM_FLOATS,
         ..Default::default()
     })
     .reads(src, BYTES)
@@ -139,14 +142,14 @@ fn chains_and_branches_of_copy_tasks_are_exact_and_independent_tasks_overlap() {
         "the last task ran before the end of chain A"
     );
 
-    // Each event holds the items of its task: one for each block, and 1 for the JOIN.
+    // Each event holds the items of its task: 16 for a copy, one for each block of a fill, and 1 for the JOIN.
     let scoreboard = ring.read_scoreboard().unwrap();
     assert_eq!(scoreboard.len(), planned.len() + 1);
     for (index, task) in planned.iter().enumerate() {
-        let want = if task.origin.is_none() {
-            1
-        } else {
-            signals(blocks as u32)
+        let want = match task.origin.map(|i| &tasks[i]) {
+            None => 1,
+            Some(t) if t.per_block => signals(blocks as u32),
+            Some(t) => t.desc.items,
         };
         assert_eq!(scoreboard[index], want, "event {index}: {task:?}");
     }
@@ -158,15 +161,17 @@ fn chains_and_branches_of_copy_tasks_are_exact_and_independent_tasks_overlap() {
         (profile[base], profile[base + 1], profile[base + 2])
     };
     let fill_end = (0..blocks).map(|b| slot(0, b).2).max().unwrap();
-    let early: Vec<usize> = (0..blocks).filter(|&b| slot(1, b).1 < fill_end).collect();
-    let overlap_ns = fill_end - (0..blocks).map(|b| slot(1, b).1).min().unwrap();
+    // Only the blocks that have an item of B1 leave a wait.
+    let with_item = 0..COPY_ITEMS as usize;
+    let early: Vec<usize> = with_item.clone().filter(|&b| slot(1, b).1 < fill_end).collect();
+    let overlap_ns = fill_end - with_item.map(|b| slot(1, b).1).min().unwrap();
     eprintln!(
-        "cuda_graph: {} of {blocks} blocks passed the wait of task B1 before the fill ended; the first passed {overlap_ns} ns before",
+        "cuda_graph: {} of {COPY_ITEMS} blocks passed the wait of task B1 before the fill ended; the first passed {overlap_ns} ns before",
         early.len()
     );
     assert!(
-        early.len() >= blocks - 1,
-        "only {} of {blocks} blocks passed the wait of B1 before the fill ended: the tasks do not overlap",
+        early.len() >= COPY_ITEMS as usize - 1,
+        "only {} of {COPY_ITEMS} blocks passed the wait of B1 before the fill ended: the tasks do not overlap",
         early.len()
     );
     assert!(overlap_ns > u64::from(DELAY_NS) / 2, "the overlap is {overlap_ns} ns");
@@ -179,7 +184,8 @@ fn chains_and_branches_of_copy_tasks_are_exact_and_independent_tasks_overlap() {
         for wait in &task.waits {
             let producer = wait.event as usize;
             let last_end = (0..blocks).map(|b| slot_of(producer, b).2).max().unwrap();
-            for b in 0..blocks {
+            // A block with no item of the task does not wait.
+            for b in 0..(task.items.max(1) as usize).min(blocks) {
                 let after_wait = slot_of(index, b).1;
                 assert!(
                     after_wait >= last_end,
