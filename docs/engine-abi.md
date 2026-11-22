@@ -1847,7 +1847,8 @@ choice open.
   - The square law rests on one measurement, the largest image. A measurement of smaller images can change the
     rule.
   - The card gate `crates/nagaya/tests/xe_inkling2_long_pass.rs` runs a cold image of 4,096 px through the process,
-    with the watchdog at its defaults. It has not run yet.
+    with the watchdog at its defaults. It passed on card 0 on 2026-11-22, on `7f6880a`. The pass of 10,631 tokens
+    declared 88,200 ms, and the route showed 57,309 ms elapsed with `overdue` false. The generation took 75,073 ms.
 - **The tower in quanta of its own** (from ChatGPT through kaibo `gpt-plan`, 2026-11-21; accepted 2026-11-22 under
   D8). The family keeps the bound of 4,096 px. The tower runs in quanta before the pass that reads its rows. Each
   quantum fits `max_quantum_ms`.
