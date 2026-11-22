@@ -724,8 +724,6 @@ impl Limits {
         Ok(())
     }
 
-    /// Check the rule of cycles: the capability `cycles` and the limit come together, and the limit is in order
-    /// (engine-abi "Inkling 2").
     /// Check the ceiling of a long pass: it is more than `max_quantum_ms` and at most 180,000 ms, and an engine with
     /// stages declares none (engine-abi D8).
     fn check_long_quantum(&self) -> Result<(), String> {
@@ -783,6 +781,8 @@ impl Limits {
         Ok(())
     }
 
+    /// Check the rule of cycles: the capability `cycles` and the limit come together, and the limit is in order
+    /// (engine-abi "Inkling 2").
     fn check_cycles(&self) -> Result<(), String> {
         let declared = self.capabilities.contains(&Capability::Cycles);
         let Some(l) = &self.cycles else {
