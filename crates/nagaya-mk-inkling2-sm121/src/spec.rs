@@ -10,7 +10,7 @@ use nagaya_abi::{
     CONTROL_TERM, Capability, ChainLimits, ControlLimit, CyclesLimit, Determinism, Dtype, FeedRule, Inputs, Kind,
     Lifetime, Limits, MandatoryTerm, MemoryLimits, PartKind, PartLimits, SlotLimit, TapLimit, Tier,
 };
-use nagaya_mk_cuda::protocol::{MAX_TASKS_PER_CARD, NUM_EXPERTS, NUM_SCOREBOARD_EVENTS, RING_DEV_BYTES};
+use nagaya_mk_cuda::protocol::{NUM_EXPERTS, NUM_SCOREBOARD_EVENTS, RING_DEV_BYTES};
 use nagaya_mk_cuda::safetensors::{SafeTensorsHeader, TensorMeta};
 
 /// Engine kind name in a placement profile (`AGENTS.md`, "Layout").
@@ -381,7 +381,7 @@ pub fn limits(config: &Config, llm_weights: u64, vision_weights: u64) -> Limits 
     let ring_bytes = (NUM_SCOREBOARD_EVENTS * 4 + RING_DEV_BYTES) as u64;
     let block_work = (config.max_block * BLOCK_WORK_FLOATS_PER_TOKEN * 4) as u64;
     let work = block_work + attn_scratch_bytes(config.max_seq()) + ring_bytes + VISION_WORK_BYTES;
-    let pinned = (MAX_TASKS_PER_CARD * 64 + 256 * 24 + STAGING_BYTES) as u64;
+    let pinned = (RING_DEV_BYTES + 256 * 24 + STAGING_BYTES) as u64;
     let control = ControlLimit {
         tables: CONTROL_TABLES,
         layers: LAYERS as u32,
@@ -677,9 +677,9 @@ mod tests {
         // The work: 512 rows of 65,536 `f32` values, the scratch, the ring, and the vision tower.
         assert_eq!(
             bytes("work"),
-            134_217_728 + 1_635_778_560 + (2_049 * 4 + 131_072) + 1_870_588_096
+            134_217_728 + 1_635_778_560 + (2_049 * 4 + 262_144) + 1_870_588_096
         );
-        assert_eq!(bytes("pinned"), 131_072 + 6_144 + 67_108_864);
+        assert_eq!(bytes("pinned"), 262_144 + 6_144 + 67_108_864);
         assert_eq!(lim.slots.len(), 1);
         assert_eq!(
             (lim.slots[0].count, lim.slots[0].tokens, lim.slots[0].bytes),

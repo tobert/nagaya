@@ -208,9 +208,9 @@ fn probe_read_bandwidth() {
                     opcode: OP_PROBE_READ,
                     a: buffer,
                     c: checks + (t * blocks * 4) as u64,
-                    p0: items as u32,
-                    p1: u32::from(case.variant),
-                    p2: case.param,
+                    n: items as u32,
+                    k: u32::from(case.variant),
+                    kt: case.param,
                     ..Default::default()
                 })
                 .collect();
@@ -281,8 +281,8 @@ fn probe_l2_knee() {
                     opcode: OP_PROBE_L2,
                     a: buffer,
                     c: checks + (t * blocks * 4) as u64,
-                    p0: slice as u32,
-                    p1: passes,
+                    n: slice as u32,
+                    k: passes,
                     ..Default::default()
                 })
                 .collect();
@@ -425,7 +425,7 @@ fn probe_globaltimer_resolution() {
     ring.set(&[MkTaskDescriptor {
         opcode: OP_PROBE_TIMER,
         c: out,
-        p0: READS,
+        n: READS,
         ..Default::default()
     }]);
     unsafe { ring.run().unwrap() };
@@ -606,7 +606,7 @@ fn run_tile(dev: &CudaDevice, kind: u16, tile: &Tile) -> Vec<f32> {
         b,
         c: out,
         d: s,
-        p1: u32::from(kind),
+        k: u32::from(kind),
         ..Default::default()
     }]);
     unsafe { ring.run().unwrap() };
@@ -706,8 +706,8 @@ fn probe_mma_rate() {
                     b,
                     c: out + (t * words * 4) as u64,
                     d: s,
-                    p0: REPS,
-                    p1: u32::from(kind),
+                    n: REPS,
+                    k: u32::from(kind),
                     ..Default::default()
                 })
                 .collect();

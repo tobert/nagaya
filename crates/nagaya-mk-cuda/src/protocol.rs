@@ -10,7 +10,7 @@ pub const MAX_TASKS_PER_CARD: usize = 2048;
 pub const NUM_SCOREBOARD_EVENTS: usize = MAX_TASKS_PER_CARD + 1;
 
 /// Device bytes of the task ring copy read by the kernel.
-pub const RING_DEV_BYTES: usize = MAX_TASKS_PER_CARD * 64;
+pub const RING_DEV_BYTES: usize = MAX_TASKS_PER_CARD * 128;
 
 /// Words of `u64` written by the profile cubin per task per thread block:
 /// `t_start`, `t_after_wait`, and `t_end` from `%globaltimer` (nanoseconds).
@@ -73,11 +73,11 @@ define_u16_table! {
 
     // Probe opcodes. They measure the GB10 in `tests/cuda_probe.rs`. An engine does not use them. Each has its own
     // comment in `kernels/probe_ops.cuh`.
-    // `OP_PROBE_READ`: every block streams items of `PROBE_ITEM_BYTES` from `a`, in the variant `p1`.
-    // `OP_PROBE_L2`: every block reads its own slice of `p0` bytes at `a`, `p1` times.
-    // `OP_PROBE_TIMER`: block 0 reads `%globaltimer` `p0` times, and writes four words to `c`.
-    // `OP_PROBE_MMA_TILE`: warp 0 of block 0 runs one MMA tile of the kind `p1` and writes its result to `c`.
-    // `OP_PROBE_MMA_RATE`: every warp runs `p0` MMAs of the kind `p1` in each of `PROBE_MMA_CHAINS` chains.
+    // `OP_PROBE_READ`: every block streams items of `PROBE_ITEM_BYTES` from `a`, in the variant `k`.
+    // `OP_PROBE_L2`: every block reads its own slice of `n` bytes at `a`, `k` times.
+    // `OP_PROBE_TIMER`: block 0 reads `%globaltimer` `n` times, and writes four words to `c`.
+    // `OP_PROBE_MMA_TILE`: warp 0 of block 0 runs one MMA tile of the kind `k` and writes its result to `c`.
+    // `OP_PROBE_MMA_RATE`: every warp runs `n` MMAs of the kind `k` in each of `PROBE_MMA_CHAINS` chains.
     OP_PROBE_READ = 230;
     OP_PROBE_L2 = 231;
     OP_PROBE_TIMER = 232;
@@ -85,17 +85,17 @@ define_u16_table! {
     OP_PROBE_MMA_RATE = 234;
 
     // Test opcodes. They gate the scoreboard in `tests/cuda_smoke.rs`. An engine does not use them.
-    // `OP_SELFTEST_FILL`: block `n` writes `p0` words at `a + n * p0` words, after a delay of `p1` ns in block `p2`.
+    // `OP_SELFTEST_FILL`: block `n` writes `n` words at `a + n * n` words, after a delay of `k` ns in block `kt`.
     // `OP_SELFTEST_CHECK`: each block reads the words of all blocks and writes its count of wrong words to `d[block]`.
-    // Both use the seed `p3` for the value of each word.
+    // Both use the seed `group_items` for the value of each word.
     OP_SELFTEST_FILL = 250;
     OP_SELFTEST_CHECK = 251;
 }
 
 define_u16_table! {
     PROBE_READ_VARIANTS;
-    // The variants of `OP_PROBE_READ` in `p1`. The two prefetch variants read with `PROBE_READ_NC`, and `p2` is the
-    // distance of the prefetch in items. `PROBE_READ_SMEM_BULK` copies into shared memory, and `p2` is the count of
+    // The variants of `OP_PROBE_READ` in `k`. The two prefetch variants read with `PROBE_READ_NC`, and `kt` is the
+    // distance of the prefetch in items. `PROBE_READ_SMEM_BULK` copies into shared memory, and `kt` is the count of
     // stages of `PROBE_STAGE_BYTES` each.
     PROBE_READ_PLAIN = 0;
     PROBE_READ_NC = 1;
@@ -106,7 +106,7 @@ define_u16_table! {
 
 define_u16_table! {
     PROBE_MMA_KINDS;
-    // The kinds of MMA in `p1` of `OP_PROBE_MMA_TILE` and `OP_PROBE_MMA_RATE`.
+    // The kinds of MMA in `k` of `OP_PROBE_MMA_TILE` and `OP_PROBE_MMA_RATE`.
     PROBE_MMA_BF16 = 0;
     PROBE_MMA_NVFP4 = 1;
     PROBE_MMA_MXFP8 = 2;
@@ -135,23 +135,44 @@ define_u16_table! {
     FLAG_MXFP8 = 1 << 15;
 }
 
-/// 64-byte task descriptor shared with `kernels/megakernel.cu`.
-#[repr(C, align(64))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The task descriptor of `docs/engine-abi.md` "The CUDA interpreter". It is 128 bytes, inline in the ring, and it
+/// is shared with `kernels/megakernel.cu`.
+///
+/// A task waits on up to two pairs of an event and a target before its first work item. It signals the event
+/// `signal` once for each item that it finishes. The pointers `a` to `f`, the words `n` to `layer` and the
+/// parameters `p0` to `p3` have one meaning for each op. The probe and test ops use `n`, `k`, `kt` and
+/// `group_items` as their four integer parameters.
+#[repr(C, align(128))]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MkTaskDescriptor {
     pub opcode: u16,
     pub flags: u16,
-    pub layer: u32,
-    pub wait_event: u32,
-    pub signal_event: u32,
+    /// The count of work items. `u32::MAX` means that the count comes from the plan in `d`.
+    pub items: u32,
+    pub wait0_event: u32,
+    pub wait0_target: u32,
+    pub wait1_event: u32,
+    pub wait1_target: u32,
+    pub signal: u32,
+    pub rows: u32,
     pub a: u64,
     pub b: u64,
     pub c: u64,
     pub d: u64,
-    pub p0: u32,
-    pub p1: u32,
-    pub p2: u32,
-    pub p3: u32,
+    pub e: u64,
+    pub f: u64,
+    pub n: u32,
+    pub k: u32,
+    pub kt: u32,
+    pub group_items: u32,
+    pub item_bytes: u32,
+    pub scale_bytes: u32,
+    pub pos0: u32,
+    pub layer: u32,
+    pub p0: f32,
+    pub p1: f32,
+    pub p2: f32,
+    pub p3: f32,
 }
 
 impl Default for MkTaskDescriptor {
@@ -159,17 +180,31 @@ impl Default for MkTaskDescriptor {
         Self {
             opcode: OP_NOP,
             flags: 0,
-            layer: 0,
-            wait_event: NO_EVENT,
-            signal_event: NO_EVENT,
+            items: 0,
+            wait0_event: NO_EVENT,
+            wait0_target: 0,
+            wait1_event: NO_EVENT,
+            wait1_target: 0,
+            signal: NO_EVENT,
+            rows: 0,
             a: 0,
             b: 0,
             c: 0,
             d: 0,
-            p0: 0,
-            p1: 0,
-            p2: 0,
-            p3: 0,
+            e: 0,
+            f: 0,
+            n: 0,
+            k: 0,
+            kt: 0,
+            group_items: 0,
+            item_bytes: 0,
+            scale_bytes: 0,
+            pos0: 0,
+            layer: 0,
+            p0: 0.0,
+            p1: 0.0,
+            p2: 0.0,
+            p3: 0.0,
         }
     }
 }

@@ -51,7 +51,7 @@ fn persistent_interpreter_runs_copy_and_profile_on_gb10() {
             opcode: OP_COPY,
             a: dev_dst,
             b: dev_src,
-            p0: n as u32,
+            n: n as u32,
             ..Default::default()
         },
         MkTaskDescriptor {
@@ -182,18 +182,18 @@ fn scoreboard_tasks(data: u64, out1: u64, out2: u64, slow_a: u32, slow_b: u32) -
     let fill = |seed: u32, slow: u32| MkTaskDescriptor {
         opcode: OP_SELFTEST_FILL,
         a: data,
-        p0: WORDS_PER_BLOCK as u32,
-        p1: DELAY_NS,
-        p2: slow,
-        p3: seed,
+        n: WORDS_PER_BLOCK as u32,
+        k: DELAY_NS,
+        kt: slow,
+        group_items: seed,
         ..Default::default()
     };
     let check = |seed: u32, out: u64| MkTaskDescriptor {
         opcode: OP_SELFTEST_CHECK,
         a: data,
         d: out,
-        p0: WORDS_PER_BLOCK as u32,
-        p3: seed,
+        n: WORDS_PER_BLOCK as u32,
+        group_items: seed,
         ..Default::default()
     };
     let nop = MkTaskDescriptor {

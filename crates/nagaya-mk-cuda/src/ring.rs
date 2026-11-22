@@ -71,14 +71,15 @@ impl<'d> Ring<'d> {
         );
         for (i, task) in tasks.iter().enumerate() {
             let mut task = *task;
-            task.wait_event = if i == 0 { NO_EVENT } else { i as u32 };
-            task.signal_event = i as u32 + 1;
+            task.wait0_event = if i == 0 { NO_EVENT } else { i as u32 };
+            task.wait0_target = self.grid_blocks;
+            task.signal = i as u32 + 1;
             unsafe { *self.host_tasks.add(i) = task };
         }
         let halt = MkTaskDescriptor {
             opcode: OP_HALT,
-            wait_event: if tasks.is_empty() { NO_EVENT } else { tasks.len() as u32 },
-            signal_event: NO_EVENT,
+            wait0_event: if tasks.is_empty() { NO_EVENT } else { tasks.len() as u32 },
+            wait0_target: self.grid_blocks,
             ..Default::default()
         };
         unsafe { *self.host_tasks.add(tasks.len()) = halt };
@@ -109,7 +110,11 @@ impl<'d> Ring<'d> {
         let count = self.len + 1;
         dev.memset_zero(self.scoreboard, (count + 1) * 4)?;
         unsafe {
-            dev.copy_htod(self.dev_tasks, self.host_tasks.cast::<c_void>(), count * 64)?;
+            dev.copy_htod(
+                self.dev_tasks,
+                self.host_tasks.cast::<c_void>(),
+                count * std::mem::size_of::<MkTaskDescriptor>(),
+            )?;
             dev.launch_megakernel_shared(
                 self.grid_blocks,
                 block_threads,

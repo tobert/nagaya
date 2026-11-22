@@ -219,25 +219,25 @@ __device__ uint32_t probe_read_smem_bulk(const uint8_t* base, uint32_t items, ui
 }
 
 // a = the buffer, c = `u32` checksum of each block (the wrapping sum of the words that the block read),
-// p0 = items, p1 = the variant (`PROBE_READ_*`), p2 = the distance of a prefetch, or the stages of the bulk copy.
+// n = items, k = the variant (`PROBE_READ_*`), kt = the distance of a prefetch, or the stages of the bulk copy.
 __device__ __forceinline__ void op_probe_read(const MkTaskDescriptor& task) {
     const uint8_t* base = reinterpret_cast<const uint8_t*>(task.a);
     uint32_t sum = 0;
-    switch (task.p1) {
+    switch (task.k) {
         case PROBE_READ_PLAIN:
-            sum = probe_read_direct<false, 0>(base, task.p0, 0);
+            sum = probe_read_direct<false, 0>(base, task.n, 0);
             break;
         case PROBE_READ_NC:
-            sum = probe_read_direct<true, 0>(base, task.p0, 0);
+            sum = probe_read_direct<true, 0>(base, task.n, 0);
             break;
         case PROBE_READ_PREFETCH_LINE:
-            sum = probe_read_direct<true, 1>(base, task.p0, task.p2);
+            sum = probe_read_direct<true, 1>(base, task.n, task.kt);
             break;
         case PROBE_READ_PREFETCH_BULK:
-            sum = probe_read_direct<true, 2>(base, task.p0, task.p2);
+            sum = probe_read_direct<true, 2>(base, task.n, task.kt);
             break;
         case PROBE_READ_SMEM_BULK:
-            sum = probe_read_smem_bulk(base, task.p0, task.p2);
+            sum = probe_read_smem_bulk(base, task.n, task.kt);
             break;
         default:
             __trap();
@@ -252,14 +252,14 @@ __device__ __forceinline__ void op_probe_read(const MkTaskDescriptor& task) {
 // OP_PROBE_L2
 // ---------------------------------------------------------------------------------------------------------------
 
-// Block `b` reads the slice of `p0` bytes at `a + b * p0`, `p1` times, with loads that skip the L1 cache. The slices
-// do not overlap, so the footprint is the grid width times `p0`. A footprint that fits in L2 reads from L2 after the
-// first pass. c = `u32` checksum of each block: the wrapping sum of the words of its slice, times `p1`.
+// Block `b` reads the slice of `n` bytes at `a + b * n`, `k` times, with loads that skip the L1 cache. The slices
+// do not overlap, so the footprint is the grid width times `n`. A footprint that fits in L2 reads from L2 after the
+// first pass. c = `u32` checksum of each block: the wrapping sum of the words of its slice, times `k`.
 __device__ __forceinline__ void op_probe_l2(const MkTaskDescriptor& task) {
-    const uint8_t* slice = reinterpret_cast<const uint8_t*>(task.a) + static_cast<uint64_t>(blockIdx.x) * task.p0;
-    const uint32_t v4_count = task.p0 / 16;
+    const uint8_t* slice = reinterpret_cast<const uint8_t*>(task.a) + static_cast<uint64_t>(blockIdx.x) * task.n;
+    const uint32_t v4_count = task.n / 16;
     uint32_t sum = 0;
-    for (uint32_t pass = 0; pass < task.p1; ++pass) {
+    for (uint32_t pass = 0; pass < task.k; ++pass) {
         for (uint32_t first = 0; first < v4_count; first += blockDim.x * PROBE_UNROLL) {
             uint4 v[PROBE_UNROLL];
 #pragma unroll
@@ -286,7 +286,7 @@ __device__ __forceinline__ void op_probe_l2(const MkTaskDescriptor& task) {
 // OP_PROBE_TIMER
 // ---------------------------------------------------------------------------------------------------------------
 
-// Thread 0 of block 0 reads `%globaltimer` `p0` times in a row. c = four `u64` words: the smallest nonzero step
+// Thread 0 of block 0 reads `%globaltimer` `n` times in a row. c = four `u64` words: the smallest nonzero step
 // in ns (0 if the value never changed), the count of steps, the ns from the first read to the last change, and
 // the count of reads.
 __device__ __forceinline__ void op_probe_timer(const MkTaskDescriptor& task) {
@@ -298,7 +298,7 @@ __device__ __forceinline__ void op_probe_timer(const MkTaskDescriptor& task) {
     uint64_t last = first;
     uint64_t smallest = 0;
     uint64_t steps = 0;
-    for (uint32_t i = 0; i < task.p0; ++i) {
+    for (uint32_t i = 0; i < task.n; ++i) {
         const uint64_t now = globaltimer_ns();
         if (now != last) {
             const uint64_t step = now - last;
@@ -310,7 +310,7 @@ __device__ __forceinline__ void op_probe_timer(const MkTaskDescriptor& task) {
     out[0] = smallest;
     out[1] = steps;
     out[2] = last - first;
-    out[3] = task.p0;
+    out[3] = task.n;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -399,16 +399,16 @@ __device__ __forceinline__ void mma_tile(float (&d)[4], const MmaFragment& f) {
 }
 
 // Warp 0 of block 0 runs one tile from zero. a, b = the operands, d = the scales, c = 128 `f32` words: the tile
-// of results in row-major order (16 rows of 8). p1 = the kind (`PROBE_MMA_*`).
+// of results in row-major order (16 rows of 8). k = the kind (`PROBE_MMA_*`).
 __device__ __forceinline__ void op_probe_mma_tile(const MkTaskDescriptor& task) {
     if (blockIdx.x != 0 || threadIdx.x >= 32) {
         return;
     }
     const MmaFragment f = mma_load_fragment(
-        task.p1, reinterpret_cast<const uint8_t*>(task.a), reinterpret_cast<const uint8_t*>(task.b),
+        task.k, reinterpret_cast<const uint8_t*>(task.a), reinterpret_cast<const uint8_t*>(task.b),
         reinterpret_cast<const uint8_t*>(task.d));
     float d[4] = {0.f, 0.f, 0.f, 0.f};
-    switch (task.p1) {
+    switch (task.k) {
         case PROBE_MMA_BF16:
             mma_tile<PROBE_MMA_BF16>(d, f);
             break;
@@ -430,7 +430,7 @@ __device__ __forceinline__ void op_probe_mma_tile(const MkTaskDescriptor& task) 
     out[(g + 8) * 8 + 2 * t + 1] = d[3];
 }
 
-// Every warp of every block loads the tile (a, b, scales in d) and runs `p0` MMAs in each of `MK_PROBE_MMA_CHAINS`
+// Every warp of every block loads the tile (a, b, scales in d) and runs `n` MMAs in each of `MK_PROBE_MMA_CHAINS`
 // chains. A chain adds each result to its own accumulator, so the chains are independent and keep the tensor
 // cores busy. c = the four accumulators of each chain for each thread, in the order of block, thread, chain, word.
 template <uint32_t KIND>
@@ -439,7 +439,7 @@ __device__ __forceinline__ void probe_mma_rate(const MkTaskDescriptor& task) {
         KIND, reinterpret_cast<const uint8_t*>(task.a), reinterpret_cast<const uint8_t*>(task.b),
         reinterpret_cast<const uint8_t*>(task.d));
     float acc[MK_PROBE_MMA_CHAINS][4] = {};
-    for (uint32_t i = 0; i < task.p0; ++i) {
+    for (uint32_t i = 0; i < task.n; ++i) {
 #pragma unroll
         for (uint32_t chain = 0; chain < MK_PROBE_MMA_CHAINS; ++chain) {
             mma_tile<KIND>(acc[chain], f);
@@ -457,7 +457,7 @@ __device__ __forceinline__ void op_probe_mma_rate(const MkTaskDescriptor& task) 
     if ((blockDim.x & 31) != 0) {
         __trap();  // An MMA needs whole warps.
     }
-    switch (task.p1) {
+    switch (task.k) {
         case PROBE_MMA_BF16:
             probe_mma_rate<PROBE_MMA_BF16>(task);
             break;
