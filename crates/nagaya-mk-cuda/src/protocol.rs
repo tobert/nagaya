@@ -78,7 +78,7 @@ define_u16_table! {
     // `OP_ROUTE`: the router matmul, the sigmoid, the top 8 and the list of pairs (reserved for lane M).
     OP_ROUTE = 55;
 
-    // The row lane R, 70 to 79 (`kernels/ops_rows.cuh`). All five are reserved for lane R.
+    // The row lane R, 70 to 79 (`kernels/ops_rows.cuh`).
     // `OP_EMBED`: the embedding of the tokens, the first norm and the row factor.
     OP_EMBED = 70;
     // `OP_MIX`: the attention residual and the message mix over the planes.
@@ -115,6 +115,12 @@ define_u16_table! {
     // and writes the sum to `c[g]`. `f` holds one float for each item, then one `u32` counter for each group. The
     // counters start at 0.
     OP_REDUCE_PROBE = 235;
+    // `OP_ROWS_PROBE`: the probe of the row finisher (`kernels/ops_rows.cuh`). `rows` rows of `group_items * n` floats
+    // are at `a`. Item `i` writes the sum of squares of its `n` floats of each row to a partial in `f`, and the item
+    // that arrives last in the group sums the partials in the order of the tiles. It writes the sums and the row
+    // factors to `c`, and the normed rows to `e`. `f` holds the counter, the count of finishers, 2 free words, then
+    // the partials.
+    OP_ROWS_PROBE = 236;
 
     // Test opcodes. They gate the scoreboard in `tests/cuda_smoke.rs`. An engine does not use them.
     // `OP_SELFTEST_FILL`: block `n` writes `n` words at `a + n * n` words, after a delay of `k` ns in block `kt`.
