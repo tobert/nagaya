@@ -7,11 +7,16 @@
 //   b      the bank of repacked weights: the item `(expert, tile)` is at `b + (expert * (n / 64) + tile) * item_bytes`,
 //          and an item holds the 64 weight rows of a column tile (`src/experts.rs` writes the layout).
 //   c      the output, f32: `y_row` of a pair is a row of `n` floats.
-//   d      NVFP4 only: the amax of each expert (`f32`, 128 of them).
-//   f      the list of pairs (`ExpertPair`, in protocol.rs). Item `i` takes the pair `i / (n / 64)`.
+//   d      the task table. NVFP4 needs it: the slot MK_EXPERT_TABLE_AMAX holds the pointer to the amax of each expert
+//          (`f32`, 128 of them).
+//   e      the list of pairs: a header with the live count of pairs, then the pairs (`ExpertPairHeader` and
+//          `ExpertPair`, in protocol.rs). Item `i` takes the pair `i / (n / 64)`. `f` is free: it is for the scratch of a
+//          merge.
 //   n      the rows of the weight: a multiple of 64.
 //   k      the values of a row: a multiple of 128.
-//   items  the count of pairs times `n / 64`.
+//   items  a static bound: the most pairs that the list can hold, times `n / 64`. The live count is in the header. An
+//          item of a pair at or after the live count does nothing, and an empty pair (count 0) does nothing. Both
+//          count as done for the signal.
 //   p0     the expert scale (1.0 on sm_120 and sm_121).
 //   p1     NVFP4 only: the outer scale denominator of the weight.
 //   item_bytes is 0: the items are not in the order of the item index, so the producer warp prefetches nothing. The op
@@ -36,11 +41,32 @@ struct ExpertPair {
     uint32_t count;
     uint16_t x_row[MK_EXPERT_MAX_ROWS];
     uint16_t y_row[MK_EXPERT_MAX_ROWS];
+    float weight[MK_EXPERT_MAX_ROWS];
+};
+
+struct ExpertPairHeader {
+    uint32_t pairs;
+    uint32_t reserved[3];
 };
 
 static_assert(sizeof(ExpertPair) == MK_EXPERT_PAIR_BYTES, "ExpertPair differs in size from src/protocol.rs");
+MK_CHECK_OFFSET(ExpertPair, expert, MK_EXPERT_PAIR_OFF_expert);
+MK_CHECK_OFFSET(ExpertPair, count, MK_EXPERT_PAIR_OFF_count);
 MK_CHECK_OFFSET(ExpertPair, x_row, MK_EXPERT_PAIR_OFF_x_row);
 MK_CHECK_OFFSET(ExpertPair, y_row, MK_EXPERT_PAIR_OFF_y_row);
+MK_CHECK_OFFSET(ExpertPair, weight, MK_EXPERT_PAIR_OFF_weight);
+static_assert(sizeof(ExpertPairHeader) == MK_EXPERT_PAIR_HEADER_BYTES, "ExpertPairHeader differs in size from src/protocol.rs");
+MK_CHECK_OFFSET(ExpertPairHeader, pairs, MK_EXPERT_PAIR_HEADER_OFF_pairs);
+
+// The live count of pairs in the list at `e`. An earlier task writes the list, so the read skips L1.
+__device__ __forceinline__ uint32_t live_pairs(const MkTaskDescriptor& task) {
+    return __ldcg(&reinterpret_cast<const ExpertPairHeader*>(task.e)->pairs);
+}
+
+// Pair `index` of the list at `e`. The caller checked `index` against the live count.
+__device__ __forceinline__ const ExpertPair* pair_at(const MkTaskDescriptor& task, uint32_t index) {
+    return reinterpret_cast<const ExpertPair*>(task.e + MK_EXPERT_PAIR_HEADER_BYTES) + index;
+}
 
 // A pair in global memory. An earlier task writes the list, so every field is read with `__ldcg`, which skips L1.
 struct PairRef {
@@ -49,6 +75,7 @@ struct PairRef {
     __device__ __forceinline__ uint32_t count() const { return __ldcg(&p->count); }
     __device__ __forceinline__ uint32_t x_row(uint32_t i) const { return __ldcg(&p->x_row[i]); }
     __device__ __forceinline__ uint32_t y_row(uint32_t i) const { return __ldcg(&p->y_row[i]); }
+    __device__ __forceinline__ float weight(uint32_t i) const { return __ldcg(&p->weight[i]); }
 };
 
 // Loads of the weights and of the rows. The weights never change while the kernel runs, so they use the loads of
@@ -210,7 +237,7 @@ __device__ __forceinline__ void sum_groups(
 }
 
 template <typename F, uint32_t NB>
-__device__ __forceinline__ void expert_item_nb(const MkTaskDescriptor& task, uint32_t item, const PairRef pair) {
+__device__ __forceinline__ void expert_item_nb(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item, const PairRef pair) {
     const uint32_t n = task.n;
     const uint32_t k = task.k;
     const uint32_t tiles = n / MK_EXPERT_TILE_ROWS;
@@ -273,7 +300,7 @@ __device__ __forceinline__ void expert_item_nb(const MkTaskDescriptor& task, uin
         float w_amax = 0.0f;
         float inverse_row_scale = 0.0f;
         if constexpr (F::STEPS == 2) {
-            w_amax = reinterpret_cast<const float*>(task.d)[pair.expert()];
+            w_amax = reinterpret_cast<const float*>(table->ptr[MK_EXPERT_TABLE_AMAX])[pair.expert()];
             inverse_row_scale = 1.0f / (1536.0f * task.p1);
         }
 #pragma unroll
@@ -306,7 +333,14 @@ __device__ __forceinline__ void experts_prefetch_next(const MkTaskDescriptor& ta
     if (next >= task.items || (worker_id() & 31) != 0) {
         return;
     }
-    const PairRef pair{reinterpret_cast<const ExpertPair*>(task.f) + next / tiles};
+    // The next item may be past the live pairs, or it may hold an empty pair. Then there is nothing to prefetch.
+    if (next / tiles >= live_pairs(task)) {
+        return;
+    }
+    const PairRef pair{pair_at(task, next / tiles)};
+    if (pair.count() == 0 || pair.count() > MK_EXPERT_MAX_ROWS) {
+        return;
+    }
     const uint32_t groups = task.k / MK_EXPERT_K_GROUP;
     const uint64_t item_bytes = static_cast<uint64_t>(4) * groups * F::RECORD_BYTES;
     const uint32_t warp = worker_id() >> 5;
@@ -322,24 +356,41 @@ __device__ __forceinline__ void experts_prefetch_next(const MkTaskDescriptor& ta
 }
 
 template <typename F>
-__device__ __forceinline__ void op_expert(const MkTaskDescriptor& task, uint32_t item) {
+__device__ __forceinline__ void op_expert(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
     if (worker_count() != MK_CONSUMER_THREADS || (task.n % MK_EXPERT_TILE_ROWS) != 0 || (task.k % MK_EXPERT_K_GROUP) != 0 ||
-        dynamic_smem_bytes() < MK_EXPERT_SMEM_BYTES || task.item_bytes != 0) {
+        dynamic_smem_bytes() < MK_EXPERT_SMEM_BYTES || task.item_bytes != 0 ||
+        (F::STEPS == 2 && table == nullptr)) {
         __trap();  // The cut needs 8 warps, whole tiles and groups, and the shared memory of the partial sums.
     }
     const uint32_t tiles = task.n / MK_EXPERT_TILE_ROWS;
-    const PairRef pair{reinterpret_cast<const ExpertPair*>(task.f) + item / tiles};
-    if (pair.count() == 0 || pair.count() > MK_EXPERT_MAX_ROWS) {
+    // The count of items is the static bound of pairs times the tiles. The list has room for the bound.
+    if ((task.e & 15) != 0 || task.items % tiles != 0 || live_pairs(task) > task.items / tiles) {
         __trap();
+    }
+    // An item of a pair that is not live, and an item of an empty pair, do nothing. All the consumers take the same
+    // way, and the item counts as done.
+    if (item / tiles >= live_pairs(task)) {
+        return;
+    }
+    const PairRef pair{pair_at(task, item / tiles)};
+    if (pair.count() > MK_EXPERT_MAX_ROWS) {
+        __trap();
+    }
+    if (pair.count() == 0) {
+        return;
     }
     experts_prefetch_next<F>(task, item);
     if (pair.count() <= 8) {
-        expert_item_nb<F, 1>(task, item, pair);
+        expert_item_nb<F, 1>(task, table, item, pair);
     } else {
-        expert_item_nb<F, 2>(task, item, pair);
+        expert_item_nb<F, 2>(task, table, item, pair);
     }
 }
 
-__device__ __forceinline__ void op_expert_nvfp4(const MkTaskDescriptor& task, uint32_t item) { op_expert<ExpertNvfp4>(task, item); }
+__device__ __forceinline__ void op_expert_nvfp4(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
+    op_expert<ExpertNvfp4>(task, table, item);
+}
 
-__device__ __forceinline__ void op_expert_mxfp8(const MkTaskDescriptor& task, uint32_t item) { op_expert<ExpertMxfp8>(task, item); }
+__device__ __forceinline__ void op_expert_mxfp8(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
+    op_expert<ExpertMxfp8>(task, table, item);
+}

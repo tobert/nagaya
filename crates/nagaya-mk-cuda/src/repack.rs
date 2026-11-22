@@ -38,7 +38,7 @@ pub const STEP_BYTES: usize = 512;
 
 /// The K slice for each K that the Inkling 2 matmuls use. A K that is not in the table is an error: add its slice
 /// here and to the engine identity, because the slice is part of the order of a sum.
-pub const KT_TABLE: [(usize, usize); 3] = [(2304, 768), (3072, 768), (1152, 1152)];
+pub const KT_TABLE: [(usize, usize); 4] = [(2304, 768), (3072, 768), (1152, 1152), (4608, 768)];
 
 /// The K slice of a matmul with `k` values in a row of `W`.
 pub fn k_slice(k: usize) -> Result<usize, String> {
@@ -260,6 +260,9 @@ mod tests {
         assert_eq!(k_slice(2304).unwrap(), 768);
         assert_eq!(k_slice(3072).unwrap(), 768);
         assert_eq!(k_slice(1152).unwrap(), 1152);
+        assert_eq!(k_slice(4608).unwrap(), 768);
+        // K = 4608 is the width of the message gate: 6 slices of 768.
+        assert_eq!(MatmulShape::new(64, 4608).unwrap().slices(), 6);
         let error = k_slice(2000).unwrap_err();
         assert!(error.contains("K = 2000") && error.contains("KT_TABLE"), "{error}");
         for (k, kt) in KT_TABLE {

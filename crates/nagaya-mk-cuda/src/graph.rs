@@ -74,7 +74,8 @@ fn conflicts(earlier: &Node, later: &Node) -> bool {
 ///
 /// # Panics
 /// A node that waits on itself or on a later node panics, and so does a node whose count of items comes from the
-/// plan (`u32::MAX`), because the host cannot give a target for it.
+/// plan (`u32::MAX`), because the host cannot give a target for it. Give such a task a static bound of items: an item
+/// beyond the live count does nothing and still counts as done.
 pub fn plan(nodes: &[Node]) -> Vec<Planned> {
     let mut out: Vec<Planned> = Vec::with_capacity(nodes.len());
     // For each planned task, the planned tasks that it waits on, directly or not.
@@ -85,7 +86,7 @@ pub fn plan(nodes: &[Node]) -> Vec<Planned> {
         assert!(
             node.items != u32::MAX,
             "task {j} takes its count of items from the plan on the device. The host cannot give a target for a wait on it. \
-             Give the task a count of items, or do not wait on it"
+             Give the task a static bound of items, and let the op skip the items beyond the live count"
         );
         for &i in &node.after {
             assert!(

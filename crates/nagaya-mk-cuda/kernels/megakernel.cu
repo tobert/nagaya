@@ -53,6 +53,13 @@ struct alignas(128) MkTaskDescriptor {
     float p3;
 };
 
+// The task table of a task: `MK_TABLE_POINTERS` device pointers that stay the same for a slot and a run. `d` of the
+// descriptor points to it, or `d` is 0 when the task has none. The producer copies the table to shared memory with the
+// descriptor. An op names the slots that it uses (for example MK_EXPERT_TABLE_AMAX), in its own file.
+struct alignas(128) MkTaskTable {
+    uint64_t ptr[MK_TABLE_POINTERS];
+};
+
 #define MK_CHECK_OFFSET(type, field, offset) \
     static_assert(offsetof(type, field) == (offset), #type "::" #field " is not where src/protocol.rs puts it")
 
@@ -85,6 +92,10 @@ MK_CHECK_OFFSET(MkTaskDescriptor, p0, MK_DESC_OFF_p0);
 MK_CHECK_OFFSET(MkTaskDescriptor, p1, MK_DESC_OFF_p1);
 MK_CHECK_OFFSET(MkTaskDescriptor, p2, MK_DESC_OFF_p2);
 MK_CHECK_OFFSET(MkTaskDescriptor, p3, MK_DESC_OFF_p3);
+
+static_assert(sizeof(MkTaskTable) == MK_TABLE_BYTES, "MkTaskTable differs in size from src/protocol.rs");
+static_assert(alignof(MkTaskTable) == MK_TABLE_ALIGN, "MkTaskTable differs in alignment from src/protocol.rs");
+MK_CHECK_OFFSET(MkTaskTable, ptr, MK_TABLE_OFF_ptr);
 
 struct BlockStats {
     uint32_t tasks_run;
@@ -135,6 +146,21 @@ __device__ __forceinline__ uint32_t atom_acq_rel_gpu_add_u32(uint32_t* ptr, uint
     uint32_t old;
     asm volatile("atom.acq_rel.gpu.global.add.u32 %0, [%1], %2;" : "=r"(old) : "l"(ptr), "r"(val) : "memory");
     return old;
+}
+
+// The merge rule. The items of one merge group (the K slices of a tile, or the tiles of a row) each write a partial and
+// then call this function with the counter of the group. The item that gets the last count returns true, and it merges
+// the partials. That item also sets the counter back to 0 before it merges, because every other item of the group has
+// added its count already. So a counter needs a host zero only when the ring opens, and after a launch that failed. A
+// new merge group or finisher must call this function and must not reset its counter in another way. The merging
+// thread signals the task after the reset, and a later task that reuses the counter waits on that signal, so the reset
+// is seen. Only one thread of the item calls this function.
+__device__ __forceinline__ bool merge_arrive(uint32_t* counter, uint32_t group_items) {
+    if (atom_acq_rel_gpu_add_u32(counter, 1u) != group_items - 1) {
+        return false;
+    }
+    asm volatile("st.relaxed.gpu.global.u32 [%0], %1;" ::"l"(counter), "r"(0u) : "memory");
+    return true;
 }
 
 // The threads that do the work of an item. A sum that an op cuts over the workers has this many lanes, whatever the
@@ -213,10 +239,10 @@ __device__ __forceinline__ void op_selftest_fill(const MkTaskDescriptor& task) {
 }
 
 // Each block reads the words of all blocks and counts the words that differ from selftest_value. Thread 0 writes the
-// count to d[blockIdx.x].
+// count to e[blockIdx.x].
 __device__ __forceinline__ void op_selftest_check(const MkTaskDescriptor& task) {
     const uint32_t* data = reinterpret_cast<const uint32_t*>(task.a);
-    uint32_t* out = reinterpret_cast<uint32_t*>(task.d);
+    uint32_t* out = reinterpret_cast<uint32_t*>(task.e);
     const uint32_t words = task.n;
     const uint64_t total = static_cast<uint64_t>(gridDim.x) * words;
     uint32_t wrong = 0;
@@ -243,10 +269,25 @@ __device__ __forceinline__ void op_selftest_check(const MkTaskDescriptor& task) 
     }
 }
 
+// Item `item` writes the words of its task table to `c + item * MK_TABLE_POINTERS` words. A task with no table traps.
+__device__ __forceinline__ void op_selftest_table(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
+    if (table == nullptr) {
+        __trap();
+    }
+    uint64_t* out = reinterpret_cast<uint64_t*>(task.c);
+    if (worker_id() < MK_TABLE_POINTERS) {
+        out[static_cast<uint64_t>(item) * MK_TABLE_POINTERS + worker_id()] = table->ptr[worker_id()];
+    }
+}
+
 #include "probe_ops.cuh"
 #include "matmul_bf16.cuh"
 #include "quant.cuh"
 #include "experts.cuh"
+#include "ops_dense.cuh"
+#include "ops_rows.cuh"
+#include "ops_moe.cuh"
+#include "ops_attn.cuh"
 
 // Thread 0 polls the event until it reaches the target. A lost signal traps at the spin limit.
 __device__ __forceinline__ void wait_for_event(const uint32_t* event, uint32_t target) {
@@ -258,9 +299,9 @@ __device__ __forceinline__ void wait_for_event(const uint32_t* event, uint32_t t
     }
 }
 
-// Run work item `item` of the task. A per-item op uses `item`. The probe and test ops run once in each block, so their
+// Run work item `item` of the task. `table` is the task table, or null when `d` is 0. A per-item op uses `item`. The probe and test ops run once in each block, so their
 // item is blockIdx.x, and they read that.
-__device__ __forceinline__ void run_op(const MkTaskDescriptor& task, uint32_t item) {
+__device__ __forceinline__ void run_op(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
     switch (task.opcode) {
         case OP_NOP:
             break;
@@ -275,6 +316,9 @@ __device__ __forceinline__ void run_op(const MkTaskDescriptor& task, uint32_t it
             break;
         case OP_SELFTEST_CHECK:
             op_selftest_check(task);
+            break;
+        case OP_SELFTEST_TABLE:
+            op_selftest_table(task, table, item);
             break;
         case OP_PROBE_READ:
             op_probe_read(task);
@@ -301,11 +345,50 @@ __device__ __forceinline__ void run_op(const MkTaskDescriptor& task, uint32_t it
             op_quant_mxfp8(task, item);
             break;
         case OP_EXPERT_NVFP4:
-            op_expert_nvfp4(task, item);
+            op_expert_nvfp4(task, table, item);
             break;
         case OP_EXPERT_MXFP8:
-            op_expert_mxfp8(task, item);
+            op_expert_mxfp8(task, table, item);
             break;
+
+        // The cases below are reserved for the lanes of wave B. Each calls a stub that traps, in the file of its lane.
+        // A lane changes the stub of its own ops, and not this switch.
+        case OP_PROJ:
+            op_proj(task, table, item);
+            break;
+
+        case OP_OUT_MIX:
+            op_out_mix(task, table, item);
+            break;
+
+        case OP_ROUTE:
+            op_route(task, table, item);
+            break;
+
+        case OP_EMBED:
+            op_embed(task, table, item);
+            break;
+
+        case OP_MIX:
+            op_mix(task, table, item);
+            break;
+
+        case OP_GATE_DOWN:
+            op_gate_down(task, table, item);
+            break;
+
+        case OP_GATE_UP:
+            op_gate_up(task, table, item);
+            break;
+
+        case OP_MIX_OUT:
+            op_mix_out(task, table, item);
+            break;
+
+        case OP_ATTN:
+            op_attn(task, table, item);
+            break;
+
         default:
             // Unknown opcode: trap rather than silently corrupt state (spec 8.5).
             __trap();
@@ -328,7 +411,9 @@ __device__ __forceinline__ void record_profile(uint64_t* profile, uint32_t idx, 
 }
 
 // The count of items of a task. A task with no items is a JOIN: block 0 runs one item that does no work, and it
-// signals once. A count that comes from a plan on the device is a defect of the ring, because no op reads one yet.
+// signals once. A task whose live count comes from a plan on the device has a static bound here, and the op reads the
+// live count: an item beyond it does nothing, and it counts as done. So the count is never read from the device, and
+// 0xFFFFFFFF is a defect of the ring.
 __device__ __forceinline__ uint32_t item_count(const MkTaskDescriptor& task) {
     if (task.items == 0xFFFFFFFFu) {
         __trap();
@@ -339,11 +424,11 @@ __device__ __forceinline__ uint32_t item_count(const MkTaskDescriptor& task) {
 // The consumers run the items b, b + G, b + 2G and so on of the task, with b the block and G the grid width. Then the
 // block adds the count of its items to the event of the task, one time. A block with no item adds nothing. The
 // barrier before the add orders the writes of every consumer before the release of the add.
-__device__ __forceinline__ void run_items(const MkTaskDescriptor& task, uint32_t count, uint32_t* scoreboard, uint32_t base_event) {
+__device__ __forceinline__ void run_items(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t count, uint32_t* scoreboard, uint32_t base_event) {
     uint32_t ran = 0;
     for (uint32_t item = blockIdx.x; item < count; item += gridDim.x) {
         if (task.items != 0) {
-            run_op(task, item);
+            run_op(task, table, item);
         }
         worker_sync();
         ran += 1;
@@ -399,7 +484,8 @@ __device__ __forceinline__ void run_flat_shape(
         __syncthreads();
 
         if (!halt) {
-            run_items(task, count, scoreboard, base_event);
+            // The flat shape reads the table from global memory. It is the same for the whole run.
+            run_items(task, task.d != 0 ? reinterpret_cast<const MkTaskTable*>(task.d) : nullptr, count, scoreboard, base_event);
         }
         if (threadIdx.x == 0) {
             const uint64_t t_end = globaltimer_ns();
@@ -422,7 +508,7 @@ constexpr uint32_t MK_BAR_THREADS = MK_PRODUCER_THREADS;
 // The producer shape. Warp 0 is the producer and warps 1 to 8 are the consumers. The two sides pass tasks through two
 // slots of descriptors in shared memory. For the slot s of a task t (s = t mod 2):
 // - The producer waits for the barrier EMPTY[s] (the consumers are done with the task t - 2). It copies the
-//   descriptor to the slot, asks L2 to prefetch the first item of the block, and waits at the scoreboard. Then it
+//   descriptor and the task table to the slot, asks L2 to prefetch the first item of the block, and waits at the scoreboard. Then it
 //   arrives at FULL[s]. It runs ahead of the consumers by up to two tasks, so the wait of a task that does not depend
 //   on the task before it ends while the consumers work.
 // - The consumers wait at FULL[s], run the items and arrive at EMPTY[s].
@@ -431,6 +517,7 @@ constexpr uint32_t MK_BAR_THREADS = MK_PRODUCER_THREADS;
 __device__ __forceinline__ void run_producer_shape(
     const MkTaskDescriptor* tasks, uint32_t num_tasks, uint32_t* scoreboard, uint32_t base_event, BlockStats* stats, uint64_t* profile) {
     __shared__ MkTaskDescriptor slots[2];
+    __shared__ MkTaskTable tables[2];
 
     if (threadIdx.x < 32) {
         const bool lead = threadIdx.x == 0;
@@ -442,6 +529,15 @@ __device__ __forceinline__ void run_producer_shape(
             }
             if (lead) {
                 slots[slot] = tasks[t];
+                // The table is the same for the whole run, so the producer copies it now, with the descriptor, before
+                // its wait. The consumers read it after the arrive at FULL, as they read the descriptor.
+                const uint64_t table_at = slots[slot].d;
+                if (table_at != 0) {
+                    if ((table_at & (MK_TABLE_ALIGN - 1)) != 0) {
+                        __trap();  // A table is 128-byte aligned. A nonzero `d` that is not one is a defect of the task.
+                    }
+                    tables[slot] = *reinterpret_cast<const MkTaskTable*>(table_at);
+                }
             }
             __syncwarp();
             const MkTaskDescriptor& task = slots[slot];
@@ -492,7 +588,7 @@ __device__ __forceinline__ void run_producer_shape(
         const uint64_t t_after_wait = lead ? globaltimer_after(opcode) : 0;
         const bool halt = opcode == OP_HALT;
         if (!halt) {
-            run_items(task, item_count(task), scoreboard, base_event);
+            run_items(task, task.d != 0 ? &tables[slot] : nullptr, item_count(task), scoreboard, base_event);
         }
         if (lead) {
             const uint64_t t_end = globaltimer_ns();
