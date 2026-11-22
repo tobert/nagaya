@@ -245,6 +245,7 @@ __device__ __forceinline__ void op_selftest_check(const MkTaskDescriptor& task) 
 
 #include "probe_ops.cuh"
 #include "quant.cuh"
+#include "experts.cuh"
 
 // Thread 0 polls the event until it reaches the target. A lost signal traps at the spin limit.
 __device__ __forceinline__ void wait_for_event(const uint32_t* event, uint32_t target) {
@@ -294,6 +295,12 @@ __device__ __forceinline__ void run_op(const MkTaskDescriptor& task, uint32_t it
             break;
         case OP_QUANT_MXFP8:
             op_quant_mxfp8(task, item);
+            break;
+        case OP_EXPERT_NVFP4:
+            op_expert_nvfp4(task, item);
+            break;
+        case OP_EXPERT_MXFP8:
+            op_expert_mxfp8(task, item);
             break;
         default:
             // Unknown opcode: trap rather than silently corrupt state (spec 8.5).
