@@ -56,7 +56,7 @@ define_u16_table! {
     OP_COPY = 21;
 
     // The dense lane D, 40 to 49 (`kernels/matmul_bf16.cuh`, `kernels/ops_dense.cuh`).
-    // `OP_MATMUL_BF16`: `y[r, n] = sum_k x[r, k] * W[n, k]` for 1 to 16 rows. `a` = `x` (`f32`, `rows` rows of `k`),
+    // `OP_MATMUL_BF16`: `y[r, n] = sum_k x[r, k] * W[n, k]` for 1 to 512 rows. `a` = `x` (`f32`, `rows` rows of `k`),
     // `b` = `W` repacked by `repack.rs`, `c` = `y` (`f32`, `rows` rows of `n`), `f` = merge counters, then partials
     // (`MatmulShape::scratch_floats`), `n`, `k`, `kt`, `rows`, `items` and `group_items` as `repack.rs` gives them.
     // The head of the model is this op with `FLAG_NORM` and `FLAG_SOFTCAP_30`, so it has no opcode of its own.
@@ -240,6 +240,21 @@ pub struct MkTaskTable {
 
 /// The slot of the pointer to the amax of each expert (`f32`, 128 of them) in the table of `OP_EXPERT_NVFP4`.
 pub const EXPERT_TABLE_AMAX: usize = 0;
+
+/// The numbers of the dense lane (`kernels/matmul_bf16.cuh`, `kernels/ops_dense.cuh`). `build.rs` writes each one into
+/// the header as `MK_<name>`.
+pub const DENSE_CONSTANTS: &[(&str, usize)] = &[
+    // The most rows of one `OP_MATMUL_BF16` task: a block of a prefill.
+    ("MATMUL_MAX_ROWS", MATMUL_MAX_ROWS),
+    // The slot of the pointer to the norm weight (`bf16`, `k` values) in the table of a matmul with `FLAG_NORM`.
+    ("MATMUL_TABLE_NORM_WEIGHT", MATMUL_TABLE_NORM_WEIGHT),
+];
+
+/// The most rows of one `OP_MATMUL_BF16` task. The op loops over tiles of 16 rows.
+pub const MATMUL_MAX_ROWS: usize = 512;
+
+/// The slot of the table of `OP_MATMUL_BF16` that holds the norm weight.
+pub const MATMUL_TABLE_NORM_WEIGHT: usize = 0;
 
 define_u16_table! {
     FLAGS;
