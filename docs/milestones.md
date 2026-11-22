@@ -955,6 +955,15 @@ Do the steps in this order. Each step ends with the checks green.
 10. **The pass.** The task ring of a decode step and of a prefill block, at 1 to 5 cycles. Gates: the oracle of
     step 8, and a row of a decode step gives the bits of its position in a block. Print the table of the ops, and
     compare each op with its budget.
+    - **Flips of the quantizer.** A sum that changes in its last bit can flip a code of the quantizer. On a tiny
+      model, such a flip moved a logit by 0.3 to 8 (`dc574559`). The engine sums in another order than the CPU
+      reference. Thus a pass of the engine cannot give the logits of the quantized oracle within a tight bound.
+    - Thus each op has a card gate that reads the quantized rows of the oracle, not rows that it quantized itself.
+      The reference records them (its tape of quantized rows).
+    - The gate of a whole pass is a gate of coherence, as in step 11. It compares the top token, the greedy text
+      and the logit gap over the oracle prompts. Write the thresholds into the binding with the first measure.
+    - Rule 4 keeps the engine consistent with itself: a decode step gives the bits of its position in a block. Thus
+      a flip cannot come from the cache path of the engine.
 11. **The engine and the long context.** The `Engine` trait, cycles 1 to 5, snapshots and the conformance suite.
     Slots of 400K to 512K positions, with gates of latency and accuracy.
     - **The format of the cache.** Decided 2026-11-22: a format of fewer bytes is allowed, and it may move bits, if
