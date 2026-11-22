@@ -438,7 +438,7 @@ Do the steps in this order. Each step ends with the checks green.
       164,352 positions at 3 cycles, and 106,496 at up to 5. A position costs 68,656 bytes at 3 cycles.
     - The open and the ledger do not refuse a slot that does not fit the card. A slot of 262,144 positions opens,
       and the driver puts a part of it in system memory. Then a block takes 4.0 to 5.0 s, not 0.78 s. Thus 256K
-      does not run on one card at the speed of the card.
+      does not run on one card at the speed of the card. Since step 12, the open refuses such a slot.
     - The card gate `tests/xe_long.rs` feeds 130,560 seeded ids into a slot of 131,072, in blocks of 512, and
       decodes 8 steps after them. The host form runs from position 0 up to 1,536. At 1,527 a route flips at a near
       tie (engine-abi "A route near a tie"). Thus later, the host form runs each checked block from the state that
@@ -467,16 +467,21 @@ Do the steps in this order. Each step ends with the checks green.
     - Not taken: Gemini said the window reads 2,048 keys and the block outputs overflow. The window is 1,024
       (`inkling2_attn_helpers.cl:24`), `BLOCK` is 6 (`host/weights.rs:22`), and the card gates of the window and
       of the 24 messages pass.
-    - To fix, after step 8 merges, with a test each:
-      - `extra_runs` changes the parts of a state but not the identity, so two reserves share one recipe.
-      - The plan checks the shape of a few tensors only, and the load panics on a tensor that is not there.
-      - A snapshot holds the stale rows of the reserve that a count does not reach. Thus one recipe can get two
-        content ids. A restore loses the count of the slot, so its first pass can run at another count.
-      - The probe of the oracle clears a slot before it checks the probe. `last_error` is never cleared.
-      - The ABI still says that a pass with rows is refused, and that images come in step 9.
-      - The family's template is not compared with the template of the identity, and the template id does not
-        cover the placeholders of an image.
-      - The tower of an image of 10,609 tokens takes about 56,780 ms, and `max_quantum_ms` is 2,000 ms (step 9).
+    - The fixes of round 1, each with a test and its mutations (branch `inkling2-review`, 2026-11-21):
+      - The identity names `extra_runs` (`0c01111`).
+      - The plan checks the name, the dtype and the shape of each tensor that the load reads (`497a9fc`).
+      - A snapshot holds the part `cycles`, and the runs that its count does not reach read as zeros (`b744330`,
+        `c0a6258`). The identity names the layout of the parts, `state` 2.
+      - The probe of the oracle checks before it clears, and `last_error` clears on a call that does not fail
+        (`442e272`).
+      - The stale text of the ABI is gone (`df44845`).
+      - The family must have the template of the identity (`f1b854a`), and the template id covers the placeholders
+        of an image (`50ec3ed`).
+      - The open refuses a slot that the card does not hold (`e8d66eb`, `553842c`). The budget of a card in the
+        example profile stays 32 GiB. A budget of the usable memory waits for the owner.
+    - Not fixed: the tower of an image of 10,609 tokens takes about 56,780 ms, and `max_quantum_ms` is 2,000 ms. The
+      watchdog of the process stops a group with no beat for 30 s. The ABI holds a **Proposed** rule: the tower in
+      quanta of its own (`dc37002`, engine-abi "The time of a large image").
 
 **Speed.** Each finding about the speed of the engine goes into milestone 36, not into this milestone.
 
