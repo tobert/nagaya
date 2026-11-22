@@ -284,3 +284,106 @@ fn the_profile_of_a_decode_step_and_a_prefill_block() {
     eprintln!("{}", spread("the tasks of a block", &mut kernel));
     eprintln!("{}", spread("the pass of a block", &mut walls));
 }
+
+/// The tokens each second of a batch of 1, 2, 4 and 8 decode rows at 3 cycles, each row at about position 1,024 of
+/// its own slot (milestone 36 item 12). Then the profile of a step of 8 rows. The rows of a pass share the fixed costs
+/// of a step: the weights of the dense ops, the head and the task boundaries.
+#[test]
+fn the_speed_of_a_batch_of_decode_rows() {
+    if absent() {
+        return;
+    }
+    const ROWS: [usize; 4] = [1, 2, 4, 8];
+    let steps = 16;
+    // Eight slots with the reserve of 48 do not fit the card, so this test runs at most 3 cycles.
+    let config = || Config {
+        slots: vec![2_048; 8],
+        extra_runs: 24,
+        ..config()
+    };
+    let cards = nagaya_mk_bmg::test_cards::card();
+    // Feed each slot a prefix of 1,024 positions, then run `steps` steps of `rows` rows after one step that warms the
+    // card. Give the wall time of each step in ms, and the launches of each.
+    let measure = |engine: &mut Inkling2Engine, rows: usize, at: &mut [usize; 8], next: &mut [u32; 8]| {
+        let mut out = Vec::new();
+        for k in 0..=steps {
+            let segments: Vec<nagaya_abi::Segment> = (0..rows)
+                .map(|s| {
+                    let mut seg = card::segment(s as u32, at[s] as u64, &[next[s]], &[at[s] as u64]);
+                    seg.cycles = Some(3);
+                    seg
+                })
+                .collect();
+            let started = std::time::Instant::now();
+            let got = engine
+                .pass(&segments, &[])
+                .unwrap_or_else(|e| panic!("a batch of {rows}: {}", e.message));
+            let wall = started.elapsed().as_secs_f64() * 1e3;
+            for s in 0..rows {
+                next[s] = argmax(&card::floats(&got.outputs[s].bytes));
+                at[s] += 1;
+            }
+            let launches = engine.take_profile();
+            if k > 0 {
+                out.push((wall, launches));
+            }
+        }
+        out
+    };
+    let prefixed = |engine: &mut Inkling2Engine| -> ([usize; 8], [u32; 8]) {
+        let mut next = [0u32; 8];
+        for (s, first) in next.iter_mut().enumerate() {
+            card::clear(engine, s as u32);
+            let ids: Vec<u32> = prose(PREFIX + 7 * s).split_off(7 * s);
+            let mut logits = Vec::new();
+            for at in (0..PREFIX).step_by(DEFAULT_MAX_BLOCK) {
+                let last = (at + DEFAULT_MAX_BLOCK - 1) as u64;
+                let mut seg = card::segment(s as u32, at as u64, &ids[at..at + DEFAULT_MAX_BLOCK], &[last]);
+                seg.cycles = Some(3);
+                logits = card::floats(&engine.pass(&[seg], &[]).unwrap().outputs[0].bytes);
+            }
+            *first = argmax(&logits);
+        }
+        engine.take_profile();
+        ([PREFIX; 8], next)
+    };
+
+    let mut engine = Inkling2Engine::open(config(), &cards).unwrap_or_else(|e| panic!("the open failed: {e}"));
+    let (mut at, mut next) = prefixed(&mut engine);
+    eprintln!(
+        "\n## A batch of decode rows at 3 cycles, each row near position {PREFIX}, the median of {steps} steps\n"
+    );
+    eprintln!("| rows | step ms | tokens/s of a row | tokens/s of the batch |");
+    eprintln!("|---:|---:|---:|---:|");
+    for rows in ROWS {
+        let mut walls: Vec<f64> = measure(&mut engine, rows, &mut at, &mut next)
+            .into_iter()
+            .map(|(w, _)| w)
+            .collect();
+        walls.sort_by(f64::total_cmp);
+        let ms = walls[walls.len() / 2];
+        eprintln!("| {rows} | {ms:.1} | {:.1} | {:.1} |", 1e3 / ms, rows as f64 * 1e3 / ms);
+    }
+    drop(engine);
+
+    let mut engine = Inkling2Engine::open_profiled(config(), &cards).unwrap_or_else(|e| panic!("the open failed: {e}"));
+    let (mut at, mut next) = prefixed(&mut engine);
+    for rows in [1usize, 8] {
+        let measured = measure(&mut engine, rows, &mut at, &mut next);
+        let per_step = measured[0].1.len();
+        let launches: Vec<Launch> = measured.into_iter().flat_map(|(_, l)| l).collect();
+        let times = times_of(&launches);
+        let rate = profile::ticks_per_ns(&launches);
+        let all: Vec<TaskTime> = times.concat();
+        eprintln!(
+            "\n## A step of {rows} decode rows near position {PREFIX} at 3 cycles: {} tasks in {per_step} launches\n",
+            all.len() / steps
+        );
+        eprintln!("{}", profile::table(&profile::rows(&all, profile::by_op), steps, rate));
+        let mut kernel: Vec<f64> = times
+            .chunks(per_step)
+            .map(|step| step.iter().map(|t| covered(t)).sum::<u64>() as f64 / rate / 1e6)
+            .collect();
+        eprintln!("{}", spread("the tasks of a step", &mut kernel));
+    }
+}
