@@ -700,6 +700,24 @@ impl Engine for Inkling2Engine {
         self.limits.clone()
     }
 
+    /// A pass that runs the tower of an image declares a bound from its count of tokens (`bound::pass_bound_ms`).
+    /// The held rows of the last image tell which towers run, as in `encode`.
+    fn pass_bound_ms(&self, segments: &[Segment], taps: &[Tap]) -> Result<Option<std::num::NonZeroU32>, String> {
+        // A pass that the checks refuse runs nothing, and `pass` gives the refusal.
+        let Ok((block, _)) = self.check_block(segments, taps) else {
+            return Ok(None);
+        };
+        let nagaya_abi::SegmentInputs::TokensAndRows { rows, .. } = &segments[0].inputs else {
+            return Ok(None);
+        };
+        let images = block.spans.iter().filter_map(|used| {
+            let grid = used.span.grid()?;
+            Some((grid, &rows[used.rows_at..used.rows_at + used.span.bytes()]))
+        });
+        let towers: Vec<usize> = self.held_rows.towers(images).iter().map(|g| g.tokens()).collect();
+        Ok(crate::bound::pass_bound_ms(&towers))
+    }
+
     fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
         self.last_error = None;
         let (block, named) = match self.check_block(segments, taps) {

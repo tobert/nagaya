@@ -268,6 +268,21 @@ impl HeldRows {
         false
     }
 
+    /// The grids of `images` whose tower a pass runs, in order, from the rows held now. It changes nothing, so the
+    /// bound of a pass reads it before the pass (engine-abi D8).
+    pub fn towers<'a>(&self, images: impl IntoIterator<Item = (Grid, &'a [u8])>) -> Vec<Grid> {
+        let mut held = self.image;
+        let mut towers = Vec::new();
+        for (grid, rows) in images {
+            let image = Some((grid, blake3::hash(rows)));
+            if held != image {
+                held = image;
+                towers.push(grid);
+            }
+        }
+        towers
+    }
+
     /// The held rows are those of no image: another task wrote them.
     pub fn forget(&mut self) {
         self.image = None;

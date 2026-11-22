@@ -11,6 +11,7 @@
 //! both formats to `bf16` at load (`Inkling2LoopDequantizeExperts` in transformers, commit `046bdb8cc2`). The ops
 //! in `formats` give the same bits. A kernel of the card checks itself against them.
 
+pub mod bound;
 #[cfg(feature = "xe")]
 pub mod device;
 #[cfg(feature = "xe")]
