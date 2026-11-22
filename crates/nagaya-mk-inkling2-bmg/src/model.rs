@@ -597,15 +597,17 @@ fn run_tasks(
         }
         let a = [0, 1, 2].map(|p| hidden_plane(bufs.a, p));
         let m = |i: usize| hidden_plane(bufs.m, i);
+        // The rows g of each gate go in the router rows, which the router of this layer writes later.
+        let gs = bufs.router;
         if full {
             for i in 0..3 {
-                t.push(tasks::message_gate(a[i], m(i), lw.gates[i], a[i], n32, h32));
+                t.extend(tasks::message_gate(a[i], m(i), lw.gates[i], a[i], gs, n32, h32));
             }
         } else {
             // A sliding layer has one residual: the key and the value gate it into planes 1 and 2 first.
-            t.push(tasks::message_gate(a[0], m(1), lw.gates[1], a[1], n32, h32));
-            t.push(tasks::message_gate(a[0], m(2), lw.gates[2], a[2], n32, h32));
-            t.push(tasks::message_gate(a[0], m(0), lw.gates[0], a[0], n32, h32));
+            t.extend(tasks::message_gate(a[0], m(1), lw.gates[1], a[1], gs, n32, h32));
+            t.extend(tasks::message_gate(a[0], m(2), lw.gates[2], a[2], gs, n32, h32));
+            t.extend(tasks::message_gate(a[0], m(0), lw.gates[0], a[0], gs, n32, h32));
         }
         // The outputs of the gates of the query, the key and the value.
         if let Some((tap, rows)) = lab.taps
@@ -806,11 +808,13 @@ fn run_tasks(
         mb,
     ));
     if messages {
-        t.push(tasks::message_gate(
+        // The rows g go in the router rows: the router writes them after the gate.
+        t.extend(tasks::message_gate(
             bufs.e,
             hidden_plane(bufs.m, 3),
             lw.gates[3],
             bufs.e,
+            bufs.router,
             n32,
             h32,
         ));

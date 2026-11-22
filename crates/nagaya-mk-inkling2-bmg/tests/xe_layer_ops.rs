@@ -30,6 +30,13 @@ use nagaya_mk_inkling2_bmg::host::ops::{
 /// positions spread over more than one round of the work-groups.
 const BLOCKS: [usize; 3] = [1, 5, 37];
 const MOST: usize = 37;
+/// The block sizes of the attention residual and the message gate. These ops spread a block over all work-groups,
+/// so a block of 400 positions also takes more than one round of each work-group.
+const WIDE: [usize; 4] = [1, 5, 37, 400];
+const LONG: usize = 400;
+/// The SHA-256 of the bits of each check of the attention residual and the message gate. A change of the order of a
+/// sum moves them, and it changes the engine identity (spec 12.1).
+const OP_BITS: &str = include_str!("fixtures/layer_op_bits.txt");
 
 /// The attention residual, as the relative L2 gap of a row. The card and the host take each RMS factor through a
 /// division and a square root of a few units in the last place (ulp) each, then an exp and a division for each
@@ -171,17 +178,38 @@ fn bits(v: &[f32]) -> Vec<u32> {
 }
 
 /// Check that each block size gives the rows of the longest block in its bits, and return the longest.
-fn same_in_each_block(what: &str, width: usize, mut run: impl FnMut(usize) -> Vec<f32>) -> Vec<f32> {
-    let outs: Vec<Vec<f32>> = BLOCKS.iter().map(|n| run(*n)).collect();
+fn same_in_each_block(what: &str, width: usize, run: impl FnMut(usize) -> Vec<f32>) -> Vec<f32> {
+    same_in_blocks(what, width, &BLOCKS, run)
+}
+
+/// Check that each block of `blocks` gives the rows of the last, longest block in its bits, and return the longest.
+fn same_in_blocks(what: &str, width: usize, blocks: &[usize], mut run: impl FnMut(usize) -> Vec<f32>) -> Vec<f32> {
+    let outs: Vec<Vec<f32>> = blocks.iter().map(|n| run(*n)).collect();
     let longest = outs.last().unwrap();
-    for (n, out) in BLOCKS.iter().zip(&outs) {
+    let most = blocks.last().unwrap();
+    for (n, out) in blocks.iter().zip(&outs) {
         assert_eq!(out.len(), n * width, "{what}: a block of {n} gave {} values", out.len());
         assert!(
             bits(out) == bits(&longest[..n * width]),
-            "{what}: a block of {n} and a block of {MOST} give other bits"
+            "{what}: a block of {n} and a block of {most} give other bits"
         );
     }
     longest.clone()
+}
+
+/// Check that the bits of `got` have the hash of the line `what` in `fixtures/layer_op_bits.txt`.
+fn keep_bits(what: &str, got: &[f32]) {
+    let bytes: Vec<u8> = got.iter().flat_map(|v| v.to_bits().to_le_bytes()).collect();
+    let sha = nagaya_text_inkling2::tokenizer::sha256_of(&bytes);
+    eprintln!("bits: {what}: {sha}");
+    let want = OP_BITS
+        .lines()
+        .find_map(|l| l.strip_prefix(what).and_then(|r| r.strip_prefix(": ")))
+        .unwrap_or_else(|| panic!("fixtures/layer_op_bits.txt has no line for {what}. Add the line above."));
+    assert_eq!(
+        sha, want,
+        "{what}: the bits moved. A change of bits changes the engine identity (spec 12.1)."
+    );
 }
 
 /// The worst relative L2 gap of the rows, printed for the gate report.
@@ -200,13 +228,13 @@ fn check_attn_residual(card: &mut Card, blocks: usize, queries: usize) {
     let what = format!("the attention residual of {blocks} blocks and {queries} queries");
     // Rows of other sizes, so that the norm matters, and queries that give scores of about 1.
     let planes: Vec<f32> = (0..blocks)
-        .flat_map(|j| rows(100 + j as u32, MOST, HIDDEN, 0.5 + j as f32))
+        .flat_map(|j| rows(100 + j as u32, LONG, HIDDEN, 0.5 + j as f32))
         .collect();
-    let partial = rows(200, MOST, HIDDEN, 3.0);
+    let partial = rows(200, LONG, HIDDEN, 3.0);
     let q = values(300 + blocks as u32, queries * HIDDEN, 2.0);
     let (bb, pb, qb) = (card.buf(&planes), card.buf(&partial), card.buf(&q));
-    let ob = card.zeros(queries * MOST * HIDDEN * 4);
-    let got = same_in_each_block(&what, queries * HIDDEN, |n| {
+    let ob = card.zeros(queries * LONG * HIDDEN * 4);
+    let got = same_in_blocks(&what, queries * HIDDEN, &WIDE, |n| {
         card.run(&[tasks::attn_residual(
             bb.at(),
             blocks as u32,
@@ -216,26 +244,27 @@ fn check_attn_residual(card: &mut Card, blocks: usize, queries: usize) {
             ob.at(),
             n as u32,
             HIDDEN as u32,
-            MOST as u32,
+            LONG as u32,
         )]);
-        let planes: Vec<f32> = ob.read(card.card(), queries * MOST * HIDDEN);
+        let planes: Vec<f32> = ob.read(card.card(), queries * LONG * HIDDEN);
         // Position-major: the rows of each query of position t.
         (0..n)
-            .flat_map(|t| (0..queries).flat_map(move |i| (i * MOST + t) * HIDDEN..(i * MOST + t + 1) * HIDDEN))
+            .flat_map(|t| (0..queries).flat_map(move |i| (i * LONG + t) * HIDDEN..(i * LONG + t + 1) * HIDDEN))
             .map(|i| planes[i])
             .collect()
     });
     let qs: Vec<&[f32]> = q.as_chunks::<HIDDEN>().0.iter().map(|r| r.as_slice()).collect();
     let mut want = Vec::new();
     let mut out = vec![Vec::new(); queries];
-    for t in 0..MOST {
-        let blk: Vec<&[f32]> = (0..blocks).map(|j| row(&planes, j * MOST + t, HIDDEN)).collect();
+    for t in 0..LONG {
+        let blk: Vec<&[f32]> = (0..blocks).map(|j| row(&planes, j * LONG + t, HIDDEN)).collect();
         ops::attention_residual(&blk, row(&partial, t, HIDDEN), &qs, &mut out);
         for o in &out {
             want.extend_from_slice(o);
         }
     }
     gap(&what, &got, &want, HIDDEN, TOL_RESIDUAL);
+    keep_bits(&what, &got);
 }
 
 #[test]
@@ -250,28 +279,30 @@ fn the_attention_residual_on_the_card_gives_the_host_form_in_any_block() {
 #[test]
 fn the_message_gate_on_the_card_gives_the_host_form_in_any_block_and_in_place() {
     let mut card = Card::open();
-    let h = rows(400, MOST, HIDDEN, 2.0);
-    let m = rows(500, MOST, HIDDEN, 0.7);
+    let h = rows(400, LONG, HIDDEN, 2.0);
+    let m = rows(500, LONG, HIDDEN, 0.7);
     // Weights that give g and the gates of about 1, so that tanh is not flat.
     let (down_b, down) = bf16s(600, GATE_RANK * 2 * HIDDEN, 0.03);
     let (forget_b, forget) = bf16s(601, HIDDEN * GATE_RANK, 0.2);
     let (gain_b, gain) = bf16s(602, HIDDEN * GATE_RANK, 0.2);
     let weights: Vec<u16> = [down_b, forget_b, gain_b].concat();
     let (hb, mb, wb) = (card.buf(&h), card.buf(&m), card.buf(&weights));
-    let yb = card.zeros(MOST * HIDDEN * 4);
-    let got = same_in_each_block("the message gate", HIDDEN, |n| {
-        card.run(&[tasks::message_gate(
+    let yb = card.zeros(LONG * HIDDEN * 4);
+    let gb = card.zeros(LONG * GATE_RANK * 4);
+    let got = same_in_blocks("the message gate", HIDDEN, &WIDE, |n| {
+        card.run(&tasks::message_gate(
             hb.at(),
             mb.at(),
             wb.at(),
             yb.at(),
+            gb.at(),
             n as u32,
             HIDDEN as u32,
-        )]);
+        ));
         yb.read(card.card(), n * HIDDEN)
     });
-    let mut want = vec![0f32; MOST * HIDDEN];
-    for t in 0..MOST {
+    let mut want = vec![0f32; LONG * HIDDEN];
+    for t in 0..LONG {
         ops::message_gate(
             row(&h, t, HIDDEN),
             row(&m, t, HIDDEN),
@@ -282,17 +313,19 @@ fn the_message_gate_on_the_card_gives_the_host_form_in_any_block_and_in_place() 
         );
     }
     gap("the message gate", &got, &want, HIDDEN, TOL_GATE);
+    keep_bits("the message gate", &got);
     // In place: the output replaces h, with the same bits.
     let ib = card.buf(&h);
-    card.run(&[tasks::message_gate(
+    card.run(&tasks::message_gate(
         ib.at(),
         mb.at(),
         wb.at(),
         ib.at(),
-        MOST as u32,
+        gb.at(),
+        LONG as u32,
         HIDDEN as u32,
-    )]);
-    let in_place: Vec<f32> = ib.read(card.card(), MOST * HIDDEN);
+    ));
+    let in_place: Vec<f32> = ib.read(card.card(), LONG * HIDDEN);
     assert!(
         bits(&in_place) == bits(&got),
         "the message gate in place gives other bits"

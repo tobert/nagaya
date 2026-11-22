@@ -1,7 +1,7 @@
 use super::*;
 use nagaya_mk_bmg::protocol::{
     OP_ATTN_RESIDUAL, OP_COPY, OP_EMBED, OP_INKLING2_ATTN, OP_INKLING2_CONTROL, OP_MATMUL, OP_MESSAGE_GATE,
-    OP_RESIDUAL_CONV, OP_SIGMOID_ROUTER,
+    OP_MESSAGE_GATE_DOWN, OP_RESIDUAL_CONV, OP_SIGMOID_ROUTER,
 };
 
 use crate::host::weights::CYCLE_END;
@@ -17,11 +17,12 @@ fn counter() -> impl FnMut(usize) -> u64 {
     }
 }
 
-/// Weights at fake addresses: field `f` of layer `l` is `(l + 1) << 32 | f`.
+/// Weights at fake addresses: field `f` of layer `l` is `(l + 1) << 32 | f << 8`. Each one is a multiple of 256
+/// bytes, as the ops that read rows in blocks require.
 fn weights() -> Weights {
     let layers = (0..LAYERS)
         .map(|l| {
-            let a = |f: u64| ((l as u64 + 1) << 32) | f;
+            let a = |f: u64| ((l as u64 + 1) << 32) | f << 8;
             Layer {
                 attn_queries: if l == 0 { 0 } else { a(1) },
                 mlp_query: a(2),
@@ -55,11 +56,11 @@ fn weights() -> Weights {
         })
         .collect();
     Weights {
-        embed: 1,
-        embed_norm: 2,
-        head: 3,
-        norm: 4,
-        output_query: 5,
+        embed: 1 << 8,
+        embed_norm: 2 << 8,
+        head: 3 << 8,
+        norm: 4 << 8,
+        output_query: 5 << 8,
         message_queries: 6 << 20,
         layers,
     }
@@ -256,8 +257,33 @@ fn the_runs_of_later_cycles_read_the_messages_of_the_cycle_before() {
                 assert_eq!(g.b, plane(b, b.m, i), "run {r}: gate {i} reads message {i}");
             }
             assert_eq!((gates[3].a, gates[3].c), (b.e, b.e));
+            // Each gate reads g from the task just before it, which writes it into the router rows.
+            for (i, t) in run.iter().enumerate().filter(|(_, t)| t.opcode == OP_MESSAGE_GATE) {
+                let down = &run[i - 1];
+                assert_eq!(down.opcode, OP_MESSAGE_GATE_DOWN, "run {r}: the task before a gate");
+                assert_eq!((down.a, down.b, down.x, down.n), (t.a, t.b, t.x, t.n), "run {r}");
+                assert_eq!(down.c, b.router, "run {r}: g goes in the router rows");
+                assert_eq!(
+                    t.p0 as u64 | (t.layer as u64) << 32,
+                    b.router,
+                    "run {r}: the gate reads g there"
+                );
+            }
+            let downs = run.iter().filter(|t| t.opcode == OP_MESSAGE_GATE_DOWN).count();
+            assert_eq!(downs, 4, "run {r}: one first step for each gate");
+            // The router rows hold g only until the router of the layer writes them.
+            let last_gate = run.iter().rposition(|t| t.opcode == OP_MESSAGE_GATE).unwrap();
+            let router = run
+                .iter()
+                .position(|t| t.c == b.router && t.opcode == OP_MATMUL)
+                .unwrap();
+            assert!(
+                last_gate < router,
+                "run {r}: the router writes its rows after the last gate"
+            );
         } else {
             assert!(message.is_none() && gates.is_empty(), "run {r}");
+            assert!(run.iter().all(|t| t.opcode != OP_MESSAGE_GATE_DOWN), "run {r}");
         }
     }
 }

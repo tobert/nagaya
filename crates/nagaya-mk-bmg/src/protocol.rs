@@ -115,7 +115,7 @@ pub const OP_SUBSAMPLE: u16 = 110;
 // The layer-part ops of the Inkling 2 binary (`kernels/inkling2_layer_ops.cl`): opcodes 150 to 159.
 /// The attention residual: the softmax mix of the normed block outputs and the partial row, for 1 to 4 queries.
 pub const OP_ATTN_RESIDUAL: u16 = 150;
-/// The message gate of a cycle: `(1 - forget) * h + gain * m`.
+/// The message gate of a cycle: `(1 - forget) * h + gain * m`, from the `g` of `OP_MESSAGE_GATE_DOWN`.
 pub const OP_MESSAGE_GATE: u16 = 151;
 /// The L2 clip, or the RMS norm of no weight, of each head, with the log scale of a full layer.
 pub const OP_HEAD_CLIP: u16 = 152;
@@ -125,6 +125,8 @@ pub const OP_OUTPUT_GATE: u16 = 153;
 pub const OP_RESIDUAL_CONV: u16 = 154;
 /// The router of sigmoid scores with a bias: 8 picks in ascending expert order.
 pub const OP_SIGMOID_ROUTER: u16 = 155;
+/// The first step of the message gate: `g = D [norm(h), norm(m)]` of each position.
+pub const OP_MESSAGE_GATE_DOWN: u16 = 156;
 /// The partial sums of the attention of Inkling 2 for each chunk of keys, with the relative bias
 /// (`kernels/inkling2_attn_ops.cl`).
 pub const OP_INKLING2_ATTN: u16 = 160;
