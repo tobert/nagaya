@@ -719,16 +719,41 @@ The experts take 33.2 ms, 11 times their floor of about 3 ms. Two small ops run 
 
 **Then the batch of decode rows** (Amy's order: after the items above).
 
-10. **`FLAG_TILED` in the Inkling 2 binary.** `OP_MATMUL` takes another path for one row than for 2 to 8 rows. Thus a
-   decode step differs from its position in a block by up to 9.1e-6. The LFM3 binary has the flag. With it, a row
-   gets the same bits for 1 to 8 rows, and a decode step gets the bits of the block.
-11. **A ring of several slots.** A decode pass of rows from several contexts, each with its own slot and position,
-   as LFM3's `model::batch`. Raise `MAX_SEGMENTS` from 1. The rows of one pass have one count of cycles, and the
-   council joins only equal counts.
-12. **What a batch gains.** With 8 rows, about 51 of 128 experts run in each run. Thus a row reads about 80% of the
-    expert bytes of a row alone. Most of the gain comes from the fixed costs that the rows share. They are the
-    tasks, the weights of the attention and the idle rows of each dpas. Measure tokens each second at 1, 2, 4 and 8
-    rows.
+10. **`FLAG_TILED` in the Inkling 2 binary: done on 2026-11-22.** Each matmul of a pass carries the flag, so one
+   token sums in the order of 2 to 8 tokens. Thus a row gets the same bits for 1 to 8 rows. A block of 2 to 8
+   tokens gives the bits of the same tokens decoded one at a time (`tests/xe_batch.rs`).
+   - A decode step still differs from its position in a block of 9 or more. The block takes another path of
+     `OP_MATMUL` and of the expert ops. On the merge with item 1, 180,735 logits differ, by 1.00e-5 at most.
+   - The decode bits moved, so the engine identity moved. On main it moves once, with item 1:
+     `tests/fixtures/logit_bits.txt` holds the hashes of both.
+   - The gap to the oracle did not grow. `xe_oracle` on Mini gives 2.0e-5 on the prompts and 2.86e-5 over 8 decode
+     steps, and every argmax agrees.
+   - The cost at one row: a decode step at 1,024 takes 34.80 ms of tasks, from 34.39 ms on main.
+11. **A batch of decode rows: done on 2026-11-22.** A pass of 2 to 8 segments runs one decode token of each segment.
+   Each row is on its own slot at its own position (`model::batch`, engine-abi "A batch of decode rows").
+   - `max_segments` is 8. `segments_exact` stays false, because of the feed rule. The process joins the decode rows
+     of concurrent contexts by D11 rule 6, and only rows of one count of cycles (`jobs::joins`).
+   - The rows share one attention task of each run (`FLAG_ATTN_ROWS`), with a table of their planes and positions.
+   - `xe_batch` ran 8 contexts at positions 5 to 2,200 in batches of 8, 4, 3, 2 and 1, at 3 cycles and at 1. Each
+     row gave the bits of its pass alone (spec 5.7).
+   - Not done: a decode row of a shared pass still holds no decoded head (spec 6.14). The rows of a batch keep the
+     bits of a pass alone. Thus a later declaration in the ABI can let them keep it, as for LFM3.
+12. **What a batch gains: measured on 2026-11-22.** The table gives a batch of decode rows at 3 cycles. Each row is
+    near position 1,024 of its own slot, and each time is the median of 16 steps (`xe_profile`):
+
+    | rows | step ms | tokens/s of a row | tokens/s of the batch |
+    |---:|---:|---:|---:|
+    | 1 | 34.7 | 28.8 | 28.8 |
+    | 2 | 46.4 | 21.6 | 43.1 |
+    | 4 | 65.8 | 15.2 | 60.8 |
+    | 8 | 105.1 | 9.5 | 76.1 |
+
+    - A step of 8 rows is 3,866 tasks in 2 launches, 103.4 ms of tasks. The expert ops take 45.2 ms, the matmuls
+      22.0 ms and the attention 16.2 ms. The 1,536 convolutions and 976 clips of the rows take 10.2 ms with their
+      boundaries.
+    - Before the shared attention, each row ran its own: 57.4 ms of a step of 8 rows, and 54.2 tokens each second.
+    - Next: the convolutions and the clips of the rows in one task each, as the attention. The expert ops at 8 rows
+      take 5.2 times their time at one row. A tile of the rows of one expert can share the reads of its weights.
 
 **Also.**
 
