@@ -552,39 +552,128 @@ contexts I think; we can focus on other perf gains first". Thus the items of the
 - A prefill of 512 tokens takes 799 ms, about 640 tokens each second.
 - A decode step takes 65 to 70 ms. A pass of 3 cycles is 1,635 tasks in one launch.
 - A decode step reads about 1.7 GB of packed experts: 8 experts in each of 48 runs. At 608 GB/s, that sets a floor
-  near 3 ms. Thus most of a step is not the reads of the experts.
+  near 3 ms.
 
 **The rules of each item.**
 
 - Measure before and after, on the same prompt and slot, and write both numbers in the commit.
+- Profile the change with `tests/xe_profile.rs` of the Inkling 2 crate (item 0). Write the row of the op before and
+  after in the commit.
 - Keep the gates of milestone 35 green: `xe_oracle`, `xe_feed` and the card gate of each op. A change of the order
   of a sum changes bits, so it changes the engine identity. Say so in the commit, and measure the gap again.
 - A host form in `src/host/` stays the oracle of each op. A new op gets a card gate against it.
 - One owner of card 0 at a time (milestone 35, "Lanes").
 
+**0. The profile of a decode step: done on 2026-11-22.** The profile binary of Inkling 2 is the engine binary with
+`MK_PROFILE`. Each work-group writes three clocks of each task: at its start, after its wait, and at its end.
+`Inkling2Engine::open_profiled` loads it, and `take_profile` gives the clocks. `src/profile.rs` sums them for each
+op kind. The test `xe_profile` prints the tables below.
+
+- The clock is `clock_read_device`. It counts at 2,800 MHz, and the Xe cores agree to about 600 counts.
+- The profile binary gives the bits of the engine binary. Its tasks cover 99.9% of the host time of each launch.
+- "Work" runs from the first work-group past the wait to the last work-group at the end. "Boundary" is the time
+  before it. "Spread" runs from the first work-group at the end to the last one. A spread near the work says that
+  one work-group did the op.
+- The engine binary takes 70.8 ms for a decode step at position 1,024 at 3 cycles. The profile binary takes 72.1 ms
+  in its tasks. The host part of a pass is about 0.3 ms.
+- The noise is small. Over 16 decode steps, the sum of the tasks is 72.02 to 72.14 ms. Over 5 blocks, it is 803.32
+  to 803.43 ms.
+
+A decode step at position 1,024 at 3 cycles, the mean of 16 steps (prompt "longer" of the oracle, repeated):
+
+| op | tasks | work ms | boundary ms | mean work us | spread ms | share |
+|---|---:|---:|---:|---:|---:|---:|
+| EXPERT_UP | 48 | 24.35 | 0.02 | 507.3 | 0.26 | 33.8% |
+| MESSAGE_GATE | 96 | 10.11 | 0.05 | 105.4 | 10.01 | 14.1% |
+| MATMUL | 385 | 9.07 | 0.23 | 23.6 | 0.42 | 12.9% |
+| EXPERT_DOWN | 48 | 8.82 | 0.04 | 183.7 | 0.14 | 12.3% |
+| INKLING2_ATTN | 48 | 7.14 | 0.02 | 148.8 | 3.04 | 9.9% |
+| ATTN_RESIDUAL | 120 | 6.24 | 0.08 | 52.0 | 6.11 | 8.8% |
+| RMSNORM | 154 | 1.24 | 0.08 | 8.0 | 0.98 | 1.8% |
+| MOE_PLAN | 48 | 1.08 | 0.02 | 22.5 | 1.00 | 1.5% |
+| RESIDUAL_CONV | 192 | 0.99 | 0.10 | 5.2 | 0.25 | 1.5% |
+| HEAD_CLIP | 192 | 0.63 | 0.14 | 3.3 | 0.45 | 1.1% |
+| SIGMOID_ROUTER | 48 | 0.35 | 0.02 | 7.4 | 0.30 | 0.5% |
+| INKLING2_ATTN_SUM | 48 | 0.32 | 0.04 | 6.8 | 0.13 | 0.5% |
+| MOE_GATHER | 48 | 0.28 | 0.02 | 5.8 | 0.22 | 0.4% |
+| EXPERT_SUM | 48 | 0.17 | 0.03 | 3.6 | 0.09 | 0.3% |
+| OUTPUT_GATE | 48 | 0.14 | 0.02 | 3.0 | 0.02 | 0.2% |
+| EMBED | 49 | 0.12 | 0.02 | 2.4 | 0.07 | 0.2% |
+| COPY | 15 | 0.04 | 0.01 | 2.7 | 0.01 | 0.1% |
+| sum | 1,635 | 71.11 | 0.96 | | | 100% |
+
+The variants of a decode step that the table joins:
+
+- `EXPERT_UP` of NVFP4 takes 504 us and of MXFP8 541 us. `EXPERT_DOWN` takes 183 us and 197 us.
+- `INKLING2_ATTN` takes 98 us on a sliding layer (40 tasks) and 401 us on a full layer (8 tasks). On a full layer,
+  3.0 ms of 3.2 ms is spread. One chunk of 2,048 keys holds all 1,024 positions, so the op has 24 items, one for
+  each head. Thus 24 teams of 4 subgroups work, of 512 teams.
+- The head (`MATMUL`, 200,064 rows) takes 1.63 ms, about 570 GB/s. The matmuls of 3,072 rows take 35 us each.
+
+One cycle costs about 20.5 ms. A decode step takes 31.1 ms at 1 cycle (736 tasks) and 72.1 ms at 3. At 5 cycles it
+takes 113.1 ms (2,533 tasks in 2 launches), and the shares are those at 3, within 4 points.
+
+A prefill block of 512 tokens from position 0 at 3 cycles, the mean of 5 blocks:
+
+| op | tasks | work ms | boundary ms | mean work us | spread ms | share |
+|---|---:|---:|---:|---:|---:|---:|
+| EXPERT_UP | 48 | 309.61 | 0.05 | 6450.1 | 1.74 | 38.5% |
+| MESSAGE_GATE | 96 | 142.94 | 0.08 | 1489.0 | 8.54 | 17.8% |
+| EXPERT_DOWN | 48 | 140.09 | 0.09 | 2918.5 | 0.19 | 17.4% |
+| MATMUL | 385 | 84.55 | 0.28 | 219.6 | 57.52 | 10.6% |
+| ATTN_RESIDUAL | 120 | 67.81 | 0.08 | 565.0 | 3.37 | 8.5% |
+| INKLING2_ATTN | 48 | 20.94 | 0.03 | 436.3 | 14.61 | 2.6% |
+| RMSNORM | 154 | 9.63 | 0.11 | 62.5 | 0.29 | 1.2% |
+| RESIDUAL_CONV | 192 | 6.96 | 0.15 | 36.3 | 0.36 | 0.9% |
+| EXPERT_SUM | 48 | 4.73 | 0.13 | 98.5 | 0.19 | 0.6% |
+| MOE_PLAN | 48 | 3.58 | 0.02 | 74.6 | 3.50 | 0.4% |
+| MOE_GATHER | 48 | 3.38 | 0.03 | 70.5 | 0.39 | 0.4% |
+| INKLING2_ATTN_SUM | 48 | 2.65 | 0.04 | 55.1 | 0.09 | 0.3% |
+| HEAD_CLIP | 192 | 2.50 | 0.13 | 13.0 | 0.38 | 0.3% |
+| OUTPUT_GATE | 48 | 1.44 | 0.04 | 30.1 | 0.04 | 0.2% |
+| SIGMOID_ROUTER | 48 | 0.68 | 0.03 | 14.2 | 0.13 | 0.1% |
+| COPY | 15 | 0.31 | 0.01 | 20.9 | 0.02 | 0.0% |
+| EMBED | 49 | 0.23 | 0.03 | 4.7 | 0.07 | 0.0% |
+| sum | 1,635 | 802.03 | 1.33 | | | 100% |
+
+**What the profile shows.** The task boundaries take 0.96 ms of a decode step, not 1.6 ms. The ops take the rest.
+The experts take 33.2 ms, 11 times their floor of about 3 ms. Two small ops run in one work-group of 32 and take
+16.4 ms. Thus the items below are in the order of their measured gain.
+
 **The findings, first the gains of one row.**
 
-0. **A profile of a decode step, first.** A step of 65 ms over 1,635 tasks is about 40 microseconds for each task.
-   The task boundaries take about 1.6 ms and the reads of the experts about 3 ms. Thus about 60 ms is in the ops
-   themselves, and no measurement says which ops. Time each op kind of one step on the card. Then choose among the
-   items below by the measured time. Amy measured 12 tokens each second in the trial of milestone 35.
-1. **A decode path in the expert ops.** `OP_EXPERT_UP` and `OP_EXPERT_DOWN` always take the XMX path. With one
-   token, 15 of the 16 rows of each dpas are idle. A path of SIMD dot products for one token can read the packed
-   planes as fast with less work. The review of the binding by ChatGPT asked to measure both.
-2. **Wider ops of the residual and the gates.** `OP_ATTN_RESIDUAL` and `OP_MESSAGE_GATE` take one work-group for
-   each position. A decode step has one position, so most of the card is idle in them. Split each one over more
-   work-groups, with a fixed order of the sums.
-3. **Fewer tasks in a run.** Each task boundary costs about 1 microsecond, so 1,635 tasks cost about 1.6 ms of
-   waits. Join a small op to the task before it when it reads only its output. Examples: the clips with their
-   matmul, or the gate with the output matmul.
-4. **Reuse of an expanded tile in a prefill.** A block of 512 tokens has about 32 picks for each expert. Expand a
-   tile of an expert once into local memory, and run many tiles of tokens against it. The review asked for it.
-5. **The chunk size of the attention.** It is 256 keys on a sliding layer and 2,048 on a full layer (Proposed in
-   the binding). Measure other sizes for a decode step and for a prefill. A new size changes bits.
-6. **The tower of an image** (milestone 35 step 9). An image of 4,096 by 4,096 px has 42,436 patches, and its
+1. **A decode path in the expert ops: 33.2 ms of a decode step.** `OP_EXPERT_UP` and `OP_EXPERT_DOWN` always take
+   the XMX path. With one token, 15 of the 16 rows of each dpas are idle. A path of SIMD dot products for one token
+   can read the packed planes as fast with less work. The review of the binding by ChatGPT asked to measure both.
+   - An up task reads about 24 MB in 507 us, about 47 GB/s. A down task reads about 12 MB in 184 us.
+   - At half of 608 GB/s, the two ops take about 6 ms. Thus the gain is about 27 ms of a step.
+2. **Wider ops of the residual and the gates: 16.4 ms of a decode step.** `OP_ATTN_RESIDUAL` and `OP_MESSAGE_GATE`
+   take one work-group for each position. A decode step has one position, so 31 of 32 work-groups wait. Split each
+   one over more work-groups, with a fixed order of the sums.
+   - In one work-group, a subgroup takes a whole row of 2,304 values. Thus at most 5 of 64 subgroups work in the
+     first step of `OP_ATTN_RESIDUAL`.
+   - `OP_MESSAGE_GATE` reads the gate weights again for each position: about 1.2 MB. In a block of 512 it takes
+     143 ms. A form as matmuls over the block reads them once.
+   - The estimated gain is about 15 ms of a step. The matmul form of the gate can gain most of its 143 ms of a
+     block.
+3. **The chunk size of the attention: 7.1 ms of a decode step.** It is 256 keys on a sliding layer and 2,048 on a
+   full layer (Proposed in the binding). At position 1,024, a full layer has 24 items for 512 teams: 401 us. Measure
+   other sizes for a decode step and for a prefill. A new size changes bits.
+4. **Reuse of an expanded tile in a prefill: 450 ms of a block.** A block of 512 tokens has about 32 picks for each
+   expert. Expand a tile of an expert once into local memory, and run many tiles of tokens against it. The review
+   asked for it. The expert ops take 56% of a block.
+5. **The balance of the matmuls of a block: 57.5 ms of spread.** The matmuls of a block take 84.6 ms, and 57.5 ms
+   of it is spread. The matmul of 3,072 rows takes 345 us, and its work-groups end about 170 us apart on average.
+   Give the work-groups tiles of equal work.
+6. **The small ops in one work-group: about 2.3 ms of a decode step.** `OP_RMSNORM` of one row (1.24 ms) and
+   `OP_MOE_PLAN` (1.08 ms) run in one work-group. Join each one to the op after it, or split it.
+7. **Fewer tasks in a run: 0.96 ms of a decode step.** A task boundary takes about 0.6 microseconds. Thus 1,635
+   tasks take about 1 ms. Join a small op to the task before it when it reads only its output. Examples: the clips
+   with their matmul, or the gate with the output matmul.
+8. **The tower of an image** (milestone 35 step 9). An image of 4,096 by 4,096 px has 42,436 patches, and its
    attention reads every pair. Its tower takes about 56,780 ms in one pass, 28 times `max_quantum_ms` (milestone 35
    step 11). Decide between a flash form of that attention, a tower in several quanta, and a limit.
-7. **Long contexts.** A slot of one card holds 164,352 positions at 3 cycles, and 106,496 at up to 5 (milestone 35
+9. **Long contexts.** A slot of one card holds 164,352 positions at 3 cycles, and 106,496 at up to 5 (milestone 35
    step 11). The keys and values in `bf16` would hold about twice as many, but they change bits: a new identity and a
    new gap. Two cards could hold the keys of the full layers on the second card.
    - The attention of a block grows with the count of keys. A block of 512 at 130,048 takes 971 ms more than at
@@ -596,13 +685,13 @@ contexts I think; we can focus on other perf gains first". Thus the items of the
 
 **Then the batch of decode rows** (Amy's order: after the items above).
 
-8. **`FLAG_TILED` in the Inkling 2 binary.** `OP_MATMUL` takes another path for one row than for 2 to 8 rows. Thus a
+10. **`FLAG_TILED` in the Inkling 2 binary.** `OP_MATMUL` takes another path for one row than for 2 to 8 rows. Thus a
    decode step differs from its position in a block by up to 9.1e-6. The LFM3 binary has the flag. With it, a row
    gets the same bits for 1 to 8 rows, and a decode step gets the bits of the block.
-9. **A ring of several slots.** A decode pass of rows from several contexts, each with its own slot and position,
+11. **A ring of several slots.** A decode pass of rows from several contexts, each with its own slot and position,
    as LFM3's `model::batch`. Raise `MAX_SEGMENTS` from 1. The rows of one pass have one count of cycles, and the
    council joins only equal counts.
-10. **What a batch gains.** With 8 rows, about 51 of 128 experts run in each run. Thus a row reads about 80% of the
+12. **What a batch gains.** With 8 rows, about 51 of 128 experts run in each run. Thus a row reads about 80% of the
     expert bytes of a row alone. Most of the gain comes from the fixed costs that the rows share. They are the
     tasks, the weights of the attention and the idle rows of each dpas. Measure tokens each second at 1, 2, 4 and 8
     rows.
