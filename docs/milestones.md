@@ -770,13 +770,15 @@ with each weight in its checkpoint format:
 |---|---:|
 | dense weights of the 48 runs (`bf16`): attention, gates, controllers | 2.79 GB |
 | experts, 8 of 128 in each run (NVFP4 in layers 0 to 19, MXFP8 in 20 to 23) | 1.84 GB |
-| the head (`bf16`, 200,064 rows) | 0.93 GB |
-| sum | 5.56 GB |
+| the head (`bf16`, 200,064 rows of 2,304 values, 922 MB) | 0.92 GB |
+| sum | 5.55 GB |
 
 - NVIDIA gives the GB10 273 GB/s of memory bandwidth. The probe measured a read peak of about 252 GB/s, 92 to 94% of
   that figure (`crates/nagaya-mk-cuda/tests/cuda_probe.rs`, step 7 substep 1). At the measured peak, the floor of a
-  decode step is about 22 ms (5.56 GB at 252 GB/s). That is about 45 tokens each second at batch 1. The figure of
+  decode step is about 22 ms (5.55 GB at 252 GB/s). That is about 45 tokens each second at batch 1. The figure of
   273 GB/s would give about 20 ms and about 49 tokens each second.
+- The checkpoint pads the head to 201,024 rows. The engine needs 200,064: the 200,058 rows of the vocabulary,
+  rounded up to a multiple of 16. The 960 rows of the padding are not read in a decode step.
 - The dense weights take half of the bytes. Thus a matmul of one row is as important as an expert op.
 - A weight in memory stays in its checkpoint format. An expansion to `f32` in memory doubles the dense bytes.
 - The keys and values of a full run take 8 KB of each position in `f32`. Full runs are layers 5 and 23 once, and
@@ -901,21 +903,54 @@ Do the steps in this order. Each step ends with the checks green.
 
    Wave A builds on substep 6.
 8. **The host oracle.** The B70 crate has a host form of each op in `f32` (`nagaya-mk-inkling2-bmg/src/host/`).
-   **Proposed** (Claude Opus 5.5, 2026-11-22): move the host forms into a crate with no GPU code, and both engines
-   use it. Its name follows the rules of "Layout"; Amy chooses it. Then:
+   Wave B settles the shared host crate for now: no move is needed. The GB10 crate takes `nagaya-mk-inkling2-bmg`
+   as a dev-dependency with no feature, and its tests call the public `host::ops` functions. With no `xe`, the build
+   of `nagaya-mk-bmg` needs no `ocloc` and no Level Zero. A later move into a crate with no GPU code stays possible.
+   Then:
    - Add the quantized expert op, with `quant.rs`, as a host form.
    - Make a reference venv with transformers at `046bdb8cc2`. Add a mode to `tools/inkling2_reference.py` that
      quantizes the inputs of each expert by the rules of `quant.rs`. Its Python must match the fixture of step 6.
    - Write the golden files of both modes. Measure the logit gap between the quantized oracle and the `f32` oracle.
 9. **The device ops.** Each op has a card gate against its host form, and the gate prints its GB/s. Do them in
    waves:
-   - **Wave A, the matmul core.** The dense `bf16` matmul of 1 to 16 rows, with the `f32` split of rule 9. Then the
-     NVFP4 quantizer and the NVFP4 expert op with the block-scaled MMA (`m16n8k64`). Then the MXFP8 expert op
-     (`m16n8k32`). The head is a matmul of 200,064 rows.
-   - **Wave B, the layer.** The norms, the short convolutions, the attention residual, the message gates, the
-     router with the plan and the gather, the expert sum and the clips. Fuse them as rule 7 says.
-   - **Wave C, the attention.** The sliding layers, and the full layers over key chunks of a fixed size on all SMs,
-     with a merge in a fixed order. The cache follows "The layout of the cache" of step 11. Build `f32` and the
+   - **Wave A, the matmul core.** Done. Two merges on `main`:
+     - `d7390c03`, the dense `bf16` matmul of 1 to 16 rows with the `f32` split of rule 9. The head of 201,024 rows
+       at one row reads 235 to 238 GB/s, 93 to 95% of the measured peak. A host model of the MMA rounding gives
+       the bits of the card, so a change of the sum order fails a gate.
+     - `9a1019d9`, the quantizers and the expert ops. The quantizers give the bytes of the shipped vLLM kernels for
+       all 154 rows of the fixture. The NVFP4 expert op equals the host dot on real weights. The MXFP8 op is
+       within 7.4e-8 of the sum of the absolute terms. For 8 experts at one row, the ops read at 79 to 105% of the
+       measured peak.
+
+     The binding describes both: "The ops of wave A" in `docs/engine-abi.md`.
+   - **Wave B, the layer.** The plan is in "The task graph of a layer run" of the binding. It is **Proposed**
+     (Claude Opus 5.5, 2026-11-22). The oracle of each lane is the host form of the B70 crate, through the
+     dev-dependency of step 8. Do the work in this order:
+     1. **The foundation commit**, by the lead. It reserves every opcode in `protocol.rs`, adds empty cases to
+        `megakernel.cu`, and puts the task table behind `d`. It adds `weight` to `ExpertPair` and makes the
+        merger reset its counter the rule of every group.
+     2. **Lane D, the dense ops.** Opcodes 40 to 49. The row tiles and the norm prologue, then `PROJ`, `OUT_MIX`
+        and the head. Oracle: `ops::{rms_norm, scaled_l2_clip, log_scale, short_conv, dynamic_conv, l2_clip,
+        rms_norm_unweighted, sigmoid, softcap, matvec_bf16}`. Gate: the error is under 4e-7 of the sum of the
+        absolute terms. The bits are equal at 1, 7, 16 and 512 rows and at G of 48, 24, 7 and 1. The speed is 90%
+        of 252 GB/s or more.
+     3. **Lane R, the row ops.** Opcodes 70 to 79: `EMBED`, `MIX`, `GATE_DOWN`, `GATE_UP`, `MIX_OUT` and the row
+        finishers. Oracle: `ops::{attention_residual, message_gate, rms_norm}`. Gate: a tolerance, the same bits
+        as lane D, and the time against the budget.
+     4. **Lane M, the MoE ops.** Opcodes 55 to 69: `ROUTE` and the epilogues of `UP` and `DOWN`. Oracle:
+        `ops::{route, swiglu, short_conv}` with `quant.rs`. The lane must not call `Model::experts`, because it
+        applies the route weight at another place. Gate: the same picks, unless a gap is under 2e-7, and the bytes
+        of the quantized rows equal.
+     5. **Lane P, the pass.** No opcode. The buffers, the task tables, the spans and the run ring. It needs a public
+        entry to a run of the B70 host form, because `Model::layer`, `kv` and `experts` are private. Gate: each run
+        against the host form, and a row of a decode step equals its position in a block.
+     6. **Lane A, the attention**, with opcodes 80 to 89, is wave C. Oracle: `ops::{attend, relative_logits,
+        relative_bias}`. Gate: a tolerance, and the same bits at 1, 7, 16 and 512 rows.
+
+     Lanes D, R, M and A run in parallel after the foundation. Lane P starts with the run of layer 0, then a
+     sliding run, a full run and a run with messages.
+   - **Wave C, the attention.** Lane A. The sliding layers, and the full layers over key chunks of a fixed size on
+     all SMs, with a merge in a fixed order. The cache follows "The layout of the cache" of step 11. Build `f32` and the
      first packed format together, so that the gate of step 11 can compare them.
 10. **The pass.** The task ring of a decode step and of a prefill block, at 1 to 5 cycles. Gates: the oracle of
     step 8, and a row of a decode step gives the bits of its position in a block. Print the table of the ops, and
