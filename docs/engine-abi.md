@@ -2162,7 +2162,8 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   does not round the result to `bf16`, because the trunk is `f32`.
   - The expansion to `bf16` is exact for a scale byte of 3 or more. An `e4m3` code has 4 significant bits, and its
     lowest bit is `2^-9` or more. Thus each product of a code and its scale is a `bf16` value.
-  - A scale byte of 0 to 2 needs a block amax of `448 × 2^-125` or less, about `2^-116`. Such a block can lose its lowest bits in `bf16`.
+  - A scale byte of 0 to 2 needs a block amax of `448 × 2^-125` or less, about `2^-116`. Such a block can lose its
+    lowest bits in `bf16`.
 - **The order of the sums.** vLLM does not define the order of the sums inside one MMA. The host oracle defines its
   own order: block by block, in ascending k. Thus a card gate compares a dot product with a tolerance, not bits.
   The quantizers give bits, and the fixture tests them.
