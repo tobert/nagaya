@@ -14,7 +14,7 @@ use nagaya_abi::{
     FeedRule, Inputs, Kind, Lifetime, Limits, MandatoryTerm, MemoryLimits, PartId, PartKind, PartLimits, Segment,
     SegmentInputs, SlotLimit, State, Tap, TapLimit, Tier,
 };
-use nagaya_mk_bmg::protocol::{MAX_TASKS_PER_CARD, NUM_SCOREBOARD_EVENTS};
+use nagaya_mk_bmg::protocol::{MAX_TASKS_PER_CARD, NUM_SCOREBOARD_EVENTS, RING_DEV_BYTES, WAKE_BYTES};
 use nagaya_mk_bmg::safetensors::{self, MappedSafeTensors, TensorMeta};
 use nagaya_mk_bmg::tasks;
 
@@ -753,7 +753,7 @@ pub fn scratch_floats(max_seq: usize) -> usize {
 /// The device bytes of the ring of one card: the scoreboard, the scratch, the wake buffer and the device copy of the
 /// tasks.
 pub(crate) fn ring_device_bytes(max_seq: usize) -> u64 {
-    (NUM_SCOREBOARD_EVENTS * 4 + scratch_floats(max_seq) * 4 + 128 + MAX_TASKS_PER_CARD * 64) as u64
+    (NUM_SCOREBOARD_EVENTS * 4 + scratch_floats(max_seq).max(1) * 4 + WAKE_BYTES + RING_DEV_BYTES) as u64
 }
 
 /// The host bytes of the ring and of the copies: the tasks, the statistics and the staging buffer.

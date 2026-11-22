@@ -7,6 +7,11 @@
 pub const MAX_TASKS_PER_CARD: usize = 2048;
 /// Task `i` waits on event `i` and signals event `i + 1`.
 pub const NUM_SCOREBOARD_EVENTS: usize = MAX_TASKS_PER_CARD + 1;
+/// The device bytes of the wake buffer of a card: the 64 bytes that `B70Card::wake` copies, and the 64 bytes that it
+/// copies to.
+pub const WAKE_BYTES: usize = 128;
+/// The device bytes of the device copy of the task ring of a card, which the kernel reads.
+pub const RING_DEV_BYTES: usize = MAX_TASKS_PER_CARD * 64;
 
 pub const OP_NOP: u16 = 0;
 pub const OP_RMSNORM: u16 = 1;

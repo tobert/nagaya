@@ -1600,6 +1600,15 @@ of cells and 10 rings.
   by 31,220,137,984 bytes of 31,279,353,476. The scratch of the ring, 105,252 KiB, had no memory yet. After
   the first pass, it was on the card. The card gate `tests/xe_fit_deferred.rs` sets the debug keys of Level Zero
   that defer each buffer, and it opens the same slots.
+- The card fills its own two buffers at its open: the device copy of the tasks and the wake buffer (`open_card`).
+  The check counts them with the scratch and the scoreboard, as the term `work` does (`spec::ring_device_bytes`).
+- The driver also places the state of a launch at the first launch. Thus an open that passes the check runs the
+  halt alone, and then it checks again. The first check comes first, because the launch of an open that the
+  card does not hold fails with no device memory.
+- Before review round 2, the first pass took more memory of the card after the check. With deferred memory it
+  took 983,040 bytes: the device copy of the tasks and the state of a launch. The gate now checks that the first
+  pass takes no memory. Without deferred memory, the open of 164,352 positions now holds 67,186,688 bytes more,
+  and it still passes (`tests/xe_fit.rs`).
 - The card gate `tests/xe_fit.rs` ran on 2026-11-21. A slot of 262,144 positions asks for 40,679,296,644 bytes.
   The driver puts 34,031,300,608 of them on the card, and the open is refused. Then a slot of 164,352 opens, and it
   holds 34,016,722,944 bytes of the card.

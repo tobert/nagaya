@@ -11,7 +11,7 @@ use nagaya_abi::{
     Tap, WriteResult,
 };
 use nagaya_mk_bmg::level_zero::{B70Card, L0Cluster};
-use nagaya_mk_bmg::protocol::{MkTaskDescriptor, NUM_SCOREBOARD_EVENTS};
+use nagaya_mk_bmg::protocol::MkTaskDescriptor;
 use nagaya_mk_bmg::ring::Ring;
 use nagaya_mk_bmg::safetensors::{MappedSafeTensors, SafeTensorsView};
 use nagaya_mk_bmg::{IGC_REVISION, INKLING2_KERNEL, KERNEL_ENTRY, OCLOC_VERSION};
@@ -340,11 +340,23 @@ impl Inkling2Engine {
         ring.zero_device(card);
         // The driver puts a buffer that does not fit in system memory, and then each pass runs 5 to 6 times slower.
         // Thus the open refuses, and frees what it took (engine-abi "Inkling 2", "The cost of a slot").
-        let fits = nagaya_mk_bmg::vram::card_memory(pci).and_then(|after| {
-            // The scratch and the scoreboard of the ring are device memory too; its tasks are host memory.
-            let ring_bytes = (spec::scratch_floats(config.max_seq()).max(1) + NUM_SCOREBOARD_EVENTS) * 4;
-            nagaya_mk_bmg::vram::check_open(pci, planned + ring_bytes as u64, before, after)
-        });
+        // The device bytes of the ring are the scratch, the scoreboard, and the wake buffer and the device copy of the
+        // tasks, which the card filled at its open. The tasks of the ring are host memory.
+        let ring_bytes = spec::ring_device_bytes(config.max_seq());
+        let check = || {
+            nagaya_mk_bmg::vram::card_memory(pci)
+                .and_then(|after| nagaya_mk_bmg::vram::check_open(pci, planned + ring_bytes, before, after))
+        };
+        let mut fits = check();
+        if fits.is_ok() {
+            // The driver places the state of a launch at the first launch, so a launch of the halt alone places it
+            // before the second check. It comes after the first check, because the launch of an open that the card
+            // does not hold fails with no device memory.
+            ring.set(&[]);
+            // SAFETY: the ring holds only its halt.
+            unsafe { ring.run(card) };
+            fits = check();
+        }
         if let Err(message) = fits {
             ring.free(card);
             device.free_all(card);
