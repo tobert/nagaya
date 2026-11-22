@@ -579,3 +579,70 @@ fn compose_refuses_a_part_that_breaks_its_rules() {
         );
     }
 }
+
+/// A council whose served model `toy` reads the model folder `folder`.
+fn council_on(folder: &Path) -> (Fixture, Arc<Council>) {
+    let factory = TermFactory {
+        control: Some(4),
+        ..TermFactory::toy()
+    };
+    let fixture = Fixture::with_factory(factory, 1 << 20, None, ServiceConfig::new("toy", ENGINE));
+    let service = Service::attach_with_clock(
+        fixture.process.ports(),
+        Arc::new(ToyFamily::new()),
+        fixture.directory.path(),
+        ServiceConfig::new("toy", ENGINE),
+        fixture.reader(),
+    )
+    .unwrap();
+    let served = Served {
+        service,
+        aliases: Vec::new(),
+        device: Some("fake-0".to_owned()),
+    };
+    let council = Council::new(vec![served], None)
+        .unwrap()
+        .with_lab(BTreeMap::from([(ENGINE.to_owned(), folder.to_path_buf())]));
+    (fixture, Arc::new(council))
+}
+
+/// `project` reads the head of Inkling 2 from its folder (`docs/lab.md`, "The rules of `project`", "Inkling 2"): the
+/// first 200,058 rows of `unembed`, the weight of `norm`, and the end token 200,006. `compose` reads LFM3 only. The
+/// test skips when the folder of Inkling 2 Mini is absent.
+///
+/// Falsified by a lab that reads every folder as LFM3: a 500.
+#[test]
+fn project_reads_the_head_of_inkling_2() {
+    let Some(dir) = std::env::var_os("INKLING2_MODEL_DIR").map(std::path::PathBuf::from) else {
+        eprintln!("skipped: project_reads_the_head_of_inkling_2: INKLING2_MODEL_DIR is not set");
+        return;
+    };
+    let (_fixture, council) = council_on(&dir);
+    let vector: Vec<f32> = (0..2304).map(|i| ((i * 13 % 17) as f32 - 8.0) / 4.0).collect();
+    let body = json!({"model": "toy", "vector": vector, "through": "unembed", "top_k": 5});
+    let (status, got) = send(&council, body);
+    assert_eq!(status, StatusCode::OK, "{got}");
+    let layer = &got["layers"][0];
+    let head = nagaya_mk_inkling2_bmg::lab::Head::open(&dir).unwrap();
+    let scores = head.scores(&[&vector]).remove(0);
+    let top = scores
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.total_cmp(b.1).then(b.0.cmp(&a.0)))
+        .unwrap();
+    assert_eq!(layer["up"][0]["id"], top.0 as u64, "{layer}");
+    assert_eq!(layer["up"][0]["score"].as_f64().unwrap() as f32, *top.1);
+    assert_eq!(layer["end"][0]["id"], 200_006);
+    assert_eq!(layer["up"].as_array().unwrap().len(), 5);
+    let compose = json!({"model": "toy", "parts": [{"vector": "blake3:0000", "weight": 1.0}]});
+    let (status, bytes) = send_raw(
+        &council,
+        "POST",
+        "/nagaya/v1/lab/compose",
+        compose.to_string().into_bytes(),
+        None,
+    );
+    let got: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{got}");
+    assert_eq!(got["error"]["param"], "model", "{got}");
+}

@@ -28,13 +28,9 @@ use std::collections::BTreeMap;
 use common::Which;
 use common::card;
 use nagaya_abi::{Engine, OutputsWanted, Segment, SegmentInputs, State};
-use nagaya_mk_inkling2_bmg::Inkling2Engine;
-use nagaya_mk_inkling2_bmg::host::forward::{Context, DEFAULT_CYCLES, KV_WIDTH, Model};
-use nagaya_mk_inkling2_bmg::host::ops::HIDDEN;
+use nagaya_mk_inkling2_bmg::host::forward::{Context, DEFAULT_CYCLES, Model};
 use nagaya_mk_inkling2_bmg::media::IMAGE_TOKEN;
-use nagaya_mk_inkling2_bmg::spec::{
-    self, CONV_ROW, CONV_ROWS, DEFAULT_EXTRA_RUNS, DEFAULT_MAX_BLOCK, MAX_QUANTUM_MS, Part,
-};
+use nagaya_mk_inkling2_bmg::spec::{DEFAULT_MAX_BLOCK, MAX_QUANTUM_MS};
 use nagaya_text_inkling2::media::{self, Rgb};
 
 /// The positions of the slot. A slot of 164,352 positions is the largest whose buffers all stay in the memory of
@@ -104,84 +100,6 @@ fn argmax(v: &[f32]) -> u32 {
     (0..v.len()).max_by(|a, b| v[*a].total_cmp(&v[*b])).unwrap() as u32
 }
 
-fn floats(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|b| f32::from_le_bytes(*b))
-        .collect()
-}
-
-/// The id of a part of state `s` in the part list of the engine.
-fn part_id(part: Part) -> usize {
-    spec::part_list(DEFAULT_EXTRA_RUNS)
-        .iter()
-        .position(|p| *p == part)
-        .expect("the part list holds each part of a state")
-}
-
-/// The rows of positions `from..to` of a row part of slot 0, in reads of at most 8,192 rows.
-fn read_rows(engine: &mut Inkling2Engine, part: Part, from: usize, to: usize) -> Vec<f32> {
-    let id = part_id(part);
-    let parts = engine.parts().unwrap();
-    let mut out = Vec::with_capacity((to - from) * KV_WIDTH);
-    let mut buf = Vec::new();
-    let mut at = from;
-    while at < to {
-        let n = (to - at).min(8_192);
-        buf.resize(n * spec::ROW_BYTES as usize, 0u8);
-        parts
-            .cells_read(State::Slot(0), id, at as u64, n as u64, &mut buf)
-            .unwrap_or_else(|e| panic!("a read of rows {at} to {} of {part:?}: {e:?}", at + n));
-        out.extend(floats(&buf));
-        at += n;
-    }
-    out
-}
-
-/// The host state of slot 0 at position `at`, from the parts of the slot. A full run holds every row, and a sliding
-/// run the last 1,024. The conv part holds 3 rows of the four inputs, oldest first, and the host holds each input
-/// as 3 rows.
-fn host_context(engine: &mut Inkling2Engine, at: usize) -> Context {
-    let mut ctx = Context::new(DEFAULT_CYCLES);
-    ctx.position = at;
-    let runs = spec::runs(DEFAULT_CYCLES);
-    assert_eq!(runs.len(), ctx.runs.len(), "the card and the host run the same runs");
-    for (run, state) in runs.iter().zip(ctx.runs.iter_mut()) {
-        assert_eq!(
-            run.layer, state.layer,
-            "the card and the host run the layers in one order"
-        );
-        let first = state.keys.window.map_or(0, |w| at.saturating_sub(w));
-        state.keys.first = first;
-        state.keys.rows = read_rows(engine, Part::K(run.state), first, at);
-        state.values.first = first;
-        state.values.rows = read_rows(engine, Part::V(run.state), first, at);
-        let mut conv = vec![0u8; spec::CONV_BYTES as usize];
-        engine
-            .parts()
-            .unwrap()
-            .part_read(State::Slot(0), part_id(Part::Conv(run.state)), &mut conv)
-            .unwrap_or_else(|e| panic!("a read of the conv part of state {}: {e:?}", run.state));
-        let conv = floats(&conv);
-        let widths = [KV_WIDTH, KV_WIDTH, HIDDEN, HIDDEN];
-        let mut offset = 0;
-        for (input, width) in state.conv.iter_mut().zip(widths) {
-            *input = (0..CONV_ROWS)
-                .flat_map(|r| {
-                    conv[r * CONV_ROW + offset..r * CONV_ROW + offset + width]
-                        .iter()
-                        .copied()
-                })
-                .collect();
-            offset += width;
-        }
-        assert_eq!(offset, CONV_ROW, "the four inputs fill a conv row");
-    }
-    ctx
-}
-
 /// One gap of a logit row from the host form.
 struct Gap {
     what: String,
@@ -232,7 +150,7 @@ fn a_long_context_follows_the_host_form() {
         let (from, n) = (*from, *n);
         if RESUMES.contains(&from) {
             let read = std::time::Instant::now();
-            resumed.push((from, host_context(&mut engine, from)));
+            resumed.push((from, card::host_context(&mut engine, 0, from)));
             eprintln!("the state at {from}: read in {:.1} s", read.elapsed().as_secs_f64());
         }
         let rows: Vec<u64> = wanted
@@ -444,7 +362,7 @@ fn the_tower_of_the_largest_image_runs_once() {
                 .unwrap_or_else(|e| panic!("the block {from}..{to}: {}", e.message));
             ms.push(started.elapsed().as_secs_f64() * 1e3);
             if let Some(row) = out.outputs.first() {
-                last = floats(&row.bytes);
+                last = card::floats(&row.bytes);
             }
         }
         let rest: f64 = ms[1..].iter().sum::<f64>() / (ms.len() - 1) as f64;

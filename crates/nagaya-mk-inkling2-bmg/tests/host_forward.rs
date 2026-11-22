@@ -300,3 +300,73 @@ fn a_span_past_the_window_gives_the_logits_of_two_spans_and_a_step() {
     }
     assert!(gap < PROMPT_TOL, "the split differs by {gap:.3e}");
 }
+
+/// A control item of the host form acts after each run of its layers (engine-abi "The lab of Inkling 2"). An add of
+/// strength 0 gives the bits of no item. An ablate of 1 on layer 8 leaves no part along the vector in each of the 3
+/// runs of layer 8, and the routes of each run name 8 experts in rising order.
+#[test]
+fn a_control_item_of_the_host_form_acts_after_each_run_of_its_layers() {
+    use nagaya_mk_inkling2_bmg::host::forward::ControlItem;
+    use nagaya_mk_inkling2_bmg::host::weights::LAYERS;
+    if common::model_absent(Which::Mini) || common::golden_absent("inkling2-mini.layers.safetensors") {
+        return;
+    }
+    let oracle = common::golden_tensors("inkling2-mini.layers.safetensors");
+    let ids = oracle["ids"].ids();
+    let m = model(Which::Mini);
+    let run = |control: Vec<ControlItem>| {
+        let mut ctx = Context::new(3);
+        ctx.control = control;
+        let mut trace = Trace::default();
+        let logits = m.forward(&mut ctx, &ids, &[ids.len() - 1], Some(&mut trace));
+        (logits, trace)
+    };
+    // The vector of layer 8 is the row after run 8 of "plain" at its last position, so it has a large part there.
+    let v: Vec<f32> = oracle["run08"].f32()[(ids.len() - 1) * HIDDEN..].to_vec();
+    let mut vector = vec![0f32; LAYERS * HIDDEN];
+    vector[8 * HIDDEN..9 * HIDDEN].copy_from_slice(&v);
+    let item = |op, s| ControlItem {
+        op,
+        strengths: std::array::from_fn(|l| (l == 8).then_some(s)),
+        vector: vector.clone(),
+    };
+    let (plain, plain_trace) = run(Vec::new());
+    let (zero, zero_trace) = run(vec![item(nagaya_abi::ControlOp::Add, 0.0)]);
+    assert_eq!(plain, zero, "an add of strength 0 changes no logit bit");
+    assert_eq!(plain_trace.runs, zero_trace.runs);
+    let (_, ablated) = run(vec![item(nagaya_abi::ControlOp::Ablate, 1.0)]);
+    let norm = v.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>().sqrt();
+    let layers = run_layers(3);
+    let mut acted = 0;
+    for (r, row) in ablated.runs.iter().enumerate() {
+        let worst = row
+            .as_chunks::<HIDDEN>()
+            .0
+            .iter()
+            .map(|h| {
+                h.iter()
+                    .zip(&v)
+                    .map(|(a, b)| f64::from(*a) * f64::from(*b))
+                    .sum::<f64>()
+                    / norm
+            })
+            .fold(0f64, |a, b| a.max(b.abs()));
+        if layers[r] == 8 {
+            acted += 1;
+            assert!(worst < 1e-3, "run {r}: a part of {worst} along the vector is left");
+        }
+        if r < 8 {
+            assert_eq!(row, &plain_trace.runs[r], "run {r} is before the first run of layer 8");
+        }
+    }
+    assert_eq!(acted, 3);
+    assert_ne!(ablated.runs[8], plain_trace.runs[8]);
+    assert_eq!(ablated.routes.len(), 48);
+    for (r, routes) in ablated.routes.iter().enumerate() {
+        assert_eq!(routes.len(), ids.len(), "run {r}");
+        assert!(
+            routes.iter().all(|picks| picks.windows(2).all(|w| w[0].0 < w[1].0)),
+            "run {r}"
+        );
+    }
+}

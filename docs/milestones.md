@@ -410,6 +410,10 @@ Do the steps in this order. Each step ends with the checks green.
    - The count 3 by name gives the bits of no count. The same split at 5 cycles gives the same bits twice.
 8. **The lab.** The taps: the row after each run, the block outputs, the messages, the gates and the routes. Control
    vectors, latent steps, and `ensemble` over counts of cycles.
+   - Done on 2026-11-21. The card gate `tests/xe_lab.rs` passes on card 0. Each tap gives the rows of the host
+     form, and steering stays within 3.0e-5 of the host form. A latent row of the placeholder gives its bits.
+   - A tap or a control list adds 0.2 to 1.0 ms to a decode step of 68.5 ms.
+   - The norms remove the scale of a row: twice a latent row moves a logit by 8e-6 in the host form.
 9. **Images.** The ViT, the placeholders of an image and its sizes. Card gate against the reference.
    - The oracle stage and the host form are done (`617dfb6`): the logits of a prompt with two images within 2.2e-5
      of the oracle.

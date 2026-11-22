@@ -70,6 +70,27 @@ pub struct Shared {
 /// The tap that gives the residual after each layer at each logit row (spec 13.1).
 pub const RESIDUAL_TAP: &str = "residual";
 
+/// The rows of each layer from the bytes of the tap `residual` (spec 11.17, "Rows of layers"). An engine whose tap has
+/// the condition `each run` gives the row after each run, and the council reads the row of each layer after its last
+/// run. It needs the counts of cycles and the control table of the engine, for the runs and the layers.
+pub fn layer_rows(limits: &nagaya_abi::Limits, cycles: Option<u8>, bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let each_run = limits
+        .taps
+        .iter()
+        .any(|tap| tap.name == RESIDUAL_TAP && tap.conditions.iter().any(|c| c == nagaya_council::runs::EACH_RUN));
+    if !each_run {
+        return Ok(bytes.to_vec());
+    }
+    let (Some(limit), Some(table)) = (limits.cycles, limits.control) else {
+        return Err(
+            "the tap gives the row after each run, and the engine declares no cycles or no control table".to_owned(),
+        );
+    };
+    let count = usize::from(limit.resolve(cycles));
+    let runs = nagaya_council::runs::run_layers(table.layers as usize, limit.start as usize, limit.end as usize, count);
+    nagaya_council::runs::layer_rows(bytes, &runs, table.layers as usize, table.width as usize)
+}
+
 /// The tap that gives the logit lens of each layer at the one logit row of a pass (spec 13.1).
 pub const LENS_TAP: &str = "lens";
 
@@ -1420,7 +1441,11 @@ impl<T: Then> ContextBody<T> {
                          of it"
                     )));
                 };
-                self.residual = Some(output.bytes.clone());
+                self.residual = Some(
+                    layer_rows(&self.shared.limits, self.cycles, &output.bytes).map_err(|why| {
+                        ServiceError::internal(format!("the tap `{RESIDUAL_TAP}` of tokens {from} to {to}: {why}"))
+                    })?,
+                );
             }
             if self.feeding.as_ref().is_some_and(|feeding| feeding.lens) {
                 let mut taps = out.outputs.iter().filter(|output| output.name == LENS_TAP);

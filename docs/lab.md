@@ -49,8 +49,12 @@ POST /nagaya/v1/lab/project
 
 - **Members.** `model`, `vector` and `through` are required. `layers` and `top_k` are optional. Another member is a
   400 that names it.
-- **Models.** The route serves a model whose engine kind is `mk-lfm3-bmg`: `lfm3` and `lfm3-omni`. Another served
-  model is a 400 that names `model`. A model of a peer is a 400 too: the route does not forward.
+- **Models.** The route serves a model whose engine kind is `mk-lfm3-bmg` or `mk-inkling2-bmg`: `lfm3`,
+  `lfm3-omni` and `inkling2-mini`. Another served model is a 400 that names `model`. A model of a peer is a 400 too:
+  the route does not forward.
+- **Inkling 2.** The head is the first 200,058 rows of `model.llm.unembed.weight`, and the final norm is
+  `model.llm.norm.weight`. A score has no softcap, because a vector has no scale. The end token is `eos_token_id` of
+  `generation_config.json`. The profile names no J-Lens of Inkling 2. **Proposed** (Claude Opus 5.5, 2026-11-21).
 - **No engine.** The route reads the checkpoint of the model folder of the profile, not the engine. Thus it runs
   while the engine is `unloaded` or `loading`, and it never gives a 503.
 - **`through`.** `unembed`, or `jlens` ("The rules of the J-Lens"). Another value is a 400 that names `through`.
@@ -121,9 +125,11 @@ For a loop, the trace shows which number collapses first. The entropy can fall, 
 - **Members.** The request is a generation request (gogi "Generations") and the member `trace`, which is required. The
   members of `trace` are `layers`, `vectors`, `top_k`, `lens` and `rows`, and each one is optional. Another member of
   `trace` is a 400 that names it, such as `trace.layer`.
-- **Models.** The route serves a model of the engine kind `mk-lfm3-bmg` whose engine declares the tap `residual`:
-  `lfm3`, and the text passes of `lfm3-omni`. Another served model is a 400 that names `model`. A model of a peer is a
-  400 too: the route does not forward.
+- **Models.** The route serves a model of the engine kind `mk-lfm3-bmg` or `mk-inkling2-bmg` whose engine declares
+  the tap `residual`. A trace of Inkling 2 reads the row of each layer after its last run (spec 11.17). Its engine has
+  no tap `lens`, so `lens: "logit"` is a 400 that names `trace.lens`. The kind of LFM3 serves `lfm3`, and the text
+  passes of `lfm3-omni`. Another served model is a 400 that names `model`. A model of a peer is a 400 too: the route
+  does not forward.
 - **The engine.** A trace is a job of the engine, so a model that is not `ready` is a 503 `model_unavailable`.
 - **No stream.** `stream: true` is a 400 that names `stream`. The object is complete only at the end of the reply.
 - **The response.** It is the generation response, with each member and value as the same generation with no trace
@@ -449,11 +455,17 @@ POST /nagaya/v1/lab/ensemble
   `finish` and `usage` are those of context 0.
 - **Bits.** One context with `logprob_sum` and the weight 1 gives its row to the sampler unchanged. Thus it gives the
   bits of the same generation. The card gate checks this.
-- **Errors.** A model with no batched passes is a 400 that names `model`. 0 or more than 8 contexts is a 400 that names
-  `contexts`. `contrast` with other than 2 contexts is a 400 that names `combine`. A weight that is not finite or not
-  above 0 is a 400 that names `weights[i]`. A `strength` that is not finite is a 400 that names `strength`.
-- **One pass.** The contexts share each pass, so they share one control list and one layer loop (spec 11.16). A
-  context with another list is a 400 that names `contexts[i].control`, and another loop names `contexts[i].loop`.
+- **Errors.** 0 or more than 8 contexts is a 400 that names `contexts`. `contrast` with other than 2 contexts is a
+  400 that names `combine`. A weight that is not finite or not above 0 is a 400 that names `weights[i]`. A
+  `strength` that is not finite is a 400 that names `strength`.
+- **The passes of a step.** The rows of a step join in passes by the rule of the joins of the scheduler. A pass holds
+  one count of cycles, one control list, one loop, and at most `max_segments` rows. An engine with no batched passes
+  runs each row in a pass of its own. **Proposed** (Claude Opus 5.5, 2026-11-21). Reason: each row of a step reads only
+  its own context, so the passes of the groups give the rows of one pass.
+- **One list and one loop.** The contexts share one control list and one layer loop (spec 11.16). A context with
+  another list is a 400 that names `contexts[i].control`, and another loop names `contexts[i].loop`.
+- **Counts of cycles.** The contexts can have other `cycles` (spec 11.17). The rows of each count run in a pass of
+  their own. Thus an ensemble over the counts 1 to 5 of one context reads the model at each count at once.
 
 ## Context records in the lab routes
 

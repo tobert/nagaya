@@ -1589,7 +1589,8 @@ of 30, as the reference does: the logits are `30 * tanh(z / 30)`.
 
 **Taps.** The tap `residual` gives the row after each run, not after each layer: 48 rows at 3 cycles. Reason: each
 run of a cycle has its own row, and the lab compares the cycles. A control item acts after each run of each layer
-that its vector holds. Milestone 35 step 8 adds taps of the block outputs, the messages, the gates and the routes.
+that its vector holds. "The lab of Inkling 2" gives the other taps: the block outputs, the messages, the gates and
+the routes.
 
 **Not covered yet.** The drafts of the MTP head, which wait (milestone 35 step 10). The images come in step 9
 ("The images of Inkling 2").
@@ -1831,8 +1832,8 @@ Opus 5.5, 2026-11-21).
   statistics and a staging buffer of 64 MiB, as for LFM3.
 - **The limits.** One segment in each pass, and 16 logit rows. `max_quantum_ms` is 2,000, a budget that a card
   test measures later. The capabilities are `parts`, `slots`, `coverage`, `close` and `cycles`.
-- **Not declared yet.** `control`, `layer_loops` and the tap `residual`. The tap comes with the plan of its buffer
-  in step 8. A pass with a control list, a layer loop, rows or `meta` is refused.
+- **Not declared.** `layer_loops`. A pass with a layer loop is refused. "The lab of Inkling 2" adds the taps,
+  `control` and latent rows.
 
 **The ring builder.** `src/model.rs` builds the tasks of a pass, and `src/weights.rs` puts the weights on the card.
 Each rule is **Proposed** (Claude Opus 5.5, 2026-11-21).
@@ -1880,6 +1881,81 @@ Each rule is **Proposed** (Claude Opus 5.5, 2026-11-21).
 - **The identity.** The engine names `inkling2-mini` or `inkling2-varloop`. The tokenizer hash and the template
   come from `nagaya-text-inkling2` (`spec::text_facts`). Thus the hash is `sha256:` of the whole `tokenizer.json`,
   and the check of the registry at the start compares like with like (spec 11.3).
+
+### The lab of Inkling 2
+
+These rules add the taps, the control vectors and the latent rows of milestone 35 step 8. Each rule is **Proposed**
+(Claude Opus 5.5, 2026-11-21). Reason: each follows the rule of LFM3 ("Control vectors", "Latent rows of LFM3"), and
+the docs leave the choice open.
+
+```
+limits().taps: residual, fold, blocks, messages, gates, routes
+limits().control: {tables: 8, layers: 24, width: 2304}
+segment.control: as for LFM3; an item acts after each run of each layer that its vector holds
+```
+
+**The taps.** A tap gives its rows for each logit row of the pass, in the order of the logit rows. Let `R` be the
+runs of the pass, and `c` its count of cycles. The rows are `f32`, except the picks.
+
+- `residual`: `[R][2304]`, the row after each run, in the order of the runs, after the control items of the run.
+  The tap declares the condition `each run` (`TAP_EACH_RUN`), so the council reads the row of each layer after its
+  last run (spec 11.17).
+- `fold`: `[2304]`, the input row of the head: the output residual over the block outputs and the last row, then the
+  final norm. A latent step reads it.
+- `blocks`: `[c + 3][2304]`, the block outputs in the order that the model writes them. The first two are the
+  normed embedding and the row after layer 5. Then come the row after layer 11 of each cycle, and the row after
+  layer 17 of the last cycle.
+- `messages`: `[12 (c - 1)][4][2304]`, the four messages of each layer of each cycle after the first. Their order is
+  query, key, value and expert input. A pass of 1 cycle gives no bytes.
+- `gates`: `[12 (c - 1)][4][2304]`, the output of each message gate, in the order of `messages`.
+- `routes`: two outputs. `routes` is `u32 [R][8]`, the picks of each run in rising expert order. `routes.weights` is
+  `f32 [R][8]`, the weight of each pick.
+
+The oracle file of "plain" holds `message<ii>` as `[T][4][2304]` and `gate<ii>` in the same order. Thus a tap and
+the oracle have one layout.
+
+- **Bits.** A tap only copies rows (`OP_COPY`), so a pass with a tap gives the logits of the same pass with none. A
+  pass with no tap has the tasks that it had before.
+- **The buffers.** The term `work` holds the buffers of every tap, for 16 logit rows at the most cycles of the
+  config. They take 36,372,480 bytes with `extra_runs` 24, and 68,567,040 bytes with 48. Reason: `pass` never
+  allocates. `fold` needs no buffer: the engine reads the final norm of the logit row.
+- **The cost.** A tap adds copies to each run for each logit row. `residual` and `routes` add 1 each. `messages`
+  and `gates` add 4 each in a cycle after the first. The launches cut between runs, so many copies add launches.
+- **The rows of `blocks`.** Each row of `blocks` but the first is also a row of `residual`. The tap gives them in the
+  shape that the attention residuals read.
+- **Taps and logit rows.** A tap needs a logit row. A pass with a tap and no logit row gives outputs of no bytes.
+
+**Control vectors.** They follow "Control vectors". These rules are of this engine:
+
+- **The table** holds 8 vectors of 24 layers of 2,304 values: 221,184 bytes each, 1,769,472 bytes in all. The
+  mandatory term `control` holds it.
+- **The place.** An item acts after each run of each layer that its vector holds. At 3 cycles, an item of layer 8
+  acts three times. It acts before the copy of the row after layer 5 and before the taps. Thus each cycle starts
+  from the changed row, and the taps read it.
+- **The op** is `OP_INKLING2_CONTROL` (190) in `kernels/inkling2_lab_ops.cl`. It is `OP_CONTROL` of LFM3 under the
+  opcode of this binary, because the binary does not hold `lfm3_ops.cl`. Its host form is `host::ops::control`.
+- **The bits.** An `add` or an `ablate` of strength 0 gets no task, so it gives the bits of no item. The card gate
+  names the gap of each op from its host form.
+- **The cost of the op.** The op changes the kernel binary, so the identity digest changes once. Then each held
+  context of the engine fills again once.
+
+**Latent rows.** They follow "Latent rows of LFM3". These rules are of this engine:
+
+- **The record.** The kind is 5, and the first of the four words is 2,304, the width of a row. The other three words
+  are 0, and the count of positions is 1 or more.
+- **The placeholder.** A latent position holds `pad_token_id` of `generation_config.json`: `<|endoftext|>`, id
+  199,999 in both models. The open reads it, and an id of 200,058 or more is refused.
+- **The rows.** A latent span takes one row of 2,304 `f32` values for each position. The rows of a segment are the
+  rows of each span whole, in the order of the records. One segment can hold image spans and latent spans.
+- **The copy.** The engine writes the rows of the block's positions into the media rows. The copy after the norm of
+  the embedding then puts them over the rows of their placeholders, with no norm. Thus a latent row takes the place
+  of a normed embedding row, as a projector row does.
+- **A placeholder outside a span.** `<|endoftext|>` is a token of the vocabulary. Thus a placeholder outside a latent
+  span enters the model as its embedding row. Only a position in a latent span must hold it.
+- **The map of a step.** A latent step reads the tap `fold`, the input of the head. The host scales the row to the
+  mean norm of the normed embedding rows. Reason: the row takes the place of a normed embedding row.
+- **The family.** The council sends latent rows only when the family gives a latent record (spec 11.11). The family
+  of Inkling 2 gives none yet, so the council refuses `latent` and `soft` for Inkling 2.
 
 ## Not covered yet
 

@@ -138,6 +138,9 @@ pub const OP_INKLING2_VISION_EMBED: u16 = 180;
 pub const OP_INKLING2_VISION_ROPE: u16 = 181;
 /// The attention in both directions over the rows of one image: `OP_VISION_ATTN` under the opcode of this binary.
 pub const OP_INKLING2_VISION_ATTN: u16 = 182;
+// The lab ops of the Inkling 2 binary (`kernels/inkling2_lab_ops.cl`): opcodes 190 to 199.
+/// One control item on the residual, in place: `OP_CONTROL` of the LFM3 binary under the opcode of this binary.
+pub const OP_INKLING2_CONTROL: u16 = 190;
 
 pub const FLAG_ACCUMULATE: u16 = 1 << 0;
 pub const FLAG_SOFTCAP_30: u16 = 1 << 2;

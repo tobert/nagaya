@@ -221,3 +221,55 @@ fn a_count_out_of_the_range_is_refused_before_the_job() {
     }
     assert!(seen.take().is_empty(), "nothing ran");
 }
+
+/// The council reads the row of each layer after its last run from the tap `residual` of Inkling 2, whose rows are
+/// those of each run (spec 11.17, "Rows of layers"). A tap with no condition `each run` keeps its rows.
+///
+/// Falsified by a council that keeps the rows of each run: 48 rows, not 24.
+#[test]
+fn the_rows_of_each_layer_come_from_the_last_run_of_each_layer() {
+    use nagaya::council::build::layer_rows;
+    use nagaya_mk_inkling2_bmg::spec::{Config, limits};
+    let config = Config {
+        model_dir: std::path::PathBuf::from("/nowhere"),
+        slots: vec![4096],
+        max_block: 512,
+        extra_runs: 48,
+    };
+    let engine = limits(&config, 1);
+    let width = 2304;
+    // One logit row of the runs of 3 cycles: run r holds the value r.
+    let runs = nagaya_council::runs::run_layers(24, 6, 18, 3);
+    let bytes: Vec<u8> = (0..runs.len())
+        .flat_map(|r| std::iter::repeat_n(r as f32, width))
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    let rows = layer_rows(&engine, None, &bytes).unwrap();
+    assert_eq!(rows.len(), 24 * width * 4);
+    let first: Vec<f32> = (0..24)
+        .map(|l| f32::from_le_bytes(rows[l * width * 4..l * width * 4 + 4].try_into().unwrap()))
+        .collect();
+    // Layers 0 to 5 are runs 0 to 5, layers 6 to 17 the runs of cycle 3, and layers 18 to 23 the last 6 runs.
+    let want: Vec<f32> = (0..6).chain(30..42).chain(42..48).map(|r| r as f32).collect();
+    assert_eq!(first, want);
+    // At 5 cycles a layer of the cycles takes its fifth run.
+    let five = nagaya_council::runs::run_layers(24, 6, 18, 5);
+    let bytes: Vec<u8> = (0..five.len())
+        .flat_map(|r| std::iter::repeat_n(r as f32, width))
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    let rows = layer_rows(&engine, Some(5), &bytes).unwrap();
+    assert_eq!(
+        f32::from_le_bytes(rows[6 * width * 4..6 * width * 4 + 4].try_into().unwrap()),
+        54.0
+    );
+    assert!(
+        layer_rows(&engine, Some(4), &bytes)
+            .unwrap_err()
+            .contains("not whole sets of 60 runs")
+    );
+    // An engine whose tap gives the rows of each layer keeps them.
+    let mut plain = engine.clone();
+    plain.taps[0].conditions.clear();
+    assert_eq!(layer_rows(&plain, Some(5), &bytes).unwrap(), bytes);
+}

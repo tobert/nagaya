@@ -6,8 +6,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use nagaya_abi::{
-    BitClass, BitSetting, Coverage, CoverageSpan, Dtype, Engine, Identity, Limits, Output, PartError, PartId, Parts,
-    PassError, PassErrorKind, PassOut, PassStatus, Segment, SlotId, Slots, State, Tap, WriteResult,
+    BitClass, BitSetting, Control, ControlLimit, ControlOp, Coverage, CoverageSpan, Dtype, Engine, Identity, Limits,
+    Output, PartError, PartId, Parts, PassError, PassErrorKind, PassOut, PassStatus, Segment, SlotId, Slots, State,
+    Tap, WriteResult,
 };
 use nagaya_mk_bmg::level_zero::{B70Card, L0Cluster};
 use nagaya_mk_bmg::protocol::MkTaskDescriptor;
@@ -19,8 +20,8 @@ use crate::device::{Device, OnCard};
 use crate::host::ops::HIDDEN;
 use crate::host::weights::LOGITS;
 use crate::media::HeldRows;
-use crate::model::{self, Bufs, LAUNCH_TASKS, SlotMemory, TaskRing};
-use crate::spec::{self, Block, Config, FAMILY, HEAD_ROWS, Held, Model, Part, RING_ROWS, Run};
+use crate::model::{self, Bufs, LAUNCH_TASKS, SlotMemory, TapBufs, TapRing, TaskRing};
+use crate::spec::{self, Block, Config, FAMILY, HEAD_ROWS, Held, Model, Part, RING_ROWS, ROUTE_WORDS, Run, Taps};
 use crate::vision::{self, PassBufs};
 use crate::weights::{self, Count, Weights};
 
@@ -36,6 +37,10 @@ pub struct Inkling2Engine {
     device: Device,
     weights: Weights,
     bufs: Bufs,
+    /// The buffers of the taps, in `work` (engine-abi "The lab of Inkling 2").
+    tap_bufs: TapBufs,
+    /// The control table on the card, the term `control`, and its limit.
+    control: (u64, ControlLimit),
     /// The weights of the vision tower: the term `vision`.
     tower: vision::Weights,
     /// The buffers of the images of a pass, in `work`.
@@ -218,6 +223,7 @@ pub fn describe(config: &Config, pci: &str) -> Result<(Identity, Limits), String
     config.check()?;
     let dir = &config.model_dir;
     let model = Model::read(dir)?;
+    spec::read_generation(dir)?;
     let config_text = String::from_utf8(read_file(dir, "config.json")?)
         .map_err(|e| format!("config.json of {} is not UTF-8: {e}", dir.display()))?;
     let facts = spec::text_facts(dir)?;
@@ -245,6 +251,7 @@ impl Inkling2Engine {
         config.check()?;
         let dir = config.model_dir.clone();
         let model = Model::read(&dir)?;
+        spec::read_generation(&dir)?;
         let config_text = String::from_utf8(read_file(&dir, "config.json")?)
             .map_err(|e| format!("config.json of {} is not UTF-8: {e}", dir.display()))?;
         // The family library gives the tokenizer hash and the template, so the registry's check at the start compares
@@ -305,6 +312,9 @@ impl Inkling2Engine {
             .flat_map(|v| v.to_le_bytes())
             .collect();
         device.write(card, bufs.sink_ids, &ids);
+        let tap_bufs = TapBufs::new(&mut |bytes| device.zeros(card, bytes), config.extra_runs);
+        let control_limit = spec::control_limit();
+        let control = (device.zeros(card, control_limit.table_bytes() as usize), control_limit);
         let slots: Vec<SlotMemory> = config
             .seqs()
             .iter()
@@ -316,7 +326,9 @@ impl Inkling2Engine {
             + vision::WEIGHTS_BYTES as u64
             + config.slots_bytes()
             + spec::bufs_bytes(config.max_block)
-            + PassBufs::bytes(config.max_block);
+            + PassBufs::bytes(config.max_block)
+            + spec::tap_bytes(config.extra_runs)
+            + control_limit.table_bytes();
         if device.bytes as u64 != planned {
             return Err(format!(
                 "the engine took {} device bytes, and its limits declare {planned}",
@@ -339,6 +351,8 @@ impl Inkling2Engine {
             device,
             weights,
             bufs,
+            tap_bufs,
+            control,
             tower,
             images,
             held_rows: HeldRows::default(),
@@ -399,7 +413,8 @@ impl Inkling2Engine {
     }
 
     /// Run the tower of each image span of `block` that the engine does not hold, from the rows of `segment`, and put
-    /// the projector rows of the block's positions into the media rows. The copies that this returns put them over
+    /// the projector rows of the block's positions into the media rows. A latent span puts its rows there with no
+    /// tower. The copies that this returns put them over
     /// the normed embedding rows of the placeholders (engine-abi "The choices of the pass"). The caller checked the
     /// block.
     fn encode(&mut self, segment: &Segment, block: &Block) -> Vec<MkTaskDescriptor> {
@@ -412,7 +427,17 @@ impl Inkling2Engine {
         let mut places = Vec::with_capacity(block.spans.len());
         for used in &block.spans {
             let bytes = &rows[used.rows_at..used.rows_at + used.span.bytes()];
-            let g = used.span.grid;
+            let places_rows = used.block_row..used.block_row + used.take.len();
+            let Some(g) = used.span.grid() else {
+                // Latent rows go into the media rows of their positions, with no tower and no norm (engine-abi "The
+                // lab of Inkling 2", "Latent rows").
+                let row = HIDDEN * 4;
+                let at = self.images.media + (used.block_row * row) as u64;
+                self.device
+                    .write(self.card(), at, &bytes[used.take.start * row..used.take.end * row]);
+                places.push(self.images.place(self.bufs.x, places_rows));
+                continue;
+            };
             let mut tasks = Vec::new();
             if !self.held_rows.holds(g, bytes) {
                 let card = &self.cluster.cards[0];
@@ -430,16 +455,14 @@ impl Inkling2Engine {
             }
             tasks.push(self.images.take(used.take.clone(), used.block_row));
             self.run(&[tasks]);
-            places.push(
-                self.images
-                    .place(self.bufs.x, used.block_row..used.block_row + used.take.len()),
-            );
+            places.push(self.images.place(self.bufs.x, places_rows));
         }
         places
     }
 
     /// Run a block of `cycles` cycles from position `pos0` of `slot` up to the end of `upto` runs, with the logit rows
     /// when given, and the tasks `after_embed` after the norm of the embedding. The caller checked the block.
+    #[allow(clippy::too_many_arguments)]
     fn forward(
         &mut self,
         slot: usize,
@@ -448,7 +471,9 @@ impl Inkling2Engine {
         (cycles, upto): (usize, usize),
         logit_rows: Option<&[usize]>,
         after_embed: &[MkTaskDescriptor],
+        (control, taps): (&[model::Control], Taps),
     ) {
+        let tap_bufs = self.tap_bufs;
         let pass = model::pass(
             &self.weights,
             &self.bufs,
@@ -460,6 +485,11 @@ impl Inkling2Engine {
                 upto,
                 logit_rows,
                 after_embed,
+                control,
+                taps: taps.any().then_some(TapRing {
+                    named: taps,
+                    bufs: &tap_bufs,
+                }),
             },
         );
         let launches = pass.launches(self.launch_tasks);
@@ -490,6 +520,7 @@ impl Inkling2Engine {
             (block.cycles, upto),
             norm.then_some(&[][..]),
             &[],
+            (&[], Taps::default()),
         );
         let at = if norm { self.bufs.e_norm } else { self.bufs.x };
         let out = self.read_f32(at, ids.len() * HIDDEN);
@@ -525,16 +556,91 @@ impl Inkling2Engine {
         }
     }
 
-    fn check_block(&self, segments: &[Segment], taps: &[Tap]) -> Result<Block, PassError> {
-        if let Some(tap) = taps.first() {
-            return Err(refused(format!(
-                "nothing ran: the engine has no tap `{}`; the tap `residual` comes in milestone 35 step 8",
-                tap.name
-            )));
-        }
-        self.held
+    fn check_block(&self, segments: &[Segment], taps: &[Tap]) -> Result<(Block, Taps), PassError> {
+        let named = Taps::of(taps).map_err(|message| refused(format!("nothing ran: {message}")))?;
+        let block = self
+            .held
             .check_pass(segments, self.config.max_block)
-            .map_err(|message| refused(format!("nothing ran: {message}")))
+            .map_err(|message| refused(format!("nothing ran: {message}")))?;
+        Ok((block, named))
+    }
+
+    /// The control items of a block as tasks of the ring: the address of each vector in the table.
+    fn control_of(&self, block: &Block) -> Vec<model::Control> {
+        let (table, limit) = self.control;
+        block
+            .control
+            .iter()
+            .map(|item| model::Control {
+                vector: table + u64::from(item.index) * limit.entry_bytes(),
+                op: match item.op {
+                    ControlOp::Add => nagaya_mk_bmg::protocol::ControlOp::Add,
+                    ControlOp::Ablate => nagaya_mk_bmg::protocol::ControlOp::Ablate,
+                    ControlOp::Clamp => nagaya_mk_bmg::protocol::ControlOp::Clamp,
+                },
+                strength: item.strength,
+                layers: item.layers.clone(),
+            })
+            .collect()
+    }
+
+    /// The outputs of the taps of a pass of `block` that ran, in the order of `spec::TAPS` (engine-abi "The lab of
+    /// Inkling 2").
+    fn tap_outputs(&self, block: &Block, taps: Taps) -> Vec<Output> {
+        let b = &self.tap_bufs;
+        let rows = &block.logit_rows;
+        let runs = self.runs_of(block.cycles).len();
+        let row = HIDDEN * 4;
+        let messages = (block.cycles - 1) * spec::CYCLE_LAYERS * 4;
+        let f32s = |name: &str, bytes: Vec<u8>| Output {
+            name: name.to_owned(),
+            dtype: Dtype::F32,
+            bytes,
+        };
+        let gather = |at: &dyn Fn(usize) -> u64, n: usize| -> Vec<u8> {
+            let mut out = Vec::with_capacity(rows.len() * n);
+            for i in 0..rows.len() {
+                out.extend(self.device.read(self.card(), at(i), n));
+            }
+            out
+        };
+        let mut out = Vec::new();
+        if taps.residual {
+            out.push(f32s(spec::RESIDUAL_TAP, gather(&|i| b.residual_row(i, 0), runs * row)));
+        }
+        if taps.fold {
+            let at = |i: usize| self.bufs.e_norm + (rows[i] * row) as u64;
+            out.push(f32s(spec::FOLD_TAP, gather(&at, row)));
+        }
+        if taps.blocks {
+            out.push(f32s(
+                spec::BLOCKS_TAP,
+                gather(&|i| b.block_row(i, 0), (block.cycles + 3) * row),
+            ));
+        }
+        if taps.messages {
+            let at = |i: usize| b.message_row(b.messages, i, 0, 0);
+            out.push(f32s(spec::MESSAGES_TAP, gather(&at, messages * row)));
+        }
+        if taps.gates {
+            let at = |i: usize| b.message_row(b.gates, i, 0, 0);
+            out.push(f32s(spec::GATES_TAP, gather(&at, messages * row)));
+        }
+        if taps.routes {
+            let words = gather(&|i| b.route_row(i, 0), runs * ROUTE_WORDS * 4);
+            let (mut picks, mut weights) = (Vec::new(), Vec::new());
+            for decision in words.as_chunks::<{ ROUTE_WORDS * 4 }>().0 {
+                picks.extend_from_slice(&decision[..32]);
+                weights.extend_from_slice(&decision[32..64]);
+            }
+            out.push(Output {
+                name: spec::ROUTES_TAP.to_owned(),
+                dtype: Dtype::U32,
+                bytes: picks,
+            });
+            out.push(f32s(spec::ROUTE_WEIGHTS, weights));
+        }
+        out
     }
 }
 
@@ -577,10 +683,11 @@ impl Engine for Inkling2Engine {
     }
 
     fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
-        let block = match self.check_block(segments, taps) {
-            Ok(block) => block,
+        let (block, named) = match self.check_block(segments, taps) {
+            Ok(found) => found,
             Err(error) => return Err(self.fail(error)),
         };
+        let control = self.control_of(&block);
         let start = Instant::now();
         let places = self.encode(&segments[0], &block);
         if block.zero_conv() {
@@ -594,8 +701,9 @@ impl Engine for Inkling2Engine {
             (block.cycles, upto),
             Some(&block.logit_rows),
             &places,
+            (&control, named),
         );
-        let outputs: Vec<Output> = (0..block.logit_rows.len())
+        let mut outputs: Vec<Output> = (0..block.logit_rows.len())
             .map(|i| Output {
                 name: "logits".to_owned(),
                 dtype: Dtype::F32,
@@ -604,6 +712,7 @@ impl Engine for Inkling2Engine {
                     .read(self.card(), self.bufs.logits + (i * HEAD_ROWS * 4) as u64, LOGITS * 4),
             })
             .collect();
+        outputs.extend(self.tap_outputs(&block, named));
         self.held.ran(&block);
         Ok(PassOut {
             status: PassStatus::Ok,
@@ -626,6 +735,25 @@ impl Engine for Inkling2Engine {
 
     fn coverage(&mut self) -> Option<&mut dyn Coverage> {
         Some(self)
+    }
+
+    fn control(&mut self) -> Option<&mut dyn Control> {
+        Some(self)
+    }
+}
+
+impl Control for Inkling2Engine {
+    /// Write one vector into its entry of the table. A wrong index, a wrong size or a value that is not finite is
+    /// refused, and nothing changes.
+    fn control_write(&mut self, index: u32, bytes: &[u8]) -> Result<(), String> {
+        let (table, limit) = self.control;
+        if let Err(message) = spec::check_control_write(&limit, index, bytes) {
+            self.last_error = Some(message.clone());
+            return Err(message);
+        }
+        self.device
+            .write(self.card(), table + u64::from(index) * limit.entry_bytes(), bytes);
+        Ok(())
     }
 }
 

@@ -30,6 +30,8 @@ pub struct Logged {
     pub passes: Vec<(Vec<ControlItem>, Vec<String>)>,
     /// The segment count of each pass, in the order of `passes`.
     pub sizes: Vec<usize>,
+    /// The counts of cycles of the segments of each pass, in the order of `passes`.
+    pub cycles: Vec<Vec<Option<u8>>>,
     pub writes: Vec<(u32, f32)>,
 }
 
@@ -147,6 +149,7 @@ impl Engine for WithContextTerm {
             let mut log = self.log.0.lock().unwrap();
             log.passes.push((segment.control.clone(), taps));
             log.sizes.push(segments.len());
+            log.cycles.push(segments.iter().map(|s| s.cycles).collect());
         }
         if let Some(seen) = &self.seen {
             seen.0.lock().unwrap().extend(segments.iter().cloned());

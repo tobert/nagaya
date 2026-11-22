@@ -23,6 +23,7 @@ fn main() {
     println!("cargo:rerun-if-changed=kernels/inkling2_attn_helpers.cl");
     println!("cargo:rerun-if-changed=kernels/inkling2_vision_ops.cl");
     println!("cargo:rerun-if-changed=kernels/inkling2_vision_helpers.cl");
+    println!("cargo:rerun-if-changed=kernels/inkling2_lab_ops.cl");
     if std::env::var_os("CARGO_FEATURE_XE").is_none() {
         return;
     }

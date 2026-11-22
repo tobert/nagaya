@@ -83,11 +83,22 @@ pub struct RunState {
     pub conv: [Vec<f32>; 4],
 }
 
-/// The state of one context: the count of cycles, the count of positions that it holds, and the state of each run.
+/// One control item of the host form: the op, the strength of each layer that it acts on, and the vector, one row of
+/// `HIDDEN` for each layer (engine-abi "Control vectors").
+#[derive(Clone, Debug)]
+pub struct ControlItem {
+    pub op: nagaya_abi::ControlOp,
+    pub strengths: [Option<f32>; LAYERS],
+    pub vector: Vec<f32>,
+}
+
+/// The state of one context: the count of cycles, the count of positions that it holds, the state of each run, and
+/// the control items that act after each run of their layers.
 pub struct Context {
     pub cycles: usize,
     pub position: usize,
     pub runs: Vec<RunState>,
+    pub control: Vec<ControlItem>,
 }
 
 impl Context {
@@ -113,6 +124,7 @@ impl Context {
             cycles,
             position: 0,
             runs,
+            control: Vec::new(),
         }
     }
 }
@@ -128,6 +140,8 @@ pub struct Trace {
     pub gates: Vec<Vec<f32>>,
     /// The row after the output residual and the final norm.
     pub final_norm: Vec<f32>,
+    /// The 8 picks and their weights of each position of each run, in the order of the runs.
+    pub routes: Vec<Vec<[(usize, f32); TOP_K]>>,
 }
 
 /// The text model on the host.
@@ -240,7 +254,21 @@ impl Model {
                         trace: &mut Option<&mut Trace>| {
             let state = &mut ctx.runs[run];
             let layer = &self.weights.layers[state.layer];
-            let out = self.layer(layer, state, x, blocks, messages, p0, trace);
+            let mut out = self.layer(layer, state, x, blocks, messages, p0, trace);
+            // The control items act after the run, before a later run, a copy or the trace reads the row.
+            for item in &ctx.control {
+                let l = state.layer;
+                let Some(s) = item.strengths[l] else {
+                    continue;
+                };
+                if s == 0.0 && item.op != nagaya_abi::ControlOp::Clamp {
+                    continue;
+                }
+                let v = &item.vector[l * HIDDEN..(l + 1) * HIDDEN];
+                for row in out.as_chunks_mut::<HIDDEN>().0 {
+                    ops::control(row, v, item.op, s);
+                }
+            }
             // A block boundary keeps the input of the layer as a block output (line 1374).
             if layer.index.is_multiple_of(BLOCK) {
                 blocks.push(std::mem::take(x));
@@ -421,7 +449,10 @@ impl Model {
         {
             tr.gates.push(mlp_gated);
         }
-        let moe = self.experts(w, &mlp_in);
+        let (moe, routes) = self.experts(w, &mlp_in);
+        if let Some(tr) = trace.as_deref_mut() {
+            tr.routes.push(routes);
+        }
         let mut out = vec![0f32; t * HIDDEN];
         let mut c = vec![0f32; HIDDEN];
         for p in 0..t {
@@ -539,13 +570,15 @@ impl Model {
 
     /// The routed experts of a span (`Inkling2LoopSparseMoeBlock`, line 820). The sum of the experts is in
     /// ascending expert order, as `index_add_` of the reference.
-    fn experts(&self, w: &Layer, xs: &[f32]) -> Vec<f32> {
+    fn experts(&self, w: &Layer, xs: &[f32]) -> (Vec<f32>, Vec<[(usize, f32); TOP_K]>) {
         let t = xs.len() / HIDDEN;
         let mut assigned: Vec<Vec<(usize, f32)>> = vec![Vec::new(); ops::EXPERTS];
         let mut logits = vec![0f32; ops::EXPERTS];
+        let mut routes = Vec::with_capacity(t);
         for p in 0..t {
             ops::matvec(&w.router, row(xs, p, HIDDEN), &mut logits);
             let chosen: [(usize, f32); TOP_K] = ops::route(&logits, &w.router_bias);
+            routes.push(chosen);
             for (e, weight) in chosen {
                 assigned[e].push((p, weight));
             }
@@ -584,7 +617,7 @@ impl Model {
                 }
             }
         }
-        out
+        (out, routes)
     }
 
     /// `xs M^T` for one expert matrix, `n x rows` from `n x cols`. Each row is expanded once for all `n` inputs.

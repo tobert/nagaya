@@ -9,6 +9,7 @@ pub mod ensemble;
 pub mod family;
 pub mod latent;
 pub mod read;
+pub mod runs;
 pub mod sampler;
 pub mod soft;
 pub mod template_id;
