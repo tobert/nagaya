@@ -22,6 +22,7 @@ pub mod ring;
 pub mod safetensors;
 pub mod tasks;
 pub mod test_cards;
+pub mod vram;
 
 /// The kernel binary of the Gemma 4 engine for `bmg-g31`, from `kernels/megakernel.cl`.
 #[cfg(feature = "xe")]

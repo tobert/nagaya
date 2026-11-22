@@ -11,7 +11,7 @@ use nagaya_abi::{
     Tap, WriteResult,
 };
 use nagaya_mk_bmg::level_zero::{B70Card, L0Cluster};
-use nagaya_mk_bmg::protocol::MkTaskDescriptor;
+use nagaya_mk_bmg::protocol::{MkTaskDescriptor, NUM_SCOREBOARD_EVENTS};
 use nagaya_mk_bmg::ring::Ring;
 use nagaya_mk_bmg::safetensors::{MappedSafeTensors, SafeTensorsView};
 use nagaya_mk_bmg::{IGC_REVISION, INKLING2_KERNEL, KERNEL_ENTRY, OCLOC_VERSION};
@@ -277,6 +277,8 @@ impl Inkling2Engine {
         }
         let checkpoint_digest = checkpoint_digest(&config_text, &view)?;
 
+        // The memory of this process on the card before the open, so the check after it sees what the open placed.
+        let before = nagaya_mk_bmg::vram::card_memory(pci)?;
         // Only the engine's card gets a context, so the open does not stall the work of another card.
         let cluster = L0Cluster::init_at(INKLING2_KERNEL, KERNEL_ENTRY, &[pci.to_owned()])?;
         let card = &cluster.cards[0];
@@ -332,7 +334,19 @@ impl Inkling2Engine {
                 device.bytes
             ));
         }
-        let ring = Ring::new(card, spec::scratch_floats(config.max_seq()));
+        let mut ring = Ring::new(card, spec::scratch_floats(config.max_seq()));
+        // The driver puts a buffer that does not fit in system memory, and then each pass runs 5 to 6 times slower.
+        // Thus the open refuses, and frees what it took (engine-abi "Inkling 2", "The cost of a slot").
+        let fits = nagaya_mk_bmg::vram::card_memory(pci).and_then(|after| {
+            // The scratch and the scoreboard of the ring are device memory too; its tasks are host memory.
+            let ring_bytes = (spec::scratch_floats(config.max_seq()).max(1) + NUM_SCOREBOARD_EVENTS) * 4;
+            nagaya_mk_bmg::vram::check_open(pci, planned + ring_bytes as u64, before, after)
+        });
+        if let Err(message) = fits {
+            ring.free(card);
+            device.free_all(card);
+            return Err(message);
+        }
 
         let identity = identity_of(model, checkpoint_digest, facts, &config, pci, driver)?;
         let runs = (1..=usize::from(limits_cycles_max(&limits))).map(spec::runs).collect();
