@@ -919,8 +919,19 @@ Do the steps in this order. Each step ends with the checks green.
     step 8, and a row of a decode step gives the bits of its position in a block. Print the table of the ops, and
     compare each op with its budget.
 11. **The engine and the long context.** The `Engine` trait, cycles 1 to 5, snapshots and the conformance suite.
-    Slots of 400K to 512K positions, with gates of latency and accuracy. Amy decides the format of the cache: `f32`,
-    or a format of fewer bytes with an identity of its own.
+    Slots of 400K to 512K positions, with gates of latency and accuracy.
+    - **The format of the cache.** Decided 2026-11-22: a format of fewer bytes is allowed, and it may move bits, if
+      the model stays coherent. Each format has an engine identity of its own.
+    - The candidates come from the GB10 path of vLLM (`vllm/models/inkling2/nvidia/attention.py`). It keeps `bf16`
+      by default, and it allows `float16` and `fp8_e4m3` with a unit scale on `sm_120` and `sm_121`. A unit scale
+      can work because the model clips the norm of each query and key, and it normalizes each value.
+    - At 409,600 positions, a decode step reads about 26 GB of cache in `f32`, 13 GB in `float16` and 6.5 GB in
+      `fp8_e4m3`. At the measured 252 GB/s, that is about 104 ms, 52 ms or 26 ms.
+    - **The gate of coherence.** Compare each format with the `f32` cache on the oracle prompts. Compare the logit
+      gap, the top token and the greedy text. Then compare them at long positions with a
+      retrieval of a fact from early in a context of 400K. A format passes when its greedy text and its retrievals
+      match those of `f32`. The thresholds of the gap go into the binding with the first measure.
+    - Start with `fp8_e4m3`. If it fails the gate, measure `float16`.
 12. **Rows.** A ring of several slots, as LFM3's `model::batch`. The ops take 16 rows from wave A, so this step is
     work of the ring and the scheduler. Measure tokens each second at 1, 2, 4, 8 and 16 rows. The MTP head waits
     for Amy's word (milestone 35 step 10).
