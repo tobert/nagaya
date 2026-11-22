@@ -19,7 +19,7 @@ use nagaya_mk_bmg::{IGC_REVISION, INKLING2_KERNEL, KERNEL_ENTRY, OCLOC_VERSION};
 use crate::device::{Device, OnCard};
 use crate::host::ops::HIDDEN;
 use crate::host::weights::LOGITS;
-use crate::media::HeldRows;
+use crate::media::{Grid, HeldRows, RowHashes};
 use crate::model::{self, Bufs, LAUNCH_TASKS, SlotMemory, TapBufs, TapRing, TaskRing};
 use crate::spec::{self, Block, Config, FAMILY, HEAD_ROWS, Held, Model, Part, ROUTE_WORDS, Run, Source, Taps};
 use crate::vision::{self, PassBufs};
@@ -47,6 +47,8 @@ pub struct Inkling2Engine {
     images: PassBufs,
     /// The image whose projector rows `images.out` holds.
     held_rows: HeldRows,
+    /// The hashes of the images of a pass, which the bound of the pass and the pass share.
+    row_hashes: RowHashes,
     slots: Vec<SlotMemory>,
     held: Held,
     /// The runs of a pass at each count of cycles, from 1. A probe of the oracle runs the default.
@@ -382,6 +384,7 @@ impl Inkling2Engine {
             tower,
             images,
             held_rows: HeldRows::default(),
+            row_hashes: RowHashes::default(),
             slots,
             held,
             runs,
@@ -444,6 +447,10 @@ impl Inkling2Engine {
     /// the normed embedding rows of the placeholders (engine-abi "The choices of the pass"). The caller checked the
     /// block.
     fn encode(&mut self, segment: &Segment, block: &Block) -> Vec<MkTaskDescriptor> {
+        // The bound of this pass hashed its images; the pass takes those hashes (engine-abi D8).
+        let images = image_rows(segment, block);
+        let rows_of: Vec<&[u8]> = images.iter().map(|(_, rows)| *rows).collect();
+        let mut hashes = self.row_hashes.take(&rows_of).into_iter();
         if block.spans.is_empty() {
             return Vec::new();
         }
@@ -465,7 +472,8 @@ impl Inkling2Engine {
                 continue;
             };
             let mut tasks = Vec::new();
-            if !self.held_rows.holds(g, bytes) {
+            let hash = hashes.next().expect("each image span has its hash");
+            if !self.held_rows.holds(g, hash) {
                 let card = &self.cluster.cards[0];
                 self.device.write(card, self.images.rows, bytes);
                 self.device.write(card, self.images.axes, &vision::axes(g));
@@ -671,6 +679,18 @@ impl Inkling2Engine {
     }
 }
 
+/// The grid and the patch rows of each image span of `block`, in the order of the spans. Latent spans have none.
+fn image_rows<'a>(segment: &'a Segment, block: &Block) -> Vec<(Grid, &'a [u8])> {
+    let nagaya_abi::SegmentInputs::TokensAndRows { rows, .. } = &segment.inputs else {
+        return Vec::new();
+    };
+    block
+        .spans
+        .iter()
+        .filter_map(|used| Some((used.span.grid()?, &rows[used.rows_at..used.rows_at + used.span.bytes()])))
+        .collect()
+}
+
 /// True when each byte is zero: the bytes of a run that a count does not reach.
 fn zeros(bytes: &[u8]) -> bool {
     bytes.iter().all(|b| *b == 0)
@@ -707,14 +727,17 @@ impl Engine for Inkling2Engine {
         let Ok((block, _)) = self.check_block(segments, taps) else {
             return Ok(None);
         };
-        let nagaya_abi::SegmentInputs::TokensAndRows { rows, .. } = &segments[0].inputs else {
-            return Ok(None);
-        };
-        let images = block.spans.iter().filter_map(|used| {
-            let grid = used.span.grid()?;
-            Some((grid, &rows[used.rows_at..used.rows_at + used.span.bytes()]))
-        });
-        let towers: Vec<usize> = self.held_rows.towers(images).iter().map(|g| g.tokens()).collect();
+        let images = image_rows(&segments[0], &block);
+        let rows_of: Vec<&[u8]> = images.iter().map(|(_, rows)| *rows).collect();
+        // The pass takes these hashes, so each image of the pass is hashed once.
+        let hashes = self.row_hashes.prepare(&rows_of);
+        let grids = images.iter().map(|(grid, _)| *grid);
+        let towers: Vec<usize> = self
+            .held_rows
+            .towers(grids.zip(hashes))
+            .iter()
+            .map(|g| g.tokens())
+            .collect();
         Ok(crate::bound::pass_bound_ms(&towers))
     }
 

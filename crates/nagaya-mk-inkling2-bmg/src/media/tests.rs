@@ -139,18 +139,18 @@ fn the_held_rows_run_the_tower_once_for_the_blocks_of_one_image() {
     let mut held = HeldRows::default();
     let g = Grid { rows: 2, columns: 2 };
     let (a, b) = (vec![1u8; 64], vec![2u8; 64]);
-    assert!(!held.holds(g, &a), "nothing is held at the start");
-    assert!(held.holds(g, &a), "the second block of the image");
+    assert!(!held.holds(g, blake3::hash(&a)), "nothing is held at the start");
+    assert!(held.holds(g, blake3::hash(&a)), "the second block of the image");
     assert_eq!(held.runs(), 1);
-    assert!(!held.holds(g, &b), "other patch rows are another image");
+    assert!(!held.holds(g, blake3::hash(&b)), "other patch rows are another image");
     assert!(
-        !held.holds(Grid { rows: 1, columns: 4 }, &b),
+        !held.holds(Grid { rows: 1, columns: 4 }, blake3::hash(&b)),
         "another grid is another image"
     );
-    assert!(!held.holds(g, &a), "the first image is held no more");
+    assert!(!held.holds(g, blake3::hash(&a)), "the first image is held no more");
     assert_eq!(held.runs(), 4);
     held.forget();
-    assert!(!held.holds(g, &a), "after a forget the tower runs again");
+    assert!(!held.holds(g, blake3::hash(&a)), "after a forget the tower runs again");
     assert_eq!(held.runs(), 5);
 }
 
@@ -161,20 +161,56 @@ fn the_towers_of_a_pass_are_the_images_that_the_held_rows_lack() {
     let mut held = HeldRows::default();
     let g = Grid { rows: 2, columns: 2 };
     let (a, b) = (vec![1u8; 64], vec![2u8; 64]);
-    assert_eq!(held.towers([(g, &a[..])]), [g], "nothing is held at the start");
-    assert_eq!(held.towers([(g, &a[..])]), [g], "towers changed nothing");
-    assert!(!held.holds(g, &a));
     assert_eq!(
-        held.towers([(g, &a[..])]),
+        held.towers([(g, blake3::hash(&a))]),
+        [g],
+        "nothing is held at the start"
+    );
+    assert_eq!(held.towers([(g, blake3::hash(&a))]), [g], "towers changed nothing");
+    assert!(!held.holds(g, blake3::hash(&a)));
+    assert_eq!(
+        held.towers([(g, blake3::hash(&a))]),
         Vec::<Grid>::new(),
         "a later block of the image"
     );
-    assert_eq!(held.towers([(g, &b[..])]), [g], "other rows of the same grid");
+    assert_eq!(held.towers([(g, blake3::hash(&b))]), [g], "other rows of the same grid");
     let other = Grid { rows: 1, columns: 4 };
-    assert_eq!(held.towers([(other, &a[..])]), [other], "another grid");
+    assert_eq!(held.towers([(other, blake3::hash(&a))]), [other], "another grid");
     // Image b replaces a in the held rows, so a runs again after it.
-    assert_eq!(held.towers([(g, &a[..]), (g, &b[..]), (g, &a[..])]), [g, g]);
+    assert_eq!(
+        held.towers([(g, blake3::hash(&a)), (g, blake3::hash(&b)), (g, blake3::hash(&a))]),
+        [g, g]
+    );
     assert_eq!(held.runs(), 1);
+}
+
+/// The bound and the pass of one segment hash each image once: `prepare` hashes, and the next `take` of the same rows
+/// reuses the hashes. A `take` with no `prepare`, or of other rows, hashes again, and a `take` keeps nothing.
+/// Falsified by a `take` that ignores the prepared hashes, and by a `take` that keeps them.
+#[test]
+fn the_bound_and_the_pass_hash_each_image_once() {
+    let hashes = RowHashes::default();
+    let (a, b) = (vec![1u8; 64], vec![2u8; 64]);
+    let want = vec![blake3::hash(&a), blake3::hash(&b)];
+    assert_eq!(hashes.prepare(&[&a, &b]), want);
+    assert_eq!(hashes.hashed(), 2);
+    assert_eq!(hashes.take(&[&a, &b]), want);
+    assert_eq!(hashes.hashed(), 2, "the pass reuses the hashes of the bound");
+    assert_eq!(hashes.take(&[&a, &b]), want);
+    assert_eq!(
+        hashes.hashed(),
+        4,
+        "a take keeps nothing, so a second pass hashes again"
+    );
+    hashes.prepare(&[&a]);
+    assert_eq!(hashes.take(&[&b]), vec![blake3::hash(&b)], "other rows hash again");
+    assert_eq!(hashes.hashed(), 6);
+    assert_eq!(
+        hashes.take(&[&a]),
+        vec![blake3::hash(&a)],
+        "the take of b dropped the prepared a"
+    );
+    assert_eq!(hashes.hashed(), 7);
 }
 
 /// The record of `count` latent rows of `width` values from `first` (engine-abi "The lab of Inkling 2", "Latent

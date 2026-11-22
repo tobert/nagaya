@@ -1841,6 +1841,8 @@ choice open.
     image of 1,614 tokens or more declares a bound.
   - A square law can be low for a small image. That does no harm: the deadline is never less than the timeout of
     30 s.
+  - The bound and the pass hash each image of the pass once (`media::RowHashes`). The bound keeps its hashes, and
+    the pass takes them when it gets the same rows.
   - The card gate `crates/nagaya/tests/xe_inkling2_long_pass.rs` runs a cold image of 4,096 px through the process,
     with the watchdog at its defaults. It has not run yet.
 - **The tower in quanta of its own** (from ChatGPT through kaibo `gpt-plan`, 2026-11-21; accepted 2026-11-22 under
