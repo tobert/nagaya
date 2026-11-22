@@ -1516,11 +1516,25 @@ engine declares no `layer_loops`.
   none (`Limits::check_segment_cycles`). A segment names a loop or cycles, and not both.
 - gogi has the context member `cycles` (gogi "Cycles"). The council passes it to `segment.cycles` (spec 11.17).
 - **A slot keeps its count.** A slot that holds positions refuses a pass at another count, and the error names
-  both counts. A clear or a write of parts drops the count, and the next pass sets it. The bytes of a part do not
-  name their count. Thus the engine trusts the council, which keys a state by its count (spec 11.17).
-  **Proposed** (Claude Opus 5.5, 2026-11-21).
-- The parts of the reserve that a count does not reach hold stale rows. A snapshot copies them, and a pass at that
-  count never reads them.
+  both counts. A clear drops the count, and the next pass sets it.
+- **The part `cycles`.** It is the last part of a state: a fixed part, `u32 [1]`. A read gives the count of the
+  slot, or 0 for an empty slot. A restore writes it. Thus a snapshot holds its count, and a restore keeps it.
+- **The parts that a count does not reach.** A run is active when it is outside the cycles, or in a cycle up to the
+  count. The parts of an inactive run of the reserve read as zeros: rows and conv. The engine does not read the card
+  for them. Thus one recipe gives one content id, whatever ran in the slot before.
+  - An inactive ring holds the last `RING_ROWS` positions of the slot, or all of them in a short slot. An inactive
+    cells part holds every position from 0.
+- **A restore.** The writes come in any order. `set_n` with a count of 1 or more needs a write of each part.
+  - The count of `cycles` is 1 to `max`. A second write of another count is refused. A count of 0 restores only
+    an empty slot.
+  - The rows of an active part follow the rules of "The host spec". An inactive part must hold zeros, else
+    `set_n` is refused, and the error names the part.
+  - `set_n` takes the count with the positions. The rings start at the first restored row of an active ring.
+- Reason: a fixed part keeps `limits().parts` static and the ABI as it is. Zeros on a read cost no write to the
+  card. A snapshot of 1 cycle still holds the reserve rows, as zeros (review by ChatGPT through kaibo `gpt-plan`).
+- The identity names `state` 2, the layout of these parts. Thus a snapshot of the parts before `cycles` does not
+  share a recipe with one after.
+- Each rule of this list from "The part `cycles`" is **Proposed** (Claude Opus 5.5, 2026-11-21).
 
 **The weights on the card.** Expanded to `bf16`, the experts take about 49 GB, which is more than the 32 GiB of the
 card. Thus the experts stay in the format of the checkpoint: NVFP4 in layers 0 to 19, and MXFP8 in layers 20 to 23.
