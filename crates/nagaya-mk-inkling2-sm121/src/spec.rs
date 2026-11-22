@@ -10,7 +10,7 @@ use nagaya_abi::{
     CONTROL_TERM, Capability, ChainLimits, ControlLimit, CyclesLimit, Determinism, Dtype, FeedRule, Inputs, Kind,
     Lifetime, Limits, MandatoryTerm, MemoryLimits, PartKind, PartLimits, SlotLimit, TapLimit, Tier,
 };
-use nagaya_mk_cuda::protocol::{MAX_TASKS_PER_CARD, NUM_SCOREBOARD_EVENTS, RING_DEV_BYTES};
+use nagaya_mk_cuda::protocol::{MAX_TASKS_PER_CARD, NUM_EXPERTS, NUM_SCOREBOARD_EVENTS, RING_DEV_BYTES};
 use nagaya_mk_cuda::safetensors::{SafeTensorsHeader, TensorMeta};
 
 /// Engine kind name in a placement profile (`AGENTS.md`, "Layout").
@@ -52,6 +52,9 @@ pub const MAX_BLOCK: usize = 512;
 pub const SLOT_TOKENS: usize = 32_768;
 pub const MAX_SLOT_TOKENS: usize = 1_048_576;
 pub const WINDOW: usize = 1024;
+/// Routed experts in each layer, and the width of one expert (`n_routed_experts`, `intermediate_size`).
+pub const EXPERTS: usize = NUM_EXPERTS;
+pub const INTERMEDIATE: usize = 1152;
 pub const RING_ROWS: usize = 2048;
 pub const RING_SPILL: usize = 1024;
 pub const MAX_QUANTUM_MS: u32 = 5_000;
@@ -140,7 +143,10 @@ impl Model {
             if got.as_u64() == Some(want as u64) {
                 Ok(())
             } else {
-                Err(format!("config.json has {name} {got}, expected {want}"))
+                Err(format!(
+                    "config.json has {name} {got}, expected {want}. The folder holds another model: use Inkling-2-Mini \
+                     or the variable-loop research model"
+                ))
             }
         };
         check_u64("text_config.hidden_size", &tc["hidden_size"], HIDDEN)?;
@@ -151,6 +157,23 @@ impl Model {
         check_u64("text_config.vocab_size", &tc["vocab_size"], VOCAB)?;
         check_u64("text_config.unpadded_vocab_size", &tc["unpadded_vocab_size"], LOGITS)?;
         check_u64("text_config.model_max_length", &tc["model_max_length"], MAX_SLOT_TOKENS)?;
+        // The slot plan reads the window and the taps of the convolution. The ops read the experts.
+        check_u64("text_config.sliding_window_size", &tc["sliding_window_size"], WINDOW)?;
+        check_u64("text_config.sconv_kernel_size", &tc["sconv_kernel_size"], CONV_TAPS)?;
+        check_u64("text_config.n_routed_experts", &tc["n_routed_experts"], EXPERTS)?;
+        check_u64("text_config.intermediate_size", &tc["intermediate_size"], INTERMEDIATE)?;
+        // The slot plan holds a full state for each layer that is not local.
+        let local: Vec<u64> = (0..LAYERS).filter(|&l| !is_full(l)).map(|l| l as u64).collect();
+        let got_local: Option<Vec<u64>> = tc["local_layer_ids"]
+            .as_array()
+            .and_then(|ids| ids.iter().map(serde_json::Value::as_u64).collect());
+        if got_local.as_ref() != Some(&local) {
+            return Err(format!(
+                "config.json has text_config.local_layer_ids {}, expected {local:?}. The folder holds another model: \
+                 use Inkling-2-Mini or the variable-loop research model",
+                tc["local_layer_ids"]
+            ));
+        }
         check_u64(
             "text_config.loop_config.core_start",
             &tc["loop_config"]["core_start"],

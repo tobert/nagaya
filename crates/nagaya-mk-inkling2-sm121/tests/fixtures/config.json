@@ -1,0 +1,48 @@
+{
+  "architectures": [
+    "Inkling2LoopForConditionalGeneration"
+  ],
+  "text_config": {
+    "model_max_length": 1048576,
+    "hidden_size": 2304,
+    "num_hidden_layers": 24,
+    "vocab_size": 201024,
+    "num_attention_heads": 24,
+    "num_key_value_heads": 8,
+    "head_dim": 128,
+    "local_layer_ids": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      6,
+      7,
+      8,
+      9,
+      10,
+      12,
+      13,
+      14,
+      15,
+      16,
+      18,
+      19,
+      20,
+      21,
+      22
+    ],
+    "sconv_kernel_size": 4,
+    "unpadded_vocab_size": 200058,
+    "sliding_window_size": 1024,
+    "n_routed_experts": 128,
+    "intermediate_size": 1152,
+    "loop_config": {
+      "core_start": 6,
+      "core_end": 18,
+      "num_passes": 3,
+      "gate_rank": 64,
+      "is_varloop": false
+    }
+  }
+}
