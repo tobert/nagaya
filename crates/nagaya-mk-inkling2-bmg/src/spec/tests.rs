@@ -799,3 +799,27 @@ fn the_latent_placeholder_is_the_pad_token_of_the_generation_config() {
     assert!(e.contains("pad_token_id 200000") && e.contains("puts 199999"), "{e}");
     assert!(check_generation("{}").unwrap_err().contains("pad_token_id null"));
 }
+
+/// Each number of the config that changes the parts of a state or the bits is in the identity. Thus two configs that
+/// give other parts never share a recipe (spec 6.2, 12.1).
+#[test]
+fn the_identity_numbers_name_the_reserve_and_the_block() {
+    let base = config(vec![SLOT_TOKENS]);
+    let numbers = identity_numbers(&base);
+    let get = |numbers: &BTreeMap<String, String>, key: &str| numbers.get(key).cloned();
+    assert_eq!(get(&numbers, "extra_runs").as_deref(), Some("24"));
+    assert_eq!(get(&numbers, "max_block").as_deref(), Some("512"));
+    assert_eq!(get(&numbers, "cycles").as_deref(), Some("3"));
+    for (extra, block) in [(36, 512), (48, 512), (24, 256)] {
+        let other = Config {
+            extra_runs: extra,
+            max_block: block,
+            ..base.clone()
+        };
+        assert_ne!(
+            identity_numbers(&other),
+            numbers,
+            "extra_runs {extra}, max_block {block}"
+        );
+    }
+}

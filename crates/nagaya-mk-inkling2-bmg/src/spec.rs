@@ -629,6 +629,20 @@ pub fn cycles_limit(extra_runs: usize) -> CyclesLimit {
     }
 }
 
+/// The numbers of the identity that come from the config (spec 12.1). `max_block` sets the bits, and `extra_runs`
+/// sets the parts of a state. Thus two configs that differ in either never share a recipe (spec 6.2).
+pub fn identity_numbers(config: &Config) -> BTreeMap<String, String> {
+    [
+        ("max_block", config.max_block.to_string()),
+        ("ring_rows", RING_ROWS.to_string()),
+        ("cycles", DEFAULT_CYCLES.to_string()),
+        ("extra_runs", config.extra_runs.to_string()),
+    ]
+    .into_iter()
+    .map(|(name, value)| (name.to_owned(), value))
+    .collect()
+}
+
 /// The slot classes of the config: each run of equal sizes is one class.
 pub fn slot_limits(slots: &[usize], extra: usize) -> Vec<SlotLimit> {
     let mut classes: Vec<SlotLimit> = Vec::new();

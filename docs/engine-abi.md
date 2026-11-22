@@ -1881,6 +1881,8 @@ Each rule is **Proposed** (Claude Opus 5.5, 2026-11-21).
 - **The identity.** The engine names `inkling2-mini` or `inkling2-varloop`. The tokenizer hash and the template
   come from `nagaya-text-inkling2` (`spec::text_facts`). Thus the hash is `sha256:` of the whole `tokenizer.json`,
   and the check of the registry at the start compares like with like (spec 11.3).
+- **The numbers of the config.** The identity names `max_block` and `extra_runs` (`spec::identity_numbers`).
+  `max_block` sets the bits, and `extra_runs` sets the parts of a state. Thus two reserves never share a recipe.
 
 ### The lab of Inkling 2
 

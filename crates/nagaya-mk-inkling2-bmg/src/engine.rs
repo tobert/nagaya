@@ -21,7 +21,7 @@ use crate::host::ops::HIDDEN;
 use crate::host::weights::LOGITS;
 use crate::media::HeldRows;
 use crate::model::{self, Bufs, LAUNCH_TASKS, SlotMemory, TapBufs, TapRing, TaskRing};
-use crate::spec::{self, Block, Config, FAMILY, HEAD_ROWS, Held, Model, Part, RING_ROWS, ROUTE_WORDS, Run, Taps};
+use crate::spec::{self, Block, Config, FAMILY, HEAD_ROWS, Held, Model, Part, ROUTE_WORDS, Run, Taps};
 use crate::vision::{self, PassBufs};
 use crate::weights::{self, Count, Weights};
 
@@ -182,7 +182,7 @@ fn identity_of(
     driver: u32,
 ) -> Result<Identity, String> {
     let (vendor, device, revision) = pci_ids(pci)?;
-    let mut numbers = BTreeMap::new();
+    let mut numbers = spec::identity_numbers(config);
     numbers.insert(
         "kernel.megakernel_inkling2_bmg.bin".to_owned(),
         format!("blake3:{}", blake3::hash(INKLING2_KERNEL).to_hex()),
@@ -190,9 +190,6 @@ fn identity_of(
     numbers.insert("ocloc".to_owned(), OCLOC_VERSION.to_owned());
     numbers.insert("igc".to_owned(), IGC_REVISION.to_owned());
     numbers.insert("driver".to_owned(), driver.to_string());
-    numbers.insert("max_block".to_owned(), config.max_block.to_string());
-    numbers.insert("ring_rows".to_owned(), RING_ROWS.to_string());
-    numbers.insert("cycles".to_owned(), spec::DEFAULT_CYCLES.to_string());
     numbers.insert("canary".to_owned(), "not run".to_owned());
     Ok(Identity {
         model: model.name().to_owned(),
