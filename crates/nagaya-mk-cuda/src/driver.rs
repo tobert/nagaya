@@ -1,10 +1,11 @@
 //! Minimal CUDA Driver API (`libcuda`) wrapper for loading `.cubin` modules and launching persistent megakernels.
 //!
-//! Links `libcuda` directly with no `libcudart` dependency. Every call must run on the device's owner thread
-//! (spec 3.2).
+//! Links `libcuda` directly with no `libcudart` dependency. One thread drives a device at a time (spec 3.2).
+//! Each call makes the primary context current on the calling thread first, so a device can move to another thread.
 
 #![allow(non_camel_case_types)]
 
+use std::cell::Cell;
 use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_void};
 use std::ptr;
 
@@ -87,9 +88,7 @@ fn advice(code: CUresult) -> &'static str {
     match code {
         2 => "Free GPU memory, or ask for fewer bytes.",
         3 | 100 | 101 => "Check that the driver is loaded: run `nvidia-smi`.",
-        201 | 202 | 219 | 400 => {
-            "Open the device again on this thread, after the owner of the context makes it current."
-        }
+        201 | 202 | 219 | 400 => "The context of the device is gone or destroyed. Open the device again.",
         209 | 222 | 300 | 301 => "The cubin does not fit this GPU. Build it for `sm_121a` with the same CUDA toolkit.",
         216 | 217 | 704 | 708 => {
             "The call is not allowed now. Check the order of the calls and the context of the thread."
@@ -150,9 +149,11 @@ pub struct CudaDevice {
     sm_count: u32,
     driver_version: i32,
     pci_address: String,
+    live_buffers: Cell<usize>,
 }
 
-// One owner thread drives the device at a time (spec 3.2).
+// One thread drives the device at a time (spec 3.2). Each call binds the context to the calling thread, so a move
+// to another thread is safe. The type is not `Sync`: the raw handles stop that.
 unsafe impl Send for CudaDevice {}
 
 impl CudaDevice {
@@ -223,6 +224,7 @@ impl CudaDevice {
                 sm_count,
                 driver_version,
                 pci_address: matched_pci,
+                live_buffers: Cell::new(0),
             })
         }
     }
@@ -242,15 +244,22 @@ impl CudaDevice {
         &self.pci_address
     }
 
-    /// Bind this device's primary context to the current thread.
+    /// Count of buffers that this device allocated and did not free. A test uses it to find a leak.
+    pub fn live_buffers(&self) -> usize {
+        self.live_buffers.get()
+    }
+
+    /// Bind this device's primary context to the current thread. Each call of the device does this itself.
     pub fn set_current(&self) -> Result<(), String> {
         unsafe { check(cuCtxSetCurrent(self.ctx), "cuCtxSetCurrent") }
     }
 
     /// Allocate `bytes` of device memory.
     pub fn alloc_device(&self, bytes: usize) -> Result<CUdeviceptr, String> {
+        self.set_current()?;
         let mut ptr: CUdeviceptr = 0;
         unsafe { check(cuMemAlloc(&mut ptr, bytes.max(1)), "cuMemAlloc")? };
+        self.live_buffers.set(self.live_buffers.get() + 1);
         Ok(ptr)
     }
 
@@ -259,13 +268,18 @@ impl CudaDevice {
         if ptr == 0 {
             return Ok(());
         }
-        unsafe { check(cuMemFree(ptr), "cuMemFree") }
+        self.set_current()?;
+        unsafe { check(cuMemFree(ptr), "cuMemFree")? };
+        self.live_buffers.set(self.live_buffers.get() - 1);
+        Ok(())
     }
 
     /// Allocate `bytes` of page-locked host memory.
     pub fn alloc_host_pinned(&self, bytes: usize) -> Result<*mut c_void, String> {
+        self.set_current()?;
         let mut ptr: *mut c_void = ptr::null_mut();
         unsafe { check(cuMemAllocHost(&mut ptr, bytes.max(1)), "cuMemAllocHost")? };
+        self.live_buffers.set(self.live_buffers.get() + 1);
         Ok(ptr)
     }
 
@@ -277,7 +291,10 @@ impl CudaDevice {
         if ptr.is_null() {
             return Ok(());
         }
-        unsafe { check(cuMemFreeHost(ptr), "cuMemFreeHost") }
+        self.set_current()?;
+        unsafe { check(cuMemFreeHost(ptr), "cuMemFreeHost")? };
+        self.live_buffers.set(self.live_buffers.get() - 1);
+        Ok(())
     }
 
     /// Copy `bytes` from host pointer `src` to device pointer `dst`.
@@ -285,6 +302,7 @@ impl CudaDevice {
     /// # Safety
     /// `src` must be valid for `bytes` readable bytes and `dst` must hold at least `bytes` device bytes.
     pub unsafe fn copy_htod(&self, dst: CUdeviceptr, src: *const c_void, bytes: usize) -> Result<(), String> {
+        self.set_current()?;
         unsafe { check(cuMemcpyHtoD(dst, src, bytes), "cuMemcpyHtoD") }
     }
 
@@ -293,16 +311,19 @@ impl CudaDevice {
     /// # Safety
     /// `dst` must be valid for `bytes` writable bytes and `src` must hold at least `bytes` device bytes.
     pub unsafe fn copy_dtoh(&self, dst: *mut c_void, src: CUdeviceptr, bytes: usize) -> Result<(), String> {
+        self.set_current()?;
         unsafe { check(cuMemcpyDtoH(dst, src, bytes), "cuMemcpyDtoH") }
     }
 
     /// Fill `bytes` of device memory at `dst` with zeros.
     pub fn memset_zero(&self, dst: CUdeviceptr, bytes: usize) -> Result<(), String> {
+        self.set_current()?;
         unsafe { check(cuMemsetD8(dst, 0, bytes), "cuMemsetD8") }
     }
 
     /// Synchronize the current context.
     pub fn sync(&self) -> Result<(), String> {
+        self.set_current()?;
         unsafe { check(cuCtxSynchronize(), "cuCtxSynchronize") }
     }
 
@@ -323,6 +344,7 @@ impl CudaDevice {
         scratch_dev: CUdeviceptr,
         profile_dev: CUdeviceptr,
     ) -> Result<(), String> {
+        self.set_current()?;
         let mut p_tasks = tasks_dev;
         let mut p_num = num_tasks;
         let mut p_sb = scoreboard_dev;

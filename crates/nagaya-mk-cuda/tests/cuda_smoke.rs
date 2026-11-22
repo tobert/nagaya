@@ -40,7 +40,7 @@ fn persistent_interpreter_runs_copy_and_profile_on_gb10() {
     dev.memset_zero(dev_dst, bytes).unwrap();
 
     let mut ring = Ring::new(&dev, 1024, false).unwrap();
-    ring.zero_device(&dev).unwrap();
+    ring.zero_device().unwrap();
     ring.set(&[
         MkTaskDescriptor {
             opcode: OP_NOP,
@@ -58,7 +58,7 @@ fn persistent_interpreter_runs_copy_and_profile_on_gb10() {
             ..Default::default()
         },
     ]);
-    unsafe { ring.run(&dev).unwrap() };
+    unsafe { ring.run().unwrap() };
     unsafe {
         dev.copy_dtoh(host_dst.as_mut_ptr().cast::<c_void>(), dev_dst, bytes)
             .unwrap()
@@ -72,13 +72,13 @@ fn persistent_interpreter_runs_copy_and_profile_on_gb10() {
         );
     }
 
-    let stats = ring.read_stats(&dev).unwrap();
+    let stats = ring.read_stats().unwrap();
     assert_eq!(stats.len(), dev.sm_count() as usize);
     for (bid, st) in stats.iter().enumerate() {
         assert_eq!(st.tasks_run, 3, "block {bid} ran {} tasks", st.tasks_run);
         assert!(st.exec_ns > 0, "block {bid} reported 0 exec_ns");
     }
-    ring.free(&dev).unwrap();
+    ring.free().unwrap();
     dev.free_device(dev_src).unwrap();
     dev.free_device(dev_dst).unwrap();
     drop(dev);
@@ -86,7 +86,7 @@ fn persistent_interpreter_runs_copy_and_profile_on_gb10() {
     // Verify the MK_PROFILE cubin records monotonic %globaltimer timestamps.
     let prof_dev = CudaDevice::open_by_pci(&pci, INKLING2_PROFILE_CUBIN).expect("open GB10 with profile cubin");
     let mut prof_ring = Ring::new(&prof_dev, 1024, true).unwrap();
-    prof_ring.zero_device(&prof_dev).unwrap();
+    prof_ring.zero_device().unwrap();
     prof_ring.set(&[
         MkTaskDescriptor {
             opcode: OP_NOP,
@@ -97,8 +97,8 @@ fn persistent_interpreter_runs_copy_and_profile_on_gb10() {
             ..Default::default()
         },
     ]);
-    unsafe { prof_ring.run(&prof_dev).unwrap() };
-    let prof = prof_ring.read_profile(&prof_dev).unwrap();
+    unsafe { prof_ring.run().unwrap() };
+    let prof = prof_ring.read_profile().unwrap();
     let blocks = prof_ring.grid_blocks() as usize;
     // 2 tasks + 1 trailing OP_HALT = 3 entries per block.
     assert_eq!(prof.len(), 3 * blocks * PROFILE_WORDS);
@@ -113,5 +113,44 @@ fn persistent_interpreter_runs_copy_and_profile_on_gb10() {
             );
         }
     }
-    prof_ring.free(&prof_dev).unwrap();
+    prof_ring.free().unwrap();
+}
+
+#[test]
+fn a_device_moves_to_another_thread_and_works_there() {
+    let pci = test_cards::card();
+    let dev = CudaDevice::open_by_pci(&pci, INKLING2_CUBIN).expect("open GB10");
+    // The thread that opened the device holds the context. The new thread holds none.
+    std::thread::spawn(move || {
+        let ptr = dev.alloc_device(4096).expect("alloc on the second thread");
+        dev.memset_zero(ptr, 4096).expect("memset on the second thread");
+        dev.sync().expect("sync on the second thread");
+        dev.free_device(ptr).expect("free on the second thread");
+    })
+    .join()
+    .expect("the second thread did not panic");
+}
+
+#[test]
+fn a_ring_that_fails_to_allocate_frees_what_it_holds() {
+    let pci = test_cards::card();
+    let dev = CudaDevice::open_by_pci(&pci, INKLING2_CUBIN).expect("open GB10");
+    let overflow = Ring::new(&dev, usize::MAX, false)
+        .err()
+        .expect("an overflowing scratch is an error");
+    assert!(overflow.contains("overflows"), "{overflow}");
+    // 2^50 floats are 4 PiB. The first four buffers succeed, and the scratch fails.
+    let too_big = Ring::new(&dev, 1 << 50, false)
+        .err()
+        .expect("4 PiB of scratch is an error");
+    assert!(too_big.contains("cuMemAlloc failed"), "{too_big}");
+    assert!(too_big.contains("OUT_OF_MEMORY"), "{too_big}");
+    assert_eq!(dev.live_buffers(), 0, "the failed rings leaked buffers");
+    // The device still works, and a later ring runs.
+    let ring = Ring::new(&dev, 1024, false).expect("a later ring allocates");
+    assert_eq!(dev.live_buffers(), 5, "a ring holds 5 buffers with no profile");
+    ring.free().expect("the ring frees all of its buffers");
+    assert_eq!(dev.live_buffers(), 0, "free left buffers");
+    drop(Ring::new(&dev, 1024, true).expect("a profile ring allocates"));
+    assert_eq!(dev.live_buffers(), 0, "Drop left buffers");
 }
