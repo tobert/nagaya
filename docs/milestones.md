@@ -754,8 +754,10 @@ The decisions of 2026-11-22:
 - **The rule of the port.** Follow the model card, unless a change gives a clear gain of bandwidth.
 - **Kernels.** Clean-room CUDA C++ with inline PTX. No external C++ dependency. The source of vLLM informs a
   numeric rule; we do not copy its code.
-- **Long context.** Target 400K to 512K positions (`model_max_length` 1,048,576). At 3 cycles in `f32`, 400K
-  positions take about 28.1 GB and 512K take about 36.0 GB. The weights take 19.5 GB.
+- **Long context.** Target 400K to 512K positions (`model_max_length` 1,048,576). Here 400K means 409,600
+  positions. At 3 cycles in `f32`, a slot of 409,600 positions takes 27.854 GB, and 524,288 take 35.370 GB. Each
+  figure includes the 40 fixed sliding rings. The attention scratch is extra, a provisional B70 bound until the GB10
+  attention exists (step 9, wave C). The weights take 19.5 GB.
 - **The machine.** sm121host serves only the nagaya. The vLLM of k8s goes for good. The control plane of the cluster
   scales it to 0 replicas.
 
