@@ -13,3 +13,7 @@ blake3 = { version = "1.8.7", optional = true }
 nagaya-abi = { version = "0.1.0", path = "../nagaya-abi" }
 nagaya-mk-cuda = { version = "0.1.0", path = "../nagaya-mk-cuda" }
 serde_json = { version = "1.0.154", features = ["float_roundtrip", "preserve_order"] }
+
+[dev-dependencies]
+# The host forms of the B70 crate are the oracle of the dense ops. With no feature it builds with no Level Zero.
+nagaya-mk-inkling2-bmg = { version = "0.1.0", path = "../nagaya-mk-inkling2-bmg" }
