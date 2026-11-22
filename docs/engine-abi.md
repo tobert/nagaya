@@ -1587,6 +1587,15 @@ of cells and 10 rings.
   two cases, and it frees what it took:
   - the memory of the card grew by less than the device bytes of the terms and of the ring;
   - a byte of a buffer of the process on the card is not resident there.
+- **The open fills the ring before the check.** Under memory pressure, Level Zero creates each buffer with
+  `DRM_XE_GEM_CREATE_FLAG_DEFER_BACKING`. Such a buffer gets its memory only at its first use. Until then, fdinfo
+  counts it in `drm-total-system`, and it is not resident. The open writes each buffer of the terms, but not the
+  scoreboard and the scratch of the ring. Thus the open fills them with zeros (`Ring::zero_device`), and then it reads
+  the memory again.
+- The service on 2026-11-21 showed this. It refused the open of two slots of 32,768 positions. The card had grown
+  by 31,220,137,984 bytes of 31,279,353,476. The scratch of the ring, 105,252 KiB, had no memory yet. After
+  the first pass, it was on the card. The card gate `tests/xe_fit_deferred.rs` sets the debug keys of Level Zero
+  that defer each buffer, and it opens the same slots.
 - The card gate `tests/xe_fit.rs` ran on 2026-11-21. A slot of 262,144 positions asks for 40,679,296,644 bytes.
   The driver puts 34,031,300,608 of them on the card, and the open is refused. Then a slot of 164,352 opens, and it
   holds 34,016,722,944 bytes of the card.

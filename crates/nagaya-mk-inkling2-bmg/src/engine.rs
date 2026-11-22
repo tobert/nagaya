@@ -335,6 +335,9 @@ impl Inkling2Engine {
             ));
         }
         let mut ring = Ring::new(card, spec::scratch_floats(config.max_seq()));
+        // Under memory pressure, the driver gives a buffer its memory only at its first use. The open writes each
+        // other buffer, so it fills the ring too, and the check sees all of it.
+        ring.zero_device(card);
         // The driver puts a buffer that does not fit in system memory, and then each pass runs 5 to 6 times slower.
         // Thus the open refuses, and frees what it took (engine-abi "Inkling 2", "The cost of a slot").
         let fits = nagaya_mk_bmg::vram::card_memory(pci).and_then(|after| {
