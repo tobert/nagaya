@@ -411,7 +411,9 @@ __device__ __forceinline__ void record_profile(uint64_t* profile, uint32_t idx, 
 }
 
 // The count of items of a task. A task with no items is a JOIN: block 0 runs one item that does no work, and it
-// signals once. A count that comes from a plan on the device is a defect of the ring, because no op reads one yet.
+// signals once. A task whose live count comes from a plan on the device has a static bound here, and the op reads the
+// live count: an item beyond it does nothing, and it counts as done. So the count is never read from the device, and
+// 0xFFFFFFFF is a defect of the ring.
 __device__ __forceinline__ uint32_t item_count(const MkTaskDescriptor& task) {
     if (task.items == 0xFFFFFFFFu) {
         __trap();

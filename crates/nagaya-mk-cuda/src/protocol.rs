@@ -180,15 +180,44 @@ pub const EXPERT_MXFP8_RECORD_BYTES: usize = 4 * 512 + 64;
 pub const EXPERT_SMEM_BYTES: usize = 4 * 2 * 32 * 4 * 4;
 
 /// One pair of an expert op: an expert and the rows that it takes. `x_row[i]` is the row of the quantized rows that
-/// the row `i` of the expert reads, and `y_row[i]` is the row of the output that it writes. Only the first `count`
-/// entries count. The device reads the list through `f` of the descriptor.
+/// the row `i` of the expert reads, `y_row[i]` is the row of the output that it writes, and `weight[i]` is the route
+/// weight of the row. Only the first `count` entries count. A pair with `count` 0 is empty, and the op does nothing
+/// for it. The device reads the list through `e` of the descriptor (see [`ExpertPairHeader`]). The expert ops do not
+/// use `weight` yet.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ExpertPair {
     pub expert: u32,
     pub count: u32,
     pub x_row: [u16; EXPERT_MAX_ROWS],
     pub y_row: [u16; EXPERT_MAX_ROWS],
+    pub weight: [f32; EXPERT_MAX_ROWS],
+}
+
+/// The bytes of the header of a pair list.
+pub const EXPERT_PAIR_HEADER_BYTES: usize = 16;
+
+/// The header of a pair list, at the address `e` of the descriptor. The pairs follow it: pair `i` is at
+/// `e + EXPERT_PAIR_HEADER_BYTES + i * size_of::<ExpertPair>()`.
+///
+/// `pairs` is the live count of pairs. The count of items of the task is a static bound, because the host does not
+/// know the live count when it builds the ring (a router writes the list on the device). Item `i` takes the pair
+/// `i / tiles`. A pair at or after `pairs` is not live: the op does nothing for its items, and they count as done for
+/// the signal, so the waits on the task stay exact. The list must have room for `items / tiles` pairs. The op traps
+/// when `pairs` is larger than that.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExpertPairHeader {
+    pub pairs: u32,
+    pub reserved: [u32; 3],
+}
+
+/// The static bound of the pairs of an expert op for `rows` rows of tokens, 8 experts for each row. A pair holds at
+/// most 16 rows, so the live count is at most `8 * rows` (each pair has one row), and at most `8 * rows / 16` plus one
+/// pair for each of the 128 experts (each expert wastes at most one part of a pair). The count is exact at 1 row.
+/// The bound of the items is this number times the tiles of one pair.
+pub fn expert_pair_bound(rows: usize) -> usize {
+    (TOP_K * rows).min(TOP_K * rows / EXPERT_MAX_ROWS + NUM_EXPERTS)
 }
 
 /// Pointers in a task table.
@@ -243,7 +272,9 @@ define_u16_table! {
 pub struct MkTaskDescriptor {
     pub opcode: u16,
     pub flags: u16,
-    /// The count of work items. `u32::MAX` means that the count comes from the plan in `d`.
+    /// The count of work items. A task whose live count comes from the plan on the device gets a static bound here,
+    /// and an item beyond the live count does nothing (see [`ExpertPairHeader`]). `u32::MAX` is not a count: the
+    /// kernel traps on it.
     pub items: u32,
     pub wait0_event: u32,
     pub wait0_target: u32,

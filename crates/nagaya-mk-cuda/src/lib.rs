@@ -68,7 +68,7 @@ mod tests {
     use std::mem::{align_of, offset_of, size_of};
 
     use super::*;
-    use crate::protocol::{self, BlockStats, MkTaskDescriptor, MkTaskTable};
+    use crate::protocol::{self, BlockStats, ExpertPair, ExpertPairHeader, MkTaskDescriptor, MkTaskTable};
     use crate::safetensors::SafeTensorsHeader;
 
     #[test]
@@ -130,6 +130,45 @@ mod tests {
             "#define MK_EXPERT_TABLE_AMAX 0\n",
         ] {
             assert!(header.contains(line), "{line:?} is not in the header");
+        }
+    }
+
+    #[test]
+    fn the_expert_pair_and_its_list_have_the_layout_that_the_kernel_checks() {
+        assert_eq!(size_of::<ExpertPair>(), 136);
+        assert_eq!(offset_of!(ExpertPair, expert), 0);
+        assert_eq!(offset_of!(ExpertPair, count), 4);
+        assert_eq!(offset_of!(ExpertPair, x_row), 8);
+        assert_eq!(offset_of!(ExpertPair, y_row), 40);
+        assert_eq!(offset_of!(ExpertPair, weight), 72);
+        assert_eq!(size_of::<ExpertPairHeader>(), protocol::EXPERT_PAIR_HEADER_BYTES);
+        assert_eq!(offset_of!(ExpertPairHeader, pairs), 0);
+        let header = include_str!(concat!(env!("OUT_DIR"), "/mk_protocol.h"));
+        for line in [
+            "#define MK_EXPERT_PAIR_BYTES 136\n",
+            "#define MK_EXPERT_PAIR_HEADER_BYTES 16\n",
+            "#define MK_EXPERT_PAIR_OFF_weight 72\n",
+            "#define MK_EXPERT_PAIR_OFF_y_row 40\n",
+            "#define MK_EXPERT_PAIR_HEADER_OFF_pairs 0\n",
+        ] {
+            assert!(header.contains(line), "{line:?} is not in the header");
+        }
+    }
+
+    #[test]
+    fn the_bound_of_the_pairs_is_exact_at_one_row_and_never_below_the_most_pairs() {
+        assert_eq!(protocol::expert_pair_bound(1), 8);
+        assert_eq!(protocol::expert_pair_bound(2), 16);
+        assert_eq!(protocol::expert_pair_bound(16), 128);
+        assert_eq!(protocol::expert_pair_bound(512), 8 * 512 / 16 + 128);
+        // The bound never passes the 8 pairs of one row for each row, and it grows by 1 pair for each 2 rows after
+        // 128 pairs of slack.
+        for rows in 1..=1024usize {
+            let bound = protocol::expert_pair_bound(rows);
+            assert!(
+                bound <= 8 * rows && bound <= 8 * rows / 16 + 128,
+                "rows {rows}: bound {bound}"
+            );
         }
     }
 

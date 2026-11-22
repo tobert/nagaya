@@ -24,10 +24,10 @@ use std::path::PathBuf;
 
 use common::gpu::{GRIDS, download, open, open_profile, run_with_watchdog, upload};
 use nagaya_mk_cuda::driver::{CUdeviceptr, CudaDevice};
-use nagaya_mk_cuda::experts::{ExpertFormat, QuantRowsLayout, repack_expert};
+use nagaya_mk_cuda::experts::{ExpertFormat, QuantRowsLayout, pair_list_bytes, repack_expert};
 use nagaya_mk_cuda::protocol::{
     EXPERT_MAX_ROWS, EXPERT_TABLE_AMAX, ExpertPair, MkTaskDescriptor, MkTaskTable, OP_EXPERT_MXFP8, OP_EXPERT_NVFP4,
-    OP_PROBE_READ, OP_QUANT_MXFP8, OP_QUANT_NVFP4, PROBE_ITEM_BYTES, PROBE_READ_NC, PROFILE_WORDS,
+    OP_PROBE_READ, OP_QUANT_MXFP8, OP_QUANT_NVFP4, PROBE_ITEM_BYTES, PROBE_READ_NC, PROFILE_WORDS, expert_pair_bound,
 };
 use nagaya_mk_cuda::ring::{DEFAULT_BLOCK_THREADS, Ring, Task};
 use nagaya_mk_cuda::safetensors::SafeTensorsHeader;
@@ -222,6 +222,11 @@ fn quant_rows_bytes(layout: &QuantRowsLayout, rows: &[QuantRow]) -> Vec<u8> {
     bytes
 }
 
+/// The pair list on the device: the header, the pairs, and zero pairs up to `bound` pairs.
+fn upload_pairs(dev: &CudaDevice, pairs: &[ExpertPair], bound: usize) -> CUdeviceptr {
+    upload(dev, &pair_list_bytes(pairs, bound).unwrap())
+}
+
 /// A pair for the op: the bank index of the expert, and the rows with the slots that they write.
 fn pair(expert: usize, x_rows: &[usize], first_slot: usize) -> ExpertPair {
     assert!(!x_rows.is_empty() && x_rows.len() <= EXPERT_MAX_ROWS);
@@ -266,7 +271,8 @@ fn upload_bank(dev: &CudaDevice, m: &Matrix) -> Bank {
     }
 }
 
-/// The descriptor of an expert op over `pairs`.
+/// The descriptor of an expert op over the pair list at `pairs`. The count of items is the static bound `bound` of
+/// pairs, times the tiles of a pair.
 #[allow(clippy::too_many_arguments)]
 fn expert_task(
     m: &Matrix,
@@ -275,7 +281,7 @@ fn expert_task(
     x_rows: usize,
     y: CUdeviceptr,
     pairs: CUdeviceptr,
-    count: usize,
+    bound: usize,
     expert_scale: f32,
 ) -> MkTaskDescriptor {
     MkTaskDescriptor {
@@ -283,13 +289,13 @@ fn expert_task(
             ExpertFormat::Nvfp4 => OP_EXPERT_NVFP4,
             ExpertFormat::Mxfp8 => OP_EXPERT_MXFP8,
         },
-        items: (count * N / 64) as u32,
+        items: (bound * N / 64) as u32,
         rows: x_rows as u32,
         a: x,
         b: bank.ptr,
         c: y,
         d: bank.table,
-        f: pairs,
+        e: pairs,
         n: N as u32,
         k: m.k as u32,
         p0: expert_scale,
@@ -328,7 +334,7 @@ fn run_experts_scaled(
     expert_scale: f32,
 ) -> Vec<f32> {
     let x = upload(dev, x_bytes);
-    let pair_ptr = upload(dev, pairs);
+    let pair_ptr = upload_pairs(dev, pairs, pairs.len());
     let y = upload(dev, &vec![0xFFu8; slots * N * 4]);
     let mut ring = Ring::new(dev, 1, false).unwrap();
     ring.set(&[
@@ -558,6 +564,156 @@ fn the_bits_do_not_depend_on_the_grid_the_count_of_rows_or_the_place_in_the_pair
     }
 }
 
+/// Run the expert op over a pair list that the caller built (`list`, with room for `bound` pairs), and return the
+/// `y_rows` rows of `N` floats and the scoreboard of the ring. The rows start as a NaN with every bit set.
+#[allow(clippy::too_many_arguments)]
+fn run_list(
+    dev: &CudaDevice,
+    m: &Matrix,
+    bank: &Bank,
+    x_bytes: &[u8],
+    list: &[u8],
+    bound: usize,
+    y_rows: usize,
+    grid: u32,
+) -> (Vec<f32>, Vec<u32>) {
+    let x = upload(dev, x_bytes);
+    let list_ptr = upload(dev, list);
+    let y = upload(dev, &vec![0xFFu8; y_rows * N * 4]);
+    let mut ring = Ring::new(dev, 1, false).unwrap();
+    ring.set(&[Task::with_items(expert_task(m, bank, x, 16, y, list_ptr, bound, 1.0))
+        .reads(x, x_bytes.len())
+        .reads(bank.ptr, bank.bytes)
+        .writes(y, y_rows * N * 4)]);
+    ring.zero_device().unwrap();
+    run_with_watchdog(
+        &ring,
+        grid,
+        DEFAULT_BLOCK_THREADS,
+        dev.max_dynamic_shared_bytes().unwrap(),
+    );
+    let out = download::<f32>(dev, y, y_rows * N);
+    let board = ring.read_scoreboard().unwrap();
+    ring.free().unwrap();
+    for ptr in [x, list_ptr, y] {
+        dev.free_device(ptr).unwrap();
+    }
+    (out, board)
+}
+
+/// A pair that would write the 16 rows from `first_slot` if the op ran it: it is a trap for an op that does not skip
+/// it.
+fn junk_pair(j: usize, first_slot: usize) -> ExpertPair {
+    let rows: Vec<usize> = (0..16).map(|i| (i + j) % 16).collect();
+    pair(j % 8, &rows, first_slot)
+}
+
+#[test]
+fn a_bound_above_the_live_pairs_gives_the_same_bits_and_each_event_counts_its_items() {
+    let Some(matrices) = matrices() else { return };
+    let dev = open();
+    let tiles = N / 64;
+    for m in &matrices {
+        let (layout, rows, pairs, slots) = standard_case(m);
+        let bank = upload_bank(&dev, m);
+        let x_bytes = quant_rows_bytes(&layout, &rows);
+        let reference = run_experts(&dev, m, &bank, &x_bytes, 16, &pairs, slots, 48);
+        // The decode step: 8 pairs of 1 row, with the bound of 1 row of tokens.
+        let decode: Vec<ExpertPair> = (0..8).map(|e| pair(e, &[0], e)).collect();
+        assert_eq!(expert_pair_bound(1), decode.len());
+        let decode_reference = run_experts(&dev, m, &bank, &x_bytes, 16, &decode, 8, 48);
+        let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<u32>>();
+        for (name, live, want_rows, want, first_junk) in [
+            ("standard", &pairs, slots, &reference, slots),
+            ("decode", &decode, 8, &decode_reference, 8),
+        ] {
+            for (bound, grid) in [
+                (live.len(), 48u32),
+                (live.len() + 1, 48),
+                (21, 7),
+                (40, 24),
+                (133, 48),
+                (21, 1),
+            ] {
+                // The pairs after the live ones are not zero: each would write 16 rows after the live rows. The header
+                // says that the live count is smaller, so the op must not run them.
+                let mut all = live.clone();
+                all.extend((live.len()..bound).map(|j| junk_pair(j, first_junk)));
+                let mut list = pair_list_bytes(&all, bound).unwrap();
+                list[..4].copy_from_slice(&(live.len() as u32).to_le_bytes());
+                let (y, board) = run_list(&dev, m, &bank, &x_bytes, &list, bound, want_rows + 16, grid);
+                assert_eq!(
+                    bits(&y[..want_rows * N]),
+                    bits(want),
+                    "{} {name}: bound {bound} at grid {grid}: the live rows differ from the run with no extra pairs",
+                    m.name
+                );
+                assert!(
+                    y[want_rows * N..].iter().all(|v| v.to_bits() == u32::MAX),
+                    "{} {name}: bound {bound} at grid {grid}: the op ran a pair that is not live",
+                    m.name
+                );
+                assert_eq!(
+                    board[0] as usize,
+                    bound * tiles,
+                    "{} {name}: bound {bound} at grid {grid}: the event of the task must count each item, live or not",
+                    m.name
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn an_empty_pair_does_nothing_and_its_items_count() {
+    let Some(matrices) = matrices() else { return };
+    let dev = open();
+    let tiles = N / 64;
+    for m in &matrices {
+        let (layout, rows, pairs, slots) = standard_case(m);
+        let bank = upload_bank(&dev, m);
+        let x_bytes = quant_rows_bytes(&layout, &rows);
+        let reference = run_experts(&dev, m, &bank, &x_bytes, 16, &pairs, slots, 48);
+        for empty_at in [0usize, 3, pairs.len() - 1] {
+            // The empty pair keeps the rows and the slots of the pair that it replaces. Only its count is 0.
+            let mut list_pairs = pairs.clone();
+            let kept = list_pairs[empty_at].count as usize;
+            let first_slot = list_pairs[empty_at].y_row[0] as usize;
+            list_pairs[empty_at].count = 0;
+            let bytes = pair_list_bytes(&list_pairs, list_pairs.len()).unwrap();
+            for grid in [48u32, 7] {
+                let (y, board) = run_list(&dev, m, &bank, &x_bytes, &bytes, list_pairs.len(), slots, grid);
+                for slot in 0..slots {
+                    let row = &y[slot * N..(slot + 1) * N];
+                    if (first_slot..first_slot + kept).contains(&slot) {
+                        assert!(
+                            row.iter().all(|v| v.to_bits() == u32::MAX),
+                            "{}: the empty pair {empty_at} wrote slot {slot} at grid {grid}",
+                            m.name
+                        );
+                    } else {
+                        assert_eq!(
+                            row.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                            reference[slot * N..(slot + 1) * N]
+                                .iter()
+                                .map(|v| v.to_bits())
+                                .collect::<Vec<_>>(),
+                            "{}: slot {slot} with the pair {empty_at} empty, at grid {grid}",
+                            m.name
+                        );
+                    }
+                }
+                assert_eq!(
+                    board[0] as usize,
+                    list_pairs.len() * tiles,
+                    "{}: the items counted",
+                    m.name
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn the_device_quantizer_and_the_expert_op_in_one_ring_give_the_bits_of_the_host_quantizer() {
     let Some(matrices) = matrices() else { return };
@@ -575,7 +731,7 @@ fn the_device_quantizer_and_the_expert_op_in_one_ring_give_the_bits_of_the_host_
         let (a, x, pair_ptr) = (
             upload(&dev, &input),
             upload(&dev, &vec![0u8; layout.bytes()]),
-            upload(&dev, &pairs),
+            upload_pairs(&dev, &pairs, pairs.len()),
         );
         let y = upload(&dev, &vec![0xFFu8; slots * N * 4]);
         let mut ring = Ring::new(&dev, 1, false).unwrap();
@@ -708,7 +864,7 @@ fn speed_of_8_experts_with_1_row() {
         // The decode step of one layer: each of 8 experts takes the one row.
         let pairs: Vec<ExpertPair> = (0..8).map(|e| pair(e, &[0], e)).collect();
         let x = upload(&dev, &x_bytes);
-        let pair_ptr = upload(&dev, &pairs);
+        let pair_ptr = upload_pairs(&dev, &pairs, pairs.len());
         let y = upload(&dev, &vec![0u8; 8 * N * 4]);
         let mut ring = Ring::new(&dev, 1, true).unwrap();
         let read = Task::per_block(MkTaskDescriptor {

@@ -17,7 +17,46 @@
 //! order, so that a warp reads one stream. The bank holds the items of expert 0, then expert 1, and so on. An expert
 //! has `n / 64` items in the order of the tile.
 
-use crate::protocol::{EXPERT_K_GROUP, EXPERT_MXFP8_RECORD_BYTES, EXPERT_NVFP4_RECORD_BYTES, EXPERT_TILE_ROWS};
+use crate::protocol::{
+    EXPERT_K_GROUP, EXPERT_MXFP8_RECORD_BYTES, EXPERT_NVFP4_RECORD_BYTES, EXPERT_PAIR_HEADER_BYTES, EXPERT_TILE_ROWS,
+    ExpertPair, ExpertPairHeader,
+};
+
+/// The bytes of a pair list for the device: the header with the live count `pairs.len()`, the live pairs, and zero pairs
+/// up to `capacity` pairs. The task needs room for `capacity` pairs, because its count of items is the bound
+/// `capacity * tiles`. An error says that the live pairs do not fit.
+pub fn pair_list_bytes(pairs: &[ExpertPair], capacity: usize) -> Result<Vec<u8>, String> {
+    if pairs.len() > capacity {
+        return Err(format!(
+            "the list has {} live pairs, and the bound of the task is {capacity}. Raise the bound, or route fewer pairs",
+            pairs.len()
+        ));
+    }
+    let header = ExpertPairHeader {
+        pairs: pairs.len() as u32,
+        reserved: [0; 3],
+    };
+    let mut out = Vec::with_capacity(EXPERT_PAIR_HEADER_BYTES + capacity * std::mem::size_of::<ExpertPair>());
+    out.extend_from_slice(&header.pairs.to_le_bytes());
+    out.extend(header.reserved.iter().flat_map(|word| word.to_le_bytes()));
+    for pair in pairs
+        .iter()
+        .copied()
+        .chain(std::iter::repeat(ExpertPair::default()))
+        .take(capacity)
+    {
+        out.extend_from_slice(&pair.expert.to_le_bytes());
+        out.extend_from_slice(&pair.count.to_le_bytes());
+        out.extend(pair.x_row.iter().flat_map(|row| row.to_le_bytes()));
+        out.extend(pair.y_row.iter().flat_map(|row| row.to_le_bytes()));
+        out.extend(pair.weight.iter().flat_map(|weight| weight.to_le_bytes()));
+    }
+    debug_assert_eq!(
+        out.len(),
+        EXPERT_PAIR_HEADER_BYTES + capacity * std::mem::size_of::<ExpertPair>()
+    );
+    Ok(out)
+}
 
 /// The two formats of the experts of Inkling 2.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -248,6 +287,32 @@ impl QuantRowsLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_pair_list_has_the_header_the_live_pairs_and_zero_pairs_up_to_the_bound() {
+        let mut live = ExpertPair {
+            expert: 7,
+            count: 2,
+            ..Default::default()
+        };
+        live.x_row[1] = 5;
+        live.y_row[1] = 9;
+        live.weight[1] = 0.25;
+        let bytes = pair_list_bytes(&[live], 3).unwrap();
+        let pair = std::mem::size_of::<ExpertPair>();
+        assert_eq!(bytes.len(), EXPERT_PAIR_HEADER_BYTES + 3 * pair);
+        assert_eq!(&bytes[..4], &1u32.to_le_bytes());
+        assert!(bytes[4..EXPERT_PAIR_HEADER_BYTES].iter().all(|b| *b == 0));
+        let first = &bytes[EXPERT_PAIR_HEADER_BYTES..][..pair];
+        assert_eq!(&first[..4], &7u32.to_le_bytes());
+        assert_eq!(&first[4..8], &2u32.to_le_bytes());
+        assert_eq!(&first[8 + 2..8 + 4], &5u16.to_le_bytes());
+        assert_eq!(&first[40 + 2..40 + 4], &9u16.to_le_bytes());
+        assert_eq!(&first[72 + 4..72 + 8], &0.25f32.to_le_bytes());
+        assert!(bytes[EXPERT_PAIR_HEADER_BYTES + pair..].iter().all(|b| *b == 0));
+        let error = pair_list_bytes(&[live, live], 1).unwrap_err();
+        assert!(error.contains("2 live pairs") && error.contains("bound"), "{error}");
+    }
 
     /// A byte that tells its place: no two nearby places hold the same byte.
     fn pattern(index: usize, salt: usize) -> u8 {
