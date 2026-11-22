@@ -2150,6 +2150,13 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   - A raw scale of `2^-127` or less gives the byte 0. The byte stops at 254. The byte 255 is an error.
   - The inverse is the exact reciprocal of the scale, and `2^127` for the byte 0.
   - Each value is `v × inverse`, clamped to ±448, then rounded to `e4m3` nearest even.
+- **The rows that the experts quantize.** The GB10 path of vLLM quantizes two kinds of rows (`ops/moe.py`,
+  `ops/activation.py` and `moe.py` of `vllm/models/inkling2/nvidia/`):
+  - The input of gate and up: one row of 2,304 values for each token. All experts of the token share it. The router
+    reads the row before its quantization.
+  - The input of down: one row of 1,152 values for each token and expert slot, with its own amax. The row is the
+    gated product times the routing weight. Thus the routing weight comes before the quantization and the down
+    projection, not after the down projection as in transformers.
 - **The expert epilogue of NVFP4.** The dot product of an activation row and a weight row follows the GEMM of vLLM:
   - Sum each block of 16 products of the codes. Multiply the block sum by the product of the two block scales.
     Add it to the total in `f32`.
