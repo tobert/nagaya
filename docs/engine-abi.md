@@ -1876,6 +1876,18 @@ Opus 5.5, 2026-11-21).
     fused multiply-add and no other order.
   - The sum of the 8 picks has a fixed order, with no atomics. The reference sums in the order of the experts, and
     the card test names the gap of the order that the op uses.
+  - **The row path** (milestone 36 item 1). A block of 1 to 8 tokens takes a path with no XMX. Each expert then has
+    at most 8 entries, and a lane expands each weight of its row once for them. A block of 9 or more tokens takes
+    the XMX path.
+  - The row path splits the steps of a row into fixed parts: 16 for the gate and up rows, 8 for the down rows.
+    The subgroups of one work-group take the parts of one tile. The first part adds the parts in order, so the
+    count of work-groups changes no bit.
+  - A part sums in `f32` with a fused multiply-add, in 4 sums of columns `i mod 4`. The weights keep the bits of the
+    XMX path. A step of NVFP4 writes the 8 magnitudes of its codes to local memory, and a code reads its value
+    back. The values of MXFP8 come from the bits of the code and the exponent of the scale.
+  - Each path gives a token the same bits in any block of its counts. A token alone and in a block of 9 or more
+    differ by the order of the sums, as the matmuls do (D11). The card test `xe_experts` measures both paths
+    against the host form.
 - **The attention.** The op computes the bias of each score inline. It is the dot product of the 16 bias states of
   the query and the column of the distance. A distance of 1,024 or more has no bias.
   - The distance and the log scale read absolute positions, never a row of a ring.
