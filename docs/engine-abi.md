@@ -905,6 +905,11 @@ so the worst wait behind other work is one quantum.
 
 A watchdog thread reports each quantum that runs past the bound.
 
+The size of a quantum is a balance. Amy, 2026-11-22: "I'd say 1-10s chunks are fine in the nagaya, we want there to
+be opportunities to pipeline and have hot caches and so on, but also we do some chunky work sharing, and want health
+checks". Thus a bound from 1,000 to 10,000 ms is in range. Split expensive work at a rough boundary where a switch
+of work is possible, even if the scheduler seldom switches there.
+
 ds4-recipe chose cooperative yields after a short turn waited 283.95 s behind a long prefill. The nagaya uses the
 bounded wait instead.
 
@@ -1789,9 +1794,9 @@ choice open.
   843 ms. The bound `max_quantum_ms` is 2,000 ms (D8), and the watchdog stops a group with no beat for 30 s (spec
   7.4). Thus such a pass breaks the bound, and in the process it can stop the process. This is a known defect, not
   an exception to the bound.
-- **Proposed (ChatGPT through kaibo `gpt-plan`, 2026-11-21): the tower in quanta of its own.** The family keeps the
-  bound of 4,096 px. The tower runs in quanta before the pass that reads its rows. Each quantum fits
-  `max_quantum_ms`.
+- **The tower in quanta of its own** (from ChatGPT through kaibo `gpt-plan`, 2026-11-21; accepted 2026-11-22 under
+  D8). The family keeps the bound of 4,096 px. The tower runs in quanta before the pass that reads its rows. Each
+  quantum fits `max_quantum_ms`.
   - The engine chooses the slices, and it keeps the state of a tower that is not done. A slice can be a few layers,
     or the queries of one layer in parts. A slice must not cut the image, because the attention of the tower reads
     the whole image.
