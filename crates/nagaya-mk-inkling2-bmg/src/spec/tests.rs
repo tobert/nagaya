@@ -823,3 +823,56 @@ fn the_identity_numbers_name_the_reserve_and_the_block() {
         );
     }
 }
+
+/// A header of the tensors of `text_tensors`, with no bytes: each tensor takes the bytes of its dtype and shape.
+fn table_header() -> HashMap<String, TensorMeta> {
+    let mut at = 0;
+    text_tensors()
+        .into_iter()
+        .map(|(name, dtype, shape)| {
+            let bytes = shape.iter().product::<usize>() * dtype.size_bytes();
+            let meta = TensorMeta {
+                name: name.clone(),
+                dtype,
+                shape,
+                data_start: at,
+                data_end: at + bytes,
+            };
+            at += bytes;
+            (name, meta)
+        })
+        .collect()
+}
+
+/// The plan checks each tensor that the load reads: its name, its dtype and its shape. A missing tensor or one of
+/// another shape is an error that names it, and the plan of the whole table is the bytes of Mini.
+#[test]
+fn the_plan_checks_each_tensor_of_the_text_model() {
+    let header = table_header();
+    assert_eq!(weights_bytes_of(&header), Ok(18_881_368_064));
+    let names = [
+        "model.llm.embed_norm.weight",
+        "model.llm.norm.weight",
+        "model.llm.attn_res.output_query",
+        "model.llm.attn_res.attn_queries.4",
+        "model.llm.attn_res.mlp_queries.23",
+        "model.llm.middle_cycle_cross_pass_queries",
+        "model.llm.layers.3.mlp_norm.weight",
+        "model.llm.layers.5.k_input_norm.weight",
+        "model.llm.layers.5.attn.k_sconv.weight_proj",
+        "model.llm.layers.4.attn.v_sconv.weight",
+        "model.llm.layers.9.controllers.mlp.gain_weight",
+        "model.llm.layers.23.mlp.gate.bias",
+        "model.llm.layers.0.attn.wo_ud.weight",
+    ];
+    for name in names {
+        let mut missing = header.clone();
+        missing.remove(name).unwrap();
+        let e = weights_bytes_of(&missing).unwrap_err();
+        assert!(e.contains(&format!("holds no tensor {name}")), "{e}");
+        let mut other = header.clone();
+        other.get_mut(name).unwrap().shape.push(1);
+        let e = weights_bytes_of(&other).unwrap_err();
+        assert!(e.contains(&format!("the tensor {name} is")), "{e}");
+    }
+}

@@ -835,68 +835,144 @@ fn tensor<'a>(
     Ok(meta)
 }
 
-/// The device bytes of the weights from the table of tensors of the checkpoint. Each expert matrix is one slab, the
-/// embedding keeps its first `LOGITS` rows, the head holds `HEAD_ROWS` rows, each sink projection `SINK_ROWS` rows, and
-/// each other tensor of `model.llm.` keeps its bytes. The
-/// tensors of `model.visual.` are the term `vision`, which `vision::load` checks. Any other tensor is refused.
-pub fn weights_bytes_of(tensors: &HashMap<String, TensorMeta>) -> Result<u64, String> {
+/// Each tensor of `model.llm.` that the load reads, with its dtype and its shape (engine-abi "The host spec", "The
+/// term `weights`"). The plan checks each one, so the load never meets a missing tensor.
+pub fn text_tensors() -> Vec<(String, safetensors::Dtype, Vec<usize>)> {
     use safetensors::Dtype::{BF16, F8E4M3, F32, U8};
-    let mut total = 0usize;
-    let mut read: HashSet<String> = HashSet::new();
-    let mut need = |name: String, dtype, shape: &[usize]| -> Result<(), String> {
-        tensor(tensors, &name, dtype, shape)?;
-        read.insert(name);
-        Ok(())
-    };
+    let mut out = Vec::new();
+    let mut t = |name: String, dtype, shape: &[usize]| out.push((format!("model.llm.{name}"), dtype, shape.to_vec()));
+    t("embed.weight".into(), BF16, &[VOCAB, HIDDEN]);
+    t("unembed.weight".into(), BF16, &[VOCAB, HIDDEN]);
+    t("embed_norm.weight".into(), BF16, &[HIDDEN]);
+    t("norm.weight".into(), BF16, &[HIDDEN]);
+    t("attn_res.output_query".into(), F32, &[HIDDEN]);
+    t(
+        "middle_cycle_cross_pass_queries".into(),
+        F32,
+        &[2 * CYCLE_LAYERS, HIDDEN],
+    );
+    t(
+        "middle_cycle_cross_pass_kv_queries".into(),
+        F32,
+        &[2 * CYCLE_LAYERS, HIDDEN],
+    );
+    let (q, kv) = (HEADS * HEAD_DIM, KV_HEADS * HEAD_DIM);
     for l in 0..LAYERS {
-        let p = |name: &str| format!("model.llm.layers.{l}.mlp.experts.{name}");
+        let full = is_full(l);
+        if l > 0 {
+            // The queries of the input of layer `l` have the index `l - 1`: layer 0 reads the embedding row. A full
+            // layer has three: query, key and value.
+            let rows: &[usize] = if full { &[3, HIDDEN] } else { &[HIDDEN] };
+            t(format!("attn_res.attn_queries.{}", l - 1), F32, rows);
+        }
+        t(format!("attn_res.mlp_queries.{l}"), F32, &[HIDDEN]);
+        let mut layer = |name: &str, dtype, shape: &[usize]| t(format!("layers.{l}.{name}"), dtype, shape);
+        layer("mlp_norm.weight", BF16, &[HIDDEN]);
+        if full {
+            for norm in ["q", "k", "v"] {
+                layer(&format!("{norm}_input_norm.weight"), BF16, &[HIDDEN]);
+            }
+            for conv in ["k", "v"] {
+                layer(&format!("attn.{conv}_sconv.static_w"), BF16, &[CONV_TAPS, kv]);
+                layer(
+                    &format!("attn.{conv}_sconv.weight_proj"),
+                    BF16,
+                    &[CONV_TAPS * KV_HEADS, HIDDEN],
+                );
+            }
+        } else {
+            layer("attn_norm.weight", BF16, &[HIDDEN]);
+            for conv in ["k", "v"] {
+                layer(&format!("attn.{conv}_sconv.weight"), BF16, &[kv, 1, CONV_TAPS]);
+            }
+        }
+        layer("attn.wq_du.weight", BF16, &[q, HIDDEN]);
+        layer("attn.wr_du.weight", BF16, &[HEADS * D_REL, HIDDEN]);
+        layer("attn.attn_sink_proj.weight", BF16, &[HEADS, HIDDEN]);
+        layer("attn.gate_attn.weight", BF16, &[q, HIDDEN]);
+        layer("attn.wk_dv.weight", BF16, &[kv, HIDDEN]);
+        layer("attn.wv_dv.weight", BF16, &[kv, HIDDEN]);
+        layer("attn.wo_ud.weight", BF16, &[HIDDEN, q]);
+        layer("attn.q_l2_clip.scale", BF16, &[HEADS, HEAD_DIM]);
+        layer("attn.rel_l2_clip.scale", BF16, &[HEADS, D_REL]);
+        layer("attn.rel_logits_proj.proj", BF16, &[D_REL, REL_EXTENT]);
+        layer("attn_sconv.weight", BF16, &[HIDDEN, 1, CONV_TAPS]);
+        layer("mlp_sconv.weight", BF16, &[HIDDEN, 1, CONV_TAPS]);
+        layer("mlp.gate.weight", BF16, &[EXPERTS, HIDDEN]);
+        layer("mlp.gate.bias", F32, &[EXPERTS]);
+        if (CYCLE_START..CYCLE_END).contains(&l) {
+            for g in ["attn", "k", "v", "mlp"] {
+                layer(&format!("controllers.{g}.down_weight"), BF16, &[GATE_RANK, 2 * HIDDEN]);
+                layer(&format!("controllers.{g}.forget_weight"), BF16, &[HIDDEN, GATE_RANK]);
+                layer(&format!("controllers.{g}.gain_weight"), BF16, &[HIDDEN, GATE_RANK]);
+            }
+        }
         let mx = l >= NVFP4_LAYERS;
         for (w, rows, cols) in [("w13", 2 * INTERMEDIATE, HIDDEN), ("w2", HIDDEN, INTERMEDIATE)] {
+            let p = |name: &str| format!("mlp.experts.{w}_{name}");
             if mx {
                 // E4M3 values, and one UE8M0 scale in a `u8` for each 32 values.
-                need(p(&format!("{w}_weight")), F8E4M3, &[EXPERTS, rows, cols])?;
-                need(p(&format!("{w}_weight_scale")), U8, &[EXPERTS, rows, cols / 32])?;
+                layer(&p("weight"), F8E4M3, &[EXPERTS, rows, cols]);
+                layer(&p("weight_scale"), U8, &[EXPERTS, rows, cols / 32]);
             } else {
                 // Two E2M1 codes in a `u8`, one E4M3 scale for each 16 values, and the two numbers of the factor.
-                need(p(&format!("{w}_weight")), U8, &[EXPERTS, rows, cols / 2])?;
-                need(p(&format!("{w}_weight_scale")), F8E4M3, &[EXPERTS, rows, cols / 16])?;
-                need(p(&format!("{w}_weight_amax")), F32, &[EXPERTS])?;
-                need(p(&format!("{w}_weight_outer_scale_denominator")), F32, &[1])?;
+                layer(&p("weight"), U8, &[EXPERTS, rows, cols / 2]);
+                layer(&p("weight_scale"), F8E4M3, &[EXPERTS, rows, cols / 16]);
+                layer(&p("weight_amax"), F32, &[EXPERTS]);
+                layer(&p("weight_outer_scale_denominator"), F32, &[1]);
             }
-            total += rounded(expert_slab_bytes(EXPERTS, rows, cols, mx));
         }
     }
-    // The embedding holds its first LOGITS rows, and the head holds HEAD_ROWS rows.
-    for (name, rows) in [
-        ("model.llm.embed.weight", LOGITS),
-        ("model.llm.unembed.weight", HEAD_ROWS),
-    ] {
-        need(name.to_owned(), BF16, &[VOCAB, HIDDEN])?;
-        total += rounded(rows * HIDDEN * 2);
-    }
-    // Each sink projection holds SINK_ROWS rows.
-    for l in 0..LAYERS {
-        need(
-            format!("model.llm.layers.{l}.attn.attn_sink_proj.weight"),
-            BF16,
-            &[HEADS, HIDDEN],
-        )?;
-        total += rounded(SINK_ROWS * HIDDEN * 2);
+    out
+}
+
+/// The device bytes of the weights from the table of tensors of the checkpoint. Each tensor of `text_tensors` must be
+/// there with its dtype and shape. Each expert matrix is one slab, the embedding keeps its first `LOGITS` rows, the
+/// head holds `HEAD_ROWS` rows, each sink projection `SINK_ROWS` rows, and each other tensor keeps its bytes. The
+/// tensors of `model.visual.` are the term `vision`, which `vision::load` checks. Any other tensor is refused.
+pub fn weights_bytes_of(tensors: &HashMap<String, TensorMeta>) -> Result<u64, String> {
+    let mut total = 0usize;
+    let mut read: HashSet<String> = HashSet::new();
+    for (name, dtype, shape) in text_tensors() {
+        let meta = tensor(tensors, &name, dtype, &shape)?;
+        total += if let Some(rest) = name.strip_suffix("_weight")
+            && let Some((_, w)) = rest.rsplit_once(".mlp.experts.")
+        {
+            let (rows, cols) = if w == "w13" {
+                (2 * INTERMEDIATE, HIDDEN)
+            } else {
+                (HIDDEN, INTERMEDIATE)
+            };
+            rounded(expert_slab_bytes(
+                EXPERTS,
+                rows,
+                cols,
+                dtype == safetensors::Dtype::F8E4M3,
+            ))
+        } else if name.contains(".mlp.experts.") {
+            // The scales and the factor go into the slab of their matrix.
+            0
+        } else if name == "model.llm.embed.weight" {
+            rounded(LOGITS * HIDDEN * 2)
+        } else if name == "model.llm.unembed.weight" {
+            rounded(HEAD_ROWS * HIDDEN * 2)
+        } else if name.ends_with(".attn.attn_sink_proj.weight") {
+            rounded(SINK_ROWS * HIDDEN * 2)
+        } else {
+            rounded(meta.data_end - meta.data_start)
+        };
+        read.insert(name);
     }
     let mut names: Vec<&String> = tensors.keys().collect();
     names.sort();
-    for name in names {
-        if read.contains(name) || name.starts_with("model.visual.") {
-            continue;
-        }
-        if !name.starts_with("model.llm.") || name.contains(".mlp.experts.") {
-            return Err(format!(
-                "the checkpoint holds the tensor {name}, which the Inkling 2 engine does not know. The file is not \
-                 Inkling 2"
-            ));
-        }
-        let meta = &tensors[name];
-        total += rounded(meta.data_end - meta.data_start);
+    if let Some(name) = names
+        .into_iter()
+        .find(|name| !read.contains(*name) && !name.starts_with("model.visual."))
+    {
+        return Err(format!(
+            "the checkpoint holds the tensor {name}, which the Inkling 2 engine does not know. The file is not \
+             Inkling 2"
+        ));
     }
     Ok(total as u64)
 }

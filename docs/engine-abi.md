@@ -1824,7 +1824,9 @@ Opus 5.5, 2026-11-21).
   - Each other tensor of `model.llm.` keeps its bytes. Some tensors share one allocation ("The weights on the
     card").
   - Each allocation rounds up to 64 bytes. Mini gives 18,881,368,064 bytes.
-  - The tensors of `model.visual.` wait for images (step 9). Another tensor is refused, and so is a missing one.
+  - The plan checks the name, the dtype and the shape of each tensor that the load reads (`spec::text_tensors`).
+    A missing tensor, or one of another dtype or shape, is an error that names it. Thus the load never meets a
+    missing tensor. Another tensor of `model.llm.` is refused too. `vision::load` checks the tensors of `model.visual.`.
 - **The term `work`.** It is the buffers of a block (`spec::block_buffers`), the logits and the ring of the card.
   The list of buffers is the list of `model::Bufs`, and the ring builder names its use. The scratch is the scratch of
   `OP_INKLING2_ATTN` for a block of 512 (`tasks::inkling2_attn_scratch_floats`).
