@@ -545,7 +545,22 @@ might have a kaijutsu agent go after some". This milestone is a list of findings
 engine on one B70 card. Each item stands alone, and an agent may take any one. Add each new finding here.
 
 Amy set the order on 2026-11-21: "mostly we'll want some batching for when we want to try swarm or parallel
-contexts I think; we can focus on other perf gains first". Thus the items of the batch come last.
+contexts I think; we can focus on other perf gains first". On 2026-11-22 she let the agent choose the order: "if
+pulling swarm forward puts us on the right path I'm all for making it next". Thus the batch (items 10 to 12) comes
+next after item 1, and then the other items. Reasons:
+
+- With 8 rows, each run reads about 51 experts, so each expert gets one or two rows. That is the path of item 1.
+- Item 1 and `FLAG_TILED` both move bits. Back to back, the engine identity moves once, and the gap is measured once.
+- A batch shares the fixed costs of a step: the head, the dense weights and the task boundaries.
+
+**The ceiling of one row.** A decode step must read each weight that it uses once. At 3 cycles it reads these:
+
+- about 1.7 GB of experts and 0.92 GB of the head;
+- 0.5 to 1 GB of the other dense weights, an estimate (item 13).
+
+At 608 GB/s, with about 2 ms of task boundaries, a step takes at least 7 to 8 ms: 120 to 150 tokens each second.
+Persistent kernels seldom hold more than 60% to 70% of the bandwidth, so 60 to 90 tokens each second is a fair goal.
+A batch can pass this ceiling in the tokens of all its rows.
 
 **Where the engine is.** Milestone 35 step 5 measured it on 2026-11-21 (`effd4d2`):
 
@@ -677,8 +692,9 @@ The experts take 33.2 ms, 11 times their floor of about 3 ms. Two small ops run 
    tasks take about 1 ms. Join a small op to the task before it when it reads only its output. Examples: the clips
    with their matmul, or the gate with the output matmul.
 8. **The tower of an image** (milestone 35 step 9). An image of 4,096 by 4,096 px has 42,436 patches, and its
-   attention reads every pair. Its tower takes about 56,780 ms in one pass, 28 times `max_quantum_ms` (milestone 35
-   step 11). Decide between a flash form of that attention, a tower in several quanta, and a limit.
+   attention reads every pair. Its tower takes about 56,780 ms in one pass. Since 2026-11-22 it runs as a long pass
+   with a declared bound (engine-abi D8), and its card gate passed through the process. A flash form of that
+   attention, or a tower in several quanta, is now for its speed and for the wait of other work.
 9. **Long contexts.** A slot of one card holds 164,352 positions at 3 cycles, and 106,496 at up to 5 (milestone 35
    step 11). The keys and values in `bf16` would hold about twice as many, but they change bits: a new identity and a
    new gap. Two cards could hold the keys of the full layers on the second card.
@@ -701,3 +717,12 @@ The experts take 33.2 ms, 11 times their floor of about 3 ms. Two small ops run 
     expert bytes of a row alone. Most of the gain comes from the fixed costs that the rows share. They are the
     tasks, the weights of the attention and the idle rows of each dpas. Measure tokens each second at 1, 2, 4 and 8
     rows.
+
+**Also.**
+
+13. **Bytes in the profile.** Give each row of the profile the bytes that its tasks read, and their rate against
+    608 GB/s. Then each op shows its distance from its floor, and the ceiling above stops being an estimate. Amy,
+    2026-11-22, of the profile binary: "a super cool feature". The README names it as a feature to grow.
+14. **The register spills.** The megakernel spills about 6.8 KB of scratch for each work item at 128 GRF (5.8 KB
+    before item 2). A work-group of 1,024 threads cannot use the large GRF. Thus the time of each op depends on the
+    compiler. Find the ops that spill most, and measure a binary with fewer threads in each work-group.
