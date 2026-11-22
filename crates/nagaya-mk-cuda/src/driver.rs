@@ -23,6 +23,8 @@ const CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT: c_int = 16;
 
 unsafe extern "C" {
     fn cuInit(flags: c_uint) -> CUresult;
+    fn cuGetErrorName(error: CUresult, p_str: *mut *const c_char) -> CUresult;
+    fn cuGetErrorString(error: CUresult, p_str: *mut *const c_char) -> CUresult;
     fn cuDriverGetVersion(driver_version: *mut c_int) -> CUresult;
     fn cuDeviceGetCount(count: *mut c_int) -> CUresult;
     fn cuDeviceGet(device: *mut CUdevice, ordinal: c_int) -> CUresult;
@@ -64,11 +66,67 @@ unsafe extern "C" {
     ) -> CUresult;
 }
 
+/// Read one driver text through `cuGetErrorName` or `cuGetErrorString`. These calls need no context.
+fn driver_text(
+    code: CUresult,
+    get: unsafe extern "C" fn(CUresult, *mut *const c_char) -> CUresult,
+    fallback: &str,
+) -> String {
+    let mut text: *const c_char = ptr::null();
+    // SAFETY: the driver writes a pointer to a static NUL-terminated string, or leaves null on an error.
+    let status = unsafe { get(code, &mut text) };
+    if status != CUDA_SUCCESS || text.is_null() {
+        return fallback.to_owned();
+    }
+    // SAFETY: `text` is not null and the driver owns a NUL-terminated string.
+    unsafe { CStr::from_ptr(text) }.to_string_lossy().into_owned()
+}
+
+/// What the reader can do about one driver error code.
+fn advice(code: CUresult) -> &'static str {
+    match code {
+        2 => "Free GPU memory, or ask for fewer bytes.",
+        3 | 100 | 101 => "Check that the driver is loaded: run `nvidia-smi`.",
+        201 | 202 | 219 | 400 => {
+            "Open the device again on this thread, after the owner of the context makes it current."
+        }
+        209 | 222 | 300 | 301 => "The cubin does not fit this GPU. Build it for `sm_121a` with the same CUDA toolkit.",
+        216 | 217 | 704 | 708 => {
+            "The call is not allowed now. Check the order of the calls and the context of the thread."
+        }
+        700 | 701 | 702 | 715 | 719 | 999 => {
+            "A kernel failed, and the context cannot run again. Restart the process and check the task pointers."
+        }
+        _ => "Check that no other process holds the GPU, and that the driver matches the CUDA toolkit.",
+    }
+}
+
+/// Build the message of one driver error: what failed, the driver's name and text, and what to do.
+fn describe(code: CUresult, what: &str) -> String {
+    let name = driver_text(code, cuGetErrorName, "an unknown error");
+    let text = driver_text(code, cuGetErrorString, "the driver gives no text");
+    format!(
+        "{what} failed with CUDA driver error {code} ({name}): {text}. {}",
+        advice(code)
+    )
+}
+
 fn check(code: CUresult, what: &str) -> Result<(), String> {
     if code == CUDA_SUCCESS {
         Ok(())
     } else {
-        Err(format!("{what} failed with CUDA driver error {code}"))
+        Err(describe(code, what))
+    }
+}
+
+/// Convert the multiprocessor count that the driver reports. A count below 1 is an error, not a default.
+fn sm_count_from(raw: c_int) -> Result<u32, String> {
+    match u32::try_from(raw) {
+        Ok(count) if count >= 1 => Ok(count),
+        _ => Err(format!(
+            "the driver reports {raw} multiprocessors for the GPU, so the grid width is unknown. \
+             Check the driver with `nvidia-smi`, and do not run on this GPU"
+        )),
     }
 }
 
@@ -135,6 +193,7 @@ impl CudaDevice {
                 cuDeviceGetAttribute(&mut sm_count, CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT, device),
                 "cuDeviceGetAttribute(MULTIPROCESSOR_COUNT)",
             )?;
+            let sm_count = sm_count_from(sm_count)?;
             let mut ctx: CUcontext = ptr::null_mut();
             check(cuDevicePrimaryCtxRetain(&mut ctx, device), "cuDevicePrimaryCtxRetain")?;
             if let Err(err) = check(cuCtxSetCurrent(ctx), "cuCtxSetCurrent") {
@@ -161,7 +220,7 @@ impl CudaDevice {
                 ctx,
                 module,
                 kernel,
-                sm_count: u32::try_from(sm_count).unwrap_or(1).max(1),
+                sm_count,
                 driver_version,
                 pci_address: matched_pci,
             })
@@ -308,6 +367,33 @@ impl Drop for CudaDevice {
             let _ = cuCtxSetCurrent(self.ctx);
             let _ = cuModuleUnload(self.module);
             let _ = cuDevicePrimaryCtxRelease(self.device);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_message_names_the_code_the_cause_and_the_next_step() {
+        let message = check(700, "cuLaunchKernel").unwrap_err();
+        assert!(message.starts_with("cuLaunchKernel failed"), "{message}");
+        assert!(message.contains("CUDA_ERROR_ILLEGAL_ADDRESS"), "{message}");
+        assert!(message.contains("illegal memory access"), "{message}");
+        assert!(message.contains("Restart the process"), "{message}");
+        let unknown = check(123_456, "cuInit").unwrap_err();
+        assert!(unknown.contains("123456"), "{unknown}");
+        assert!(unknown.contains("Check that no other process"), "{unknown}");
+    }
+
+    #[test]
+    fn a_bad_multiprocessor_count_is_an_error() {
+        assert_eq!(sm_count_from(48).unwrap(), 48);
+        for bad in [0, -1] {
+            let message = sm_count_from(bad).unwrap_err();
+            assert!(message.contains(&bad.to_string()), "{message}");
+            assert!(message.contains("nvidia-smi"), "{message}");
         }
     }
 }
