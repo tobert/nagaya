@@ -2117,31 +2117,70 @@ the oracle have one layout.
 
 The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop research model on one NVIDIA GB10
 (`sm_121`) GPU (milestone 37). It uses the shared persistent interpreter of `nagaya-mk-cuda`. Each rule below is
-**Proposed** (Gemini 4 Neon, 2026-11-22).
+**Proposed** (Claude Sonnet 5.5, 2026-11-22), except the rule of the trunk, which the owner decided on 2026-11-22.
 
-- **Native NVFP4 activations (`fouroversix_mae`).** Experts in layers 0 to 19 quantize each activation row per token
-  into blocks of 16 values (`hf_quant_config.json`). A zero row gives zero codes, zero scales, and a global scale
-  of `0.0`. Otherwise the global scale is `row_amax / (6.0 * 448.0)`.
-  - For each block of 16 values, evaluate two target scales: `block_amax / (6.0 * global_scale)` and
-    `block_amax / (4.0 * global_scale)`. Round each candidate scale to `e4m3fn` nearest-to-even.
-  - Quantize the 16 values to E2M1 nearest-to-even under each candidate scale, and compute the mean absolute error
-    in `f32`. Select target 4 strictly when `mae4 < mae6`; otherwise select target 6.
-  - Pack even elements in the low nibble and odd elements in the high nibble.
-- **Native MXFP8 activations (`ue8m0`).** Experts in layers 20 to 23 quantize each activation row into blocks of 32
-  values. A zero block gives scale code `0` and zero codes. Otherwise the scale is `2^e` where `e` is the smallest
-  integer with `2^e >= block_amax / 448.0`, clamped to `[-127, 127]`. Divide each value by `2^e` and round to
-  `e4m3fn` nearest-to-even.
-- **Packed weights and MMA.** Expert weights stay packed in unified memory in their checkpoint formats (NVFP4 in
-  layers 0 to 19, MXFP8 in layers 20 to 23). The kernels run `sm_121a` block-scaled MMA with `f32` accumulation,
-  then apply the combined `f32` global scale and expert factor.
+- **The trunk is `f32`.** The trunk of this engine is `f32`, and the quantizers take `f32` rows. vLLM runs the trunk
+  in `bf16` and quantizes `bf16` rows. Decided 2026-11-22. A `bf16` trunk is a later choice.
+- **The source of the activation rules.** The checkpoint requires the quantization of the activations
+  (`required_activation_quantization` in `hf_quant_config.json`). The rules below are those of the Inkling 2 path of
+  vLLM at commit `186882d9e8` (Apache-2.0): `vllm/models/inkling2/nvidia/ops/nvfp4.py`, `mxfp8.py`, `moe.py` and
+  `moe_sm120.py`. transformers at `046bdb8cc2` expands the experts to `bf16` and quantizes no activation. It is not
+  a source.
+- **The test of the rules.** The fixture `tests/fixtures/quant_kernels.safetensors` holds the output of the shipped
+  kernels for 154 rows. `tools/inkling2_quant_fixture.py` writes it. `quant.rs` gives the same bytes for each row.
+  Thus the fixture is the test of the rules below.
+- **NVFP4 activations.** Experts in layers 0 to 19 quantize each row per token (`amax_type: per_token`), into blocks
+  of 16 values with `e4m3` scales (`scale_selection_rule: fouroversix_mae`). Each step is an `f32` operation:
+  - The row amax is the largest absolute value of the row. A value that is not finite is an error.
+  - The encoder is `min(1536 / amax, FLT_MAX)`. The decoder is `1 / encoder`.
+  - The outer scale is `amax × (1/1536 rounded to f32)`. The number 1536 is 6 × 256. With 256 in place of 448, a
+    block that holds the row amax can still take the scale of 4.
+  - A block has two candidate scales. The first is `block_amax × (encoder × (1/6 rounded to f32))`. The second is
+    `block_amax × (encoder × 0.25)`. Cap each at 448, then round it to `e4m3` nearest even.
+  - The inverse of a candidate is `min(1 / (scale × decoder), FLT_MAX)`. Each value is `v × inverse`, rounded to
+    `e2m1` nearest even, and saturated at 6.0.
+  - The reconstruction of a value is `((e2m1 × scale) × outer)`. Keep this order.
+  - The error of a candidate is the sum of the 16 values of `|reconstruction − v|`. The sum is a pairwise tree:
+    adjacent pairs first, then pairs of pairs.
+  - The block takes the scale of 4 only when its error is less than the error of the scale of 6. A tie keeps 6.
+  - A zero row gives zero codes, zero scales and an amax of 0. An even element goes in the low nibble.
+- **MXFP8 activations.** Experts in layers 20 to 23 quantize each row into blocks of 32 values with `ue8m0` scales.
+  - The raw scale is `block_amax × (1/448 rounded to f32)`. The scale byte is the exponent bits of the raw scale,
+    rounded up: add the mantissa mask, and keep the exponent field. A nonzero mantissa carries into the exponent.
+  - A raw scale of `2^-127` or less gives the byte 0. The byte stops at 254. The byte 255 is an error.
+  - The inverse is the exact reciprocal of the scale, and `2^127` for the byte 0.
+  - Each value is `v × inverse`, clamped to ±448, then rounded to `e4m3` nearest even.
+- **The expert epilogue of NVFP4.** The dot product of an activation row and a weight row follows the GEMM of vLLM:
+  - Sum each block of 16 products of the codes. Multiply the block sum by the product of the two block scales.
+    Add it to the total in `f32`.
+  - Multiply the total by `expert_scale` (1.0 on `sm_120` and `sm_121`).
+  - Multiply the result by `(x_amax × w_amax) × (1 / (1536 × w_denominator))`. The checkpoint gives `w_amax` and
+    `w_denominator` (`weight_scale_format: amax_denominator`).
+- **The expert epilogue of MXFP8.** The GB10 path of vLLM (`moe_sm120.py`) does not use a block-scaled MMA for
+  MXFP8. It expands the codes of both sides to `bf16` with their scales, and it sums the products in `f32`. Then
+  it multiplies by `expert_scale` and rounds the result to `bf16`. The host oracle sums in `f32` in ascending k and
+  does not round to `bf16`.
+- **The order of the sums.** vLLM does not define the order of the sums inside one MMA. The host oracle defines its
+  own order: block by block, in ascending k. Thus a card gate compares a dot product with a tolerance, not bits.
+  The quantizers give bits, and the fixture tests them.
+- **Packed weights.** Expert weights stay packed in unified memory in their checkpoint formats (NVFP4 in layers 0
+  to 19, MXFP8 in layers 20 to 23).
 - **Persistent CUDA interpreter.** `nagaya-mk-cuda` compiles `kernels/megakernel.cu` to `sm_121a` `.cubin` with
   `nvcc --fmad=false`. `mk_persistent_interpreter` walks 64-byte `MkTaskDescriptor` entries using GPU-scope
   acquire and release scoreboard atomics. The profile binary records `%globaltimer` timestamps in nanoseconds.
 - **Identity and oracle.** Because expert activations are quantized to NVFP4 and MXFP8, this engine has its own
   quantized host oracle and engine identity. Its `numbers` hold `quant` (`nvfp4_fouroversix_mae+mxfp8_ue8m0`),
   `max_block`, `extra_runs`, `state` (`2`), the `nvcc` version, and the BLAKE3 of the `.cubin`.
-- **Long-context sizing.** On a GB10 with 121 GB of unified memory, the weights take about 19.5 GB. At 3 cycles in
-  `f32`, 409,600 positions take about 28.1 GB. A slot of 524,288 positions takes about 36.0 GB.
+- **Long-context sizing.** The weights take about 19.5 GB of the 121 GB of unified memory. Here 400K means 409,600
+  positions. A slot at 3 cycles has 48 runs of state: 8 full runs and 40 sliding runs. `slot_bytes` in `spec.rs`
+  gives the bytes, in `f32`:
+  - A full run holds 2 planes of one row of 1,024 values for each position. The 8 full runs of 409,600 positions
+    take 26,844,184,576 bytes with their convolution state.
+  - Each of the 40 sliding runs holds a fixed ring of 3,072 rows. The 40 rings take 1,009,827,840 bytes.
+  - A slot of 409,600 positions takes 27,854,012,416 bytes (27.854 GB). A slot of 524,288 positions takes
+    35,370,205,184 bytes (35.370 GB).
+  - The attention scratch on top is a provisional bound from the B70 engine: 3,120 bytes for each position. It
+    stays until the GB10 attention exists (milestone 37 step 9, wave C).
 
 ## Not covered yet
 
