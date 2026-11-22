@@ -92,7 +92,7 @@ fn protocol_header() -> String {
     writeln!(h, "#define MK_PROFILE_WORDS {}u", protocol::PROFILE_WORDS).unwrap();
     writeln!(h, "#define MK_DESC_BYTES {}", size_of::<MkTaskDescriptor>()).unwrap();
     writeln!(h, "#define MK_DESC_ALIGN {}", align_of::<MkTaskDescriptor>()).unwrap();
-    offsets!(h, "MK_DESC_OFF_", MkTaskDescriptor: opcode, flags, layer, wait_event, signal_event, a, b, c, d, p0, p1, p2, p3);
+    offsets!(h, "MK_DESC_OFF_", MkTaskDescriptor: opcode, flags, items, wait0_event, wait0_target, wait1_event, wait1_target, signal, rows, a, b, c, d, e, f, n, k, kt, group_items, item_bytes, scale_bytes, pos0, layer, p0, p1, p2, p3);
     writeln!(h, "#define MK_STATS_BYTES {}", size_of::<BlockStats>()).unwrap();
     offsets!(h, "MK_STATS_OFF_", BlockStats: tasks_run, pad, wait_ns, exec_ns);
     h

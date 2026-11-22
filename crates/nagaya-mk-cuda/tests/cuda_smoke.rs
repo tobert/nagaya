@@ -12,7 +12,7 @@ use nagaya_mk_cuda::driver::CudaDevice;
 use nagaya_mk_cuda::protocol::{
     MkTaskDescriptor, OP_COPY, OP_NOP, OP_SELFTEST_CHECK, OP_SELFTEST_FILL, PROFILE_WORDS, selftest_value,
 };
-use nagaya_mk_cuda::ring::Ring;
+use nagaya_mk_cuda::ring::{Ring, Task, chained};
 use nagaya_mk_cuda::{INKLING2_CUBIN, INKLING2_PROFILE_CUBIN, test_cards};
 
 #[test]
@@ -42,22 +42,19 @@ fn persistent_interpreter_runs_copy_and_profile_on_gb10() {
 
     let mut ring = Ring::new(&dev, 1024, false).unwrap();
     ring.zero_device().unwrap();
+    // 16 items of 1,024 floats. The items run on whatever blocks the assignment gives.
     ring.set(&[
-        MkTaskDescriptor {
-            opcode: OP_NOP,
-            ..Default::default()
-        },
-        MkTaskDescriptor {
+        Task::per_block(MkTaskDescriptor::default()),
+        Task::with_items(MkTaskDescriptor {
             opcode: OP_COPY,
+            items: 16,
             a: dev_dst,
             b: dev_src,
-            p0: n as u32,
+            n: 1024,
             ..Default::default()
-        },
-        MkTaskDescriptor {
-            opcode: OP_NOP,
-            ..Default::default()
-        },
+        })
+        .after(0),
+        Task::per_block(MkTaskDescriptor::default()).after(1),
     ]);
     unsafe { ring.run().unwrap() };
     unsafe {
@@ -88,7 +85,7 @@ fn persistent_interpreter_runs_copy_and_profile_on_gb10() {
     let prof_dev = CudaDevice::open_by_pci(&pci, INKLING2_PROFILE_CUBIN).expect("open GB10 with profile cubin");
     let mut prof_ring = Ring::new(&prof_dev, 1024, true).unwrap();
     prof_ring.zero_device().unwrap();
-    prof_ring.set(&[
+    prof_ring.set(&chained(&[
         MkTaskDescriptor {
             opcode: OP_NOP,
             ..Default::default()
@@ -97,7 +94,7 @@ fn persistent_interpreter_runs_copy_and_profile_on_gb10() {
             opcode: OP_NOP,
             ..Default::default()
         },
-    ]);
+    ]));
     unsafe { prof_ring.run().unwrap() };
     let prof = prof_ring.read_profile().unwrap();
     let blocks = prof_ring.grid_blocks() as usize;
@@ -178,35 +175,42 @@ const WORDS_PER_BLOCK: usize = 1024;
 const DELAY_NS: u32 = 300_000;
 
 /// The tasks of one round: fill, check, fill again with a new seed and a new slow block, check again, then two nops.
-fn scoreboard_tasks(data: u64, out1: u64, out2: u64, slow_a: u32, slow_b: u32) -> Vec<MkTaskDescriptor> {
-    let fill = |seed: u32, slow: u32| MkTaskDescriptor {
-        opcode: OP_SELFTEST_FILL,
-        a: data,
-        p0: WORDS_PER_BLOCK as u32,
-        p1: DELAY_NS,
-        p2: slow,
-        p3: seed,
-        ..Default::default()
+/// The tasks declare the ranges that they touch, and the builder orders them from the ranges. The nops follow each
+/// other by an explicit order, because they touch nothing.
+fn scoreboard_tasks(data: u64, out1: u64, out2: u64, slow_a: u32, slow_b: u32, blocks: usize) -> Vec<Task> {
+    let data_bytes = blocks * WORDS_PER_BLOCK * 4;
+    let fill = |seed: u32, slow: u32| {
+        Task::per_block(MkTaskDescriptor {
+            opcode: OP_SELFTEST_FILL,
+            a: data,
+            n: WORDS_PER_BLOCK as u32,
+            k: DELAY_NS,
+            kt: slow,
+            group_items: seed,
+            ..Default::default()
+        })
+        .writes(data, data_bytes)
     };
-    let check = |seed: u32, out: u64| MkTaskDescriptor {
-        opcode: OP_SELFTEST_CHECK,
-        a: data,
-        d: out,
-        p0: WORDS_PER_BLOCK as u32,
-        p3: seed,
-        ..Default::default()
+    let check = |seed: u32, out: u64| {
+        Task::per_block(MkTaskDescriptor {
+            opcode: OP_SELFTEST_CHECK,
+            a: data,
+            d: out,
+            n: WORDS_PER_BLOCK as u32,
+            group_items: seed,
+            ..Default::default()
+        })
+        .reads(data, data_bytes)
+        .writes(out, blocks * 4)
     };
-    let nop = MkTaskDescriptor {
-        opcode: OP_NOP,
-        ..Default::default()
-    };
+    let nop = || Task::per_block(MkTaskDescriptor::default());
     vec![
         fill(1, slow_a),
         check(1, out1),
         fill(2, slow_b),
         check(2, out2),
-        nop,
-        nop,
+        nop().after(3),
+        nop().after(4),
     ]
 }
 
@@ -247,7 +251,7 @@ fn the_scoreboard_orders_the_tasks_of_all_blocks() {
         dev.memset_zero(out2, blocks * 4).unwrap();
         let slow_a = (blocks - 1 - round % blocks) as u32;
         let slow_b = (round * 7 % blocks) as u32;
-        ring.set(&scoreboard_tasks(data, out1, out2, slow_a, slow_b));
+        ring.set(&scoreboard_tasks(data, out1, out2, slow_a, slow_b, blocks));
         run_with_watchdog(&ring);
 
         // Each block read the words of all other blocks, and found each one right.
@@ -273,23 +277,23 @@ fn the_scoreboard_orders_the_tasks_of_all_blocks() {
             assert_eq!(got, want, "round {round}: word {k}");
         }
 
-        // Each signalled event holds one count for each block. Event 0 has no task that signals it.
+        // Each task signals its own event, one count for each block. The halt signals no event.
         let tasks = 6;
         let scoreboard = ring.read_scoreboard().unwrap();
-        assert_eq!(scoreboard.len(), tasks + 2);
-        assert_eq!(scoreboard[0], 0, "round {round}: event 0");
-        for (event, &count) in scoreboard.iter().enumerate().take(tasks + 1).skip(1) {
+        assert_eq!(scoreboard.len(), tasks + 1);
+        for (event, &count) in scoreboard.iter().enumerate().take(tasks) {
             assert_eq!(count, blocks as u32, "round {round}: event {event}");
         }
-        assert_eq!(scoreboard[tasks + 1], 0, "round {round}: the halt signals no event");
+        assert_eq!(scoreboard[tasks], 0, "round {round}: the halt signals no event");
 
-        // Task i + 1 leaves its wait in each block no earlier than the last end of task i in any block.
+        // Task i + 1 leaves its wait in each block no earlier than the last end of task i in any block. The halt
+        // waits on nothing, so the pairs end with the last task.
         let prof = ring.read_profile().unwrap();
         let slot = |task: usize, block: usize| {
             let base = (task * blocks + block) * PROFILE_WORDS;
             (prof[base], prof[base + 1], prof[base + 2])
         };
-        for task in 0..tasks {
+        for task in 0..tasks - 1 {
             let last_end = (0..blocks).map(|b| slot(task, b).2).max().unwrap();
             for block in 0..blocks {
                 let after_wait = slot(task + 1, block).1;

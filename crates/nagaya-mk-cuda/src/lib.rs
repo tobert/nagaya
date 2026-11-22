@@ -1,11 +1,12 @@
 //! The shared persistent megakernel interpreter for CUDA GPUs (`sm_121`).
 //!
 //! `kernels/megakernel.cu` is compiled ahead of time by `nvcc` into one `.cubin` per engine under the feature `cuda`.
-//! `driver` loads the `.cubin` through the CUDA Driver API (`libcuda`) and `ring` drives the 64-byte task ring.
+//! `driver` loads the `.cubin` through the CUDA Driver API (`libcuda`) and `ring` drives the 128-byte task ring, and `graph` plans its dependencies.
 //! Without the feature `cuda`, the crate needs no GPU and no CUDA toolkit.
 
 #[cfg(feature = "cuda")]
 pub mod driver;
+pub mod graph;
 pub mod protocol;
 #[cfg(feature = "cuda")]
 pub mod ring;
@@ -69,22 +70,36 @@ mod tests {
 
     #[test]
     fn descriptor_and_stats_layouts_are_fixed() {
-        assert_eq!(size_of::<MkTaskDescriptor>(), 64);
-        assert_eq!(align_of::<MkTaskDescriptor>(), 64);
+        assert_eq!(size_of::<MkTaskDescriptor>(), 128);
+        assert_eq!(align_of::<MkTaskDescriptor>(), 128);
         let offsets = [
             (offset_of!(MkTaskDescriptor, opcode), 0),
             (offset_of!(MkTaskDescriptor, flags), 2),
-            (offset_of!(MkTaskDescriptor, layer), 4),
-            (offset_of!(MkTaskDescriptor, wait_event), 8),
-            (offset_of!(MkTaskDescriptor, signal_event), 12),
-            (offset_of!(MkTaskDescriptor, a), 16),
-            (offset_of!(MkTaskDescriptor, b), 24),
-            (offset_of!(MkTaskDescriptor, c), 32),
-            (offset_of!(MkTaskDescriptor, d), 40),
-            (offset_of!(MkTaskDescriptor, p0), 48),
-            (offset_of!(MkTaskDescriptor, p1), 52),
-            (offset_of!(MkTaskDescriptor, p2), 56),
-            (offset_of!(MkTaskDescriptor, p3), 60),
+            (offset_of!(MkTaskDescriptor, items), 4),
+            (offset_of!(MkTaskDescriptor, wait0_event), 8),
+            (offset_of!(MkTaskDescriptor, wait0_target), 12),
+            (offset_of!(MkTaskDescriptor, wait1_event), 16),
+            (offset_of!(MkTaskDescriptor, wait1_target), 20),
+            (offset_of!(MkTaskDescriptor, signal), 24),
+            (offset_of!(MkTaskDescriptor, rows), 28),
+            (offset_of!(MkTaskDescriptor, a), 32),
+            (offset_of!(MkTaskDescriptor, b), 40),
+            (offset_of!(MkTaskDescriptor, c), 48),
+            (offset_of!(MkTaskDescriptor, d), 56),
+            (offset_of!(MkTaskDescriptor, e), 64),
+            (offset_of!(MkTaskDescriptor, f), 72),
+            (offset_of!(MkTaskDescriptor, n), 80),
+            (offset_of!(MkTaskDescriptor, k), 84),
+            (offset_of!(MkTaskDescriptor, kt), 88),
+            (offset_of!(MkTaskDescriptor, group_items), 92),
+            (offset_of!(MkTaskDescriptor, item_bytes), 96),
+            (offset_of!(MkTaskDescriptor, scale_bytes), 100),
+            (offset_of!(MkTaskDescriptor, pos0), 104),
+            (offset_of!(MkTaskDescriptor, layer), 108),
+            (offset_of!(MkTaskDescriptor, p0), 112),
+            (offset_of!(MkTaskDescriptor, p1), 116),
+            (offset_of!(MkTaskDescriptor, p2), 120),
+            (offset_of!(MkTaskDescriptor, p3), 124),
         ];
         for (index, (got, want)) in offsets.into_iter().enumerate() {
             assert_eq!(got, want, "descriptor field {index}");
@@ -112,8 +127,10 @@ mod tests {
         }
         assert!(header.contains("#define OP_COPY 21u\n"));
         assert!(header.contains("#define OP_HALT 255u\n"));
-        assert!(header.contains("#define MK_DESC_OFF_a 16\n"));
-        assert!(header.contains("#define MK_DESC_OFF_p3 60\n"));
+        assert!(header.contains("#define MK_DESC_BYTES 128\n"));
+        assert!(header.contains("#define MK_DESC_OFF_a 32\n"));
+        assert!(header.contains("#define MK_DESC_OFF_layer 108\n"));
+        assert!(header.contains("#define MK_DESC_OFF_p3 124\n"));
         assert!(header.contains("#define MK_STATS_OFF_exec_ns 16\n"));
         assert!(header.contains("#define MK_PROFILE_WORDS 3u\n"));
         assert!(header.contains("#define MK_PROBE_ITEM_BYTES 32768\n"));
