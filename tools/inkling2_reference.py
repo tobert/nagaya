@@ -182,7 +182,8 @@ class QuantTape:
 
     A row has the key (kind, visit, position, slot). A visit is the place of a call in one forward pass, from 0 to
     `visits - 1`, and the same visit has the same layer in each pass. The position of a row is the count of rows that
-    the earlier calls of that visit had, plus its place in the call. The input row of a token has the slot -1.
+    the earlier calls of that visit had, plus its place in the call. The input row and the route of a token have the slot -1.
+    A route holds the expert ids and the routing weights of the token.
     """
 
     def __init__(self, visits):
@@ -263,16 +264,22 @@ class ExpertCalls:
         token and slot, after the routing weight, as vLLM does it."""
         fmt, layer = self.activation_format, self.layer_index
         final = torch.zeros_like(hidden_states, dtype=torch.float32)
-        with torch.no_grad():
-            mask = F.one_hot(top_k_index, num_classes=self.num_experts + 1).permute(2, 1, 0)
-            hit = torch.greater(mask.sum(dim=(-1, -2)), 0).nonzero()
         if ExpertCalls.quant is None:
             ExpertCalls.quant = quant_module()
-        rows = ExpertCalls.quant.fake_quantize(hidden_states.float(), fmt)
         tape = ExpertCalls.tape
         if tape:
             visit, first = tape.begin_call(hidden_states.shape[0])
             every = torch.arange(hidden_states.shape[0])
+            # The router is a step function too: a near tie between two experts flips with the order of the sums.
+            route = torch.cat([top_k_index.float(), top_k_weights.float()], dim=1)
+            route = tape.rows_of("route", visit, first, every, [-1] * len(every), route)
+            top_k_index = route[:, : top_k_index.shape[1]].long()
+            top_k_weights = route[:, top_k_index.shape[1] :].to(top_k_weights.dtype)
+        with torch.no_grad():
+            mask = F.one_hot(top_k_index, num_classes=self.num_experts + 1).permute(2, 1, 0)
+            hit = torch.greater(mask.sum(dim=(-1, -2)), 0).nonzero()
+        rows = ExpertCalls.quant.fake_quantize(hidden_states.float(), fmt)
+        if tape:
             rows = tape.rows_of("input", visit, first, every, [-1] * len(every), rows)
         ExpertCalls.inputs[layer] += 1
         for expert in hit:
