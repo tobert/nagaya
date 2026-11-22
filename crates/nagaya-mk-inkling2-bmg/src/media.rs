@@ -258,14 +258,29 @@ pub struct HeldRows {
 impl HeldRows {
     /// True when the held rows are those of the image of `grid` and `rows`. If not, this records the image and counts a
     /// run, and the caller must run the tower before the next call.
-    pub fn holds(&mut self, grid: Grid, rows: &[u8]) -> bool {
-        let image = Some((grid, blake3::hash(rows)));
+    pub fn holds(&mut self, grid: Grid, hash: blake3::Hash) -> bool {
+        let image = Some((grid, hash));
         if self.image == image {
             return true;
         }
         self.image = image;
         self.runs += 1;
         false
+    }
+
+    /// The grids of `images` whose tower a pass runs, in order, from the rows held now, with the hash of the rows of
+    /// each image. It changes nothing, so the bound of a pass reads it before the pass (engine-abi D8).
+    pub fn towers(&self, images: impl IntoIterator<Item = (Grid, blake3::Hash)>) -> Vec<Grid> {
+        let mut held = self.image;
+        let mut towers = Vec::new();
+        for (grid, hash) in images {
+            let image = Some((grid, hash));
+            if held != image {
+                held = image;
+                towers.push(grid);
+            }
+        }
+        towers
     }
 
     /// The held rows are those of no image: another task wrote them.

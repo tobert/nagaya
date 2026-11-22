@@ -800,6 +800,8 @@ pub fn limits(config: &Config, weights: u64) -> Limits {
         max_logit_rows: MAX_LOGIT_ROWS as u32,
         slots: slot_limits(&config.seqs(), config.extra_runs),
         max_quantum_ms: MAX_QUANTUM_MS,
+        // The tower of a large image runs in a long pass (engine-abi D8, "The time of a large image").
+        max_long_quantum_ms: std::num::NonZeroU32::new(crate::bound::MAX_LONG_QUANTUM_MS),
         memory: MemoryLimits {
             mandatory: vec![
                 term("weights", Tier::Device(0), weights),

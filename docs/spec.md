@@ -1773,6 +1773,39 @@ bootstrap config. The code takes it as a start parameter, so the tests use a sho
 **Open:** The group thread sends no beat while a quantum runs. On a slow NVMe, a copy quantum could run past the 30 s
 timeout, and the watchdog would end the process. This is not measured.
 
+**A long pass (Proposed, Claude Opus 5.5, 2026-11-22; engine-abi D8).** An engine can declare a bound for one pass
+that is longer than `max_quantum_ms`. Then the watchdog keeps a deadline for that pass alone.
+
+- Before each pass, the group asks the engine for the bound of the pass (`pass_bound_ms`). A pass with no bound runs
+  under the timeout, as before.
+- A bound that breaks a rule of D8 refuses the pass before it runs. So does an error of `pass_bound_ms`.
+- The deadline is the start of the pass plus the larger of the timeout and the bound plus the beat interval. A beat
+  does not change it.
+- Only the return of that pass clears the deadline, and only a return before it. Then the watch reads the timeout
+  again, and the return counts as a beat.
+- Whether the pass ended in time is one decision, under the lock of the table of long passes. The return of the pass
+  and the watchdog each read the clock under that lock, and the first one decides.
+- A pass past its bound gives one warning in the log. A pass past its deadline stops the process with code 1, as a
+  stall does.
+- A pass that returns past its deadline gives no result. The pass gives the error `Timeout`, the engine runs no more
+  passes, and the process stops.
+- The deadline is in the watch of the thread of the pass. In a group of more than one device, that is the device
+  thread of the engine (3.2).
+
+**The route `busy`.** `GET /nagaya/v1/devices/{id}/busy` shows the long pass that runs on a device. Reason: a long
+pass holds the device for minutes, and another client must see why. The route reads only, and it waits for no group.
+
+- The reply is a 200 with `{"device", "long_pass"}`. `long_pass` is `null` when no long pass runs on the device.
+- Otherwise it is `{"group", "devices", "bound_ms", "elapsed_ms", "overdue"}`. A pass past its deadline leaves the
+  route, because the process stops. `devices` holds the machine devices of
+  the engine. `overdue` is true when `elapsed_ms` is more than `bound_ms`.
+- A device that no engine of the profile names is a 404 `not_found` that names `id`, as for a release (3.3b).
+
+**A stop during a long pass.** A stop lets the running quantum go to its end (10.3 step 2), so it waits for a long
+pass up to its deadline. The units of `deploy/` give `TimeoutStopSec=60`. After that time, systemd kills the process,
+and the park does not run. Thus a profile with a long pass needs `TimeoutStopSec` of at least the ceiling of its
+bounds plus the beat interval and the park budget. The units do not have it yet.
+
 **The watchdog during an open.** An engine's open can take longer than the timeout: the Qwen3.8 engine loads in 24 to
 50 s. A group beats its heartbeat while its engine opens, so a long open is not a stall. The group thread is blocked
 in the open. Thus a helper thread sends the beats, at the heartbeat interval, until the open ends. The helper stops

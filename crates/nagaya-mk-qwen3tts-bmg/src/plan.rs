@@ -117,6 +117,7 @@ pub fn limits(config: &Config, weights: u64) -> Limits {
             tokens: config.max_positions() as u64,
         }],
         max_quantum_ms: MAX_QUANTUM_MS,
+        max_long_quantum_ms: None,
         memory: MemoryLimits {
             mandatory,
             elastic: Vec::new(),
