@@ -703,7 +703,7 @@ mod tests {
         ] {
             assert_eq!(rust, kernel_const(ROWS_CUH, kernel), "{kernel}");
         }
-        assert!(MIX_TABLE_MSG_QUERIES < TABLE_POINTERS);
+        const { assert!(MIX_TABLE_MSG_QUERIES < TABLE_POINTERS) };
     }
 
     #[test]
@@ -743,7 +743,7 @@ mod tests {
                 depth,
                 message_queries: mq,
             };
-            let d = mix(&shape, 0x1000, 0x2000, 0x3000, 0x4000, 0x5000 - 0x5000 % 128 + 128).unwrap();
+            let d = mix(&shape, 0x1000, 0x2000, 0x3000, 0x4000, 0x5080).unwrap();
             assert_eq!(d.items as usize, rows * (q + mq));
             assert_eq!((d.n, d.k, d.kt), (q as u32, depth as u32, mq as u32));
             assert_eq!(d.group_items, if mq > 0 { 2 } else { 0 });
