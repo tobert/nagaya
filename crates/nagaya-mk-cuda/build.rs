@@ -214,6 +214,8 @@ fn main() {
     // - The default cubin holds the f32 and the e4m3 formats of the cache, and it picks one with the flags of a task.
     // - A cubin of a cache format (`MK_CACHE_*`) runs tasks of that format only, and a task of another format traps.
     // - The profile cubin records the time of each task.
+    // - A probe cubin (`MK_PROBES`) holds the probe ops that measure the GB10. No engine cubin holds them, and a probe
+    //   opcode traps there. The probe cubin with the profile also records the time of each task.
     // - The spin cubin has a small spin limit, so that a test can prove that a wait that never ends traps.
     let jobs: &[(&str, &[&str])] = &[
         ("megakernel_inkling2_sm121.cubin", &[]),
@@ -225,6 +227,11 @@ fn main() {
         (
             "megakernel_inkling2_profile_sm121_cache_bf16.cubin",
             &["MK_PROFILE", "MK_CACHE_BF16"],
+        ),
+        ("megakernel_inkling2_probe_sm121.cubin", &["MK_PROBES"]),
+        (
+            "megakernel_inkling2_probe_profile_sm121.cubin",
+            &["MK_PROBES", "MK_PROFILE"],
         ),
     ];
     std::thread::scope(|scope| {

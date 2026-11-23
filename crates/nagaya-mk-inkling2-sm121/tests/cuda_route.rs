@@ -19,7 +19,7 @@
 mod common;
 mod moe_support;
 
-use common::gpu::{GRIDS, download, open, open_profile, run_with_watchdog, upload};
+use common::gpu::{GRIDS, download, open, open_probe_profile, run_with_watchdog, upload};
 use moe_support::{Checkpoint, Rng, activation_row, download_pairs, model_dir, widen_bf16};
 use nagaya_mk_cuda::driver::{CUdeviceptr, CudaDevice};
 use nagaya_mk_cuda::experts::{
@@ -708,7 +708,7 @@ fn speed_of_the_router_at_1_row() {
             &std::fs::read(&path).unwrap_or_else(|e| panic!("cannot read {path}: {e}")),
         )
         .expect("open the GPU"),
-        Err(_) => open_profile(),
+        Err(_) => open_probe_profile(),
     };
     let blocks = dev.sm_count() as usize;
     let flush_bytes = 1usize << 30;

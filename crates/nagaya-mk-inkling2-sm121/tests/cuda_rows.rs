@@ -138,7 +138,7 @@ fn bits(v: &[f32]) -> Vec<u32> {
 
 #[test]
 fn the_row_finisher_gives_the_bits_of_the_fixed_order_at_each_grid_and_each_count_of_rows() {
-    let dev = gpu::open();
+    let dev = gpu::open_probe();
     let shared = dev.max_dynamic_shared_bytes().unwrap();
     // 64 columns per tile is the width of a gate tile, and 300 needs a second pass of the lanes.
     for (tiles, width) in [(36usize, 64usize), (11, 300)] {

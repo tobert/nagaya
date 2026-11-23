@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use nagaya_mk_cuda::driver::{CUdeviceptr, CudaDevice};
 use nagaya_mk_cuda::protocol::{MkTaskDescriptor, OP_COPY, OP_REDUCE_PROBE};
 use nagaya_mk_cuda::ring::{DEFAULT_BLOCK_THREADS, Ring, Task};
-use nagaya_mk_cuda::{INKLING2_CUBIN, test_cards};
+use nagaya_mk_cuda::{INKLING2_PROBE_CUBIN, test_cards};
 
 /// The grid widths of the gate. 7 and 24 divide no group size below.
 const GRIDS: [u32; 4] = [48, 24, 7, 1];
@@ -114,7 +114,7 @@ fn download_f32(dev: &CudaDevice, ptr: CUdeviceptr, count: usize) -> Vec<f32> {
 
 #[test]
 fn the_merge_of_k_slices_gives_the_bits_of_the_fixed_order_at_each_grid() {
-    let dev = CudaDevice::open_by_pci(&test_cards::card(), INKLING2_CUBIN).expect("open the GPU");
+    let dev = CudaDevice::open_by_pci(&test_cards::card(), INKLING2_PROBE_CUBIN).expect("open the GPU");
     for shape in &SHAPES {
         let items = shape.groups * shape.slices();
         let input: Vec<f32> = (0..(shape.groups * shape.n) as u64).map(value).collect();
@@ -203,7 +203,7 @@ fn the_merge_of_k_slices_gives_the_bits_of_the_fixed_order_at_each_grid() {
 /// zero only once, at the open, and the next launch finds every counter at 0.
 #[test]
 fn a_ring_runs_again_with_no_host_zero_in_between() {
-    let dev = CudaDevice::open_by_pci(&test_cards::card(), INKLING2_CUBIN).expect("open the GPU");
+    let dev = CudaDevice::open_by_pci(&test_cards::card(), INKLING2_PROBE_CUBIN).expect("open the GPU");
     let shape = &SHAPES[0];
     let items = shape.groups * shape.slices();
     let input: Vec<f32> = (0..(shape.groups * shape.n) as u64).map(value).collect();

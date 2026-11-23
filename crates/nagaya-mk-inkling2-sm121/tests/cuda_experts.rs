@@ -22,7 +22,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::PathBuf;
 
-use common::gpu::{GRIDS, download, open, open_profile, run_with_watchdog, upload};
+use common::gpu::{GRIDS, download, open, open_probe_profile, run_with_watchdog, upload};
 use nagaya_mk_cuda::driver::{CUdeviceptr, CudaDevice};
 use nagaya_mk_cuda::experts::{ExpertFormat, QuantRowsLayout, pair_list_bytes, repack_expert};
 use nagaya_mk_cuda::protocol::{
@@ -850,7 +850,7 @@ fn task_ns(profile: &[u64], blocks: usize, task: usize) -> u64 {
 #[test]
 fn speed_of_8_experts_with_1_row() {
     let Some(matrices) = matrices() else { return };
-    let dev = open_profile();
+    let dev = open_probe_profile();
     let blocks = dev.sm_count() as usize;
     // A task that reads 1 GiB before the expert op, so that the weights come from memory and not from L2.
     let flush_bytes = 1usize << 30;
