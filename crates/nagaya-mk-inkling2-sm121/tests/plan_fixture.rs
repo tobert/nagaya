@@ -74,7 +74,10 @@ fn plan_sums_the_header_and_sizes_the_slots_with_no_model() {
     let bytes = |name: &str| lim.memory.mandatory.iter().find(|t| t.name == name).unwrap().bytes;
     // Each of the 48 expert tensors takes 64 bytes, and the embedding takes 100 bytes rounded to 128.
     assert_eq!(bytes("weights"), 48 * 64 + 128);
-    assert_eq!(bytes("vision"), 64);
+    assert!(
+        lim.memory.mandatory.iter().all(|t| t.name != "vision"),
+        "the tower of images is not served yet"
+    );
     assert_eq!(bytes("kv"), 34_866_888_704 + 2 * 2_654_633_984);
     // The classes of slots are sorted by length, and equal lengths make one class.
     let classes: Vec<(u32, u64, u64)> = lim.slots.iter().map(|s| (s.count, s.tokens, s.bytes)).collect();

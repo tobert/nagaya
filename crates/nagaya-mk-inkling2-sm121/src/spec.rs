@@ -7,9 +7,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use nagaya_abi::{
-    BitClass, BitSetting, CONTROL_TERM, Capability, ChainLimits, ControlLimit, CyclesLimit, Determinism, Dtype,
-    FeedRule, Inputs, Kind, Lifetime, Limits, MandatoryTerm, MemoryLimits, PartKind, PartLimits, SlotLimit, TapLimit,
-    Tier,
+    BitClass, BitSetting, Capability, ChainLimits, CyclesLimit, Determinism, Dtype, FeedRule, Inputs, Kind, Lifetime,
+    Limits, MandatoryTerm, MemoryLimits, PartKind, PartLimits, SlotLimit, Tier,
 };
 use nagaya_mk_cuda::attn::{AttnShape, CacheFormat, plane_bytes, sliding_ring_rows};
 use nagaya_mk_cuda::protocol::{ATTN_CHUNK_KEYS, ATTN_SPLIT_ROWS, NUM_EXPERTS, NUM_SCOREBOARD_EVENTS, RING_DEV_BYTES};
@@ -70,12 +69,6 @@ pub const LATENT_TOKEN: u32 = 199_999;
 
 /// Staging host buffer size (64 MiB).
 const STAGING_BYTES: usize = 64 << 20;
-
-/// Control table budget: 8 vectors of 24 layers of 2,304 `f32` values.
-const CONTROL_TABLES: u32 = 8;
-
-/// Vision tower buffer reserve for up to 4,096 x 4,096 px images (matches `docs/engine-abi.md`).
-const VISION_WORK_BYTES: u64 = 1_870_588_096;
 
 /// Fixed block activation buffers for `max_block` tokens (conservative upper bound matching Inkling 2).
 const BLOCK_WORK_FLOATS_PER_TOKEN: usize = 64 * 1024;
@@ -393,16 +386,14 @@ fn term(name: &str, tier: Tier, bytes: u64) -> MandatoryTerm {
     }
 }
 
-/// Sum weight bytes for `model.llm.*` and `model.visual.*` from the safetensors header,
-/// verifying expected prefixes and NVFP4/MXFP8 expert tensor presence.
-fn sum_checkpoint_weights(tensors: &BTreeMap<String, TensorMeta>) -> Result<(u64, u64), String> {
+/// Sum the weight bytes of `model.llm.*` from the safetensors header, and verify the NVFP4 and MXFP8 expert tensors.
+/// The tensors of the tower of images, `model.visual.*`, are not loaded until milestone 37 step 13, so they have no
+/// term.
+fn sum_checkpoint_weights(tensors: &BTreeMap<String, TensorMeta>) -> Result<u64, String> {
     let mut llm_bytes: u64 = 0;
-    let mut vision_bytes: u64 = 0;
     for (name, meta) in tensors {
         if name.starts_with("model.llm.") {
             llm_bytes = llm_bytes.saturating_add(rounded(meta.nbytes as usize) as u64);
-        } else if name.starts_with("model.visual.") {
-            vision_bytes = vision_bytes.saturating_add(rounded(meta.nbytes as usize) as u64);
         }
     }
     // Verify NVFP4 expert tensors in layers 0..20 and MXFP8 in layers 20..24 exist with expected dtypes.
@@ -424,7 +415,7 @@ fn sum_checkpoint_weights(tensors: &BTreeMap<String, TensorMeta>) -> Result<(u64
     if llm_bytes == 0 {
         return Err("checkpoint has no `model.llm.` tensors".to_owned());
     }
-    Ok((llm_bytes, vision_bytes))
+    Ok(llm_bytes)
 }
 
 /// The counts of cycles that a config runs: 1 to `1 + extra_runs / 12`, and 3 by default.
@@ -439,16 +430,11 @@ pub fn cycles_limit(extra_runs: usize) -> CyclesLimit {
 }
 
 /// Build `Limits` from `config` and measured weight byte sizes.
-pub fn limits(config: &Config, llm_weights: u64, vision_weights: u64) -> Limits {
+pub fn limits(config: &Config, llm_weights: u64) -> Limits {
     let ring_bytes = (NUM_SCOREBOARD_EVENTS * 4 + RING_DEV_BYTES) as u64;
     let block_work = (config.max_block * BLOCK_WORK_FLOATS_PER_TOKEN * 4) as u64;
-    let work = block_work + attn_scratch_bytes(config.max_seq(), config.max_block) + ring_bytes + VISION_WORK_BYTES;
+    let work = block_work + attn_scratch_bytes(config.max_seq(), config.max_block) + ring_bytes;
     let pinned = (RING_DEV_BYTES + 256 * 24 + STAGING_BYTES) as u64;
-    let control = ControlLimit {
-        tables: CONTROL_TABLES,
-        layers: LAYERS as u32,
-        width: HIDDEN as u32,
-    };
     Limits {
         capabilities: vec![
             Capability::Parts,
@@ -456,10 +442,9 @@ pub fn limits(config: &Config, llm_weights: u64, vision_weights: u64) -> Limits 
             Capability::Coverage,
             Capability::Close,
             Capability::Cycles,
-            Capability::Control,
         ],
         parts: parts(config.extra_runs, config.cache),
-        inputs: Inputs::TokensAndRows,
+        inputs: Inputs::Tokens,
         devices: vec![0],
         stages: Vec::new(),
         max_segments: MAX_SEGMENTS,
@@ -467,16 +452,14 @@ pub fn limits(config: &Config, llm_weights: u64, vision_weights: u64) -> Limits 
         max_logit_rows: MAX_LOGIT_ROWS as u32,
         slots: slot_limits(&config.seqs(), config.extra_runs, config.cache),
         max_quantum_ms: MAX_QUANTUM_MS,
-        // No long pass until the vision tower runs here (milestone 37 step 13).
+        // No long pass until the tower of images runs here (milestone 37 step 13).
         max_long_quantum_ms: None,
         memory: MemoryLimits {
             mandatory: vec![
                 term("weights", Tier::Device(0), llm_weights),
-                term("vision", Tier::Device(0), vision_weights),
                 term("kv", Tier::Device(0), config.slots_bytes()),
                 term("work", Tier::Device(0), work),
                 term("pinned", Tier::Host, pinned),
-                term(CONTROL_TERM, Tier::Device(0), control.table_bytes()),
             ],
             elastic: Vec::new(),
         },
@@ -487,19 +470,10 @@ pub fn limits(config: &Config, llm_weights: u64, vision_weights: u64) -> Limits 
         segments_exact: false,
         determinism: Determinism::Always,
         bit_dependence: Vec::new(),
-        taps: vec![
-            TapLimit {
-                name: "residual".to_owned(),
-                conditions: vec![nagaya_abi::TAP_EACH_RUN.to_owned()],
-            },
-            TapLimit {
-                name: "fold".to_owned(),
-                conditions: Vec::new(),
-            },
-        ],
+        taps: Vec::new(),
         checkpoint_grain: None,
         residual_row_bytes: 0,
-        control: Some(control),
+        control: None,
         feed: Some(FeedRule {
             block: config.max_block as u64,
         }),
@@ -541,8 +515,8 @@ pub fn plan(config: &Config) -> Result<Limits, String> {
         ));
     }
     let header = SafeTensorsHeader::read(&config.model_dir.join(WEIGHTS_FILE))?;
-    let (llm_weights, vision_weights) = sum_checkpoint_weights(&header.tensors)?;
-    let lim = limits(config, llm_weights, vision_weights);
+    let llm_weights = sum_checkpoint_weights(&header.tensors)?;
+    let lim = limits(config, llm_weights);
     lim.check().map_err(|e| format!("planned limits are invalid: {e}"))?;
     Ok(lim)
 }
@@ -772,17 +746,13 @@ mod tests {
             cache: DEFAULT_CACHE,
         };
         // The sums of the Inkling 2 Mini header, with each tensor rounded up to 64 bytes.
-        let lim = limits(&cfg, 18_889_360_896, 636_512_256);
+        let lim = limits(&cfg, 18_889_360_896);
         lim.check().unwrap();
         let bytes = |name: &str| lim.memory.mandatory.iter().find(|t| t.name == name).unwrap().bytes;
         assert_eq!(bytes("weights"), 18_889_360_896);
-        assert_eq!(bytes("vision"), 636_512_256);
         assert_eq!(bytes("kv"), 34_866_888_704);
-        // The work: 512 rows of 65,536 `f32` values, the scratch, the ring, and the vision tower.
-        assert_eq!(
-            bytes("work"),
-            134_217_728 + 415_236_192 + (2_049 * 4 + 262_144) + 1_870_588_096
-        );
+        // The work: 512 rows of 65,536 `f32` values, the scratch, and the ring. The tower of images has no reserve.
+        assert_eq!(bytes("work"), 134_217_728 + 415_236_192 + (2_049 * 4 + 262_144));
         assert_eq!(bytes("pinned"), 262_144 + 6_144 + 67_108_864);
         assert_eq!(lim.slots.len(), 1);
         assert_eq!(
@@ -791,6 +761,34 @@ mod tests {
         );
         let cycles = lim.cycles.unwrap();
         assert_eq!((cycles.min, cycles.max, cycles.default), (1, 3, 3));
+    }
+
+    /// The limits name only what the engine serves. Control vectors, the taps `residual` and `fold`, rows of images and
+    /// the tower of images wait for milestone 37 step 13, so a client that needs them sees the lack in the limits.
+    #[test]
+    fn the_limits_declare_only_what_the_engine_serves() {
+        let lim = limits(&config_of(CacheFormat::F32), 1_000);
+        lim.check().unwrap();
+        assert_eq!(
+            lim.capabilities,
+            vec![
+                Capability::Parts,
+                Capability::Slots,
+                Capability::Coverage,
+                Capability::Close,
+                Capability::Cycles
+            ]
+        );
+        assert_eq!(lim.inputs, Inputs::Tokens);
+        assert!(lim.taps.is_empty());
+        assert!(lim.control.is_none());
+        assert!(lim.layer_loops.is_none() && lim.max_long_quantum_ms.is_none());
+        let names: Vec<&str> = lim.memory.mandatory.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["weights", "kv", "work", "pinned"]);
+        // The work holds the block rows, the scratch of the attention and the ring, and no reserve for a tower.
+        let work = lim.memory.mandatory[2].bytes;
+        let ring = (NUM_SCOREBOARD_EVENTS * 4 + RING_DEV_BYTES) as u64;
+        assert_eq!(work, 256 * 65_536 * 4 + attn_scratch_bytes(409_600, 256) + ring);
     }
 
     #[test]
@@ -854,7 +852,7 @@ mod tests {
     fn the_limits_and_the_identity_follow_the_cache_format_of_the_config() {
         for format in [CacheFormat::F32, CacheFormat::Bf16, CacheFormat::E4m3] {
             let cfg = config_of(format);
-            let lim = limits(&cfg, 1_000, 0);
+            let lim = limits(&cfg, 1_000);
             lim.check().unwrap();
             let kv = lim.memory.mandatory.iter().find(|t| t.name == "kv").unwrap().bytes;
             assert_eq!(
@@ -930,7 +928,7 @@ mod tests {
             }
             // The limits of a config declare the same list.
             let cfg = config_of(format);
-            assert_eq!(limits(&cfg, 1_000, 0).parts, parts(cfg.extra_runs, format));
+            assert_eq!(limits(&cfg, 1_000).parts, parts(cfg.extra_runs, format));
         }
     }
 }

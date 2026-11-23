@@ -152,6 +152,10 @@ fn real_model_plans_512k_slot_through_factory() {
     lim.check().unwrap();
     let kv = lim.memory.mandatory.iter().find(|t| t.name == "kv").unwrap().bytes;
     assert_eq!(kv, 34_866_888_704);
+    // The limits declare what the engine serves: no control table, no taps and no tower of images until step 13.
+    assert!(lim.control.is_none() && lim.taps.is_empty());
+    assert_eq!(lim.inputs, nagaya_abi::Inputs::Tokens);
+    assert!(lim.memory.mandatory.iter().all(|term| term.name != "vision"));
     assert_eq!(lim.slots.len(), 1);
     assert_eq!((lim.slots[0].tokens, lim.slots[0].bytes), (524_288, 34_866_888_704));
 }
