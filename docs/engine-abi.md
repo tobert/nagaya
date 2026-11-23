@@ -3025,7 +3025,11 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     - **The row factors.** Each producer of a row writes its row factor. DOWN writes the factor of `x` into slot 6 of
       its table (`EXPERT_TABLE_OUT_RF`).
     - **The counters of OP_ATTN and OP_ROUTE.** Their offset depended on the rows, so a call after a smaller call
-      merged too early. The pass zeroes both counter heads before each call. A fix of the layouts removes that.
+      merged too early (found in `8f9f4339`). Now the counters sit first, at a fixed size: 24 words for OP_ATTN and
+      580 for OP_ROUTE (`c1c923d9`). Rule: the head of the counters of an op never depends on the count of rows.
+    - **The cache of the rings.** The pass keeps the ring of each shape: rows, cycles, logit rows and the form of
+      PROJ (`8aee95f9`). A call of a loaded shape patches only the positions of PROJ and ATTN and the chunks of
+      ATTN. Each span covers a whole plane or a whole region, so no span changes.
     - **The gates of a run** read the tape (milestone 37 step 10). The worst errors, relative to the rms of the tape,
       are 1.0e-4 for the attention output, 5.2e-5 for `r` and 4.0e-5 for `h_e`. The route picks equal the tape on all
       240 rows. On NVFP4 runs the MoE output differs from the tape by up to 2.6e-2, because the reference expands the
@@ -3040,8 +3044,9 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     - **Decode equals block.** The splits 16 + 1, 9 + 8 and 17 single steps give the bits of one block of 17. That
       holds for the last logits and for each plane and state of the 48 runs, at G of 48, 24, 7 and 1.
     - **Speed** at 3 cycles, an `f32` cache, position about 100. A decode step takes 31.0 ms on the GPU at 1 row,
-      32 tokens each second. 16 rows take 76.7 ms, 209 tokens each second. The host adds about 25 ms to each call,
-      because it plans the ring again.
+      32 tokens each second. 16 rows take 76.7 ms, 209 tokens each second. With the cache of the rings, the host
+      adds 0.67 ms to a call. Then a step takes 29.8 ms end to end at 1 row (33.5 tokens each second), and 82.1 ms
+      at 16 rows.
 
       | op at 1 row | us in the pass | budget | GB/s |
       |---|---:|---:|---:|
