@@ -319,20 +319,13 @@ mod tests {
             assert_eq!(seen & value, 0, "{name} = {value:#x} shares a bit with an earlier flag");
             seen |= value;
         }
-        for name in [
-            "FLAG_NORM",
-            "FLAG_NORM_UNWEIGHTED",
-            "FLAG_PAIRS",
-            "FLAG_UP",
-            "FLAG_DOWN",
-        ] {
+        for name in ["FLAG_NORM", "FLAG_PAIRS", "FLAG_UP", "FLAG_DOWN"] {
             assert!(
                 protocol::FLAGS.iter().any(|(known, _)| *known == name),
                 "{name} is not in the table"
             );
         }
         assert_eq!(protocol::FLAG_NORM, 1 << 3);
-        assert_eq!(protocol::FLAG_NORM_UNWEIGHTED, 1 << 4);
         assert_eq!(protocol::FLAG_PAIRS, 1 << 5);
     }
 

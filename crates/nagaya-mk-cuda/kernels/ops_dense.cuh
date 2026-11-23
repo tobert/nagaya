@@ -714,11 +714,10 @@ __device__ __forceinline__ void op_block_form(const MkTaskDescriptor& task, cons
         } else {
             mb_matmul_check(task, table);
             it = mb_item_of(task, item);
-            const bool norm = (task.flags & (FLAG_NORM | FLAG_NORM_UNWEIGHTED)) != 0;
-            const bool weighted = (task.flags & FLAG_NORM) != 0;
+            const bool norm = (task.flags & FLAG_NORM) != 0;
             in.x = reinterpret_cast<const float*>(task.a);
             in.factors = norm ? reinterpret_cast<const float*>(task.e) : nullptr;
-            in.norm_w = weighted ? reinterpret_cast<const uint16_t*>(table->ptr[MK_MATMUL_TABLE_NORM_WEIGHT]) : nullptr;
+            in.norm_w = norm ? reinterpret_cast<const uint16_t*>(table->ptr[MK_MATMUL_TABLE_NORM_WEIGHT]) : nullptr;
         }
         mb_core(task, it, in.x, in.factors, in.norm_w);
     }
