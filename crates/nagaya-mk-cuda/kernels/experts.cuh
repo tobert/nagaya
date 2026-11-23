@@ -617,8 +617,9 @@ __device__ __forceinline__ void expert_pass(
 }
 
 // The warps ask L2 for the bytes that they read in the next tile of this block, so the first loads of that tile do not
-// wait for DRAM. The next tile is the tile after this one in the same item, or the first tile of the next item of this
-// block. One bulk prefetch for each stream of a warp. A bulk prefetch needs a multiple of 16 bytes.
+// wait for DRAM. The next tile is the tile after this one in the same item, or the first tile of the next item that this
+// block has claimed (`mk_next_item`). One bulk prefetch for each stream of a warp. A bulk prefetch needs a multiple of 16
+// bytes.
 template <typename F>
 __device__ __forceinline__ void experts_prefetch_next(
     const MkTaskDescriptor& task, uint32_t item, uint32_t item_tiles, uint32_t tpi, uint32_t in_item) {
@@ -626,7 +627,7 @@ __device__ __forceinline__ void experts_prefetch_next(
     uint32_t next_pair = item / item_tiles;
     uint32_t next_tile = (item % item_tiles) * tpi + in_item + 1;
     if (in_item + 1 == tpi) {
-        const uint32_t next = item + gridDim.x;
+        const uint32_t next = mk_next_item();
         if (next >= task.items) {
             return;
         }

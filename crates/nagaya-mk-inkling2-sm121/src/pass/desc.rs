@@ -45,9 +45,18 @@ pub const GATE_UP_TABLE_NORM: usize = 12;
 /// The most rows in the stack of a mix.
 pub const MIX_MAX_STACK: usize = 5;
 
-/// The tiles of an item of the up and down ops of the experts: one item covers 6 of the 36 tiles of a pair, so that a
-/// decode step of 8 pairs has 48 items and one block counts one arrival at a merge counter.
-pub const EXPERT_TILES_PER_ITEM: usize = 6;
+/// The tiles of an item of the up op of the experts for `tokens` tokens. A pair has 36 tiles, so 9 tiles make 4 items of
+/// a pair: a decode step of 8 pairs has 32 items, and the claim of the later items balances their tails. The pick comes
+/// from the sweep of lane E (milestone 37 step 10). It is a host rule and not part of the identity: the bits of the op
+/// do not depend on it.
+pub fn up_tiles_per_item(_tokens: usize) -> usize {
+    9
+}
+
+/// The tiles of an item of the down op of the experts for `tokens` tokens: 3 tiles, so a decode step has 96 items..
+pub fn down_tiles_per_item(_tokens: usize) -> usize {
+    3
+}
 
 /// The width of the up and the down matrix of an expert in rows: gate and up of 1,152 columns, and the 2,304 outputs.
 const EXPERT_ROWS: usize = HIDDEN;
@@ -484,16 +493,23 @@ pub struct ExpertAddrs {
 }
 
 /// The up op of the experts for `tokens` tokens: `FLAG_PAIRS | FLAG_UP`. `x_rows` is the capacity of the quantized
-/// input, and `denominator` is the outer scale denominator of the weight (`p1`, NVFP4 only).
+/// input, and `denominator` is the outer scale denominator of the weight (`p1`, NVFP4 only). An item covers
+/// `tiles_per_item` of the 36 tiles of a pair, and the count must divide 36.
 pub fn up(
     format: ExpertFormat,
     tokens: usize,
     x_rows: usize,
+    tiles_per_item: usize,
     a: &ExpertAddrs,
     denominator: f32,
 ) -> Result<MkTaskDescriptor, String> {
     rows_in("up", tokens, 512)?;
     let tiles = EXPERT_ROWS / 64;
+    if tiles_per_item == 0 || !tiles.is_multiple_of(tiles_per_item) {
+        return Err(format!(
+            "{tiles_per_item} tiles for an item do not divide the {tiles} tiles of a pair. Use a divisor of {tiles}"
+        ));
+    }
     aligned("the pair list", a.pairs, 16)?;
     aligned("the activations", a.out, 16)?;
     aligned("the counters", a.counters, 4)?;
@@ -501,10 +517,7 @@ pub fn up(
     Ok(MkTaskDescriptor {
         opcode: expert_opcode(format),
         flags: FLAG_PAIRS | FLAG_UP,
-        items: count(
-            "count of items",
-            expert_pair_bound(tokens) * tiles / EXPERT_TILES_PER_ITEM,
-        )?,
+        items: count("count of items", expert_pair_bound(tokens) * tiles / tiles_per_item)?,
         rows: x_rows as u32,
         a: a.input,
         b: a.bank,
@@ -515,8 +528,8 @@ pub fn up(
         n: EXPERT_ROWS as u32,
         k: HIDDEN as u32,
         kt: tokens as u32,
-        group_items: (tiles / EXPERT_TILES_PER_ITEM) as u32,
-        pos0: EXPERT_TILES_PER_ITEM as u32,
+        group_items: (tiles / tiles_per_item) as u32,
+        pos0: tiles_per_item as u32,
         p0: 1.0,
         p1: denominator,
         ..Default::default()
@@ -535,14 +548,21 @@ pub fn up_table(amax: Option<u64>, qact: u64) -> Result<MkTaskTable, String> {
 }
 
 /// The down op of the experts for `tokens` tokens: `FLAG_PAIRS | FLAG_DOWN`. The input is `8 * tokens` quantized rows.
+/// An item covers `tiles_per_item` of the 36 tiles of a pair, and the count must divide 36.
 pub fn down(
     format: ExpertFormat,
     tokens: usize,
+    tiles_per_item: usize,
     a: &ExpertAddrs,
     denominator: f32,
 ) -> Result<MkTaskDescriptor, String> {
     rows_in("down", tokens, 512)?;
     let tiles = EXPERT_ROWS / 64;
+    if tiles_per_item == 0 || !tiles.is_multiple_of(tiles_per_item) {
+        return Err(format!(
+            "{tiles_per_item} tiles for an item do not divide the {tiles} tiles of a pair. Use a divisor of {tiles}"
+        ));
+    }
     aligned("the pair list", a.pairs, 16)?;
     aligned("the slot rows", a.out, 4)?;
     aligned("the counters of the down op", a.counters, 8)?;
@@ -550,10 +570,7 @@ pub fn down(
     Ok(MkTaskDescriptor {
         opcode: expert_opcode(format),
         flags: FLAG_PAIRS | FLAG_DOWN,
-        items: count(
-            "count of items",
-            expert_pair_bound(tokens) * tiles / EXPERT_TILES_PER_ITEM,
-        )?,
+        items: count("count of items", expert_pair_bound(tokens) * tiles / tiles_per_item)?,
         rows: (8 * tokens) as u32,
         a: a.input,
         b: a.bank,
@@ -564,7 +581,7 @@ pub fn down(
         n: EXPERT_ROWS as u32,
         k: INTERMEDIATE as u32,
         kt: tokens as u32,
-        pos0: EXPERT_TILES_PER_ITEM as u32,
+        pos0: tiles_per_item as u32,
         p0: 1.0,
         p1: denominator,
         ..Default::default()
@@ -884,24 +901,39 @@ mod tests {
         };
         for tokens in [1usize, 7, 16, 512] {
             let bound = expert_pair_bound(tokens);
-            let u = up(ExpertFormat::Nvfp4, tokens, tokens, &a, 1.5).unwrap();
-            // items is the bound times the items of a pair (6), and the group is the items of a pair.
-            assert_eq!(u.items as usize, bound * 6);
+            let (tu, td) = (up_tiles_per_item(tokens), down_tiles_per_item(tokens));
+            let u = up(ExpertFormat::Nvfp4, tokens, tokens, tu, &a, 1.5).unwrap();
+            // items is the bound times the items of a pair, and the group is the items of a pair.
+            assert_eq!(u.items as usize, bound * 36 / tu);
             assert_eq!(
-                (u.group_items, u.pos0, u.n, u.k, u.kt as usize),
-                (6, 6, 2304, 2304, tokens)
+                (u.group_items as usize, u.pos0 as usize, u.n, u.k, u.kt as usize),
+                (36 / tu, tu, 2304, 2304, tokens)
             );
             assert_eq!(u.flags, FLAG_PAIRS | FLAG_UP);
-            assert_eq!(u.items as usize % 6, 0);
-            let d = down(ExpertFormat::Mxfp8, tokens, &a, 1.25).unwrap();
+            let d = down(ExpertFormat::Mxfp8, tokens, td, &a, 1.25).unwrap();
             assert_eq!((u.p0, u.p1, d.p0, d.p1), (1.0, 1.5, 1.0, 1.25));
-            assert_eq!(d.items as usize, bound * 6);
+            assert_eq!(d.items as usize, bound * 36 / td);
+            assert_eq!(d.pos0 as usize, td);
             assert_eq!((d.rows as usize, d.k, d.n, d.item_bytes), (8 * tokens, 1152, 2304, 0));
             assert_eq!(d.opcode, OP_EXPERT_MXFP8);
             assert_eq!(d.flags & (FLAG_UP | FLAG_DOWN), FLAG_DOWN);
         }
-        // A token has 8 pairs at most, so a decode step has 8 pairs of 6 items: 48.
-        assert_eq!(up(ExpertFormat::Nvfp4, 1, 1, &a, 1.0).unwrap().items, 48);
+        // A token has 8 pairs at most, so a decode step has 8 pairs of 4 up items or 12 down items: 32 and 96.
+        assert_eq!(up(ExpertFormat::Nvfp4, 1, 1, 9, &a, 1.0).unwrap().items, 32);
+        assert_eq!(down(ExpertFormat::Nvfp4, 1, 3, &a, 1.0).unwrap().items, 96);
+        // A count of tiles that does not divide the 36 tiles of a pair is an error.
+        for bad in [0usize, 5, 7, 8, 72] {
+            assert!(
+                up(ExpertFormat::Nvfp4, 1, 1, bad, &a, 1.0)
+                    .unwrap_err()
+                    .contains("do not divide")
+            );
+            assert!(
+                down(ExpertFormat::Nvfp4, 1, bad, &a, 1.0)
+                    .unwrap_err()
+                    .contains("do not divide")
+            );
+        }
         assert_eq!(EXPERT_MAX_ROWS, 16);
         assert!(up_table(Some(0), 16).unwrap_err().contains("amax"));
         assert_eq!(up_table(None, 16).unwrap().ptr[0], 0);

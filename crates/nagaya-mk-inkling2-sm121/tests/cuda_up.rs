@@ -438,6 +438,57 @@ fn the_bits_do_not_depend_on_the_count_of_rows_the_grid_or_the_order_of_the_pair
     }
 }
 
+/// The cuts of an item that the pass may pick: each divisor of the 36 tiles of a pair, and the cut of the pass.
+const CUTS: [usize; 9] = [1, 2, 3, 4, 6, 9, 12, 18, 36];
+
+#[test]
+fn the_bits_of_each_cut_of_an_item_are_equal_at_1_7_and_16_tokens_and_the_grids_48_and_7() {
+    use nagaya_mk_inkling2_sm121::pass::desc::up_tiles_per_item;
+    let Some(matrices) = matrices() else { return };
+    let dev = open();
+    for m in &matrices {
+        let rows = input_rows(m, 16);
+        let bank = upload_bank(&dev, m, true);
+        for tokens in [1usize, 7, 16] {
+            assert!(
+                CUTS.contains(&up_tiles_per_item(tokens)),
+                "the cut of the pass is not in the list"
+            );
+            let pairs = standard_pairs(tokens);
+            let reference = run_up(&dev, m, &bank, &rows[..tokens], tokens, &pairs, pairs.len(), 48, 1, TPI);
+            for tpi in CUTS {
+                for grid in [48u32, 7] {
+                    let got = run_up(
+                        &dev,
+                        m,
+                        &bank,
+                        &rows[..tokens],
+                        tokens,
+                        &pairs,
+                        pairs.len(),
+                        grid,
+                        1,
+                        tpi,
+                    );
+                    assert_eq!(
+                        bits(&got.act),
+                        bits(&reference.act),
+                        "{}: the activation of {tokens} tokens with {tpi} tiles for an item at grid {grid}",
+                        m.name
+                    );
+                    assert_eq!(
+                        got.quant, reference.quant,
+                        "{}: the quantized rows of {tokens} tokens with {tpi} tiles for an item at grid {grid}",
+                        m.name
+                    );
+                }
+            }
+        }
+        dev.free_device(bank.ptr).unwrap();
+    }
+    eprintln!("cuda_up: the bits equal at the cuts {CUTS:?}, at 1, 7 and 16 tokens, and at the grids 48 and 7");
+}
+
 /// The hashes of the standard case (16 tokens, grid 48): the activation rows, then the quantized rows. They are part of the
 /// engine identity: they pin the repack of `w13`, the epilogue, and the finisher.
 const PINNED_HASHES: [&str; 2] = [

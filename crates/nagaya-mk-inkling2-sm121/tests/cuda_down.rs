@@ -586,6 +586,52 @@ const PINNED_HASHES: [&str; 2] = [
     "af99dea24278e73fa193ccb1f6235f8ec969dd0967e4bc0c8b5c139391bfabe1",
 ];
 
+/// The cuts of an item that the pass may pick: each divisor of the 36 tiles of a pair, and the cut of the pass.
+const CUTS: [usize; 9] = [1, 2, 3, 4, 6, 9, 12, 18, 36];
+
+#[test]
+fn the_bits_of_each_cut_of_an_item_are_equal_at_1_7_and_16_tokens_and_the_grids_48_and_7() {
+    use nagaya_mk_inkling2_sm121::pass::desc::down_tiles_per_item;
+    let Some(matrices) = matrices() else { return };
+    let dev = open();
+    for m in &matrices {
+        let bank = upload_bank(&dev, m, false);
+        for tokens in [1usize, 7, 16] {
+            assert!(
+                CUTS.contains(&down_tiles_per_item(tokens)),
+                "the cut of the pass is not in the list"
+            );
+            let inp = inputs(m, tokens);
+            let pairs = pairs_of(tokens);
+            let reference = run_down(&dev, m, &bank, &inp, tokens, &pairs, pairs.len(), 48, 1, false, TPI);
+            for tpi in CUTS {
+                for grid in [48u32, 7] {
+                    let got = run_down(&dev, m, &bank, &inp, tokens, &pairs, pairs.len(), grid, 1, false, tpi);
+                    for (name, a, b) in [
+                        ("slots", &got.slots, &reference.slots),
+                        ("output", &got.out, &reference.out),
+                        ("state", &got.state, &reference.state),
+                    ] {
+                        assert_eq!(
+                            bits(a),
+                            bits(b),
+                            "{}: the {name} of {tokens} tokens with {tpi} tiles for an item at grid {grid}",
+                            m.name
+                        );
+                    }
+                    assert!(
+                        got.counters.iter().all(|c| *c == 0),
+                        "{}: a counter was not reset",
+                        m.name
+                    );
+                }
+            }
+        }
+        dev.free_device(bank.ptr).unwrap();
+    }
+    eprintln!("cuda_down: the bits equal at the cuts {CUTS:?}, at 1, 7 and 16 tokens, and at the grids 48 and 7");
+}
+
 #[test]
 fn the_bits_of_the_standard_case_are_pinned() {
     let Some(matrices) = matrices() else { return };
