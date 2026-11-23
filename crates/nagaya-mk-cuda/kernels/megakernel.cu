@@ -414,8 +414,8 @@ __device__ __forceinline__ void run_op(const MkTaskDescriptor& task, const MkTas
     }
     return;
 block_form:
-    // The block form of the matmul and of the projection (a prefill) runs in the producer shape only: the flat shape
-    // keeps the task in registers, and the heavy loop of the block form needs them. Both ops share one copy of the loop.
+    // The block form of the matmul and of the projection (a prefill) runs in the producer shape only. Both ops share
+    // one copy of the loop.
     if constexpr (PRODUCER) {
         op_block_form(task, table, item);
     } else {
@@ -528,7 +528,9 @@ __device__ __forceinline__ void run_flat_shape(
     }
 
     for (uint32_t idx = 0; idx < mk_num_tasks(); ++idx) {
-        const MkTaskDescriptor task = tasks[idx];
+        // A reference, not a copy: a copy of the descriptor would live in registers across every op, and the ops of the
+        // merged lanes then spill. The descriptors are read-only in global memory.
+        const MkTaskDescriptor& task = tasks[idx];
         const bool halt = task.opcode == OP_HALT;
         const uint32_t count = halt ? 0 : item_count(task);
 

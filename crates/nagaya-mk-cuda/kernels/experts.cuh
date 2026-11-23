@@ -63,10 +63,18 @@
 //                EXPERT_TABLE_CONV_WEIGHT (`n` rows of 4 floats, tap 3 weights the current row);
 //                EXPERT_TABLE_CONV_STATE (3 rows of `n` floats, the 3 last sums, oldest first); EXPERT_TABLE_OUT
 //                (`kt` rows of `n` floats, the output `x`; it may be the residual).
-//   f            one `u32` counter for each column tile, `n / 64` of them, at 0 and left at 0.
+//                EXPERT_TABLE_OUT_RF (`kt` floats: the row factor of each row of `x`).
+//   f            the scratch, `ex_down_scratch_words(n, kt)` words, at 0 and left at 0: one `u32` counter for each column
+//                tile (`n / 64` of them), the counter of the row finisher, rounded up to a multiple of 4 words, and then
+//                2 floats for each token of each tile (the sums of squares of the two halves of the tile).
 // The last item of a column tile does the finisher of the tile. It waits for every live pair, so a pair with no rows
 // still counts. For each token in order it sums the 8 slots in slot order from 0, runs `ops::short_conv` with the state,
 // and writes `x = r + conv`. Then it pushes the last 3 sums into the state. A token has exactly 8 slots.
+// The row factor of `x`. The finisher of a tile also writes the sum of squares of its 64 values of each token, in two
+// halves of 32 columns, each half in the butterfly of the shuffles (offsets 16, 8, 4, 2, 1). Then it arrives at the
+// counter of the row finisher. The last tile to arrive is the row finisher: for each token it adds the 36 tiles in
+// tile order, each tile as `half 0 + half 1`, starting from the tile 0, and it writes `rf = 1 / sqrt(sum / n + 1e-6)`
+// to EXPERT_TABLE_OUT_RF. The sum order is fixed, and no float is added with an atomic. The merger resets the counter.
 //
 // The up mode needs a dynamic shared memory of MK_EXPERT_SMEM_BYTES + 16 bytes (4,112), and the down mode needs
 // MK_EXPERT_SMEM_BYTES + 16 + EX_DOWN_SMEM_BYTES bytes (21,264).
@@ -290,6 +298,14 @@ constexpr uint32_t EXPERT_TABLE_RESIDUAL = 2;   // DOWN: the residual `r`, `kt` 
 constexpr uint32_t EXPERT_TABLE_CONV_WEIGHT = 3;  // DOWN: the weights of `mlp_conv`, `n` rows of 4 floats.
 constexpr uint32_t EXPERT_TABLE_CONV_STATE = 4;   // DOWN: the state of the convolution, 3 rows of `n` floats.
 constexpr uint32_t EXPERT_TABLE_OUT = 5;          // DOWN: the output `x`, `kt` rows of `n` floats.
+constexpr uint32_t EXPERT_TABLE_OUT_RF = 6;       // DOWN: the row factor of each row of `x`, `kt` floats.
+
+// The epsilon of the row factor (`ops::EPS` of the host form; it is RW_EPS of ops_rows.cuh, which comes after this file).
+constexpr float EX_RF_EPS = 1e-6f;
+
+// The word of the scratch `f` of the down op where the partial sums start: after one counter for each column tile and
+// the counter of the row finisher, rounded up to 4 words. `src/experts.rs` has the same rule (`down_scratch_words`).
+__device__ __forceinline__ uint32_t ex_down_partials_offset(uint32_t tiles) { return (tiles + 1 + 3) & ~3u; }
 
 // The columns of the activation of one expert, and the values of K of the down matmul: the half of `n` of the up matmul.
 constexpr uint32_t EXPERT_UP_TILE_COLUMNS = MK_EXPERT_TILE_ROWS / 2;
@@ -357,6 +373,18 @@ __device__ __forceinline__ void up_finish_rows(const MkTaskDescriptor& task, con
     }
 }
 
+// Count the arrival of an item of a merge group, and tell the whole block if it is the last one. The caller has run a
+// barrier of the consumers after its last write.
+__device__ __forceinline__ bool expert_arrive(uint32_t* counter, uint32_t group_items) {
+    uint32_t* flag = reinterpret_cast<uint32_t*>(mk_smem + MK_EXPERT_SMEM_BYTES);
+    if (worker_id() == 0) {
+        *flag = merge_arrive(counter, group_items) ? 1u : 0u;
+    }
+    worker_sync();
+    // No barrier after the read: the next write of the flag is in a later item, after more barriers.
+    return *flag != 0;
+}
+
 // The rows of the chunk of the finisher of the down op: tokens at a time. A chunk holds 3 rows of the tokens before it,
 // and the sums of its own tokens.
 constexpr uint32_t EX_DOWN_CHUNK = 64;
@@ -412,7 +440,19 @@ __device__ __forceinline__ void down_finish_tile(const MkTaskDescriptor& task, c
                               w3 * f[3 * MK_EXPERT_TILE_ROWS];
             const float conv = ex_div_const(sum + f[3 * MK_EXPERT_TILE_ROWS], divisor, inverse);
             const uint64_t at = static_cast<uint64_t>(first + j) * n + col;
-            out[at] = __ldcg(residual + at) + conv;
+            const float x = __ldcg(residual + at) + conv;
+            out[at] = x;
+            // The sum of the squares of the 32 columns of this warp. All the lanes of a warp have the same `j`.
+            float square = x * x;
+#pragma unroll
+            for (uint32_t offset = 16; offset >= 1; offset >>= 1) {
+                square += __shfl_xor_sync(0xFFFFFFFFu, square, offset);
+            }
+            if ((tid & 31) == 0) {
+                __stcg(reinterpret_cast<float*>(task.f) + ex_down_partials_offset(n / MK_EXPERT_TILE_ROWS) +
+                           (static_cast<uint64_t>(tile) * tokens + first + j) * 2 + ((tid >> 5) & 1),
+                       square);
+            }
         }
         worker_sync();
     }
@@ -432,6 +472,24 @@ __device__ __forceinline__ void down_finish_tile(const MkTaskDescriptor& task, c
         for (uint32_t j = 0; j < 3; ++j) {
             __stcg(state + static_cast<uint64_t>(j) * n + col, next[j]);
         }
+    }
+    // The row finisher: the last tile to arrive adds the sums of squares of all the tiles. The sums of this tile are
+    // written, so the barrier comes first and the release of the add publishes them.
+    const uint32_t tiles = n / MK_EXPERT_TILE_ROWS;
+    worker_sync();
+    if (!expert_arrive(reinterpret_cast<uint32_t*>(task.f) + tiles, tiles)) {
+        return;
+    }
+    const float* partials = reinterpret_cast<const float*>(task.f) + ex_down_partials_offset(tiles);
+    float* factors = reinterpret_cast<float*>(table->ptr[EXPERT_TABLE_OUT_RF]);
+    for (uint32_t token = tid; token < tokens; token += MK_CONSUMER_THREADS) {
+        float total = 0.0f;
+        for (uint32_t t = 0; t < tiles; ++t) {
+            const float2 half = __ldcg(reinterpret_cast<const float2*>(partials) + static_cast<uint64_t>(t) * tokens + token);
+            const float sum = half.x + half.y;
+            total = t == 0 ? sum : total + sum;
+        }
+        __stcg(factors + token, 1.0f / sqrtf(total / static_cast<float>(n) + EX_RF_EPS));
     }
 }
 
@@ -558,18 +616,6 @@ __device__ __forceinline__ void expert_pass(
     }
 }
 
-// Count the arrival of an item of a merge group, and tell the whole block if it is the last one. The caller has run a
-// barrier of the consumers after its last write.
-__device__ __forceinline__ bool expert_arrive(uint32_t* counter, uint32_t group_items) {
-    uint32_t* flag = reinterpret_cast<uint32_t*>(mk_smem + MK_EXPERT_SMEM_BYTES);
-    if (worker_id() == 0) {
-        *flag = merge_arrive(counter, group_items) ? 1u : 0u;
-    }
-    worker_sync();
-    // No barrier after the read: the next write of the flag is in a later item, after more barriers.
-    return *flag != 0;
-}
-
 // The warps ask L2 for the bytes that they read in the next tile of this block, so the first loads of that tile do not
 // wait for DRAM. The next tile is the tile after this one in the same item, or the first tile of the next item of this
 // block. One bulk prefetch for each stream of a warp. A bulk prefetch needs a multiple of 16 bytes.
@@ -692,8 +738,9 @@ __device__ __forceinline__ void op_expert(const MkTaskDescriptor& task, const Mk
         op_expert_mode<F, EX_UP>(task, table, item);
     } else if (mode_flags == FLAG_DOWN) {
         if (table == nullptr || table->ptr[EXPERT_TABLE_RESIDUAL] == 0 || table->ptr[EXPERT_TABLE_CONV_WEIGHT] == 0 ||
-            table->ptr[EXPERT_TABLE_CONV_STATE] == 0 || table->ptr[EXPERT_TABLE_OUT] == 0 || task.kt == 0 ||
-            task.rows != 8 * task.kt || (task.f & 3) != 0 ||
+            table->ptr[EXPERT_TABLE_CONV_STATE] == 0 || table->ptr[EXPERT_TABLE_OUT] == 0 ||
+            table->ptr[EXPERT_TABLE_OUT_RF] == 0 || (table->ptr[EXPERT_TABLE_OUT_RF] & 3) != 0 || task.kt == 0 ||
+            task.rows != 8 * task.kt || (task.f & 7) != 0 ||
             dynamic_smem_bytes() < EX_FINISH_OFFSET + EX_DOWN_SMEM_BYTES) {
             __trap();
         }
