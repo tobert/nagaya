@@ -50,6 +50,31 @@ fn config_refuses_unknown_key_missing_keys_and_two_devices() {
     assert!(inkling2_sm121::config(&no_dir).is_err());
 }
 
+#[test]
+fn config_reads_the_cache_format_and_refuses_a_bad_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut table = toml::Table::new();
+    table.insert(
+        "model_dir".to_owned(),
+        toml::Value::String(dir.path().display().to_string()),
+    );
+    table.insert("slots".to_owned(), toml::Value::Integer(1));
+    let cache = |table: &toml::Table| {
+        inkling2_sm121::config(table).map(|config| nagaya_mk_inkling2_sm121::spec::cache_name(config.cache))
+    };
+    assert_eq!(cache(&table).unwrap(), "f32", "the default is the oracle form");
+    for name in ["f32", "bf16", "e4m3"] {
+        table.insert("cache".to_owned(), toml::Value::String(name.to_owned()));
+        assert_eq!(cache(&table).unwrap(), name);
+    }
+    table.insert("cache".to_owned(), toml::Value::String("fp8".to_owned()));
+    let error = cache(&table).unwrap_err().message;
+    assert!(error.contains("`fp8`") && error.contains("`bf16`"), "{error}");
+    table.insert("cache".to_owned(), toml::Value::Integer(16));
+    let error = cache(&table).unwrap_err().message;
+    assert!(error.contains("`cache`") && error.contains("16"), "{error}");
+}
+
 #[cfg(feature = "cuda")]
 #[test]
 fn open_says_which_milestone_steps_are_missing() {
@@ -127,6 +152,10 @@ fn real_model_plans_512k_slot_through_factory() {
     lim.check().unwrap();
     let kv = lim.memory.mandatory.iter().find(|t| t.name == "kv").unwrap().bytes;
     assert_eq!(kv, 34_866_888_704);
+    // The limits declare what the engine serves: no control table, no taps and no tower of images until step 13.
+    assert!(lim.control.is_none() && lim.taps.is_empty());
+    assert_eq!(lim.inputs, nagaya_abi::Inputs::Tokens);
+    assert!(lim.memory.mandatory.iter().all(|term| term.name != "vision"));
     assert_eq!(lim.slots.len(), 1);
     assert_eq!((lim.slots[0].tokens, lim.slots[0].bytes), (524_288, 34_866_888_704));
 }

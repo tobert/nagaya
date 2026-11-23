@@ -1347,8 +1347,10 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "nagaya-abi",
+ "nagaya-mk-bmg",
  "nagaya-mk-cuda",
  "nagaya-mk-inkling2-bmg",
+ "nagaya-text-inkling2",
  "serde_json",
 ]
 
