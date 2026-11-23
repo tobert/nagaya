@@ -10,9 +10,11 @@
 //! - A call of 40 tokens equals two calls of 20 tokens that carry the state.
 //! - The bits of a token do not depend on the count of tokens, the grid, the order of the pairs, or an output that is the
 //!   residual.
+//! - The row factor of each output row (`EXPERT_TABLE_OUT_RF`) equals a host model of its sum order, bit for bit, in
+//!   every run: at 1, 7, 16 and 40 tokens and at each grid. It is also within 16 epsilons of `ops::rms_norm`'s factor.
 //! - The counters are 0 after a run.
 //! - The bits of the standard case are pinned by a hash.
-//! - Speed: the time of 8 experts with 1 row.
+//! - Speed: the time of 8 experts with 1 and 16 rows.
 //!
 //! `NAGAYA_TEST_CARDS=<pci address> INKLING2_MODEL_DIR=<folder of Mini> cargo test -p nagaya-mk-inkling2-sm121
 //!  --features cuda --test cuda_down -- --test-threads=1 --nocapture`
@@ -29,8 +31,8 @@ use moe_support::expert::{
 use moe_support::{Checkpoint, Rng, activation_row, model_dir};
 use nagaya_mk_cuda::driver::{CUdeviceptr, CudaDevice};
 use nagaya_mk_cuda::experts::{
-    EXPERT_TABLE_CONV_STATE, EXPERT_TABLE_CONV_WEIGHT, EXPERT_TABLE_OUT, EXPERT_TABLE_RESIDUAL, ExpertFormat,
-    QuantRowsLayout, pair_list_bytes,
+    EXPERT_TABLE_CONV_STATE, EXPERT_TABLE_CONV_WEIGHT, EXPERT_TABLE_OUT, EXPERT_TABLE_OUT_RF, EXPERT_TABLE_RESIDUAL,
+    ExpertFormat, QuantRowsLayout, down_scratch_words, pair_list_bytes,
 };
 use nagaya_mk_cuda::protocol::{
     EXPERT_TABLE_AMAX, ExpertPair, FLAG_DOWN, FLAG_PAIRS, MkTaskDescriptor, MkTaskTable, OP_EXPERT_MXFP8,
@@ -108,7 +110,38 @@ struct DownRun {
     slots: Vec<f32>,
     out: Vec<f32>,
     state: Vec<f32>,
+    /// The row factor of each output row.
+    rf: Vec<f32>,
+    /// The counters of the scratch: one for each column tile, then the counter of the row finisher.
     counters: Vec<u32>,
+}
+
+/// The sum of the squares of one half tile (32 columns) in the order of the kernel: a butterfly of shuffles with the
+/// offsets 16, 8, 4, 2 and 1. Every lane ends with the same bits, and the host takes lane 0.
+fn half_tile_sum(values: &[f32]) -> f32 {
+    let mut lane: Vec<f32> = values.iter().map(|v| v * v).collect();
+    for offset in [16usize, 8, 4, 2, 1] {
+        lane = (0..32).map(|l| lane[l] + lane[l ^ offset]).collect();
+    }
+    lane[0]
+}
+
+/// The host model of the row factors of the output rows, in the exact order of the row finisher of the down op: for
+/// each column tile of 64 columns, the two half tiles (`half_tile_sum`), added as `half 0 + half 1`; then the 36 tile
+/// sums added one after the other in tile order from the tile 0; then `1 / sqrt(sum / N + EPS)`.
+fn host_rf(out: &[f32], tokens: usize) -> Vec<f32> {
+    (0..tokens)
+        .map(|t| {
+            let row = &out[t * N..(t + 1) * N];
+            let mut total = 0f32;
+            for tile in 0..N / 64 {
+                let c = &row[tile * 64..(tile + 1) * 64];
+                let sum = half_tile_sum(&c[..32]) + half_tile_sum(&c[32..]);
+                total = if tile == 0 { sum } else { total + sum };
+            }
+            1.0 / (total / N as f32 + ops::EPS).sqrt()
+        })
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -177,13 +210,15 @@ fn run_down(
     };
     let weight = upload(dev, &inp.conv_weight);
     let state = upload(dev, &inp.state);
-    let counters = upload(dev, &[0u32; N / 64]);
+    let counters = upload(dev, &vec![0u32; down_scratch_words(N, tokens)]);
+    let rf = upload(dev, &vec![0xFFu8; tokens * 4]);
     let mut table = MkTaskTable::default();
     table.ptr[EXPERT_TABLE_AMAX] = bank.amax;
     table.ptr[EXPERT_TABLE_RESIDUAL] = residual;
     table.ptr[EXPERT_TABLE_CONV_WEIGHT] = weight;
     table.ptr[EXPERT_TABLE_CONV_STATE] = state;
     table.ptr[EXPERT_TABLE_OUT] = out;
+    table.ptr[EXPERT_TABLE_OUT_RF] = rf;
     let table_ptr = upload(dev, &[table]);
     let mut ring = Ring::new(dev, 1, false).unwrap();
     ring.set(&[Task::with_items(down_task(
@@ -194,7 +229,8 @@ fn run_down(
     .writes(slots, 8 * tokens * N * 4)
     .writes(out, tokens * N * 4)
     .writes(state, 3 * N * 4)
-    .writes(counters, (N / 64) * 4)]);
+    .writes(rf, tokens * 4)
+    .writes(counters, down_scratch_words(N, tokens) * 4)]);
     for _ in 0..repeat {
         // Back to the start values.
         unsafe {
@@ -215,10 +251,29 @@ fn run_down(
         slots: download(dev, slots, 8 * tokens * N),
         out: download(dev, out, tokens * N),
         state: download(dev, state, 3 * N),
-        counters: download(dev, counters, N / 64),
+        rf: download(dev, rf, tokens),
+        counters: download(dev, counters, N / 64 + 1),
     };
+    // The factors are the bits of the host model of the sum order, in every run.
+    assert_eq!(
+        bits(&result.rf),
+        bits(&host_rf(&result.out, tokens)),
+        "{}: the row factors differ from the host model of the sum order at {tokens} tokens, grid {grid}",
+        m.name
+    );
+    // And they are the factor of `ops::rms_norm` within 16 epsilons.
+    for (t, got) in result.rf.iter().enumerate() {
+        let row = &result.out[t * N..(t + 1) * N];
+        let want = 1.0 / (ops::dot(row, row) / N as f32 + ops::EPS).sqrt();
+        let e = f64::from((got - want).abs()) / f64::from(want) / f64::from(f32::EPSILON);
+        assert!(
+            e <= 16.0,
+            "{}: row {t}: the factor is {got:e}, the host form {want:e}",
+            m.name
+        );
+    }
     ring.free().unwrap();
-    let mut frees = vec![x, pair_ptr, slots, residual, weight, state, counters, table_ptr];
+    let mut frees = vec![x, pair_ptr, slots, residual, weight, state, counters, rf, table_ptr];
     if !in_place {
         frees.push(out);
     }
@@ -314,6 +369,48 @@ fn the_slot_rows_are_within_the_bound_and_the_finisher_is_exact() {
     }
 }
 
+/// The inputs of rows with a tiny output: activations of 1e-12 and a state of 0, so the output is the residual. The
+/// residual of the token `t` is the constant `t * 1e-5`, so `mean(x^2)` runs from 0 to 3e-5 and the epsilon of the
+/// factor (1e-6) is a part of each sum. With the rows of the other tests (`mean(x^2)` about 10) the epsilon is below
+/// the ulp of the sum, and a change of it does not show.
+fn tiny_inputs(m: &Matrix, tokens: usize) -> Inputs {
+    let mut rng = Rng(0xE0E0_0000 + m.k as u64);
+    Inputs {
+        act: (0..tokens * 8)
+            .map(|_| quantize_row(m.format, &activation_row(&mut rng, K, 1.0e-12)))
+            .collect(),
+        residual: (0..tokens * N).map(|i| (i / N) as f32 * 1.0e-5).collect(),
+        conv_weight: (0..N * 4).map(|_| rng.unit() * 0.6).collect(),
+        state: vec![0.0; 3 * N],
+    }
+}
+
+/// `run_down` checks the factors against the host model of the sum order in each run. This test uses 512 tokens, so
+/// that a change of the epsilon by one ulp moves the bits of some of the rows. The row 0 is `1 / sqrt(EPS)`.
+#[test]
+fn a_tiny_output_gives_the_factor_of_the_epsilon_and_a_change_of_it_shows() {
+    let Some(matrices) = matrices() else { return };
+    let dev = open();
+    let want = 1.0 / ops::EPS.sqrt();
+    for m in &matrices {
+        let bank = upload_bank(&dev, m, false);
+        let tokens = 512;
+        let inp = tiny_inputs(m, tokens);
+        let pairs = pairs_of(tokens);
+        let run = run_down(&dev, m, &bank, &inp, tokens, &pairs, pairs.len(), 48, 1, false, TPI);
+        let biggest = run.out.iter().fold(0f32, |a, v| a.max(v.abs()));
+        assert!(biggest < 6.0e-3, "{}: the output is not tiny: {biggest:e}", m.name);
+        assert_eq!(
+            run.rf[0].to_bits(),
+            want.to_bits(),
+            "{}: row 0: {:e}, want {want:e}",
+            m.name,
+            run.rf[0]
+        );
+        dev.free_device(bank.ptr).unwrap();
+    }
+}
+
 #[test]
 fn a_call_of_40_tokens_equals_two_calls_of_20_with_the_state_carried() {
     let Some(matrices) = matrices() else { return };
@@ -378,6 +475,12 @@ fn the_bits_do_not_depend_on_the_count_of_tokens_the_grid_the_order_of_the_pairs
                 m.name
             );
             assert_eq!(
+                bits(&got.rf),
+                bits(&reference.rf),
+                "{}: the row factors at grid {grid}",
+                m.name
+            );
+            assert_eq!(
                 bits(&got.state),
                 bits(&reference.state),
                 "{}: the state at grid {grid}",
@@ -422,6 +525,12 @@ fn the_bits_do_not_depend_on_the_count_of_tokens_the_grid_the_order_of_the_pairs
                 "{}: the output of {count} tokens",
                 m.name
             );
+            assert_eq!(
+                bits(&got.rf),
+                bits(&reference.rf[..count]),
+                "{}: the row factors of {count} tokens",
+                m.name
+            );
         }
         // The order of the pairs, with room for 5 pairs that are not live, and an output that is the residual.
         let mut reversed: Vec<ExpertPair> = pairs.iter().rev().copied().collect();
@@ -454,6 +563,12 @@ fn the_bits_do_not_depend_on_the_count_of_tokens_the_grid_the_order_of_the_pairs
             bits(&got.out),
             bits(&reference.out),
             "{}: the output in place, with the pairs reversed",
+            m.name
+        );
+        assert_eq!(
+            bits(&got.rf),
+            bits(&reference.rf),
+            "{}: the row factors in place, with the pairs reversed",
             m.name
         );
         eprintln!(
@@ -505,32 +620,34 @@ fn median(mut values: Vec<u64>) -> u64 {
 }
 
 #[test]
-fn speed_of_the_down_op_for_8_experts_with_1_row() {
+fn speed_of_the_down_op_for_8_experts_with_1_and_16_rows() {
     let Some(matrices) = matrices() else { return };
     let dev = moe_support::open_profile_or_env();
     let blocks = dev.sm_count() as usize;
     let flush_bytes = 1usize << 30;
     let flush = dev.alloc_device(flush_bytes).unwrap();
     let checks = dev.alloc_device(blocks * 4).unwrap();
-    for m in &matrices {
+    for (m, tokens) in matrices.iter().flat_map(|m| [1usize, 16].map(move |t| (m, t))) {
         let bank = upload_bank(&dev, m, false);
-        let inp = inputs(m, 1);
-        let pairs = pairs_of(1);
-        let layout = QuantRowsLayout::new(m.format, 8, K).unwrap();
+        let inp = inputs(m, tokens);
+        let pairs = pairs_of(tokens);
+        let layout = QuantRowsLayout::new(m.format, 8 * tokens, K).unwrap();
         let x = upload(&dev, &quant_rows_bytes(&layout, &inp.act));
         let pair_ptr = upload(&dev, &pair_list_bytes(&pairs, pairs.len()).unwrap());
-        let slots = upload(&dev, &vec![0u8; 8 * N * 4]);
+        let slots = upload(&dev, &vec![0u8; 8 * tokens * N * 4]);
         let residual = upload(&dev, &inp.residual);
-        let out = upload(&dev, &vec![0u8; N * 4]);
+        let out = upload(&dev, &vec![0u8; tokens * N * 4]);
+        let rf = upload(&dev, &vec![0u8; tokens * 4]);
         let weight = upload(&dev, &inp.conv_weight);
         let state = upload(&dev, &inp.state);
-        let counters = upload(&dev, &[0u32; N / 64]);
+        let counters = upload(&dev, &vec![0u32; down_scratch_words(N, tokens)]);
         let mut table = MkTaskTable::default();
         table.ptr[EXPERT_TABLE_AMAX] = bank.amax;
         table.ptr[EXPERT_TABLE_RESIDUAL] = residual;
         table.ptr[EXPERT_TABLE_CONV_WEIGHT] = weight;
         table.ptr[EXPERT_TABLE_CONV_STATE] = state;
         table.ptr[EXPERT_TABLE_OUT] = out;
+        table.ptr[EXPERT_TABLE_OUT_RF] = rf;
         let table_ptr = upload(&dev, &[table]);
         let mut ring = Ring::new(&dev, 1, true).unwrap();
         let read = Task::per_block(MkTaskDescriptor {
@@ -545,7 +662,7 @@ fn speed_of_the_down_op_for_8_experts_with_1_row() {
             m,
             &bank,
             x,
-            1,
+            tokens,
             slots,
             table_ptr,
             pair_ptr,
@@ -575,7 +692,7 @@ fn speed_of_the_down_op_for_8_experts_with_1_row() {
         let weight_bytes = 8 * (N / 64) * m.format.item_bytes(K);
         let gbps = weight_bytes as f64 / ns as f64;
         eprintln!(
-            "cuda_down speed: {:<14} {:?}: 8 experts x 1 row: {:>7.1} us (best {:>7.1}), {:>6.2} MB, {:>6.1} GB/s, {:>5.1}% of {PEAK_GBPS} GB/s (the budget is 50 us NVFP4, 91 us MXFP8)",
+            "cuda_down speed: {:<14} {:?}: 8 experts x {tokens:>2} rows: {:>7.1} us (best {:>7.1}), {:>6.2} MB, {:>6.1} GB/s, {:>5.1}% of {PEAK_GBPS} GB/s (the budget is 50 us NVFP4, 91 us MXFP8)",
             m.name,
             m.format,
             ns as f64 / 1e3,
@@ -586,7 +703,7 @@ fn speed_of_the_down_op_for_8_experts_with_1_row() {
         );
         ring.free().unwrap();
         for ptr in [
-            x, pair_ptr, slots, residual, out, weight, state, counters, table_ptr, bank.ptr, bank.amax,
+            x, pair_ptr, slots, residual, out, rf, weight, state, counters, table_ptr, bank.ptr, bank.amax,
         ] {
             if ptr != 0 {
                 dev.free_device(ptr).unwrap();

@@ -79,6 +79,18 @@ pub const EXPERT_TABLE_CONV_WEIGHT: usize = 3;
 pub const EXPERT_TABLE_CONV_STATE: usize = 4;
 pub const EXPERT_TABLE_OUT: usize = 5;
 
+/// The slot of the row factors of the output rows in the table of a down op: `kt` floats, one for each row of the
+/// output `x` (the slot [`EXPERT_TABLE_OUT`]). Each is `1 / sqrt(mean(x^2) + 1e-6)`, summed in a fixed order.
+pub const EXPERT_TABLE_OUT_RF: usize = 6;
+
+/// The words of the scratch (`f`) of a down op with `n` outputs and `tokens` tokens: one counter for each column tile
+/// of 64, the counter of the row finisher, rounded up to a multiple of 4 words; then 2 floats for each token of each
+/// tile (the sums of squares of the two halves of the tile). The counters start at 0 and stay 0.
+pub fn down_scratch_words(n: usize, tokens: usize) -> usize {
+    let tiles = n / 64;
+    (tiles + 1).next_multiple_of(4) + tiles * tokens * 2
+}
+
 /// The rows that one row tile of `OP_ROUTE` takes.
 pub const ROUTE_ROW_TILE: usize = 16;
 
