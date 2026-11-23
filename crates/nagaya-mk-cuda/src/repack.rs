@@ -30,6 +30,12 @@ pub const K_STEP: usize = 16;
 /// Consumer warps that split the K slice of an item. The warps of a block join in a fixed tree.
 pub const K_WARPS: usize = 8;
 
+/// Column tiles in one item of the block form (`FLAG_BLOCK_FORM`): 128 columns.
+pub const BLOCK_GROUP_TILES: usize = 8;
+
+/// Rows in one item of the block form.
+pub const BLOCK_ROWS: usize = 32;
+
 /// The tokens that one tile of 16 rows takes: two MMAs of 8 columns. A pass of more rows loops over such tiles.
 pub const ROW_TILE: usize = 16;
 
@@ -129,6 +135,30 @@ impl MatmulShape {
         let lane = g * 4 + t;
         let item = tile * self.slices() + slice;
         item * self.item_bytes() + (step * 32 + lane) * 16 + (part * 2 + half) * 4
+    }
+
+    /// Items of the block form for `rows` rows: a group of up to [`BLOCK_GROUP_TILES`] tiles and a block of
+    /// [`BLOCK_ROWS`] rows each. The row blocks of a group are consecutive.
+    pub fn block_items(&self, rows: usize) -> usize {
+        self.tiles().div_ceil(BLOCK_GROUP_TILES) * rows.div_ceil(BLOCK_ROWS)
+    }
+
+    /// The descriptor of one `OP_MATMUL_BF16` task in the block form. The fields are those of [`Self::descriptor`],
+    /// with `FLAG_BLOCK_FORM`, `items` = [`Self::block_items`], and no scratch (`f` is 0): the form keeps every sum in
+    /// registers and shared memory. Each row has the bits of the decode form.
+    pub fn descriptor_block(&self, rows: usize, x: u64, packed: u64, y: u64) -> Result<MkTaskDescriptor, String> {
+        let mut desc = self.descriptor(rows, x, packed, y, 0)?;
+        if !x.is_multiple_of(16) {
+            return Err(format!(
+                "the address of x is {x:#x}, which is not a multiple of 16, and the block form copies rows of x with \
+                 bulk copies. Align the buffer"
+            ));
+        }
+        desc.flags |= crate::protocol::FLAG_BLOCK_FORM;
+        desc.items = u32::try_from(self.block_items(rows))
+            .map_err(|_| "the count of items of the block form does not fit in 32 bits".to_string())?;
+        desc.f = 0;
+        Ok(desc)
     }
 
     /// The descriptor of one `OP_MATMUL_BF16` task. The pointers are device addresses: `x` holds `rows` rows of `k`

@@ -95,6 +95,55 @@ impl ProjLayout {
         shape.tiles() + PROJ_HEAD_COUNTERS + shape.items() * rows * COLUMN_TILE + 2 * rows * 1024 + 2 * rows * 32
     }
 
+    /// The groups of the block form, in the order of the items: a group is up to 8 tiles of one segment (see
+    /// `kernels/ops_dense.cuh`, "OP_PROJ in the block form").
+    pub fn block_groups(&self) -> usize {
+        (if self.full { 2 } else { 0 }) + 8 + 8 + 24 + 3 + 1 + 24
+    }
+
+    /// The items of the block form for `rows` rows: the groups times the blocks of 32 rows.
+    pub fn block_items(&self, rows: usize) -> usize {
+        self.block_groups() * rows.div_ceil(crate::repack::BLOCK_ROWS)
+    }
+
+    /// The floats of scratch of the block form: one word for each tile (not used), the counters of the heads, the raw rows
+    /// of the key and the value, and their taps. It has no partials.
+    pub fn block_scratch_floats(&self, rows: usize) -> usize {
+        self.shape().tiles() + PROJ_HEAD_COUNTERS + 2 * rows * 1024 + 2 * rows * 32
+    }
+
+    /// The descriptor of one `OP_PROJ` task in the block form, for 1 to 512 rows. The arguments are those of
+    /// [`ProjLayout::descriptor`], and `scratch` holds [`ProjLayout::block_scratch_floats`] floats with the counters at 0.
+    /// The address of `x`, and of each row of the task table that is an input row, must be a multiple of 16: the form
+    /// copies rows with 16-byte pieces.
+    #[allow(clippy::too_many_arguments)]
+    pub fn descriptor_block(
+        &self,
+        rows: usize,
+        pos0: u32,
+        plane_rows: u32,
+        format: CacheFormat,
+        x: u64,
+        packed: u64,
+        out: u64,
+        table: u64,
+        rf: u64,
+        scratch: u64,
+    ) -> Result<MkTaskDescriptor, String> {
+        let mut desc = self.descriptor(rows, pos0, plane_rows, format, x, packed, out, table, rf, scratch)?;
+        if !x.is_multiple_of(16) {
+            return Err(format!(
+                "the address of x is {x:#x}, which is not a multiple of 16, and the block form copies rows of x in pieces of 16 bytes. Align the buffer"
+            ));
+        }
+        desc.flags |= crate::protocol::FLAG_BLOCK_FORM;
+        desc.items = u32::try_from(self.block_items(rows))
+            .map_err(|_| "the count of items of the block form does not fit in 32 bits".to_string())?;
+        desc.scale_bytes = u32::try_from(self.block_scratch_floats(rows))
+            .map_err(|_| "the scratch of the projection does not fit in 32 bits".to_string())?;
+        Ok(desc)
+    }
+
     /// The floats of the output at `c`: q, rel, sink and gate, for `rows` rows.
     pub fn output_floats(rows: usize) -> usize {
         rows * (3072 + 384 + SINKS + 3072)
