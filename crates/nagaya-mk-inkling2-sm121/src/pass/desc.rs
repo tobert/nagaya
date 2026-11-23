@@ -243,7 +243,7 @@ pub fn gate_down(
     scratch: u64,
     table: u64,
 ) -> Result<MkTaskDescriptor, String> {
-    let rows = rows_in("gate down", rows, 16)?;
+    let rows = rows_in("gate down", rows, 512)?;
     if !(1..=3).contains(&gates) {
         return Err(format!("a gate down task has 1 to 3 gates, and this one has {gates}"));
     }
@@ -312,7 +312,7 @@ pub fn gate_up(
     scratch: u64,
     table: u64,
 ) -> Result<MkTaskDescriptor, String> {
-    let rows = rows_in("gate up", rows, 16)?;
+    let rows = rows_in("gate up", rows, 512)?;
     if !(1..=3).contains(&gates) {
         return Err(format!("a gate up task has 1 to 3 gates, and this one has {gates}"));
     }
@@ -817,7 +817,8 @@ mod tests {
                 (gates * 36, 64, 8 * 4 * 512, 0)
             );
         }
-        assert!(gate_down(17, 3, 16, 4, 4, 128).unwrap_err().contains("1 to 16"));
+        assert!(gate_down(513, 3, 16, 4, 4, 128).unwrap_err().contains("1 to 512"));
+        assert!(gate_down(512, 3, 16, 4, 4, 128).is_ok());
         assert!(gate_down(1, 4, 16, 4, 4, 128).unwrap_err().contains("1 to 3"));
         assert!(gate_down(1, 1, 8, 4, 4, 128).unwrap_err().contains("gate weights"));
         let norm = gate_up(1, 1, 8, 16, Some(4), 4, 128).unwrap();

@@ -13,4 +13,6 @@ pub mod run;
 #[cfg(feature = "cuda")]
 pub mod slot;
 #[cfg(feature = "cuda")]
+pub mod step;
+#[cfg(feature = "cuda")]
 pub mod weights;
