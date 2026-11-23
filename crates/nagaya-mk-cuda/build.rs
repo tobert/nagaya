@@ -143,6 +143,7 @@ fn protocol_header() -> String {
     offsets!(h, "MK_EXPERT_PAIR_HEADER_OFF_", protocol::ExpertPairHeader: pairs);
     offsets!(h, "MK_EXPERT_PAIR_OFF_", protocol::ExpertPair: expert, count, x_row, y_row, weight);
     writeln!(h, "#define NO_EVENT {}u", protocol::NO_EVENT).unwrap();
+    writeln!(h, "#define MK_CLAIM_BASE {}u", protocol::CLAIM_BASE).unwrap();
     writeln!(h, "#define MK_PROFILE_WORDS {}u", protocol::PROFILE_WORDS).unwrap();
     writeln!(h, "#define MK_DESC_BYTES {}", size_of::<MkTaskDescriptor>()).unwrap();
     writeln!(h, "#define MK_DESC_ALIGN {}", align_of::<MkTaskDescriptor>()).unwrap();

@@ -332,7 +332,7 @@ __device__ __forceinline__ void op_route(const MkTaskDescriptor& task, const MkT
     const bool valid1 = g + 8 < live_rows;
 
     const uint8_t* weights = reinterpret_cast<const uint8_t*>(task.b);
-    const uint64_t next = static_cast<uint64_t>(item) + gridDim.x;
+    const uint64_t next = mk_next_item();
     if (worker_id() == 0 && next < task.items) {
         bulk_prefetch_l2(weights + (next % RT_ITEMS_PER_ROW_TILE) * RT_ITEM_BYTES, RT_ITEM_BYTES);
     }

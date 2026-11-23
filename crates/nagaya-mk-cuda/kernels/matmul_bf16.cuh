@@ -128,7 +128,7 @@ __device__ __forceinline__ void mm_item_partials(const MkTaskDescriptor& task, u
 
     const uint8_t* weights = reinterpret_cast<const uint8_t*>(task.b);
     // The next item of this block: its first bytes are on the way to L2 while this item runs.
-    const uint64_t next = static_cast<uint64_t>(item) + gridDim.x;
+    const uint64_t next = mk_next_item();
     if (worker_id() == 0 && next < task.items) {
         bulk_prefetch_l2(weights + next * task.item_bytes, task.item_bytes);
     }
