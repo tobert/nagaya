@@ -22,7 +22,7 @@ const SEQ: usize = 1024;
 
 fn slot_hashes(pass: &Pass<'_>) -> Vec<[u8; 32]> {
     let mut out = Vec::new();
-    for run in &pass.slot.runs {
+    for run in &pass.slots[0].runs {
         for buf in [&run.k_plane, &run.v_plane, &run.conv] {
             out.push(*blake3::hash(&buf.read(0, buf.bytes()).unwrap()).as_bytes());
         }
@@ -62,7 +62,7 @@ fn ids_of(chat: &[u32], at: usize, rows: usize) -> Vec<u32> {
 /// Run the calls `rows_list` in a zeroed slot. With `fresh` the pass forgets its rings before each call. The result is
 /// the logits of each call and the hashes of the slot after the last.
 fn run_calls(pass: &mut Pass<'_>, chat: &[u32], rows_list: &[usize], fresh: bool) -> (Vec<Vec<u32>>, Vec<[u8; 32]>) {
-    pass.slot.zero().unwrap();
+    pass.slots[0].zero().unwrap();
     pass.forget_rings();
     let mut at = 0;
     let mut logits = Vec::new();
@@ -165,7 +165,7 @@ fn median(mut v: Vec<f64>) -> f64 {
 
 /// The host time and the wall time of a call, as the medians of `calls` calls of `rows` rows after a warm call.
 fn time_calls(pass: &mut Pass<'_>, chat: &[u32], rows: usize, calls: usize) -> (f64, f64, f64) {
-    pass.slot.zero().unwrap();
+    pass.slots[0].zero().unwrap();
     pass.forget_rings();
     let mut at = 0;
     let (mut host, mut patch, mut wall) = (Vec::new(), Vec::new(), Vec::new());
@@ -217,7 +217,7 @@ fn host_time(cubin: Option<CacheFormat>, format: CacheFormat) {
     let mut pass = Pass::with_cache_format(&dev, &weights, SEQ, 512, 3, format).unwrap_or_else(|e| panic!("{e}"));
     let chat = chat_ids();
     // The build of a ring, for the report.
-    pass.slot.zero().unwrap();
+    pass.slots[0].zero().unwrap();
     pass.forget_rings();
     pass.run(&ids_of(&chat, 0, 1), 1).unwrap();
     eprintln!(

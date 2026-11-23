@@ -69,7 +69,7 @@ fn where_the_time_of_a_decode_step_goes() {
     let weights = DeviceWeights::load(&dev, &dir, |_| {}).unwrap_or_else(|e| panic!("{e}"));
     let mut pass = Pass::with_profile(&dev, &weights, 1024, 512, 3, true).unwrap_or_else(|e| panic!("{e}"));
     let ids = long_ids();
-    pass.slot.zero().unwrap();
+    pass.slots[0].zero().unwrap();
     pass.run(&ids[0..16], 1).unwrap_or_else(|e| panic!("{e}"));
     for i in 0..8 {
         pass.run(&ids[96 + i..97 + i], 1).unwrap_or_else(|e| panic!("{e}"));

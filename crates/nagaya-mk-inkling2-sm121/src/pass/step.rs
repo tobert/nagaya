@@ -4,7 +4,9 @@
 //! row factors of the row that it wrote, so no task waits for the host. The waits come from the ranges that each task
 //! declares (`nagaya_mk_cuda::graph`).
 //!
-//! One thread owns a pass. A launch that fails poisons the slot, and the pass refuses the next call until the slot is zeroed.
+//! One thread owns a pass. A pass holds several slots. A call names its slot, its count of cycles and the rows that give
+//! logits. A launch that fails poisons the slot of the call, and the pass refuses the next call on that slot until the
+//! slot is cleared. The pass allocates nothing in a call: the arena, the scratch and the slots exist from the open.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -16,7 +18,7 @@ use nagaya_mk_cuda::ring::{Ring, RingList, Task};
 use super::arena::Arena;
 use super::desc::{self, MixTable};
 use super::dev::Dev;
-use super::layout::{Buf, LOGIT_COLUMNS, RunPlan, ScratchKind, ScratchLayout, TaskKind, runs};
+use super::layout::{Buf, LOGIT_COLUMNS, MAX_CYCLES, RunPlan, ScratchKind, ScratchLayout, TaskKind, runs};
 use super::run::{BLOCK_FORM_ROWS_ABOVE, RunEnv, StepShape, TableSet, run_tasks};
 use super::slot::Slot;
 use super::weights::DeviceWeights;
@@ -97,14 +99,48 @@ fn weight_bytes(kind: TaskKind, plan: &RunPlan) -> usize {
     }
 }
 
+/// The lists that the pass keeps. A list holds a few hundred tasks, so the bound costs little host memory. A call that
+/// needs a list that the bound dropped builds it again.
+pub const MAX_BUILT: usize = 64;
+
 /// What makes two calls share a ring: the arena and the tasks differ only in the fields that [`Pass::patch`] sets.
+/// The tasks hold the addresses of the planes of their slot, so the slot is part of the key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct ShapeKey {
+    slot: usize,
     rows: usize,
     cycles: usize,
-    logit_rows: usize,
+    /// The first row that gives logits, and the count of rows from there (0 for no logits).
+    logit_first: usize,
+    logit_span: usize,
     /// The block form of PROJ (more than `BLOCK_FORM_ROWS_ABOVE` rows) has other descriptors and other scratch.
     block: bool,
+}
+
+/// The first row and the count of rows of the span that holds `logit_rows`, a list of rows below `rows`.
+fn span_of(logit_rows: &[usize], rows: usize) -> Result<(usize, usize), String> {
+    let Some(first) = logit_rows.first() else {
+        return Ok((0, 0));
+    };
+    if let Some(bad) = logit_rows.iter().find(|r| **r >= rows) {
+        return Err(format!(
+            "a call of {rows} rows has no row {bad} for logits. Name rows below {rows}"
+        ));
+    }
+    if let Some(pair) = logit_rows.windows(2).find(|w| w[0] >= w[1]) {
+        return Err(format!(
+            "the rows for logits must rise one by one, and {} comes before {}. Sort the rows and drop a repeat",
+            pair[0], pair[1]
+        ));
+    }
+    let last = logit_rows[logit_rows.len() - 1];
+    let span = last - first + 1;
+    if span > MAX_LOGIT_ROWS {
+        return Err(format!(
+            "the rows for logits lie in {span} rows, from {first} to {last}. They must lie inside {MAX_LOGIT_ROWS} rows"
+        ));
+    }
+    Ok((*first, span))
 }
 
 /// A field of a task that moves between calls of one shape.
@@ -126,6 +162,24 @@ struct Built {
     tags: Vec<OpTag>,
     proj_block_form: usize,
     patches: Vec<Patch>,
+    /// The byte offset of the logits in the arena (0 when the call gives none).
+    logits_at: usize,
+    /// The count of the call that last used this list.
+    used: u64,
+}
+
+/// What a pass holds, from the open.
+#[derive(Clone, Debug)]
+pub struct PassConfig {
+    /// The positions of each slot. The slots differ in length; the scratch serves the longest.
+    pub seqs: Vec<usize>,
+    /// The most rows of a call.
+    pub max_rows: usize,
+    /// The most cycles of a call. Each slot keeps the reserve of the runs of this count.
+    pub max_cycles: usize,
+    /// Record the time of each task. The device must be open with the profile cubin.
+    pub profile: bool,
+    pub format: CacheFormat,
 }
 
 /// The host time of the last call, by part. The kernel time is in `Launch::wall` less `prep`.
@@ -144,14 +198,15 @@ pub struct HostTime {
 pub struct Pass<'d> {
     dev: &'d CudaDevice,
     weights: &'d DeviceWeights<'d>,
-    pub slot: Slot<'d>,
-    cycles: usize,
+    pub slots: Vec<Slot<'d>>,
+    max_cycles: usize,
     max_rows: usize,
     scratch_layout: ScratchLayout,
     ring: Ring<'d>,
     tables: Dev<'d>,
-    arenas: HashMap<(usize, usize), Arena<'d>>,
-    plans: Vec<RunPlan>,
+    arena: Arena<'d>,
+    /// The runs for 1 to `max_cycles` cycles: `plans[c - 1]` for `c` cycles.
+    plans: Vec<Vec<RunPlan>>,
     /// The width of the launches. 48 is the width of the GPU.
     pub grid: u32,
     /// The launches of the last call, in order.
@@ -163,6 +218,8 @@ pub struct Pass<'d> {
     /// The lists of the shapes that the pass has run. The list of the shape in `loaded` is in the ring.
     built: HashMap<ShapeKey, Built>,
     loaded: Option<ShapeKey>,
+    /// The count of calls, for the order of use of the lists.
+    clock: u64,
     /// The host time of the last call.
     pub host: HostTime,
 }
@@ -213,21 +270,62 @@ impl<'d> Pass<'d> {
         profile: bool,
         format: CacheFormat,
     ) -> Result<Self, String> {
-        let plans = runs(cycles);
-        let scratch_layout = ScratchLayout::new(max_rows, seq);
+        Self::open(
+            dev,
+            weights,
+            &PassConfig {
+                seqs: vec![seq],
+                max_rows,
+                max_cycles: cycles,
+                profile,
+                format,
+            },
+        )
+    }
+
+    /// A pass with one slot for each length in `config.seqs`.
+    pub fn open(dev: &'d CudaDevice, weights: &'d DeviceWeights<'d>, config: &PassConfig) -> Result<Self, String> {
+        let PassConfig {
+            seqs,
+            max_rows,
+            max_cycles: cycles,
+            profile,
+            format,
+        } = config.clone();
+        if seqs.is_empty() || seqs.contains(&0) {
+            return Err("a pass needs at least 1 slot, and each slot needs at least 1 position".to_owned());
+        }
+        if !(1..=MAX_CYCLES).contains(&cycles) {
+            return Err(format!(
+                "a pass runs from 1 to {MAX_CYCLES} cycles, and the call names {cycles}. Name a count in that range"
+            ));
+        }
+        if !(1..=nagaya_mk_cuda::attn::MAX_ROWS).contains(&max_rows) {
+            return Err(format!(
+                "a pass takes from 1 to {} rows in a call, and the open names {max_rows}",
+                nagaya_mk_cuda::attn::MAX_ROWS
+            ));
+        }
+        let plans: Vec<Vec<RunPlan>> = (1..=cycles).map(runs).collect();
+        let longest = *seqs.iter().max().expect("a slot");
+        let scratch_layout = ScratchLayout::new(max_rows, longest);
         let ring = Ring::new(dev, scratch_layout.total_floats(), profile)?;
         ring.zero_device()?;
         let extra = (cycles - 1) * CYCLE_LAYERS;
+        let slots = seqs
+            .iter()
+            .map(|seq| Slot::new(dev, *seq, extra, format))
+            .collect::<Result<Vec<_>, String>>()?;
         Ok(Self {
             dev,
             weights,
-            slot: Slot::new(dev, seq, extra, format)?,
-            cycles,
+            slots,
+            max_cycles: cycles,
             max_rows,
             scratch_layout,
             ring,
             tables: Dev::alloc(dev, 128 * TABLES)?,
-            arenas: HashMap::new(),
+            arena: Arena::with_capacity(dev, max_rows, MAX_LOGIT_ROWS)?,
             plans,
             grid: dev.sm_count(),
             launches: Vec::new(),
@@ -236,15 +334,17 @@ impl<'d> Pass<'d> {
             profiled: profile,
             built: HashMap::new(),
             loaded: None,
+            clock: 0,
             host: HostTime::default(),
         })
     }
 
+    /// The most cycles of a call, and the count of the calls of [`Pass::run`].
     pub fn cycles(&self) -> usize {
-        self.cycles
+        self.max_cycles
     }
 
-    fn launch(&mut self, what: &str) -> Result<(), String> {
+    fn launch(&mut self, what: &str, slot: usize) -> Result<(), String> {
         let started = Instant::now();
         let result = unsafe {
             self.ring.run_grid(
@@ -254,7 +354,7 @@ impl<'d> Pass<'d> {
             )
         };
         if let Err(e) = result {
-            self.slot.poisoned = true;
+            self.slots[slot].poisoned = true;
             return Err(format!(
                 "the launch of {what} failed: {e}. The slot state may be wrong; zero the slot before the next call"
             ));
@@ -273,13 +373,52 @@ impl<'d> Pass<'d> {
         self.loaded = None;
     }
 
-    /// Run the rows `ids` at the next positions of the slot, and return the logits of the last `logit_rows` rows,
+    /// Run the rows `ids` on slot 0 at its default count of cycles, and return the logits of the last `logit_rows` rows,
     /// `LOGITS` values each. The position of the slot moves by the count of rows.
     pub fn run(&mut self, ids: &[u32], logit_rows: usize) -> Result<Vec<f32>, String> {
+        let rows = ids.len();
+        if logit_rows == 0 || logit_rows > rows.min(MAX_LOGIT_ROWS) {
+            return Err(format!(
+                "a call of {rows} rows gives logits for 1 to {} rows, and this one asks for {logit_rows}",
+                rows.min(MAX_LOGIT_ROWS)
+            ));
+        }
+        let wanted: Vec<usize> = (rows - logit_rows..rows).collect();
+        self.run_slot(0, self.max_cycles, ids, &wanted)
+    }
+
+    /// Run the rows `ids` at the next positions of slot `slot`, with `cycles` cycles (1 to the most of the open).
+    ///
+    /// `logit_rows` names the rows that give logits: each one is below the count of rows, they rise one by one, and they
+    /// lie inside a span of at most `MAX_LOGIT_ROWS` rows. An empty list runs no MIX_OUT and no HEAD, and returns no
+    /// logits. The result holds `LOGITS` values for each named row, in the order of the names. The position of the slot
+    /// moves by the count of rows. A refused call changes nothing.
+    pub fn run_slot(
+        &mut self,
+        slot: usize,
+        cycles: usize,
+        ids: &[u32],
+        logit_rows: &[usize],
+    ) -> Result<Vec<f32>, String> {
         let call = Instant::now();
         let rows = ids.len();
-        if self.slot.poisoned {
-            return Err("the slot is poisoned by a failed launch. Zero the slot before the next call".to_owned());
+        let Some(state) = self.slots.get(slot) else {
+            return Err(format!(
+                "the pass has {} slots, and the call names slot {slot}. Name a slot below {}",
+                self.slots.len(),
+                self.slots.len()
+            ));
+        };
+        if state.poisoned {
+            return Err(format!(
+                "slot {slot} is poisoned by a failed launch. Clear the slot before the next call"
+            ));
+        }
+        if !(1..=self.max_cycles).contains(&cycles) {
+            return Err(format!(
+                "a call runs from 1 to {} cycles, and this one names {cycles}",
+                self.max_cycles
+            ));
         }
         if rows == 0 || rows > self.max_rows {
             return Err(format!(
@@ -287,17 +426,12 @@ impl<'d> Pass<'d> {
                 self.max_rows
             ));
         }
-        if logit_rows == 0 || logit_rows > rows.min(MAX_LOGIT_ROWS) {
+        let (logit_first, logit_span) = span_of(logit_rows, rows)?;
+        let pos0 = state.position;
+        if pos0 + rows > state.seq {
             return Err(format!(
-                "a call of {rows} rows gives logits for 1 to {} rows, and this one asks for {logit_rows}",
-                rows.min(MAX_LOGIT_ROWS)
-            ));
-        }
-        let pos0 = self.slot.position;
-        if pos0 + rows > self.slot.seq {
-            return Err(format!(
-                "the slot holds {} positions, and this call ends at position {}. Use a slot of more positions",
-                self.slot.seq,
+                "slot {slot} holds {} positions, and this call ends at position {}. Use a slot of more positions",
+                state.seq,
                 pos0 + rows
             ));
         }
@@ -309,36 +443,43 @@ impl<'d> Pass<'d> {
         }
         self.launches.clear();
         self.host = HostTime::default();
-        if !self.arenas.contains_key(&(rows, logit_rows)) {
-            let arena = Arena::new(self.dev, rows, logit_rows)?;
-            self.arenas.insert((rows, logit_rows), arena);
-        }
-        // The arena leaves the map for the call, so that the pass can borrow itself for each launch.
-        let arena = self
-            .arenas
-            .remove(&(rows, logit_rows))
-            .expect("the arena was just made");
-        let result = self.run_with(&arena, ids, logit_rows, pos0);
-        self.arenas.insert((rows, logit_rows), arena);
+        let result = self.run_with(slot, cycles, ids, logit_first, logit_span, pos0);
         if result.is_ok() {
-            self.slot.position += rows;
+            self.slots[slot].position += rows;
         }
         if let Some(launch) = self.launches.last() {
             self.host.prep = self.ring.last_prep();
             self.host.call = call.elapsed().saturating_sub(launch.wall) + self.host.prep;
         }
-        result
+        let all = result?;
+        let mut out = Vec::with_capacity(logit_rows.len() * LOGITS);
+        for r in logit_rows {
+            let at = (r - logit_first) * LOGIT_COLUMNS;
+            out.extend_from_slice(&all[at..at + LOGITS]);
+        }
+        Ok(out)
     }
 
-    fn run_with(&mut self, arena: &Arena<'d>, ids: &[u32], logit_rows: usize, pos0: usize) -> Result<Vec<f32>, String> {
+    /// Run one call, and return the logits of the span, `LOGIT_COLUMNS` values for each row of it.
+    fn run_with(
+        &mut self,
+        slot: usize,
+        cycles: usize,
+        ids: &[u32],
+        logit_first: usize,
+        logit_span: usize,
+        pos0: usize,
+    ) -> Result<Vec<f32>, String> {
         let rows = ids.len();
-        arena
+        self.arena
             .ids
             .write(0, &ids.iter().flat_map(|i| i.to_le_bytes()).collect::<Vec<u8>>())?;
         let key = ShapeKey {
+            slot,
             rows,
-            cycles: self.cycles,
-            logit_rows,
+            cycles,
+            logit_first,
+            logit_span,
             block: rows > BLOCK_FORM_ROWS_ABOVE,
         };
         let started = Instant::now();
@@ -346,22 +487,23 @@ impl<'d> Pass<'d> {
             self.patch(key, rows, pos0)?;
             self.host.patch = started.elapsed();
         } else {
-            self.activate(key, arena, pos0)?;
+            self.activate(key, pos0)?;
             self.host.build = started.elapsed();
         }
-        self.launch("the pass")?;
-        let raw = arena
-            .buffer
-            .read(arena.layout.offset(Buf::Logits), logit_rows * LOGIT_COLUMNS * 4)?;
-        let all: Vec<f32> = raw.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
-        Ok((0..logit_rows)
-            .flat_map(|r| all[r * LOGIT_COLUMNS..r * LOGIT_COLUMNS + LOGITS].to_vec())
-            .collect())
+        self.clock += 1;
+        self.built.get_mut(&key).expect("the shape is loaded").used = self.clock;
+        self.launch("the pass", slot)?;
+        if logit_span == 0 {
+            return Ok(Vec::new());
+        }
+        let at = self.built[&key].logits_at;
+        let raw = self.arena.buffer.read(at, logit_span * LOGIT_COLUMNS * 4)?;
+        Ok(raw.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect())
     }
 
     /// Put the list of the shape `key` in the ring: the list that an earlier call built, or a new one. The ring then
-    /// holds this shape, and the device holds its task tables.
-    fn activate(&mut self, key: ShapeKey, arena: &Arena<'d>, pos0: usize) -> Result<(), String> {
+    /// holds this shape, and the device holds its task tables. The pass keeps at most [`MAX_BUILT`] lists.
+    fn activate(&mut self, key: ShapeKey, pos0: usize) -> Result<(), String> {
         if let Some(old) = self.loaded.take() {
             let list = self.ring.take_list();
             self.built.get_mut(&old).expect("the loaded shape is in the map").list = list;
@@ -371,7 +513,17 @@ impl<'d> Pass<'d> {
             let built = self.built.get_mut(&key).expect("the shape was just found");
             self.ring.put_list(std::mem::take(&mut built.list));
         } else {
-            let (built, tasks) = self.build(arena, key.rows, key.logit_rows, pos0)?;
+            let arena = self.arena.view(key.rows, key.logit_span)?;
+            let (built, tasks) = self.build(&arena, &key, pos0)?;
+            if self.built.len() >= MAX_BUILT {
+                let oldest = self
+                    .built
+                    .iter()
+                    .min_by_key(|(_, b)| b.used)
+                    .map(|(k, _)| *k)
+                    .expect("the map is full");
+                self.built.remove(&oldest);
+            }
             self.ring.set(&tasks);
             self.built.insert(key, built);
         }
@@ -391,13 +543,14 @@ impl<'d> Pass<'d> {
     /// nothing (`Ring::patch`). A task that writes the cache or the scratch declares the whole plane or region.
     fn patch(&mut self, key: ShapeKey, rows: usize, pos0: usize) -> Result<(), String> {
         let built = &self.built[&key];
+        let slot = &self.slots[key.slot];
         for p in &built.patches {
             let mut task = self.ring.task(p.input).clone();
             match p.kind {
                 TaskKind::Proj => task.desc.pos0 = pos0 as u32,
                 TaskKind::Attn => {
-                    let run = &self.slot.runs[self.plans[p.plan].state];
-                    let shape = AttnShape::new(rows, pos0, run.window, run.plane_rows, self.slot.format)?;
+                    let run = &slot.runs[self.plans[key.cycles - 1][p.plan].state];
+                    let shape = AttnShape::new(rows, pos0, run.window, run.plane_rows, slot.format)?;
                     let region = self.scratch_layout.bytes(ScratchKind::Attn);
                     if shape.scratch_floats() * 4 > region {
                         return Err(format!(
@@ -418,13 +571,10 @@ impl<'d> Pass<'d> {
     }
 
     /// Build the tasks of a pass for `rows` rows at `pos0`, with their task tables.
-    fn build(
-        &self,
-        arena: &Arena<'d>,
-        rows: usize,
-        logit_rows: usize,
-        pos0: usize,
-    ) -> Result<(Built, Vec<Task>), String> {
+    fn build(&self, arena: &Arena<'d>, key: &ShapeKey, pos0: usize) -> Result<(Built, Vec<Task>), String> {
+        let rows = key.rows;
+        let plans = &self.plans[key.cycles - 1];
+        let slot = &self.slots[key.slot];
         let w = self.weights;
         let mut tables = TableSet::new(self.tables.ptr(), TABLES);
         let mut list: Vec<Task> = Vec::new();
@@ -458,14 +608,14 @@ impl<'d> Pass<'d> {
             });
         }
         let shape = StepShape { rows, pos0 };
-        for (plan_index, plan) in self.plans.iter().enumerate() {
+        for (plan_index, plan) in plans.iter().enumerate() {
             let env = RunEnv {
                 weights: &w.layers[plan.layer],
-                slot: &self.slot.runs[plan.state],
+                slot: &slot.runs[plan.state],
                 arena,
                 scratch: self.ring.scratch(),
                 scratch_layout: &self.scratch_layout,
-                format: self.slot.format,
+                format: slot.format,
                 message_queries: if plan.messages {
                     w.message_queries[plan.layer - CYCLE_START].ptr()
                 } else {
@@ -494,66 +644,69 @@ impl<'d> Pass<'d> {
                 list.push(task);
             }
         }
-        // The output residual and the head.
-        let last = self.plans.last().expect("a pass has runs");
-        let r0 = rows - logit_rows;
-        let stack: Vec<Buf> = {
-            let mut s = last.stack_attn.clone();
-            // The stack of the output residual: the four block outputs, then the row after the last run.
-            s.pop();
-            s.push(last.x_out);
-            s
-        };
-        let stack_rows: Vec<(u64, u64)> = stack.iter().map(|b| (arena.addr(*b), arena.rf(*b))).collect();
-        let mix_table = tables.add(
-            MixTable {
-                stack: stack_rows,
-                message: Vec::new(),
-                queries: w.output_query.ptr(),
-                message_queries: 0,
+        // The output residual and the head. A call that asks for no logits ends after the last run.
+        if key.logit_span > 0 {
+            let last = plans.last().expect("a pass has runs");
+            let r0 = key.logit_first;
+            let logit_rows = key.logit_span;
+            let stack: Vec<Buf> = {
+                let mut s = last.stack_attn.clone();
+                // The stack of the output residual: the four block outputs, then the row after the last run.
+                s.pop();
+                s.push(last.x_out);
+                s
+            };
+            let stack_rows: Vec<(u64, u64)> = stack.iter().map(|b| (arena.addr(*b), arena.rf(*b))).collect();
+            let mix_table = tables.add(
+                MixTable {
+                    stack: stack_rows,
+                    message: Vec::new(),
+                    queries: w.output_query.ptr(),
+                    message_queries: 0,
+                }
+                .build()?,
+            )?;
+            let f = arena.addr(Buf::F);
+            let f_rf = arena.rf(Buf::F);
+            let mix_desc = desc::mix_out(rows, stack.len(), f, f_rf, mix_table)?;
+            let mut mix_task = Task::with_items(mix_desc);
+            for b in &stack {
+                mix_task = mix_task
+                    .reads(arena.addr(*b), rows * HIDDEN * 4)
+                    .reads(arena.rf(*b), rows * 4);
             }
-            .build()?,
-        )?;
-        let f = arena.addr(Buf::F);
-        let f_rf = arena.rf(Buf::F);
-        let mix_desc = desc::mix_out(rows, stack.len(), f, f_rf, mix_table)?;
-        let mut mix_task = Task::with_items(mix_desc);
-        for b in &stack {
-            mix_task = mix_task
-                .reads(arena.addr(*b), rows * HIDDEN * 4)
-                .reads(arena.rf(*b), rows * 4);
+            list.push(mix_task.writes(f, rows * HIDDEN * 4).writes(f_rf, rows * 4));
+            tags.push(OpTag {
+                name: "MIX_OUT",
+                run: None,
+                layer: None,
+                weight_bytes: 0,
+            });
+            let head_table = tables.add(desc::head_table(w.norm_bf16.ptr())?)?;
+            let scratch = self.ring.scratch() + self.scratch_layout.offset(ScratchKind::Head) as u64;
+            let mut head_desc = desc::head(
+                logit_rows,
+                f + (r0 * HIDDEN * 4) as u64,
+                f_rf + (r0 * 4) as u64,
+                w.head.ptr(),
+                arena.addr(Buf::Logits),
+                scratch,
+            )?;
+            head_desc.d = head_table;
+            list.push(
+                Task::with_items(head_desc)
+                    .reads(f + (r0 * HIDDEN * 4) as u64, logit_rows * HIDDEN * 4)
+                    .reads(f_rf + (r0 * 4) as u64, logit_rows * 4)
+                    .writes(arena.addr(Buf::Logits), logit_rows * LOGIT_COLUMNS * 4)
+                    .writes(scratch, self.scratch_layout.bytes(ScratchKind::Head)),
+            );
+            tags.push(OpTag {
+                name: "HEAD",
+                run: None,
+                layer: None,
+                weight_bytes: LOGIT_COLUMNS * HIDDEN * 2,
+            });
         }
-        list.push(mix_task.writes(f, rows * HIDDEN * 4).writes(f_rf, rows * 4));
-        tags.push(OpTag {
-            name: "MIX_OUT",
-            run: None,
-            layer: None,
-            weight_bytes: 0,
-        });
-        let head_table = tables.add(desc::head_table(w.norm_bf16.ptr())?)?;
-        let scratch = self.ring.scratch() + self.scratch_layout.offset(ScratchKind::Head) as u64;
-        let mut head_desc = desc::head(
-            logit_rows,
-            f + (r0 * HIDDEN * 4) as u64,
-            f_rf + (r0 * 4) as u64,
-            w.head.ptr(),
-            arena.addr(Buf::Logits),
-            scratch,
-        )?;
-        head_desc.d = head_table;
-        list.push(
-            Task::with_items(head_desc)
-                .reads(f + (r0 * HIDDEN * 4) as u64, logit_rows * HIDDEN * 4)
-                .reads(f_rf + (r0 * 4) as u64, logit_rows * 4)
-                .writes(arena.addr(Buf::Logits), logit_rows * LOGIT_COLUMNS * 4)
-                .writes(scratch, self.scratch_layout.bytes(ScratchKind::Head)),
-        );
-        tags.push(OpTag {
-            name: "HEAD",
-            run: None,
-            layer: None,
-            weight_bytes: LOGIT_COLUMNS * HIDDEN * 2,
-        });
         let proj_block_form = list
             .iter()
             .filter(|t| {
@@ -572,6 +725,12 @@ impl<'d> Pass<'d> {
             tags,
             proj_block_form,
             patches,
+            logits_at: if key.logit_span > 0 {
+                arena.layout.offset(Buf::Logits)
+            } else {
+                0
+            },
+            used: 0,
         };
         Ok((built, list))
     }
@@ -622,5 +781,30 @@ impl<'d> Pass<'d> {
             });
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_logit_rows_make_an_empty_span() {
+        assert_eq!(span_of(&[], 5).unwrap(), (0, 0));
+    }
+
+    #[test]
+    fn a_set_inside_16_rows_gives_its_first_row_and_span() {
+        assert_eq!(span_of(&[3], 9).unwrap(), (3, 1));
+        assert_eq!(span_of(&[1, 4, 16], 17).unwrap(), (1, 16));
+        assert_eq!(span_of(&[0, 15], 16).unwrap(), (0, 16));
+    }
+
+    #[test]
+    fn a_wide_unsorted_repeated_or_outside_set_is_refused_with_a_message() {
+        assert!(span_of(&[0, 16], 17).unwrap_err().contains("lie in 17 rows"));
+        assert!(span_of(&[2, 2], 5).unwrap_err().contains("rise one by one"));
+        assert!(span_of(&[3, 1], 5).unwrap_err().contains("rise one by one"));
+        assert!(span_of(&[5], 5).unwrap_err().contains("has no row 5"));
     }
 }

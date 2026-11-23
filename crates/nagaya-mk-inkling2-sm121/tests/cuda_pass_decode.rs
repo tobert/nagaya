@@ -22,7 +22,7 @@ const SEQ: usize = 1024;
 /// One hash for each buffer of the slot: the planes and the conv state of each run.
 fn snapshot(pass: &Pass<'_>) -> Vec<(String, [u8; 32])> {
     let mut out = Vec::new();
-    for run in &pass.slot.runs {
+    for run in &pass.slots[0].runs {
         for (name, buf) in [("k", &run.k_plane), ("v", &run.v_plane), ("conv", &run.conv)] {
             let bytes = buf.read(0, buf.bytes()).unwrap();
             out.push((
@@ -59,7 +59,7 @@ fn chat_ids() -> Vec<u32> {
 }
 
 fn run_split(pass: &mut Pass<'_>, ids: &[u32], split: &[usize], grid: u32) -> Vec<f32> {
-    pass.slot.zero().unwrap();
+    pass.slots[0].zero().unwrap();
     pass.grid = grid;
     let mut at = 0;
     let mut out = Vec::new();
