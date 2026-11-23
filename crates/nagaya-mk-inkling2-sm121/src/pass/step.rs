@@ -153,6 +153,7 @@ impl<'d> Pass<'d> {
             ));
         }
         self.launches.clear();
+        self.zero_counter_heads()?;
         if !self.arenas.contains_key(&(rows, logit_rows)) {
             let arena = Arena::new(self.dev, rows, logit_rows)?;
             self.arenas.insert((rows, logit_rows), arena);
@@ -280,6 +281,27 @@ impl<'d> Pass<'d> {
         Ok((0..logit_rows)
             .flat_map(|r| all[r * LOGIT_COLUMNS..r * LOGIT_COLUMNS + LOGITS].to_vec())
             .collect())
+    }
+
+    /// Zero the counters of the scratch of the attention and of the router before a call.
+    ///
+    /// The ring is zero once, and each merger resets its counter, so a counter should stay zero. These two ops break
+    /// the rule across calls of different row counts: the counters of the attention are `8 * tiles` words, the
+    /// partials follow them (`ops_attn.cuh` `counter_ptr` and `partials_ptr`, and `AttnShape::scratch_floats`), and the
+    /// counters of the router are `9 * tiles + 1` words, with the logits after them (`route_scratch_words`). A call
+    /// with fewer tiles writes partials or logits where a call with more tiles has counters. Then the second call
+    /// starts with a counter that is not zero, merges too early, and gives other bits. The heads are small, so the
+    /// pass zeroes them for the most tiles that a call can have. A fix of the two layouts (counters at a place that
+    /// does not depend on the rows) makes this call unneeded.
+    fn zero_counter_heads(&self) -> Result<(), String> {
+        let attn = self.ring.scratch() + self.scratch_layout.offset(ScratchKind::Attn) as u64;
+        let attn_bytes = (4 * 8 * 3 + 16).min(self.scratch_layout.bytes(ScratchKind::Attn));
+        self.dev.memset_zero(attn, attn_bytes)?;
+        let route = self.ring.scratch() + self.scratch_layout.offset(ScratchKind::Route) as u64;
+        let tiles = self.max_rows.div_ceil(16);
+        let route_bytes = 4 * (tiles * 9 + 1).next_multiple_of(4);
+        self.dev
+            .memset_zero(route, route_bytes.min(self.scratch_layout.bytes(ScratchKind::Route)))
     }
 
     /// Compute the row factors of the rows of `buf` on the host and write them.
