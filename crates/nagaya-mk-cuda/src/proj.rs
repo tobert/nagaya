@@ -19,6 +19,7 @@
 //! the value, which have a finisher, finish early, and the last tiles are the gate, which has the cheapest epilogue. The
 //! taps come before their matrix, so that the merge of the taps does not wait for the last tile of a head.
 
+use crate::attn::CacheFormat;
 use crate::protocol::{FLAG_FULL_LAYER, FLAG_NORM, MkTaskDescriptor, OP_PROJ};
 use crate::repack::{COLUMN_TILE, MatmulShape};
 
@@ -102,14 +103,16 @@ impl ProjLayout {
     /// The descriptor of one `OP_PROJ` task. The pointers are device addresses: `x` is the first input, `packed` is the
     /// repacked `J`, `out` receives q, rel, sink and gate (see [`ProjLayout::output_floats`]), `table` is the task
     /// table, `rf` holds the row factors of the first input, and `scratch` holds `scratch_floats(rows)` floats, the
-    /// counters at 0. `pos0` is the position of the first row, and `ring_rows` is the rows of the slot ring of the
-    /// key and the value, or 0 for no ring.
+    /// counters at 0. `pos0` is the position of the first row. `plane_rows` is the rows of a plane of the cache and
+    /// `format` is its format (see `attn.rs`): the task table holds the two planes, and the head finisher writes the
+    /// rows of the key and the value there.
     #[allow(clippy::too_many_arguments)]
     pub fn descriptor(
         &self,
         rows: usize,
         pos0: u32,
-        ring_rows: u32,
+        plane_rows: u32,
+        format: CacheFormat,
         x: u64,
         packed: u64,
         out: u64,
@@ -120,11 +123,11 @@ impl ProjLayout {
         let shape = self.shape();
         let mut desc = shape.descriptor(rows, x, packed, out, scratch)?;
         desc.opcode = OP_PROJ;
-        desc.flags = FLAG_NORM | if self.full { FLAG_FULL_LAYER } else { 0 };
+        desc.flags = FLAG_NORM | format.flags() | if self.full { FLAG_FULL_LAYER } else { 0 };
         desc.d = table;
         desc.e = rf;
         desc.pos0 = pos0;
-        desc.layer = ring_rows;
+        desc.layer = plane_rows;
         desc.scale_bytes = u32::try_from(self.scratch_floats(rows))
             .map_err(|_| "the scratch of the projection does not fit in 32 bits".to_string())?;
         Ok(desc)
@@ -190,6 +193,7 @@ pub fn split(layout: &ProjLayout, joined: &[u8]) -> Result<Vec<(Segment, Vec<u8>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::FLAG_F32;
 
     fn part(rows: usize, seed: u8) -> Vec<u8> {
         (0..rows * K * 2)
@@ -266,18 +270,40 @@ mod tests {
     fn the_descriptor_carries_the_shape_the_flags_and_the_scratch_size() {
         let layout = ProjLayout { full: true };
         let d = layout
-            .descriptor(16, 100, 3072, 0x1000, 0x2000, 0x3000, 0x4000, 0x5000, 0x6000)
+            .descriptor(
+                16,
+                100,
+                3072,
+                CacheFormat::F32,
+                0x1000,
+                0x2000,
+                0x3000,
+                0x4000,
+                0x5000,
+                0x6000,
+            )
             .unwrap();
         assert_eq!(
             (d.opcode, d.items, d.n, d.k, d.kt, d.group_items),
             (OP_PROJ, 542 * 3, 8672, 2304, 768, 3)
         );
-        assert_eq!(d.flags, FLAG_NORM | FLAG_FULL_LAYER);
+        assert_eq!(d.flags, FLAG_NORM | FLAG_FULL_LAYER | FLAG_F32);
         assert_eq!((d.d, d.e, d.pos0, d.layer), (0x4000, 0x5000, 100, 3072));
         assert_eq!(d.scale_bytes as usize, layout.scratch_floats(16));
         assert_eq!(
             ProjLayout { full: false }
-                .descriptor(1, 0, 0, 0x1000, 0x2000, 0x3000, 0x4000, 0x5000, 0x6000)
+                .descriptor(
+                    1,
+                    0,
+                    64,
+                    CacheFormat::E4m3,
+                    0x1000,
+                    0x2000,
+                    0x3000,
+                    0x4000,
+                    0x5000,
+                    0x6000
+                )
                 .unwrap()
                 .flags,
             FLAG_NORM

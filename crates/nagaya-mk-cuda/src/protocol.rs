@@ -324,7 +324,7 @@ pub const PROJ_TABLE_V_CONV: usize = 10;
 /// The conv states (`f32`, `[3][1024]`, the oldest row first). The op reads them and writes them after the block.
 pub const PROJ_TABLE_K_STATE: usize = 11;
 pub const PROJ_TABLE_V_STATE: usize = 12;
-/// The slot rows of the key and of the value (`f32`, 1024 values for each position).
+/// The planes of the cache of the key and of the value (`f32` or `e4m3`, the layout of `src/attn.rs`).
 pub const PROJ_TABLE_K_OUT: usize = 13;
 pub const PROJ_TABLE_V_OUT: usize = 14;
 

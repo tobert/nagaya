@@ -283,6 +283,7 @@ __device__ __forceinline__ void op_selftest_table(const MkTaskDescriptor& task, 
 #include "probe_ops.cuh"
 #include "matmul_bf16.cuh"
 #include "quant.cuh"
+#include "cache_layout.cuh"
 #include "experts.cuh"
 #include "ops_dense.cuh"
 #include "ops_rows.cuh"

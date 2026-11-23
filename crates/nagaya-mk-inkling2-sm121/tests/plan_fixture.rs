@@ -74,10 +74,10 @@ fn plan_sums_the_header_and_sizes_the_slots_with_no_model() {
     // Each of the 48 expert tensors takes 64 bytes, and the embedding takes 100 bytes rounded to 128.
     assert_eq!(bytes("weights"), 48 * 64 + 128);
     assert_eq!(bytes("vision"), 64);
-    assert_eq!(bytes("kv"), 35_370_205_184 + 2 * 3_157_950_464);
+    assert_eq!(bytes("kv"), 34_866_888_704 + 2 * 2_654_633_984);
     // The classes of slots are sorted by length, and equal lengths make one class.
     let classes: Vec<(u32, u64, u64)> = lim.slots.iter().map(|s| (s.count, s.tokens, s.bytes)).collect();
-    assert_eq!(classes, vec![(2, 32_768, 3_157_950_464), (1, 524_288, 35_370_205_184)]);
+    assert_eq!(classes, vec![(2, 32_768, 2_654_633_984), (1, 524_288, 34_866_888_704)]);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

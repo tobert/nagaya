@@ -60,7 +60,7 @@ impl CacheFormat {
 /// The rows of the ring of a sliding run: the least multiple of `ATTN_CHUNK_KEYS` that is at least
 /// `window + max_block - 1`. A chunk never crosses the end of the ring, and a block of `max_block` rows never writes a
 /// row that the window of its first row still reads.
-pub fn sliding_ring_rows(window: usize, max_block: usize) -> usize {
+pub const fn sliding_ring_rows(window: usize, max_block: usize) -> usize {
     (window + max_block - 1).next_multiple_of(ATTN_CHUNK_KEYS)
 }
 
