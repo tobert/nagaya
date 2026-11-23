@@ -663,9 +663,23 @@ struct GateRig {
     norm: u64,
 }
 
-/// The floats of scratch for the two ops of the gates at 16 rows: the part of GATE_DOWN, then the part of GATE_UP.
-const DOWN_SCRATCH: usize = 16 + 72 * 16 * 16;
-const UP_SCRATCH: usize = 4 + 108 * 16;
+/// The floats of scratch for the two ops of the gates at `rows` rows: the part of GATE_DOWN, then the part of GATE_UP.
+fn down_scratch(rows: usize) -> usize {
+    16 + 72 * rows * 16
+}
+fn up_scratch(rows: usize) -> usize {
+    4 + 108 * rows
+}
+
+/// The bits of one gate: `g`, `u` and the row factors of `u`.
+type GateBits = (Vec<u32>, Vec<u32>, Vec<u32>);
+
+/// The counts of rows of the gate gates, the most first: it is the reference of the bits.
+const GATE_ROWS: [usize; 6] = [512, 100, 17, 16, 7, 1];
+/// The rows that the accuracy check visits: the first tile, every 37th row, and the last row.
+fn checked(row: usize, rows: usize) -> bool {
+    row < 16 || row.is_multiple_of(37) || row + 1 == rows
+}
 
 impl GateRig {
     fn new(dev: &CudaDevice, model: &Model, layer: usize, a: &[Vec<f32>; 3], m: &[Vec<f32>; 3], rows: usize) -> Self {
@@ -737,7 +751,7 @@ impl GateRig {
                 n: 3,
                 k: 64,
                 item_bytes: GATE_UP_ITEM_BYTES as u32,
-                f: (DOWN_SCRATCH) as u64 * 4,
+                f: down_scratch(rows) as u64 * 4,
                 ..Default::default()
             },
         ]
@@ -768,8 +782,8 @@ impl GateRig {
 
 /// The rows of a gate gate: `a_i` and `m_i` of each of the 3 gates, with the scale of the residual stream.
 fn gate_rows(model: &Model, seed: u32) -> ([Vec<f32>; 3], [Vec<f32>; 3]) {
-    let a = std::array::from_fn(|i| stack_rows(model, i, 16, seed));
-    let m = std::array::from_fn(|i| stack_rows(model, 3 + i, 16, seed + 5));
+    let a = std::array::from_fn(|i| stack_rows(model, i, 512, seed));
+    let m = std::array::from_fn(|i| stack_rows(model, 3 + i, 512, seed + 5));
     (a, m)
 }
 
@@ -791,11 +805,17 @@ fn the_gates_give_the_rows_of_the_host_form_and_bits_that_do_not_depend_on_rows_
     let (mut worst_g, mut worst_u, mut worst_u64, mut worst_rf) = (0f64, 0f64, 0f64, 0f64);
     for layer in [6usize, 12, 17] {
         let (a, m) = gate_rows(model, layer as u32);
-        let mut first: Option<Vec<u32>> = None;
-        for rows in [16usize, 7, 1] {
+        // The bits of the run at 512 rows and grid 48: g, u and the factors of each gate.
+        let mut reference: Option<Vec<GateBits>> = None;
+        for rows in GATE_ROWS {
             let rig = GateRig::new(&dev, model, layer, &a, &m, rows);
             for grid in GRIDS {
-                run_tasks(&dev, &rig.descriptors(rows), DOWN_SCRATCH + UP_SCRATCH, grid);
+                run_tasks(
+                    &dev,
+                    &rig.descriptors(rows),
+                    down_scratch(rows) + up_scratch(rows),
+                    grid,
+                );
                 let g: Vec<f32> = gpu::download(&dev, rig.g, 3 * rows * 64);
                 let mut key = Vec::new();
                 for gate in 0..3 {
@@ -803,6 +823,10 @@ fn the_gates_give_the_rows_of_the_host_form_and_bits_that_do_not_depend_on_rows_
                     let u: Vec<f32> = gpu::download(&dev, rig.u[gate], rows * HIDDEN);
                     let u_rf: Vec<f32> = gpu::download(&dev, rig.u_rf[gate], rows);
                     for r in 0..rows {
+                        // The bits do not depend on the grid, so the other grids are checked against the first.
+                        if grid != GRIDS[0] || !checked(r, rows) {
+                            continue;
+                        }
                         let (h, mm) = (
                             &a[gate][r * HIDDEN..(r + 1) * HIDDEN],
                             &m[gate][r * HIDDEN..(r + 1) * HIDDEN],
@@ -872,16 +896,34 @@ fn the_gates_give_the_rows_of_the_host_form_and_bits_that_do_not_depend_on_rows_
                             "layer {layer} gate {gate} row {r}: factor error {e:.2}"
                         );
                     }
-                    key.extend(bits(&g[gate * rows * 64..gate * rows * 64 + 64]));
-                    key.extend(bits(&u[..HIDDEN]));
-                    key.extend(bits(&u_rf[..1]));
+                    key.push((
+                        bits(&g[gate * rows * 64..(gate + 1) * rows * 64]),
+                        bits(&u),
+                        bits(&u_rf),
+                    ));
                 }
-                match &first {
-                    None => first = Some(key),
-                    Some(want_bits) => assert_eq!(
-                        &key, want_bits,
-                        "layer {layer}: row 0 differs at {rows} rows, grid {grid}"
-                    ),
+                match &reference {
+                    None => reference = Some(key),
+                    Some(want) => {
+                        for (gate, (got, full)) in key.iter().zip(want).enumerate() {
+                            // The rows of a smaller call equal the first rows of the call at 512 rows.
+                            assert_eq!(
+                                got.0[..],
+                                full.0[..rows * 64],
+                                "layer {layer} gate {gate}: g differs at {rows} rows, grid {grid}"
+                            );
+                            assert_eq!(
+                                got.1[..],
+                                full.1[..rows * HIDDEN],
+                                "layer {layer} gate {gate}: u differs at {rows} rows, grid {grid}"
+                            );
+                            assert_eq!(
+                                got.2[..],
+                                full.2[..rows],
+                                "layer {layer} gate {gate}: the factors differ at {rows} rows, grid {grid}"
+                            );
+                        }
+                    }
                 }
             }
             rig.free(&dev);
@@ -902,9 +944,9 @@ fn the_mlp_gate_writes_h_e_as_the_host_form_does() {
     let w = &model.weights.layers[layer];
     let gate = &w.gates[3];
     let (a, m) = gate_rows(model, 40);
-    let mut first: Option<Vec<u32>> = None;
+    let mut reference: Option<Vec<u32>> = None;
     let mut worst = 0f64;
-    for rows in [16usize, 1] {
+    for rows in GATE_ROWS {
         let rf_of = |p: &[f32]| -> Vec<f32> {
             (0..rows)
                 .map(|r| row_factor(&p[r * HIDDEN..(r + 1) * HIDDEN]))
@@ -956,15 +998,15 @@ fn the_mlp_gate_writes_h_e_as_the_host_form_does() {
                 n: 1,
                 k: 64,
                 item_bytes: GATE_UP_ITEM_BYTES as u32,
-                f: DOWN_SCRATCH as u64 * 4,
+                f: down_scratch(rows) as u64 * 4,
                 ..Default::default()
             },
         ];
         for grid in GRIDS {
-            run_tasks(&dev, &descs, DOWN_SCRATCH + UP_SCRATCH, grid);
+            run_tasks(&dev, &descs, down_scratch(rows) + up_scratch(rows), grid);
             let got: Vec<f32> = gpu::download(&dev, h_e, rows * HIDDEN);
             if grid == GRIDS[0] {
-                for r in 0..rows {
+                for r in (0..rows).filter(|r| checked(*r, rows)) {
                     let mut want_u = vec![0f32; HIDDEN];
                     let (h, mm) = (&a[0][r * HIDDEN..(r + 1) * HIDDEN], &m[0][r * HIDDEN..(r + 1) * HIDDEN]);
                     ops::message_gate(h, mm, &gate.down, &gate.forget, &gate.gain, &mut want_u);
@@ -985,10 +1027,14 @@ fn the_mlp_gate_writes_h_e_as_the_host_form_does() {
                     }
                 }
             }
-            let key = bits(&got[..HIDDEN]);
-            match &first {
-                None => first = Some(key),
-                Some(want_bits) => assert_eq!(&key, want_bits, "row 0 of h_e differs at {rows} rows, grid {grid}"),
+            let key = bits(&got);
+            match &reference {
+                None => reference = Some(key),
+                Some(want_bits) => assert_eq!(
+                    key[..],
+                    want_bits[..rows * HIDDEN],
+                    "h_e differs at {rows} rows, grid {grid}"
+                ),
             }
         }
     }
@@ -1008,12 +1054,12 @@ fn the_gates_take_this_many_microseconds_and_this_many_gb_per_second() {
     const COPIES: usize = 24;
     const PEAK_GBPS: f64 = 252.0;
     let (a, m) = gate_rows(model, 6);
-    for rows in [1usize, 16] {
+    for rows in [1usize, 16, 512] {
         let rigs: Vec<GateRig> = (0..COPIES)
             .map(|_| GateRig::new(&dev, model, 12, &a, &m, rows))
             .collect();
         let descs: Vec<MkTaskDescriptor> = rigs.iter().flat_map(|r| r.descriptors(rows)).collect();
-        let spans = task_spans(&dev, &descs, DOWN_SCRATCH + UP_SCRATCH);
+        let spans = task_spans(&dev, &descs, down_scratch(rows) + up_scratch(rows));
         // The task `i` of the list is the span `i - 1`: the down tasks are the odd spans, and the up tasks the even.
         let down = median_us(spans.iter().skip(1).step_by(2).copied().collect());
         let up = median_us(spans.iter().step_by(2).copied().collect());
