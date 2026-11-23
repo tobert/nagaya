@@ -345,6 +345,8 @@ __device__ __forceinline__ float2 rw_load_x(const float* row, bool valid) {
     return valid ? __ldcg(reinterpret_cast<const float2*>(row)) : make_float2(0.0f, 0.0f);
 }
 
+// The rows that the gate ops compute: one MMA row tile. A task with more rows traps, and it does not corrupt them.
+constexpr uint32_t RW_GATE_MAX_ROWS = 16;
 constexpr uint32_t RW_GD_TILES = 4;    // tiles of 16 columns of the down matrix (64 columns)
 constexpr uint32_t RW_GD_SLICES = 6;   // K slices of 768: 3 of the row `a_i`, then 3 of the message `m_i`
 constexpr uint32_t RW_GD_KT = 768;
@@ -370,7 +372,7 @@ constexpr uint32_t RW_GD_M_RF = 9;   // the row factors of `m_i`
 __device__ __forceinline__ void op_gate_down(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
     const uint32_t rows = task.rows;
     const uint32_t gates = task.n;
-    if (worker_count() != MK_WORKERS || table == nullptr || rows == 0 || rows > MM_MAX_ROWS || gates == 0 || gates > 3 ||
+    if (worker_count() != MK_WORKERS || table == nullptr || rows == 0 || rows > RW_GATE_MAX_ROWS || gates == 0 || gates > 3 ||
         task.items != gates * RW_GD_ITEMS || task.k != 2 * RW_HIDDEN || task.kt != RW_GD_KT ||
         task.group_items != RW_GD_SLICES || task.item_bytes != MM_TILE * RW_GD_KT * 2 ||
         dynamic_smem_bytes() < RW_GD_SMEM_BYTES || (task.b & 15) != 0 || (task.c & 3) != 0 || (task.f & 3) != 0) {
@@ -504,7 +506,7 @@ __device__ __forceinline__ void op_gate_up(const MkTaskDescriptor& task, const M
     const uint32_t rows = task.rows;
     const uint32_t gates = task.n;
     const bool norm = (task.flags & FLAG_NORM) != 0;
-    if (worker_count() != MK_WORKERS || table == nullptr || rows == 0 || rows > MM_MAX_ROWS || gates == 0 || gates > 3 ||
+    if (worker_count() != MK_WORKERS || table == nullptr || rows == 0 || rows > RW_GATE_MAX_ROWS || gates == 0 || gates > 3 ||
         task.items != gates * RW_GU_TILES || task.k != RW_GD_RANK || task.item_bytes != RW_GU_ITEM_BYTES ||
         (task.flags & ~FLAG_NORM) != 0 || (norm && (gates != 1 || table->ptr[RW_GU_NORM] == 0 || (task.c & 3) != 0)) ||
         dynamic_smem_bytes() < RW_SMEM_BYTES || (task.a & 7) != 0 || (task.b & 15) != 0 || (task.f & 3) != 0) {
