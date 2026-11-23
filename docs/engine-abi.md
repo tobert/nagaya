@@ -3060,7 +3060,12 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     - **Speed** at 3 cycles, an `f32` cache, position about 100. A decode step takes 31.0 ms on the GPU at 1 row,
       32 tokens each second. 16 rows take 76.7 ms, 209 tokens each second. With the cache of the rings, the host
       adds 0.67 ms to a call. With the claim of items ("Work items and assignment"), a step takes 26.9 to 27.9 ms end
-      to end at 1 row: 35.9 to 37.2 tokens each second. 16 rows give 206 to 223 tokens each second.
+      to end at 1 row in a test build.
+    - **Speed in a release build** (`862460b0`, 3 runs). A decode step at 1 row takes 26.53 to 26.69 ms end to end:
+      37.5 to 37.7 tokens each second. The kernel takes 26.02 to 26.19 ms: 38.2 to 38.4. 16 rows give 216 to 217
+      tokens each second. The host time of 0.5 ms is mostly the read of the logits.
+    - **The cut of the expert items** is a host rule: UP takes 9 tiles of a pair in an item, and DOWN takes 3. The
+      bits are the same at each cut that divides 36. The expert ops prefetch the claimed next item.
 
       | op at 1 row | us in the pass | budget | GB/s |
       |---|---:|---:|---:|
