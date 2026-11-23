@@ -2795,9 +2795,31 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
         an `f32` cache. It takes 8,719,597,568 bytes with an `e4m3` cache.
       - The attention scratch (the partials of the split mode) takes 415,236,192 bytes. The state layout number is
         3, and the engine identity holds the cache format.
-    - **`OP_OUT_MIX`** (45) is not merged. It stays reserved, and the kernel traps on it. It is the output matmul
-      `wo` with the short convolution, the residual and the row finisher. The design gives 576 items, 4 K slices and a
-      finisher of 144 tiles. `32589716` did not include it.
+    - **`OP_OUT_MIX`** (45, `kernels/ops_out_mix.cuh`, `src/outmix.rs`, `7a0d74f8`). It is the output matmul `wo`
+      (K of 3,072, 2,304 columns), its short convolution, the residual and the mix of the MLP input.
+      - Items: 576, which are 144 tiles of 16 columns times 4 K slices of 768. The item that merges a tile runs the
+        epilogue of its 16 channels over all rows: the convolution `attn_conv` with its state, then the residual.
+      - The residual: `r = x + conv` with `FLAG_ACCUMULATE`. On the first layer of a block, `r = conv`, and `x` is a
+        plane of the stack.
+      - The convolution: taps `[c][4]` with tap 3 on the current row, and the divisor `sqrt(5)`. The state after the
+        block holds the last 3 raw rows.
+      - The finisher: the last of the 144 tiles runs it for each row, in one block. It writes `rf(r)`, the mix `e`
+        with `mlp_query`, and `rf(e)`. With `FLAG_NORM` it also writes `h_e = w * (e * rf)`, the order of
+        `ops::rms_norm`. The op does not quantize `h_e`. A quantizer task follows it in the pass.
+      - The descriptor: `a` the attention output, `b` the repacked `wo`, `c` the row `r`, `d` the task table. `e` is
+        the row `x` (0 with no `FLAG_ACCUMULATE`), and `f` the scratch. The field `layer` holds the depth of the
+        stack, 2 to 5. `p0` is the scale of a score, 2304^-0.5.
+      - The table: slots 0 to 4 hold the stack, with `r` at the slot `depth - 1`. Slots 5 to 9 hold their row
+        factors. Slot 10 is the convolution weight, and slot 11 its state. Slot 12 is the norm weight, slot 13 the
+        outputs `e`, `h_e` and `rf(e)`, slot 14 the query. Slot 15 must be 0.
+      - The scratch, in floats: 160 counters, then the partials (`576 * rows * 16`), then the raw sums
+        (`2304 * rows`).
+      - Accuracy, on real weights of layers 0, 5, 6, 11 and 18: the matmul is within 3.7e-8 of the sum of the
+        absolute terms. The bound is 1e-7. At 1 row, `r` and `h_e` equal the host forms of the device sums bit for bit.
+      - Bits: equal at 1, 7, 16, 17, 100 and 512 rows and at G of 48, 24, 7 and 1. Two blocks that carry the state
+        give the bits of one block.
+      - Speed: 57.9 us at 1 row, 97% of 252 GB/s, against the budget of 61 us. 16 rows take 151 us, and 512 rows take
+        4.3 ms, because the finisher runs the rows one after another in one block.
     - **The engine identity** gains these members:
       - the cut of the router and the rules of its plan, and the cut of `OP_PROJ`;
       - the repack of `w13`, with the epilogue and the finisher of the up op;
@@ -2805,6 +2827,40 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
       - the chunk of 256 keys, the cache format, and the state layout number 3.
 
       `32589716` moved the bits of the gate output of `OP_PROJ`, because `OP_ATTN` now applies the sigmoid.
+
+  - **The block form of the matmul** (a prefill). **Proposed** (Claude Opus 5.5, 2026-11-22), built in `a59e4adf`.
+    `FLAG_BLOCK_FORM` puts `OP_MATMUL_BF16` or `OP_PROJ` into the form for many rows. The host picks the form. The
+    form is not part of the engine identity, because it gives the bits of the decode form.
+    - **The probes** (`d8c52595`, `tests/cuda_probe_prefill.rs`):
+      - 4 chains for each warp give 0.642 MMA/ns on each SM, the rate of 8 chains (126 TFLOP/s in `bf16`).
+      - Shared memory on one SM: `ld.shared.v4` reads about 970 B/ns, `v2` about 810 B/ns. A store writes about
+        320 B/ns. MMAs that read their operands from shared memory run at 99 to 100% of the register rate.
+      - A ring of bulk copies with an `mbarrier` reused by its parity gives right sums. `mbarrier.inval` comes before
+        another op uses the area again.
+      - L2 under bulk reads from 48 SMs gives 1.93 to 2.02 TB/s for a footprint of 1 to 16 MiB.
+      - A bulk copy of 192 B to 1.5 KB costs about 30 ns. Thus the ring uses `cp.async` pieces of 16 B.
+    - **An item** is a group of up to 8 tiles (128 columns) times a block of 32 rows, with all of K. The row block
+      is the fastest index of the item. The 8 consumer warps split the outputs: 2 across the columns and 4 across
+      the rows. Each warp keeps 4 chains, one for each tile.
+    - **The order of the sums** is the order of the decode form. A chain starts at zero at each chunk, never at a
+      stage. It runs the k16 steps in order, and it adds the terms lo, mid and hi in that order. The tree of the
+      slice and the sum of the slices are the adds of the decode form. Thus the item needs no partials and no
+      counters, and `dot_bits` stays the oracle.
+    - **The ring** has 3 stages of 3 k16 steps, because 3 divides the chunks of 6 and of 9 steps. Each warp splits
+      the `f32` row into its three terms when it reads it, after the norm. Two of the five sets of the tree are in
+      shared memory, because they do not fit in the registers. The form needs 93,184 bytes of shared memory.
+    - **`OP_PROJ`** in the block form makes groups by segment, so a group of q, k or v is one head. A group of q runs
+      the finisher of its head on its 32 rows. The k and v finishers need all rows. A counter of the head counts
+      the row blocks, and the last arrival runs the finisher over all rows. The scratch has no partials.
+    - **The interpreter** reads the count of items and the opcode from the task again after an op. Thus no scalar
+      of the interpreter lives in a register across an op, and the block form fits 168 registers with 0 spill.
+    - **Bits.** The block form equals the decode form at 17, 32, 33, 100, 511 and 512 rows on three shapes. It
+      equals it at G of 48, 24, 7 and 1. `OP_PROJ` gives the bits of its decode form at 1 to 512 rows, on both
+      kinds of layer and both cache formats.
+    - **Speed** at 512 rows (`a59e4adf`), with the decode form in brackets: `wq` 464 us (1,382), `OP_PROJ` 3.03 ms
+      (8.68), the head 31.7 ms (106). The design expected about 0.7 ms for `OP_PROJ`. The copies and the MMAs do
+      not overlap well: the tuning list holds the causes. The form wins when it has at least 48 items, the width of
+      the grid.
 
   - **The register structure.** All ops are inline in one kernel with `__launch_bounds__(288, 1)`
     (`kernels/megakernel.cu:655`). The kernel has 168 registers, no stack frame and no spill (`6b3066ee`). The
