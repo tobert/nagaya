@@ -21,6 +21,11 @@ pub const KV_HEADS: usize = 8;
 pub const HEAD_DIM: usize = 128;
 /// The query heads that share one KV head.
 pub const GROUP: usize = HEADS / KV_HEADS;
+
+/// The words of the counters at the start of the scratch: a counter for each group of the most tiles of the split mode
+/// (`ATTN_SPLIT_ROWS` rows), padded to 4 words. The partials start after them, at a place that does not depend on the
+/// rows, so a call of few rows never writes partials where a call of more rows has counters.
+pub const ATTN_COUNTER_WORDS: usize = (KV_HEADS * (GROUP * ATTN_SPLIT_ROWS).div_ceil(16)).next_multiple_of(4);
 /// The most rows of one task: the most rows of a prefill block.
 pub const MAX_ROWS: usize = 512;
 /// The width of the relative state of a head, and the distances that the relative bias covers.
@@ -192,11 +197,11 @@ impl AttnShape {
         KV_HEADS * self.tiles()
     }
 
-    /// The floats of the scratch: one counter for each group, padded to 4 floats, then one partial for each chunk of
-    /// each group. A partial has 16 rows of `ATTN_PARTIAL_ROW_FLOATS`. The whole mode needs no scratch.
+    /// The floats of the scratch: `ATTN_COUNTER_WORDS` counters, then one partial for each chunk of each group. A
+    /// partial has 16 rows of `ATTN_PARTIAL_ROW_FLOATS`. The whole mode needs no scratch.
     pub fn scratch_floats(&self) -> usize {
         if self.split() {
-            self.groups().next_multiple_of(4) + self.groups() * self.chunks() * 16 * ATTN_PARTIAL_ROW_FLOATS
+            ATTN_COUNTER_WORDS + self.groups() * self.chunks() * 16 * ATTN_PARTIAL_ROW_FLOATS
         } else {
             0
         }
@@ -311,7 +316,10 @@ mod tests {
     fn the_scratch_holds_the_counters_then_one_partial_for_each_chunk_of_a_group() {
         let s = AttnShape::new(1, 1023, 0, 1024, CacheFormat::F32).unwrap();
         assert_eq!((s.groups(), s.chunks()), (8, 4));
-        assert_eq!(s.scratch_floats(), 8 + 8 * 4 * 16 * ATTN_PARTIAL_ROW_FLOATS);
+        assert_eq!(
+            s.scratch_floats(),
+            ATTN_COUNTER_WORDS + 8 * 4 * 16 * ATTN_PARTIAL_ROW_FLOATS
+        );
         let whole = AttnShape::new(17, 0, 0, 1024, CacheFormat::F32).unwrap();
         assert_eq!(whole.scratch_floats(), 0);
     }

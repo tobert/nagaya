@@ -1,7 +1,7 @@
 //! A persistent task ring on one CUDA GPU, with its scoreboard, stats, scratch, and optional profile buffer.
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::driver::{CUdeviceptr, CudaDevice};
 use crate::graph::{self, Node, Planned, Span};
@@ -80,6 +80,15 @@ pub fn chained(descs: &[MkTaskDescriptor]) -> Vec<Task> {
         .collect()
 }
 
+/// The list of a ring: its tasks and their plan. A caller can park the list of one shape of launch and load it again
+/// with no new plan ([`Ring::take_list`], [`Ring::put_list`]).
+#[derive(Default)]
+pub struct RingList {
+    tasks: Vec<Task>,
+    plan: Vec<Planned>,
+    len: usize,
+}
+
 /// One task ring allocated on a [`CudaDevice`]. The ring borrows the device, so the device outlives it.
 ///
 /// `Drop` frees each buffer and prints each failure to stderr. Use [`Ring::free`] to read the failures.
@@ -99,6 +108,8 @@ pub struct Ring<'d> {
     tasks: Vec<Task>,
     plan: Vec<Planned>,
     len: usize,
+    /// The nanoseconds that the last launch spent on the host before it started the kernel: the descriptors and their copy.
+    last_prep_ns: AtomicU64,
 }
 
 impl<'d> Ring<'d> {
@@ -125,6 +136,7 @@ impl<'d> Ring<'d> {
             tasks: Vec::new(),
             plan: Vec::new(),
             len: 0,
+            last_prep_ns: AtomicU64::new(0),
         };
         ring.host_tasks = dev.alloc_host_pinned(RING_DEV_BYTES)?.cast::<MkTaskDescriptor>();
         ring.dev_tasks = dev.alloc_device(RING_DEV_BYTES)?;
@@ -160,6 +172,35 @@ impl<'d> Ring<'d> {
             MAX_TASKS_PER_CARD - 1
         );
         self.len = self.plan.len();
+    }
+
+    /// Take the list out of the ring and leave it empty. A ring with an empty list cannot launch.
+    pub fn take_list(&mut self) -> RingList {
+        RingList {
+            tasks: std::mem::take(&mut self.tasks),
+            plan: std::mem::take(&mut self.plan),
+            len: std::mem::take(&mut self.len),
+        }
+    }
+
+    /// Load a list that [`Ring::take_list`] returned. The ring has the plan of that list, and it plans nothing.
+    pub fn put_list(&mut self, list: RingList) {
+        self.tasks = list.tasks;
+        self.plan = list.plan;
+        self.len = list.len;
+    }
+
+    /// The task number `input` of the list of [`Ring::set`].
+    ///
+    /// # Panics
+    /// The number is not in the list.
+    pub fn task(&self, input: usize) -> &Task {
+        &self.tasks[input]
+    }
+
+    /// The time that the last launch spent on the host before the kernel started.
+    pub fn last_prep(&self) -> std::time::Duration {
+        std::time::Duration::from_nanos(self.last_prep_ns.load(Ordering::SeqCst))
     }
 
     /// Replace the task number `input` of the list of [`Ring::set`] with `task`, which has the same ranges, the same
@@ -301,6 +342,7 @@ impl<'d> Ring<'d> {
             ));
         }
         let dev = self.dev;
+        let prep = std::time::Instant::now();
         let descs = self.descriptors(grid);
         let count = descs.len();
         // SAFETY: `host_tasks` holds `MAX_TASKS_PER_CARD` descriptors, and `descs` has fewer.
@@ -313,6 +355,8 @@ impl<'d> Ring<'d> {
                 self.host_tasks.cast::<c_void>(),
                 count * std::mem::size_of::<MkTaskDescriptor>(),
             )?;
+            self.last_prep_ns
+                .store(prep.elapsed().as_nanos() as u64, Ordering::SeqCst);
             dev.launch_megakernel_shared(
                 grid,
                 block_threads,

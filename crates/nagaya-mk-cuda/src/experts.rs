@@ -105,12 +105,15 @@ pub fn route_items(rows: usize) -> usize {
     rows.div_ceil(ROUTE_ROW_TILE) * ROUTE_ITEMS_PER_ROW_TILE
 }
 
-/// The words of the scratch (`f`) of `OP_ROUTE` for `rows` rows: the counters (a counter for each row tile and column
-/// tile, one for each row tile, and one for the plan, rounded to 4 words), then the logits (128 for each row), then the
-/// partials (256 for each item). The counters start at 0 and stay 0.
+/// The words of the counters at the start of the scratch of `OP_ROUTE`: a counter for each row tile and column tile,
+/// one for each row tile, and one for the plan, for the most rows (`ROUTE_MAX_ROWS`), rounded to 4 words. The logits
+/// start after them, at a place that does not depend on the rows.
+pub const ROUTE_COUNTER_WORDS: usize = (ROUTE_MAX_ROWS.div_ceil(ROUTE_ROW_TILE) * 9 + 1).next_multiple_of(4);
+
+/// The words of the scratch (`f`) of `OP_ROUTE` for `rows` rows: the counters (`ROUTE_COUNTER_WORDS`), then the logits
+/// (128 for each row), then the partials (256 for each item). The counters start at 0 and stay 0.
 pub fn route_scratch_words(rows: usize) -> usize {
-    let tiles = rows.div_ceil(ROUTE_ROW_TILE);
-    (tiles * 9 + 1).next_multiple_of(4) + rows * 128 + route_items(rows) * ROUTE_ROW_TILE * 16
+    ROUTE_COUNTER_WORDS + rows * 128 + route_items(rows) * ROUTE_ROW_TILE * 16
 }
 
 /// The bytes of the pair list of `OP_ROUTE` for `rows` rows: the header and room for the bound of pairs.

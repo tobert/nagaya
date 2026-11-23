@@ -50,6 +50,9 @@ constexpr uint32_t AT_REL_STATES = 16;
 constexpr uint32_t AT_EXTENT = 1024;
 constexpr uint32_t AT_CHUNK = MK_ATTN_CHUNK_KEYS;
 constexpr uint32_t AT_PARTIAL_ROW = MK_ATTN_PARTIAL_ROW_FLOATS;
+// The words of the counters at the start of the scratch: a counter for each group of the most tiles of the split mode.
+// The partials follow at this offset for every row count (`ATTN_COUNTER_WORDS` in src/attn.rs).
+constexpr uint32_t AT_COUNTER_WORDS = (AT_KV_HEADS * ((AT_GROUP * MK_ATTN_SPLIT_ROWS + 15) / 16) + 3) & ~3u;
 constexpr uint32_t AT_MAX_ROWS = 512;
 // The offsets in floats of the shared memory. The part of the scores is sized for a step of up to 16 keys.
 constexpr uint32_t AT_MAX_STEP = 16;
@@ -286,9 +289,8 @@ __device__ __forceinline__ void op_attn_item(const MkTaskDescriptor& task, const
     const auto out_ptr = [&]() { return reinterpret_cast<float*>(task.c); };
     const uint8_t* kp = reinterpret_cast<const uint8_t*>(task.b) + static_cast<uint64_t>(kvh) * plane_rows * ROW;
     const uint8_t* vp = reinterpret_cast<const uint8_t*>(task.e) + static_cast<uint64_t>(kvh) * plane_rows * ROW;
-    const uint32_t group_count = AT_KV_HEADS * mtiles;
     const auto counter_ptr = [&]() { return reinterpret_cast<uint32_t*>(task.f) + group; };
-    const auto partials_ptr = [&]() { return reinterpret_cast<float*>(task.f) + ((group_count + 3) & ~3u); };
+    const auto partials_ptr = [&]() { return reinterpret_cast<float*>(task.f) + AT_COUNTER_WORDS; };
 
     // The keys that the tile of rows reads: from the lowest key of its first row to its last position.
     const uint32_t r_first = 16 * mt;
