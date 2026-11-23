@@ -20,10 +20,10 @@ use nagaya_mk_cuda::test_cards;
 const VARIABLE: &str = "NAGAYA_RESERVED_OPCODE";
 const TEST: &str = "each_reserved_opcode_traps_until_its_lane_builds_it";
 
-/// The opcodes that wave B still reserves (the lanes built the others), then two numbers in the range of a lane that no constant names, one number
+/// An op that needs a task table and has none, then two numbers in the range of a lane that no constant names, one number
 /// that the table of the B70 used and the GB10 does not, and a test op that needs a task table and has none.
 const TRAPPING: [(&str, u16); 5] = [
-    ("OP_OUT_MIX", OP_OUT_MIX),
+    ("OP_OUT_MIX with no task table", OP_OUT_MIX),
     ("a free number of lane D", 46),
     ("a free number of lane M", 60),
     ("an old number of the B70 table", 142),

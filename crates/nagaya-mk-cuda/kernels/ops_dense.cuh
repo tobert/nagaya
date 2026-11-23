@@ -1,4 +1,4 @@
-// The dense ops of one Inkling 2 run: OP_PROJ and OP_OUT_MIX. OP_MATMUL_BF16 is in matmul_bf16.cuh.
+// The dense op of one Inkling 2 run: OP_PROJ. OP_MATMUL_BF16 is in matmul_bf16.cuh, and OP_OUT_MIX is in ops_out_mix.cuh.
 //
 // This file belongs to wave B lane D (dense). `run_op` in megakernel.cu calls each op.
 //
@@ -417,12 +417,4 @@ __device__ __forceinline__ void op_proj(const MkTaskDescriptor& task, const MkTa
     if (flags[0] != 0) {
         pr_merge(task, table, tile);
     }
-}
-
-// Reserved for wave B lane D (dense).
-__device__ __forceinline__ void op_out_mix(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
-    (void)task;
-    (void)table;
-    (void)item;
-    __trap();
 }

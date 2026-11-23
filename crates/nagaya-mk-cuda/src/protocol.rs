@@ -65,7 +65,8 @@ define_u16_table! {
     // convolutions on a full layer), with a norm prologue and an epilogue for each segment. The rows of the matrix are
     // in `src/proj.rs`, and the fields of the descriptor and the slots of the table are in `kernels/ops_dense.cuh`.
     OP_PROJ = 44;
-    // `OP_OUT_MIX`: the output matmul, its short convolution, the residual and the row finisher (reserved for lane D).
+    // `OP_OUT_MIX`: the output matmul, its short convolution, the residual and the mix of the MLP input
+    // (`src/outmix.rs`, `kernels/ops_out_mix.cuh`).
     OP_OUT_MIX = 45;
 
     // The MoE lane M, 50 to 69 (`kernels/quant.cuh`, `kernels/experts.cuh`, `kernels/ops_moe.cuh`). Each op has its
@@ -295,6 +296,12 @@ pub const DENSE_CONSTANTS: &[(&str, usize)] = &[
     ("PROJ_TABLE_V_STATE", PROJ_TABLE_V_STATE),
     ("PROJ_TABLE_K_OUT", PROJ_TABLE_K_OUT),
     ("PROJ_TABLE_V_OUT", PROJ_TABLE_V_OUT),
+    ("OUT_MIX_TABLE_STACK_RF", OUT_MIX_TABLE_STACK_RF),
+    ("OUT_MIX_TABLE_CONV", OUT_MIX_TABLE_CONV),
+    ("OUT_MIX_TABLE_STATE", OUT_MIX_TABLE_STATE),
+    ("OUT_MIX_TABLE_NORM", OUT_MIX_TABLE_NORM),
+    ("OUT_MIX_TABLE_OUT", OUT_MIX_TABLE_OUT),
+    ("OUT_MIX_TABLE_QUERY", OUT_MIX_TABLE_QUERY),
 ];
 
 /// The most rows of one `OP_MATMUL_BF16` task. The op loops over tiles of 16 rows.
@@ -327,6 +334,20 @@ pub const PROJ_TABLE_V_STATE: usize = 12;
 /// The planes of the cache of the key and of the value (`f32` or `e4m3`, the layout of `src/attn.rs`).
 pub const PROJ_TABLE_K_OUT: usize = 13;
 pub const PROJ_TABLE_V_OUT: usize = 14;
+
+// The slots of the table of `OP_OUT_MIX` (`src/outmix.rs`, `kernels/ops_out_mix.cuh`). Slots 0 to 4 are the stack of the mix
+// as `OP_MIX` has it: the planes of the blocks, then `r` at the slot `depth - 1`.
+/// The row factors of the rows of the stack: the slots 5 to 9.
+pub const OUT_MIX_TABLE_STACK_RF: usize = 5;
+/// The weight of the attention convolution (`bf16`, `[2304][4]`) and its state (`f32`, `[3][2304]`, oldest row first).
+pub const OUT_MIX_TABLE_CONV: usize = 10;
+pub const OUT_MIX_TABLE_STATE: usize = 11;
+/// The norm weight of `h_e` (`f32`, 2304; 0 without `FLAG_NORM`).
+pub const OUT_MIX_TABLE_NORM: usize = 12;
+/// The outputs (`f32`): `e` for each row, `h_e` for each row, then the row factor of each `e`.
+pub const OUT_MIX_TABLE_OUT: usize = 13;
+/// The query of the mix of the MLP input (`f32`, 2304).
+pub const OUT_MIX_TABLE_QUERY: usize = 14;
 
 define_u16_table! {
     FLAGS;
