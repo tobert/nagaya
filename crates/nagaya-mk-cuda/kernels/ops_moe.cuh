@@ -10,13 +10,12 @@
 // `bf16` MMA step, so a change of the dense lane does not move its bits.
 //
 // The descriptor:
-//   a      the rows `x`: `rows` rows of 2,304 `f32`. With FLAG_NORM they are the rows before the norm: the op reads
-//          `w * (v * rf)`, where `rf` is the row factor that an earlier task wrote (the order of `ops::rms_norm`).
+//   a      the rows `x`: `rows` rows of 2,304 `f32`. They are the rows of `h_e`, normed by an earlier task (`OP_GATE_UP`
+//          or `OP_MIX`). The op has no norm flag: a task with FLAG_NORM traps.
 //   b      the router, repacked as a dense matmul of N = 128 and K = 2,304 (`MatmulShape::new(128, 2304)`: 8 tiles of 16
 //          columns, 3 K slices of 768, an item of 24,576 bytes).
 //   c      the picks of each row: `rows * 8` `u32` expert ids in ascending order, then `rows * 8` `f32` route weights.
-//   d      the task table: `ROUTE_TABLE_BIAS` the bias (128 `f32`). With FLAG_NORM also `ROUTE_TABLE_NORM_WEIGHT` the
-//          norm weight (2,304 `f32`) and `ROUTE_TABLE_ROW_FACTOR` the row factors (`rows` `f32`).
+//   d      the task table: `ROUTE_TABLE_BIAS` the bias (128 `f32`).
 //   e      the list of pairs: the header with the live count, then room for `expert_pair_bound(rows)` pairs. The op
 //          writes the whole live list. The pairs go by expert, ascending. An expert with more than 16 rows has several
 //          pairs, and the rows of a pair are in ascending order. `x_row` is the row, `y_row` is the slot `row * 8 + j`,
@@ -41,8 +40,6 @@
 #pragma once
 
 constexpr uint32_t ROUTE_TABLE_BIAS = 0;
-constexpr uint32_t ROUTE_TABLE_NORM_WEIGHT = 1;
-constexpr uint32_t ROUTE_TABLE_ROW_FACTOR = 2;
 
 constexpr uint32_t RT_EXPERTS = 128;
 constexpr uint32_t RT_K = 2304;
@@ -121,18 +118,12 @@ __device__ __forceinline__ void rt_step(float (&acc)[4], const uint4& a, float2 
     rt_mma(acc, a, f.hi, s.hi);
 }
 
-// Two values of a row of `x`, with the norm of the row when `norm` is set. The row came from an earlier task.
-__device__ __forceinline__ float2 rt_load_x(const float* row, const float* weight, float factor, bool valid, bool norm) {
+// Two values of a row of `x`. The row came from an earlier task.
+__device__ __forceinline__ float2 rt_load_x(const float* row, bool valid) {
     if (!valid) {
         return make_float2(0.0f, 0.0f);
     }
-    float2 v = __ldcg(reinterpret_cast<const float2*>(row));
-    if (norm) {
-        const float2 w = *reinterpret_cast<const float2*>(weight);
-        v.x = w.x * (v.x * factor);
-        v.y = w.y * (v.y * factor);
-    }
-    return v;
+    return __ldcg(reinterpret_cast<const float2*>(row));
 }
 
 // The sigmoid and the division of this file use the fast division (error of 2 ulps, no call to the slow path). A division
@@ -304,14 +295,12 @@ __device__ __forceinline__ void route_plan(const MkTaskDescriptor& task, const u
 __device__ __forceinline__ void op_route(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
     const uint32_t rows = task.rows;
     const uint32_t row_tiles = (rows + RT_ROWS - 1) / RT_ROWS;
-    const bool norm = (task.flags & FLAG_NORM) != 0;
-    if (worker_count() != MK_CONSUMER_THREADS || (task.flags & ~(FLAG_NORM | FLAG_PAIRS)) != 0 || rows == 0 ||
+    if (worker_count() != MK_CONSUMER_THREADS || (task.flags & ~FLAG_PAIRS) != 0 || rows == 0 ||
         rows > RT_MAX_TOKENS || task.n != RT_EXPERTS || task.k != RT_K || task.kt != RT_KT ||
         task.group_items != RT_SLICES || task.items != row_tiles * RT_ITEMS_PER_ROW_TILE ||
         (task.item_bytes != 0 && (task.item_bytes != RT_ITEM_BYTES || rows > RT_ROWS)) ||
         table == nullptr || dynamic_smem_bytes() < RT_SMEM_BYTES || (task.a & 7) != 0 || (task.b & 15) != 0 ||
-        (task.c & 15) != 0 || (task.e & 15) != 0 || (task.f & 15) != 0 || table->ptr[ROUTE_TABLE_BIAS] == 0 ||
-        (norm && (table->ptr[ROUTE_TABLE_NORM_WEIGHT] == 0 || table->ptr[ROUTE_TABLE_ROW_FACTOR] == 0))) {
+        (task.c & 15) != 0 || (task.e & 15) != 0 || (task.f & 15) != 0 || table->ptr[ROUTE_TABLE_BIAS] == 0) {
         __trap();  // A shape or a flag that the op does not cover.
     }
     float* tree = reinterpret_cast<float*>(mk_smem + RT_OFF_TREE);
@@ -343,11 +332,6 @@ __device__ __forceinline__ void op_route(const MkTaskDescriptor& task, const MkT
     const float* x = reinterpret_cast<const float*>(task.a);
     const float* row0 = x + static_cast<uint64_t>(first_row + g) * RT_K + k_offset;
     const float* row1 = row0 + 8 * static_cast<uint64_t>(RT_K);
-    const float* norm_weight =
-        norm ? reinterpret_cast<const float*>(table->ptr[ROUTE_TABLE_NORM_WEIGHT]) + k_offset : nullptr;
-    const float* factors = norm ? reinterpret_cast<const float*>(table->ptr[ROUTE_TABLE_ROW_FACTOR]) + first_row : nullptr;
-    const float factor0 = norm && valid0 ? __ldcg(factors + g) : 0.0f;
-    const float factor1 = norm && valid1 ? __ldcg(factors + g + 8) : 0.0f;
 
     uint4 a[RT_STEPS_PER_WARP];
 #pragma unroll
@@ -358,11 +342,9 @@ __device__ __forceinline__ void op_route(const MkTaskDescriptor& task, const MkT
 #pragma unroll
     for (uint32_t j = 0; j < RT_STEPS_PER_WARP; ++j) {
         const uint32_t k0 = j * 16;
-        rt_step(acc[0], a[j], rt_load_x(row0 + k0, norm_weight + k0, factor0, valid0, norm),
-                rt_load_x(row0 + k0 + 8, norm_weight + k0 + 8, factor0, valid0, norm));
+        rt_step(acc[0], a[j], rt_load_x(row0 + k0, valid0), rt_load_x(row0 + k0 + 8, valid0));
         if (two_tiles) {
-            rt_step(acc[1], a[j], rt_load_x(row1 + k0, norm_weight + k0, factor1, valid1, norm),
-                    rt_load_x(row1 + k0 + 8, norm_weight + k0 + 8, factor1, valid1, norm));
+            rt_step(acc[1], a[j], rt_load_x(row1 + k0, valid1), rt_load_x(row1 + k0 + 8, valid1));
         }
     }
 

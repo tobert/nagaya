@@ -77,6 +77,7 @@ __device__ __forceinline__ float rw_factor(float sum_squares, uint32_t width) {
     return 1.0f / sqrtf(sum_squares / static_cast<float>(width) + RW_EPS);
 }
 
+#ifdef MK_PROBES
 // OP_ROWS_PROBE: the probe of the row finisher. `rows` rows (1 to 16) of `group_items * n` floats are at `a`. Item `i`
 // is the column tile `i`: the `n` floats of each row from `i * n`. It writes the sum of squares of the tile of each
 // row to a partial, and the last item of the group sums the partials in the order of the tiles. Then it writes
@@ -141,6 +142,7 @@ __device__ __forceinline__ void op_rows_probe(const MkTaskDescriptor& task, cons
         out[i] = __ldcg(x + i) * factors[i / stride];
     }
 }
+#endif  // MK_PROBES
 
 // ---------------------------------------------------------------------------------------------------------------
 // OP_EMBED, OP_MIX and OP_MIX_OUT.

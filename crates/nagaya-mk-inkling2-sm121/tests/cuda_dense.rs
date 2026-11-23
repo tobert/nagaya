@@ -1,7 +1,7 @@
 //! GPU gates of the dense ops of wave B lane D (milestone 37 step 9), against the host forms of the B70 crate, on real
 //! weights of Inkling 2 Mini. A test skips when `INKLING2_MODEL_DIR` is absent, and fails with `NAGAYA_REQUIRE_MODELS`.
 //!
-//! - The norm prologue of `OP_MATMUL_BF16` (`FLAG_NORM`, `FLAG_NORM_UNWEIGHTED`): the matmul applies `w * (x * rf)` while
+//! - The norm prologue of `OP_MATMUL_BF16` (`FLAG_NORM`): the matmul applies `w * (x * rf)` while
 //!   it loads `x`. The oracle is `ops::rms_norm` then the matmul.
 //! - The head: `FLAG_NORM | FLAG_SOFTCAP_30` over 200,064 rows.
 //!
@@ -17,9 +17,7 @@ use common::gpu::{GRIDS, download, open, open_profile, run_with_watchdog, upload
 use dense_support::{Checkpoint, HIDDEN, PEAK_GBPS, bits, checkpoint, make_rows, row_factor};
 use nagaya_mk_cuda::driver::{CUdeviceptr, CudaDevice};
 use nagaya_mk_cuda::mma_model::dot_bits;
-use nagaya_mk_cuda::protocol::{
-    FLAG_NORM, FLAG_NORM_UNWEIGHTED, FLAG_SOFTCAP_30, MATMUL_TABLE_NORM_WEIGHT, MkTaskTable, PROFILE_WORDS,
-};
+use nagaya_mk_cuda::protocol::{FLAG_NORM, FLAG_SOFTCAP_30, MATMUL_TABLE_NORM_WEIGHT, MkTaskTable, PROFILE_WORDS};
 use nagaya_mk_cuda::repack::{MatmulShape, repack_bf16};
 use nagaya_mk_cuda::ring::{Ring, Task};
 use nagaya_mk_inkling2_bmg::host::ops;
@@ -103,7 +101,7 @@ impl<'d> Mm<'d> {
             .descriptor(rows, x, self.packed, self.y, self.ring.scratch())
             .unwrap();
         desc.flags = flags;
-        if flags & (FLAG_NORM | FLAG_NORM_UNWEIGHTED) != 0 {
+        if flags & FLAG_NORM != 0 {
             desc.e = self.rf + (row0 * 4) as u64;
             desc.d = self.table;
         }
@@ -142,15 +140,9 @@ impl<'d> Mm<'d> {
 }
 
 /// The normed row that the host computes: `w * (v * rf)` with the weight, `v * rf` without.
-fn host_normed(row: &[f32], weight: Option<&[f32]>) -> Vec<f32> {
+fn host_normed(row: &[f32], weight: &[f32]) -> Vec<f32> {
     let mut out = vec![0f32; row.len()];
-    match weight {
-        Some(w) => ops::rms_norm(row, w, &mut out),
-        None => {
-            out.copy_from_slice(row);
-            ops::rms_norm_unweighted(&mut out);
-        }
-    }
+    ops::rms_norm(row, weight, &mut out);
     out
 }
 
@@ -199,15 +191,12 @@ fn the_norm_prologue_equals_the_host_norm_then_the_matmul() {
         let rf: Vec<f32> = x.chunks(HIDDEN).map(row_factor).collect();
         let mut mm = Mm::new(&dev, w, n, &x, &rf, Some(&weight), false);
         let columns = columns_of(n, 6);
-        for (label, flags, norm_w) in [
-            ("weighted", FLAG_NORM, Some(&weight[..])),
-            ("unweighted", FLAG_NORM_UNWEIGHTED, None),
-        ] {
-            let y = mm.run(rows, 0, flags, 48);
+        {
+            let y = mm.run(rows, 0, FLAG_NORM, 48);
             let mut worst = 0.0f64;
             let mut matvec_worst = 0.0f64;
             for r in 0..rows {
-                let normed = host_normed(&x[r * HIDDEN..(r + 1) * HIDDEN], norm_w);
+                let normed = host_normed(&x[r * HIDDEN..(r + 1) * HIDDEN], &weight);
                 let mut host_out = vec![0f32; n];
                 ops::matvec_bf16(&mm.w, &normed, &mut host_out);
                 for &c in &columns {
@@ -217,7 +206,7 @@ fn the_norm_prologue_equals_the_host_norm_then_the_matmul() {
                     let error = (f64::from(got) - sum).abs() / magnitude / f64::from(f32::EPSILON);
                     assert!(
                         error <= ACCURACY_BOUND_EPS,
-                        "{name} {label}: row {r} column {c}: the GPU gives {got:e}, the f64 sum is {sum:e}, the error is {error:.2} epsilons of {magnitude:e}"
+                        "{name}: row {r} column {c}: the GPU gives {got:e}, the f64 sum is {sum:e}, the error is {error:.2} epsilons of {magnitude:e}"
                     );
                     worst = worst.max(error);
                     // The bits: the norm is the same f32 operations, so the model of the MMA gives the bits.
@@ -225,7 +214,7 @@ fn the_norm_prologue_equals_the_host_norm_then_the_matmul() {
                     assert_eq!(
                         got.to_bits(),
                         want.to_bits(),
-                        "{name} {label}: row {r} column {c}: the GPU gives {got:e}, the host model gives {want:e}"
+                        "{name}: row {r} column {c}: the GPU gives {got:e}, the host model gives {want:e}"
                     );
                     let host = host_out[c];
                     matvec_worst =
@@ -233,7 +222,7 @@ fn the_norm_prologue_equals_the_host_norm_then_the_matmul() {
                 }
             }
             eprintln!(
-                "cuda_dense norm: {name:<6} {label:<10} {rows} rows x {} columns: worst error {worst:.3} epsilons of the sum of |terms| \
+                "cuda_dense norm: {name:<6} {rows} rows x {} columns: worst error {worst:.3} epsilons of the sum of |terms| \
                  against f64 (bound {ACCURACY_BOUND_EPS}); the host matvec is {matvec_worst:.3}; the bits equal the host model of the MMA",
                 columns.len()
             );
@@ -252,7 +241,8 @@ fn the_bits_of_a_normed_row_do_not_depend_on_the_rows_or_the_grid() {
         let x = make_rows(512, HIDDEN, 12);
         let rf: Vec<f32> = x.chunks(HIDDEN).map(row_factor).collect();
         let mut mm = Mm::new(&dev, w, n, &x, &rf, Some(&weight), false);
-        for flags in [FLAG_NORM, FLAG_NORM_UNWEIGHTED] {
+        {
+            let flags = FLAG_NORM;
             let full = mm.run(512, 0, flags, 48);
             for rows in [1, 7, 16, 17, 100] {
                 assert_eq!(
@@ -276,9 +266,7 @@ fn the_bits_of_a_normed_row_do_not_depend_on_the_rows_or_the_grid() {
                 );
             }
         }
-        eprintln!(
-            "cuda_dense norm: {name:<6} the bits of both norms are equal at 1 to 512 rows and at grids {GRIDS:?}"
-        );
+        eprintln!("cuda_dense norm: {name:<6} the bits of the norm are equal at 1 to 512 rows and at grids {GRIDS:?}");
         mm.free();
     }
 }
@@ -311,7 +299,7 @@ fn the_head_equals_the_host_norm_matvec_and_softcap() {
     let y = mm.run(rows, 0, flags, 48);
     let (mut worst_eps, mut worst_cap) = (0.0f64, 0.0f64);
     for r in 0..rows {
-        let normed = host_normed(&x[r * HIDDEN..(r + 1) * HIDDEN], Some(&weight));
+        let normed = host_normed(&x[r * HIDDEN..(r + 1) * HIDDEN], &weight);
         let mut host_out = vec![0f32; HEAD_ROWS];
         ops::matvec_bf16(&mm.w, &normed, &mut host_out);
         for &c in &columns {

@@ -324,8 +324,14 @@ __device__ __forceinline__ void op_selftest_claim(const MkTaskDescriptor& task, 
     }
 }
 
+#include "ptx_util.cuh"
+
+// The probe ops are in the probe cubins only (`MK_PROBES`). An engine cubin does not hold them, and a task with a probe
+// opcode traps there.
+#ifdef MK_PROBES
 #include "probe_ops.cuh"
 #include "probe_smem.cuh"
+#endif
 #include "matmul_bf16.cuh"
 #include "matmul_block.cuh"
 #include "quant.cuh"
@@ -375,6 +381,7 @@ __device__ __forceinline__ void run_op(const MkTaskDescriptor& task, const MkTas
         case OP_SELFTEST_CLAIM:
             op_selftest_claim(task, item);
             break;
+#ifdef MK_PROBES
         case OP_PROBE_READ:
             op_probe_read(task);
             break;
@@ -396,6 +403,7 @@ __device__ __forceinline__ void run_op(const MkTaskDescriptor& task, const MkTas
         case OP_REDUCE_PROBE:
             op_reduce_probe(task, item);
             break;
+#endif
         case OP_QUANT_NVFP4:
             op_quant_nvfp4(task, item);
             break;
@@ -446,9 +454,11 @@ __device__ __forceinline__ void run_op(const MkTaskDescriptor& task, const MkTas
             op_mix_out(task, table, item);
             break;
 
+#ifdef MK_PROBES
         case OP_ROWS_PROBE:
             op_rows_probe(task, table, item);
             break;
+#endif
 
         case OP_ATTN:
             op_attn(task, table, item);

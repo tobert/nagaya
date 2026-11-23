@@ -330,14 +330,13 @@ __device__ __forceinline__ void mb_core(const MkTaskDescriptor& task, const MbIt
 // in `ops_dense.cuh` calls them and `mb_core`, so that the kernel has one copy of the heavy loop for both ops.
 //
 // a = x (const float*, `rows` rows of `k` floats, 16-byte aligned), b = repacked W, c = y (float*, `rows` rows of `n`
-// floats), e = the row factors (with FLAG_NORM or FLAG_NORM_UNWEIGHTED), n, k, kt, group_items = slices, rows,
+// floats), e = the row factors (with FLAG_NORM), n, k, kt, group_items = slices, rows,
 // items = column groups * row blocks, item_bytes = 16 * kt * 2. `f` is not used. Every field is checked: a shape that
 // the op does not cover traps.
 __device__ __forceinline__ void mb_matmul_check(const MkTaskDescriptor& task, const MkTaskTable* table) {
     const uint32_t rows = task.rows;
     const uint32_t kt = task.kt;
-    const bool norm = (task.flags & (FLAG_NORM | FLAG_NORM_UNWEIGHTED)) != 0;
-    const bool weighted = (task.flags & FLAG_NORM) != 0;
+    const bool norm = (task.flags & FLAG_NORM) != 0;
     const uint32_t tiles = task.n / MM_TILE;
     const uint32_t row_blocks = (rows + MB_ROW_BLOCK - 1) / MB_ROW_BLOCK;
     if (worker_count() != MK_WORKERS || rows == 0 || rows > MM_MAX_ROWS || kt == 0 ||
@@ -345,11 +344,10 @@ __device__ __forceinline__ void mb_matmul_check(const MkTaskDescriptor& task, co
         task.n % MM_TILE != 0 || task.items != ((tiles + MB_GROUP_TILES - 1) / MB_GROUP_TILES) * row_blocks ||
         task.item_bytes != MM_TILE * kt * 2 || dynamic_smem_bytes() < MB_SMEM_BYTES || (task.a & 15) != 0 ||
         (task.b & 15) != 0 ||
-        (task.flags & ~(FLAG_NORM | FLAG_NORM_UNWEIGHTED | FLAG_SOFTCAP_30 | FLAG_BLOCK_FORM)) != 0 ||
-        (task.flags & FLAG_NORM) != 0 && (task.flags & FLAG_NORM_UNWEIGHTED) != 0 ||
+        (task.flags & ~(FLAG_NORM | FLAG_SOFTCAP_30 | FLAG_BLOCK_FORM)) != 0 ||
         norm && (task.e == 0 || (task.e & 3) != 0) || !norm && task.e != 0 ||
-        weighted && (table == nullptr || table->ptr[MK_MATMUL_TABLE_NORM_WEIGHT] == 0 ||
-                     (table->ptr[MK_MATMUL_TABLE_NORM_WEIGHT] & 3) != 0)) {
+        norm && (table == nullptr || table->ptr[MK_MATMUL_TABLE_NORM_WEIGHT] == 0 ||
+                 (table->ptr[MK_MATMUL_TABLE_NORM_WEIGHT] & 3) != 0)) {
         __trap();
     }
 }

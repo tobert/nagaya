@@ -15,7 +15,8 @@
 // With `FLAG_NORM` the op applies a norm while it loads x: the value is `w[k] * (x[r, k] * rf[r])`, the order of
 // `ops::rms_norm`. `rf` is the row factor `1 / sqrt(mean(x^2) + eps)` that the task before wrote, in `e`. The weight
 // `w` is bf16, and the table of the task holds its address in the slot `MK_MATMUL_TABLE_NORM_WEIGHT`.
-// `FLAG_NORM_UNWEIGHTED` leaves out `w`. With `FLAG_SOFTCAP_30` the merge writes `30 * tanh(y / 30)`.
+// With `FLAG_SOFTCAP_30` the merge writes `30 * tanh(y / 30)`. A norm with no weight does not exist: a task with the old
+// flag of bit 4 traps.
 //
 // Design rule 9: each f32 of x is the sum of three bf16 terms, hi + mid + lo, which hold its 24 bits of mantissa.
 // Each product of a term and a weight is exact in f32. For each k16 step the MMA adds the terms in the order lo, mid,
@@ -92,8 +93,8 @@ __device__ __forceinline__ float mm_bf16_at(const uint16_t* w, uint32_t index) {
     return __uint_as_float(static_cast<uint32_t>(__ldg(w + index)) << 16);
 }
 
-// The two values of a row at the K values `k0` and `k0 + 1`, with the norm of the flags. `w` is null when the norm has
-// no weight, and `rf` is null when there is no norm.
+// The two values of a row at the K values `k0` and `k0 + 1`, with the norm of the flags. `w` is null when there is no
+// norm, and then `rf` is 1.
 __device__ __forceinline__ float2 mm_load_normed(const float* row, bool valid, float rf, const uint16_t* w) {
     if (!valid) {
         return make_float2(0.0f, 0.0f);
@@ -227,25 +228,23 @@ __device__ __forceinline__ float mm_merged_sum(const float* partials, uint32_t t
 }
 
 // a = x (const float*, `rows` rows of `k` floats), b = repacked W, c = y (float*, `rows` rows of `n` floats),
-// e = the row factors (`rows` floats, with FLAG_NORM or FLAG_NORM_UNWEIGHTED),
+// e = the row factors (`rows` floats, with FLAG_NORM),
 // f = counters then partials (see MatmulShape::scratch_floats), n, k, kt, items, group_items = slices, rows,
 // item_bytes = 16 * kt * 2. Every field is checked: a shape that the op does not cover traps.
 __device__ __forceinline__ void op_matmul_bf16(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
     const uint32_t rows = task.rows;
     const uint32_t kt = task.kt;
     const uint32_t slices = task.group_items;
-    const bool norm = (task.flags & (FLAG_NORM | FLAG_NORM_UNWEIGHTED)) != 0;
-    const bool weighted = (task.flags & FLAG_NORM) != 0;
+    const bool norm = (task.flags & FLAG_NORM) != 0;
     const bool softcap = (task.flags & FLAG_SOFTCAP_30) != 0;
     if (worker_count() != MK_WORKERS || rows == 0 || rows > MM_MAX_ROWS || kt == 0 ||
         kt % (MM_WARPS * MM_K_STEP) != 0 || slices == 0 || task.k != slices * kt || task.n % MM_TILE != 0 ||
         task.items != (task.n / MM_TILE) * slices || task.item_bytes != MM_TILE * kt * 2 ||
         dynamic_smem_bytes() < MM_SMEM_BYTES || (task.a & 7) != 0 || (task.b & 15) != 0 || (task.f & 3) != 0 ||
-        (task.flags & ~(FLAG_NORM | FLAG_NORM_UNWEIGHTED | FLAG_SOFTCAP_30)) != 0 ||
-        (task.flags & FLAG_NORM) != 0 && (task.flags & FLAG_NORM_UNWEIGHTED) != 0 ||
+        (task.flags & ~(FLAG_NORM | FLAG_SOFTCAP_30)) != 0 ||
         norm && (task.e == 0 || (task.e & 3) != 0) || !norm && task.e != 0 ||
-        weighted && (table == nullptr || table->ptr[MK_MATMUL_TABLE_NORM_WEIGHT] == 0 ||
-                     (table->ptr[MK_MATMUL_TABLE_NORM_WEIGHT] & 3) != 0)) {
+        norm && (table == nullptr || table->ptr[MK_MATMUL_TABLE_NORM_WEIGHT] == 0 ||
+                 (table->ptr[MK_MATMUL_TABLE_NORM_WEIGHT] & 3) != 0)) {
         __trap();
     }
     uint32_t* merge_flag = reinterpret_cast<uint32_t*>(mk_smem + MM_TREE_FLOATS * 4);
@@ -257,7 +256,7 @@ __device__ __forceinline__ void op_matmul_bf16(const MkTaskDescriptor& task, con
     float* partials = reinterpret_cast<float*>(task.f) + (task.n / MM_TILE);
 
     mm_item_partials(task, item, reinterpret_cast<const float*>(task.a), norm ? reinterpret_cast<const float*>(task.e) : nullptr,
-                     weighted ? reinterpret_cast<const uint16_t*>(table->ptr[MK_MATMUL_TABLE_NORM_WEIGHT]) : nullptr,
+                     norm ? reinterpret_cast<const uint16_t*>(table->ptr[MK_MATMUL_TABLE_NORM_WEIGHT]) : nullptr,
                      partials);
 
     // The item that arrives last in its group merges. The release of the add publishes the partials of this block,

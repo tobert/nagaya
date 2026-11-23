@@ -62,12 +62,6 @@ pub fn pair_list_bytes(pairs: &[ExpertPair], capacity: usize) -> Result<Vec<u8>,
 /// the table are the same in `kernels/ops_moe.cuh`.
 pub const ROUTE_TABLE_BIAS: usize = 0;
 
-/// The slot of the norm weight (`f32`, 2,304 of them) in the table of `OP_ROUTE` with `FLAG_NORM`.
-pub const ROUTE_TABLE_NORM_WEIGHT: usize = 1;
-
-/// The slot of the row factors (`f32`, one for each row) in the table of `OP_ROUTE` with `FLAG_NORM`.
-pub const ROUTE_TABLE_ROW_FACTOR: usize = 2;
-
 /// The slot of the pointer to the buffer of quantized activation rows in the table of an up op (`FLAG_UP`). The slots of
 /// the table are the same in `kernels/experts.cuh`. The slot 0 is `EXPERT_TABLE_AMAX`.
 pub const EXPERT_TABLE_QACT: usize = 1;
