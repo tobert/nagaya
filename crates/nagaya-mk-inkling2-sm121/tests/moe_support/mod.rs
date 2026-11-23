@@ -157,7 +157,7 @@ pub fn download_pairs(dev: &CudaDevice, list: CUdeviceptr, capacity: usize) -> V
         .collect()
 }
 
-/// Open the GPU with the profile cubin. `MOE_CUBIN` names another profile cubin to measure, for example one that is cut
+/// Open the GPU with the probe profile cubin: the speed tests flush the cache with `OP_PROBE_READ`. `MOE_CUBIN` names another profile cubin to measure, for example one that is cut
 /// short at a stage of an op.
 pub fn open_profile_or_env() -> CudaDevice {
     match std::env::var("MOE_CUBIN") {
@@ -166,6 +166,6 @@ pub fn open_profile_or_env() -> CudaDevice {
             &std::fs::read(&path).unwrap_or_else(|e| panic!("cannot read {path}: {e}")),
         )
         .expect("open the GPU"),
-        Err(_) => super::common::gpu::open_profile(),
+        Err(_) => super::common::gpu::open_probe_profile(),
     }
 }

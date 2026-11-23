@@ -501,7 +501,7 @@ pub fn run_tasks(
             nagaya_mk_cuda::experts::route_scratch_words(rows),
             region,
         )?;
-        let table = tables.add(desc::route_table(w.router_bias.ptr(), None)?)?;
+        let table = tables.add(desc::route_table(w.router_bias.ptr())?)?;
         let d = desc::route(
             rows,
             &RouteAddrs {
@@ -512,7 +512,6 @@ pub fn run_tasks(
                 scratch,
                 table,
             },
-            false,
         )?;
         out.push((
             TaskKind::Route,
