@@ -2328,8 +2328,22 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     columns. The K slice `Kt` comes from the shape: 768 for K of 2,304 or 3,072, and 1,152 for the expert down op.
     A `bf16` item is 16 x 768 x 2 bytes, 24.6 KB. The op `q` (N 3,072, K 2,304) has 576 items: 12 on each of 48
     blocks.
-  - Block `b` of `G` runs the items `b`, `b + G`, `b + 2G` and so on. This gives the bits of a dynamic ticket. Each
-    block knows its next item early, so it can prefetch, and it needs no atomic.
+  - Block `b` of `G` runs the item `b` first. A task with at most `G` items gives each block that one item.
+  - **Proposed** (Claude Opus 5.5, 2026-11-23), built in `122c2fa7`: a task with more than `G` items gives the later
+    items by claim. The static order `b`, `b + G`, `b + 2G` made long tails, because each block runs at a random
+    speed. The tails took 9.9 ms of a decode step of 31.1 ms (measured in `73ee3a82`).
+    - The scoreboard holds one claim word for each task, after the events. A launch zeroes the events and the claim
+      words together, so a ring that runs again starts at claim 0.
+    - A claim is an integer add of 1 to the claim word. Claim `k` gives the item `G + k`. A claim at or beyond the
+      count of items gives an item that does nothing. A claim is not a sum, so design rule 8 allows it.
+    - A block holds its next item in shared memory, and it claims the item after that while it runs the current one.
+      The ops prefetch the weights of the held item, so the prefetch has the exact target.
+    - A block adds the count of its items to the event of the task, once, after its last item.
+    - The bits come from the item, not from the block that runs it. The gates at `G` of 48, 24, 7 and 1 hold.
+    - A decode step at 1 row went from 31.1 ms to 26.2 ms in the kernel (`a3ca9153`). End to end it takes 26.9 to
+      27.9 ms, 35.9 to 37.2 tokens each second. The tails fell from 9.9 to 5.1 ms. A boundary still costs 832 ns.
+    - A test ran each item in any block, the first item too: each item ran once, and every gate kept its bits.
+    - UP and DOWN have one item for each block, so a claim cannot help them. Their tails are 2.85 ms of the step.
   - Built in `31dfb91f`. `OP_COPY` copies `items` items of `n` floats each. `Ring::run_grid(G)` takes `G` from 1
     to the SM count. Five buffers were bit-identical at `G` of 48, 24, 7 and 1, and equal to the host copy.
   - The expert ops of a prefill are the exception. Their item count comes from the plan on the device. A ticket may
@@ -3045,8 +3059,8 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
       holds for the last logits and for each plane and state of the 48 runs, at G of 48, 24, 7 and 1.
     - **Speed** at 3 cycles, an `f32` cache, position about 100. A decode step takes 31.0 ms on the GPU at 1 row,
       32 tokens each second. 16 rows take 76.7 ms, 209 tokens each second. With the cache of the rings, the host
-      adds 0.67 ms to a call. Then a step takes 29.8 ms end to end at 1 row (33.5 tokens each second), and 82.1 ms
-      at 16 rows.
+      adds 0.67 ms to a call. With the claim of items ("Work items and assignment"), a step takes 26.9 to 27.9 ms end
+      to end at 1 row: 35.9 to 37.2 tokens each second. 16 rows give 206 to 223 tokens each second.
 
       | op at 1 row | us in the pass | budget | GB/s |
       |---|---:|---:|---:|

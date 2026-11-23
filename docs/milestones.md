@@ -988,8 +988,9 @@ Do the steps in this order. Each step ends with the checks green.
       a flip cannot come from the cache path of the engine.
 
     Status: the pass is built (`fe396b6e`). It is coherent with the golden on 15 prompts, and a decode row gives the
-    bits of its block. A decode step takes 31.0 ms on the GPU at 1 row (32 tokens each second), against the target
-    of about 26 ms. "The pass as built" in the binding gives the gates, the thresholds and the table of the ops.
+    bits of its block. The cache of the rings and the claim of items followed (`a3ca9153`). Now a decode step at
+    1 row takes 26.9 to 27.9 ms end to end. That is 35.9 to 37.2 tokens each second, against the target of 38.
+    "The pass as built" in the binding gives the gates, the thresholds and the table of the ops.
 11. **The engine and the long context.** The `Engine` trait, cycles 1 to 5, snapshots and the conformance suite.
     Slots of 400K to 512K positions, with gates of latency and accuracy.
     - **The format of the cache.** Decided 2026-11-22: a format of fewer bytes is allowed, and it may move bits, if
@@ -1056,6 +1057,9 @@ tuning pass takes it.
   - The order of the head's items is not tuned. The head takes 31.7 ms at 512 rows.
 - **The speed floor of the attention at 65,536 positions.** It reads 200.4 to 201.3 GB/s against a floor of
   201.6 GB/s, on `main` too. The gate can flake.
+- **The tails of UP and DOWN.** They have one item for each block, so the claim cannot help them: 2.85 ms of a
+  decode step at 1 row. Smaller items change the merge groups and the engine identity.
+- **The host time of a call.** 0.67 ms, mostly the descriptors of all tasks, made again and copied for each launch.
 - **Fixture gaps.** No row decides the order `(v * s) * outer`. No MXFP8 raw scale lies just above a power of two.
 - **Mutants that survived.**
   - The order of the lag 1 and lag 2 terms in the dynamic convolution of `PROJ`.
