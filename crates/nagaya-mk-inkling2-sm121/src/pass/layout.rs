@@ -120,6 +120,19 @@ impl Buf {
     }
 }
 
+/// The message queries of the cycle layer `l` (0 to 11): query, key, value, expert input. Row `2l` of `queries` is the
+/// query and row `2l + 1` the expert input. Row `2l` of `kv_queries` is the key and row `2l + 1` the value.
+pub fn message_queries_of(queries: &[f32], kv_queries: &[f32], l: usize) -> Vec<f32> {
+    let row = |t: &[f32], r: usize| t[r * HIDDEN..(r + 1) * HIDDEN].to_vec();
+    [
+        row(queries, 2 * l),
+        row(kv_queries, 2 * l),
+        row(kv_queries, 2 * l + 1),
+        row(queries, 2 * l + 1),
+    ]
+    .concat()
+}
+
 /// The task of a run, in the order that the builder lists them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TaskKind {
@@ -572,6 +585,18 @@ mod tests {
             out.push((Buf::Y, Some(cycle_run(c - 1, 17))));
         }
         out
+    }
+
+    #[test]
+    fn the_message_queries_have_the_order_of_the_host_form() {
+        use nagaya_mk_inkling2_bmg::host::weights::merge_message_queries;
+        let queries: Vec<f32> = (0..24 * HIDDEN).map(|i| i as f32).collect();
+        let kv: Vec<f32> = (0..24 * HIDDEN).map(|i| -(i as f32) - 1.0).collect();
+        let host = merge_message_queries(&queries, &kv);
+        assert_eq!(host.len(), 12);
+        for (l, four) in host.iter().enumerate() {
+            assert_eq!(message_queries_of(&queries, &kv, l), four.concat(), "layer {l}");
+        }
     }
 
     #[test]

@@ -2,5 +2,13 @@
 //!
 //! `layout` holds the plan of the runs and the byte layout of the buffers. It needs no GPU.
 
+#[cfg(feature = "cuda")]
+pub mod arena;
 pub mod desc;
+#[cfg(feature = "cuda")]
+pub mod dev;
 pub mod layout;
+#[cfg(feature = "cuda")]
+pub mod slot;
+#[cfg(feature = "cuda")]
+pub mod weights;
