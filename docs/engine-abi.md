@@ -2776,12 +2776,26 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
         MXFP8 100.3 us (86.6%), budget 91 us. The tail of the finisher and the boundary are a larger share than in
         the up op. The plain op of wave A took 55.4 and 98.4 us in the same session.
     - **`OP_ATTN`** (80, `ops_attn.cuh`, `src/attn.rs`, `946ddebc`). The attention of a run, with the sink, the
-      relative bias and the output gate. It reads the `f32` cache or the `e4m3` cache, for a decode or for a block.
+      relative bias and the output gate. It reads the `f32`, `bf16` or `e4m3` cache, for a decode or for a block.
       - A row of the MMA is a pair of a position and a query head. Thus the 3 query heads of a KV head share one
         read of the cache. Eight warps run an item.
       - Each warp takes 16 channels. It adds its part of the scores through the MMA with the three `bf16` terms of
         rule 9. The parts join in warp order in shared memory. The softmax is online.
-      - An `f32` cache gives 6 MMAs for each product tile, and an `e4m3` cache gives 3.
+      - An `f32` cache gives 6 MMAs for each product tile. A `bf16` or `e4m3` cache gives 3, because its value is
+        exact in `bf16`.
+      - **The formats of the cache, one cubin for each** (Proposed, Opus 5.5, 2026-11-23). Reason: a choice that is
+        fixed for an engine is a binary, not a branch, and the nagaya swaps the binaries for a test run.
+        - `f32` (4 bytes, `FLAG_F32`), `bf16` (2 bytes, `FLAG_BF16`) and `e4m3` (1 byte, a unit scale, no flag).
+          PROJ writes a `bf16` value from the `f32` value, nearest even, with no scale.
+        - `build.rs` builds a cubin for each format (`MK_CACHE_F32`, `MK_CACHE_BF16`, `MK_CACHE_E4M3`) and a
+          profile cubin of `bf16`. The default cubin holds `f32` and `e4m3`. A cubin traps on a task whose flags
+          name a format that it does not hold (`cache_flags_ok`).
+        - The pass takes its format from `Pass::with_cache_format`, and `CacheFormat::cubin` names its cubin. The
+          engine keeps `f32` (`spec.rs` `CACHE_FORMAT`). When the format becomes a config, `cubin_blake3` of the
+          identity must hash the cubin of that format.
+        - The registers are on a knife edge. A cubin with one instance of the attention spilled 12 to 28 bytes. Thus
+          each cubin keeps a pair of instances, and the second one never runs. The peak sits in `quant.cuh` and
+          `ops_moe.cuh`. A change to OP_ATTN can need this tuning again.
       - The chunk is 256 keys on absolute positions (`ATTN_CHUNK_KEYS`). A chunk starts a new softmax state and
         gives a partial. The partials of a (KV head, tile) merge in chunk order, from the state (sink, 1, 0).
         A chunk with no key of a row is skipped. The chunk size is a member of the engine identity.
@@ -2800,13 +2814,21 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
       - Oracle: `ops::{attend, relative_logits, relative_bias}`. Bound 4e-6 of the row maximum. Worst: 1.8e-6, at 1
         to 70,000 positions, on full and sliding layers, for a decode and for blocks of 512 rows.
       - The bits of a row equal its decode step for 7, 16, 17 and 512 rows and at the four grids. The `e4m3` form
-        equals the `f32` form of the same packed values bit for bit.
+        equals the `f32` form of the same packed values bit for bit, and so does the `bf16` form. Worst error of the
+        `bf16` form: 1.8e-6. Its gap to the unrounded `f32` cache is at most 7.2e-3 of the row maximum, and that of
+        `e4m3` is 1.2e-1.
       - Speed: an `f32` decode step at 65,536 positions reads 204 GB/s (81% of 252 GB/s). An `e4m3` decode step reads
         at 49%: one step of 16 keys for each sync limits it, not the memory. A step of 16 keys is the most that fits
         with no spill. One row at 1,023 positions takes 26.7 us. A prefill of 512 rows at 8,192 positions takes 9.78
         ms on a full layer, bound by the loop over keys.
-      - The slot plan follows the layout (`32589716`). At 524,288 positions a slot takes 34,866,888,704 bytes with
-        an `f32` cache. It takes 8,719,597,568 bytes with an `e4m3` cache.
+      - The speed of each format, for a decode step at 65,536 positions:
+        - `f32`: 537 MB in 2.66 ms, 201 to 202 GB/s.
+        - `bf16`: 268 MB in 1.56 ms, 172 GB/s.
+        - `e4m3`: 134 MB in 1.08 ms, 125 GB/s.
+        - A block of 512 rows at 8,192 positions takes 9.53 ms (`f32`), 7.96 ms (`bf16`) and 7.71 ms (`e4m3`).
+      - The slot plan follows the layout (`32589716`). The bytes of a slot, for `f32`, `bf16` and `e4m3`:
+        - At 524,288 positions: 34,866,888,704, 17,435,361,280 and 8,719,597,568.
+        - At 409,600 positions: 27,350,695,936, 13,677,264,896 and 6,840,549,376.
       - The attention scratch (the partials of the split mode) takes 415,236,192 bytes. The state layout number is
         3, and the engine identity holds the cache format.
     - **`OP_OUT_MIX`** (45, `kernels/ops_out_mix.cuh`, `src/outmix.rs`, `7a0d74f8`). It is the output matmul `wo`
@@ -3045,16 +3067,30 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
       PROJ (`8aee95f9`). A call of a loaded shape patches only the positions of PROJ and ATTN and the chunks of
       ATTN. Each span covers a whole plane or a whole region, so no span changes.
     - **The gates of a run** read the tape (milestone 37 step 10). The worst errors, relative to the rms of the tape,
-      are 1.0e-4 for the attention output, 5.2e-5 for `r` and 4.0e-5 for `h_e`. The route picks equal the tape on all
-      240 rows. On NVFP4 runs the MoE output differs from the tape by up to 2.6e-2, because the reference expands the
-      NVFP4 weights to `bf16`. On MXFP8 runs it differs by 2e-6.
+      are 4.2e-5 for the attention output, 2.6e-5 for `r` and 2.3e-5 for `h_e`. The route picks equal the tape on all
+      240 rows. The MoE output equals the tape within 3.8e-6 on NVFP4 runs and 1.5e-6 on MXFP8 runs. At most 12 of
+      11,520 UP codes and 10 of 46,080 DOWN codes flip in a run.
+    - **The quantized reference expands each NVFP4 expert in `f32`**, as this binding does:
+      `(e2m1 × block_scale) × (w_amax / w_denominator)`, with no `bf16` rounding of any term (`09b50eb4`). Before,
+      it took the `bf16` expansion of transformers, and the MoE output differed by up to 2.6e-2. The quantized call
+      gives the rows of an expert in token order, as the replay of the tape does.
     - **The gate of coherence**, against the quantized golden at 3 cycles, on 15 prompts. Two runs of the CPU
       reference differ by 1.9 in the last logits, so the bounds are wide:
       - The top token equals the golden on every prompt. Measured: 15 of 15.
-      - The largest gap over the 64 top ids of the golden is under 6.0. Measured: 0.52 to 2.56.
-      - The gap of the logsumexp is under 4.6. Measured: 0.0006 to 2.3.
+      - The largest gap over the 64 top ids of the golden is under 6.0. Measured: 0.52 to 3.67.
+      - The gap of the logsumexp is under 4.6. Measured: 0.002 to 0.51.
       - A prefill of 17 ids has 7 decode steps after it. At most one greedy token differs, where the golden's margin
-        is under 0.5. Measured: 7 of 8 equal, and the other step has a margin of 0.095.
+        is under 0.5. Measured: 8 of 8 equal. Step 5 is a near tie, with a margin of 0.279.
+      - Each cache format passes the same gate (`173a126e`, the golden of `09b50eb4`):
+
+        | cache | gap over the 64 top ids | gap of the logsumexp | wrong top tokens | greedy tokens |
+        |---|---|---|---|---|
+        | `f32` | 0.52 to 3.67 | 0.002 to 0.51 | 0 of 15 | 8 of 8 |
+        | `bf16` | 0.42 to 4.79 | 0.003 to 0.87 | 0 of 15 | 7 of 8 (step 5, margin 0.279) |
+        | `e4m3` | 0.32 to 4.36 | 0.003 to 1.32 | 0 of 15 | 8 of 8 |
+
+        At short context the three formats run at 37.8 to 37.9 tokens each second at 1 row. There the attention is a
+        small part of the pass. The formats differ at long context ("OP_ATTN").
     - **Decode equals block.** The splits 16 + 1, 9 + 8 and 17 single steps give the bits of one block of 17. That
       holds for the last logits and for each plane and state of the 48 runs, at G of 48, 24, 7 and 1.
     - **Speed** at 3 cycles, an `f32` cache, position about 100. A decode step takes 31.0 ms on the GPU at 1 row,

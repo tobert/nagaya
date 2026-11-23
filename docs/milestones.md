@@ -1045,7 +1045,12 @@ tuning pass takes it.
 - **`MIX` at 4 us, and the gates at 12 to 13 us.** Latency chains limit them.
 - **`ROUTE` at 8 us.** Three serial merges limit it.
 - **The tail of the finisher of `DOWN`.**
-- **The `e4m3` attention at 49% of the peak.** One step of 16 keys for each sync limits it.
+- **The `e4m3` attention at 49% of the peak, and `bf16` at 68%.** One step of 16 keys for each sync limits them.
+- **The register knife edge.** Each cache cubin keeps a pair of attention instances, because one instance spills
+  (`173a126e`). The peak sits in `quant.cuh` and `ops_moe.cuh`.
+- **The register audit** (2026-11-23). The ops at the limit have no flag that a cubin could remove. The candidates
+  that a launch fixes: decode against block as two cubins, and the probe ops in a cubin of their own. The engine
+  never sets `FLAG_NORM` on `ROUTE` or `FLAG_NORM_UNWEIGHTED`. Measure the peak of ptxas before a cut.
 - **The attention prefill at depth.** 512 rows at 8,192 positions take 9.78 ms.
 - **The tail of 8% in the head.**
 - **The floor of 80% for the NVFP4 `UP` op.** The op runs at 82 to 88%, so the gate can flake.
