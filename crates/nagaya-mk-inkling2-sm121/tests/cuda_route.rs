@@ -23,8 +23,8 @@ use common::gpu::{GRIDS, download, open, open_probe_profile, run_with_watchdog, 
 use moe_support::{Checkpoint, Rng, activation_row, download_pairs, model_dir, widen_bf16};
 use nagaya_mk_cuda::driver::{CUdeviceptr, CudaDevice};
 use nagaya_mk_cuda::experts::{
-    ROUTE_COUNTER_WORDS, ROUTE_ITEMS_PER_ROW_TILE, ROUTE_TABLE_BIAS, ROUTE_TABLE_NORM_WEIGHT, ROUTE_TABLE_ROW_FACTOR,
-    route_items, route_pair_list_bytes, route_picks_bytes, route_scratch_words,
+    ROUTE_COUNTER_WORDS, ROUTE_ITEMS_PER_ROW_TILE, ROUTE_TABLE_BIAS, route_items, route_pair_list_bytes,
+    route_picks_bytes, route_scratch_words,
 };
 use nagaya_mk_cuda::protocol::{
     EXPERT_MAX_ROWS, ExpertPair, FLAG_NORM, FLAG_PAIRS, MkTaskDescriptor, MkTaskTable, OP_PROBE_READ, OP_ROUTE,
@@ -53,7 +53,6 @@ struct Router {
     bytes: Vec<u8>,
     wide: Vec<f32>,
     bias: Vec<f32>,
-    norm_weight: Vec<f32>,
 }
 
 fn routers() -> Option<Vec<Router>> {
@@ -69,7 +68,6 @@ fn routers() -> Option<Vec<Router>> {
                     wide: widen_bf16(&bytes),
                     bytes,
                     bias: checkpoint.f32s(&format!("model.llm.layers.{layer}.mlp.gate.bias"), 0, EXPERTS),
-                    norm_weight: checkpoint.bf16_as_f32(&format!("model.llm.layers.{layer}.mlp_norm.weight")),
                 }
             })
             .collect(),
@@ -90,7 +88,6 @@ fn synthetic(class: impl Fn(usize) -> usize) -> Router {
         bytes,
         wide,
         bias: vec![0.0; EXPERTS],
-        norm_weight: vec![1.0; HIDDEN],
     }
 }
 
@@ -115,7 +112,6 @@ struct Device<'d> {
     dev: &'d CudaDevice,
     weight: CUdeviceptr,
     bias: CUdeviceptr,
-    norm_weight: CUdeviceptr,
 }
 
 impl<'d> Device<'d> {
@@ -125,17 +121,16 @@ impl<'d> Device<'d> {
             dev,
             weight: upload(dev, &repack_bf16(&router.bytes, &shape).unwrap()),
             bias: upload(dev, &router.bias),
-            norm_weight: upload(dev, &router.norm_weight),
         }
     }
 
     fn free(self) {
-        for ptr in [self.weight, self.bias, self.norm_weight] {
+        for ptr in [self.weight, self.bias] {
             self.dev.free_device(ptr).unwrap();
         }
     }
 
-    /// The descriptor of the op for `rows` rows. `norm` holds the row factors when the op applies the norm.
+    /// The descriptor of the op for `rows` rows.
     #[allow(clippy::too_many_arguments)]
     fn task(
         &self,
@@ -145,11 +140,10 @@ impl<'d> Device<'d> {
         pairs: CUdeviceptr,
         scratch: CUdeviceptr,
         table: CUdeviceptr,
-        norm: bool,
     ) -> MkTaskDescriptor {
         MkTaskDescriptor {
             opcode: OP_ROUTE,
-            flags: FLAG_PAIRS | if norm { FLAG_NORM } else { 0 },
+            flags: FLAG_PAIRS,
             items: route_items(rows) as u32,
             rows: rows as u32,
             a: x,
@@ -170,8 +164,7 @@ impl<'d> Device<'d> {
     }
 
     /// Run the op over `x` at `grid`, `repeat` times with no zeroing between the runs, and return the last result.
-    /// With `factors` the op reads `x` as the rows before the norm.
-    fn run(&self, x: &[Vec<f32>], factors: Option<&[f32]>, grid: u32, repeat: usize) -> Picks {
+    fn run(&self, x: &[Vec<f32>], grid: u32, repeat: usize) -> Picks {
         let rows = x.len();
         let flat: Vec<f32> = x.iter().flatten().copied().collect();
         let (x_ptr, scratch) = (
@@ -180,15 +173,12 @@ impl<'d> Device<'d> {
         );
         let picks = upload(self.dev, &vec![0xFFu8; route_picks_bytes(rows)]);
         let pairs = upload(self.dev, &vec![0u8; route_pair_list_bytes(rows)]);
-        let rf = upload(self.dev, factors.unwrap_or(&[0.0]));
         let mut table = MkTaskTable::default();
         table.ptr[ROUTE_TABLE_BIAS] = self.bias;
-        table.ptr[ROUTE_TABLE_NORM_WEIGHT] = self.norm_weight;
-        table.ptr[ROUTE_TABLE_ROW_FACTOR] = rf;
         let table_ptr = upload(self.dev, &[table]);
         let mut ring = Ring::new(self.dev, 1, false).unwrap();
         ring.set(&[
-            Task::with_items(self.task(rows, x_ptr, picks, pairs, scratch, table_ptr, factors.is_some()))
+            Task::with_items(self.task(rows, x_ptr, picks, pairs, scratch, table_ptr))
                 .reads(x_ptr, flat.len() * 4)
                 .writes(picks, route_picks_bytes(rows))
                 .writes(pairs, route_pair_list_bytes(rows))
@@ -219,7 +209,7 @@ impl<'d> Device<'d> {
             });
         }
         ring.free().unwrap();
-        for ptr in [x_ptr, scratch, picks, pairs, rf, table_ptr] {
+        for ptr in [x_ptr, scratch, picks, pairs, table_ptr] {
             self.dev.free_device(ptr).unwrap();
         }
         out.unwrap()
@@ -232,11 +222,8 @@ impl Device<'_> {
     fn run_after(&self, before: &[Vec<f32>], x: &[Vec<f32>], grid: u32) -> Picks {
         let most = before.len().max(x.len());
         let scratch = upload(self.dev, &vec![0u32; route_scratch_words(most)]);
-        let rf = upload(self.dev, &[0.0f32]);
         let mut table = MkTaskTable::default();
         table.ptr[ROUTE_TABLE_BIAS] = self.bias;
-        table.ptr[ROUTE_TABLE_NORM_WEIGHT] = self.norm_weight;
-        table.ptr[ROUTE_TABLE_ROW_FACTOR] = rf;
         let table_ptr = upload(self.dev, &[table]);
         let mut ring = Ring::new(self.dev, 1, false).unwrap();
         let mut out = None;
@@ -247,7 +234,7 @@ impl Device<'_> {
             let picks = upload(self.dev, &vec![0xFFu8; route_picks_bytes(rows)]);
             let pairs = upload(self.dev, &vec![0u8; route_pair_list_bytes(rows)]);
             ring.set(&[
-                Task::with_items(self.task(rows, x_ptr, picks, pairs, scratch, table_ptr, false))
+                Task::with_items(self.task(rows, x_ptr, picks, pairs, scratch, table_ptr))
                     .reads(x_ptr, flat.len() * 4)
                     .writes(picks, route_picks_bytes(rows))
                     .writes(pairs, route_pair_list_bytes(rows))
@@ -278,7 +265,7 @@ impl Device<'_> {
             }
         }
         ring.free().unwrap();
-        for ptr in [scratch, rf, table_ptr] {
+        for ptr in [scratch, table_ptr] {
             self.dev.free_device(ptr).unwrap();
         }
         out.unwrap()
@@ -427,7 +414,7 @@ fn the_picks_the_weights_and_the_pairs_follow_the_host_router() {
         let device = Device::new(&dev, router);
         for rows in [1usize, 16, 512] {
             let x = rows_of(rows, rows as u64);
-            let got = device.run(&x, None, 48, 1);
+            let got = device.run(&x, 48, 1);
             let label = format!("{} at {rows} rows", router.name);
             check_against_host(router, &x, &got, &label);
             check_pairs(&got, &label);
@@ -447,10 +434,10 @@ fn the_bits_do_not_depend_on_the_count_of_rows_or_the_grid_and_a_rerun_gives_the
     for router in &routers {
         let device = Device::new(&dev, router);
         let big = rows_of(512, 99);
-        let reference = device.run(&big, None, 48, 1);
+        let reference = device.run(&big, 48, 1);
         // The grid, and a second run with no zeroing in between.
         for grid in GRIDS {
-            let got = device.run(&big, None, grid, 2);
+            let got = device.run(&big, grid, 2);
             assert_eq!(
                 bits(&got.logits),
                 bits(&reference.logits),
@@ -473,7 +460,7 @@ fn the_bits_do_not_depend_on_the_count_of_rows_or_the_grid_and_a_rerun_gives_the
         for (label, take) in [("1 row", 0..1usize), ("16 rows", 0..16), ("7", 7..8), ("300", 300..301)] {
             for grid in [48u32, 7, 1] {
                 let sub: Vec<Vec<f32>> = big[take.clone()].to_vec();
-                let got = device.run(&sub, None, grid, 1);
+                let got = device.run(&sub, grid, 1);
                 for (i, r) in take.clone().enumerate() {
                     assert_eq!(
                         bits(&got.logits[i * EXPERTS..(i + 1) * EXPERTS]),
@@ -523,7 +510,7 @@ fn a_call_after_a_call_of_other_rows_on_the_same_scratch_gives_the_bits_of_a_fre
         for (first, second) in [(1usize, 17usize), (9, 17), (17, 1), (16, 512)] {
             let a = rows_of(first, 5);
             let b = rows_of(second, 6);
-            let fresh = device.run(&b, None, 48, 1);
+            let fresh = device.run(&b, 48, 1);
             let after = device.run_after(&a, &b, 48);
             assert_eq!(
                 bits(&after.logits),
@@ -554,7 +541,7 @@ fn the_bits_of_the_logits_and_the_picks_are_pinned() {
     let print_only = std::env::var("CUDA_MOE_PRINT_HASHES").is_ok();
     for (index, router) in routers.iter().enumerate() {
         let device = Device::new(&dev, router);
-        let got = device.run(&rows_of(512, 99), None, 48, 1);
+        let got = device.run(&rows_of(512, 99), 48, 1);
         let mut hasher = blake3::Hasher::new();
         for v in &got.logits {
             hasher.update(&v.to_le_bytes());
@@ -576,45 +563,66 @@ fn the_bits_of_the_logits_and_the_picks_are_pinned() {
     }
 }
 
-#[test]
-fn the_norm_prologue_gives_the_bits_of_a_normed_row() {
-    let Some(routers) = routers() else { return };
+const FLAG_CHILD: &str = "NAGAYA_ROUTE_FLAG_CHILD";
+const FLAG_TEST: &str = "a_route_task_with_a_flag_that_the_op_lacks_traps";
+
+/// Run one valid task of the router over one row of zeros, with the flags `extra` added to the flags of the task.
+fn run_with_flags(extra: u16) -> Result<(), String> {
     let dev = open();
-    for router in &routers {
-        let device = Device::new(&dev, router);
-        let raw = rows_of(40, 5);
-        let factors: Vec<f32> = raw
-            .iter()
-            .map(|row| 1.0 / (ops::dot(row, row) / HIDDEN as f32 + 1e-6).sqrt())
-            .collect();
-        let normed: Vec<Vec<f32>> = raw
-            .iter()
-            .map(|row| {
-                let mut out = vec![0f32; HIDDEN];
-                ops::rms_norm(row, &router.norm_weight, &mut out);
-                out
-            })
-            .collect();
-        for (n, f) in normed.iter().zip(raw.iter().zip(&factors)) {
-            for k in 0..HIDDEN {
-                assert_eq!(
-                    n[k].to_bits(),
-                    (router.norm_weight[k] * (f.0[k] * f.1)).to_bits(),
-                    "the host norm of the gate"
-                );
+    let device = Device::new(&dev, &synthetic(|_| 0));
+    let x = upload(&dev, &vec![0f32; HIDDEN]);
+    let scratch = upload(&dev, &vec![0u32; route_scratch_words(1)]);
+    let picks = upload(&dev, &vec![0u8; route_picks_bytes(1)]);
+    let pairs = upload(&dev, &vec![0u8; route_pair_list_bytes(1)]);
+    let mut table = MkTaskTable::default();
+    table.ptr[ROUTE_TABLE_BIAS] = device.bias;
+    let table_ptr = upload(&dev, &[table]);
+    let mut desc = device.task(1, x, picks, pairs, scratch, table_ptr);
+    desc.flags |= extra;
+    let mut ring = Ring::new(&dev, 1, false).unwrap();
+    ring.set(&[Task::with_items(desc)]);
+    ring.zero_device().unwrap();
+    unsafe { ring.run_shaped(DEFAULT_BLOCK_THREADS, dev.max_dynamic_shared_bytes().unwrap()) }
+}
+
+/// `FLAG_NORM` was a flag of this op that the engine never set, and the op no longer has it. A task with the flag
+/// traps. The parent runs the same task with no extra flag, so that a trap cannot come from another field. A trap
+/// breaks the CUDA context of its process, so the task with the flag runs in a child process.
+#[test]
+fn a_route_task_with_a_flag_that_the_op_lacks_traps() {
+    if std::env::var(FLAG_CHILD).is_ok() {
+        match run_with_flags(FLAG_NORM) {
+            Err(error) => eprintln!("cuda_route: the task with FLAG_NORM trapped: {error}"),
+            Ok(()) => {
+                eprintln!("cuda_route: the task with FLAG_NORM ran, but it must trap");
+                std::process::exit(3);
             }
         }
-        let with_norm = device.run(&raw, Some(&factors), 48, 1);
-        let plain = device.run(&normed, None, 48, 1);
-        assert_eq!(
-            bits(&with_norm.logits),
-            bits(&plain.logits),
-            "{}: FLAG_NORM",
-            router.name
-        );
-        assert_eq!(with_norm.experts, plain.experts);
-        device.free();
+        // The context is broken. Leave without a teardown.
+        std::process::exit(0);
     }
+    run_with_flags(0).expect("the task with no extra flag runs");
+    let me = std::env::current_exe().expect("the path of the test executable");
+    let mut process = std::process::Command::new(&me)
+        .args(["--exact", FLAG_TEST, "--nocapture", "--test-threads=1"])
+        .env(FLAG_CHILD, "1")
+        .spawn()
+        .expect("start the child");
+    let start = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = process.try_wait().expect("wait for the child") {
+            break status;
+        }
+        if start.elapsed() > std::time::Duration::from_secs(60) {
+            let _ = process.kill();
+            panic!("the child did not end in 60 s; the launch hangs");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert!(
+        status.success(),
+        "the child ended with {status}; the router did not trap on FLAG_NORM"
+    );
 }
 
 #[test]
@@ -625,10 +633,10 @@ fn the_plan_holds_the_most_rows_and_rows_that_all_pick_the_same_experts() {
     let device = Device::new(&dev, router);
     // 1,024 rows (the most), and 1,024 equal rows: the same 8 experts for each row, 64 pairs for each expert.
     let varied = rows_of(1024, 11);
-    let got = device.run(&varied, None, 48, 1);
+    let got = device.run(&varied, 48, 1);
     check_pairs(&got, "1,024 rows");
     let same: Vec<Vec<f32>> = (0..1024).map(|_| varied[0].clone()).collect();
-    let got = device.run(&same, None, 7, 1);
+    let got = device.run(&same, 7, 1);
     check_pairs(&got, "1,024 equal rows");
     assert_eq!(
         got.pairs.len(),
@@ -648,7 +656,7 @@ fn a_tie_of_keys_takes_the_lower_id() {
     // A: 25 experts (ids 4, 9, ..., 124) share the top key. The 8 lowest ids win.
     let router = synthetic(|e| if e % 5 == 4 { 4 } else { e % 4 });
     let device = Device::new(&dev, &router);
-    let got = device.run(&ones, None, 48, 1);
+    let got = device.run(&ones, 48, 1);
     assert_eq!(
         got.experts,
         (0..8).map(|i| 4 + 5 * i).collect::<Vec<u32>>(),
@@ -674,7 +682,7 @@ fn a_tie_of_keys_takes_the_lower_id() {
         }
     });
     let device = Device::new(&dev, &router);
-    let got = device.run(&ones, None, 7, 1);
+    let got = device.run(&ones, 7, 1);
     let want = ops::route(&host_logits(&router, &ones[0]), &router.bias);
     assert_eq!(
         got.experts,
@@ -734,8 +742,8 @@ fn speed_of_the_router_at_1_row() {
             k: u32::from(PROBE_READ_NC),
             ..Default::default()
         });
-        let cold = Task::with_items(first.task(1, x, picks, pairs, scratch, table_ptr, false)).after(0);
-        let warm = Task::with_items(second.task(1, x, picks, pairs, scratch, table_ptr, false)).after(1);
+        let cold = Task::with_items(first.task(1, x, picks, pairs, scratch, table_ptr)).after(0);
+        let warm = Task::with_items(second.task(1, x, picks, pairs, scratch, table_ptr)).after(1);
         ring.set(&[read, cold, warm]);
         let (cold_index, warm_index) = (ring.ring_index(1), ring.ring_index(2));
         let (mut cold_spans, mut warm_spans) = (Vec::new(), Vec::new());

@@ -5,9 +5,7 @@
 //! The ops with a builder in `nagaya-mk-cuda` are `OP_PROJ` (`ProjLayout::descriptor`), `OP_ATTN`
 //! (`AttnShape::descriptor`, `attn::table`) and the matmul of the head (`MatmulShape::descriptor`, used by [`head`]).
 
-use nagaya_mk_cuda::experts::{
-    EXPERT_TABLE_QACT, ExpertFormat, ROUTE_TABLE_BIAS, ROUTE_TABLE_NORM_WEIGHT, ROUTE_TABLE_ROW_FACTOR, route_items,
-};
+use nagaya_mk_cuda::experts::{EXPERT_TABLE_QACT, ExpertFormat, ROUTE_TABLE_BIAS, route_items};
 use nagaya_mk_cuda::proj::ProjLayout;
 use nagaya_mk_cuda::protocol::{
     EXPERT_TABLE_AMAX, FLAG_DOWN, FLAG_NORM, FLAG_PAIRS, FLAG_SOFTCAP_30, FLAG_UP, MATMUL_TABLE_NORM_WEIGHT,
@@ -418,9 +416,8 @@ pub struct RouteAddrs {
     pub table: u64,
 }
 
-/// `OP_ROUTE` for `rows` rows. With `norm`, the op applies the norm of `h` itself (the table holds the weight and the
-/// row factors).
-pub fn route(rows: usize, a: &RouteAddrs, norm: bool) -> Result<MkTaskDescriptor, String> {
+/// `OP_ROUTE` for `rows` rows. The op reads `h_e` after the norm: an earlier task normed it.
+pub fn route(rows: usize, a: &RouteAddrs) -> Result<MkTaskDescriptor, String> {
     let rows_u32 = rows_in("route", rows, 1024)?;
     aligned("h", a.h, 8)?;
     for (name, at) in [
@@ -434,7 +431,7 @@ pub fn route(rows: usize, a: &RouteAddrs, norm: bool) -> Result<MkTaskDescriptor
     aligned("the table", a.table, 128)?;
     Ok(MkTaskDescriptor {
         opcode: OP_ROUTE,
-        flags: FLAG_PAIRS | if norm { FLAG_NORM } else { 0 },
+        flags: FLAG_PAIRS,
         items: count("count of items", route_items(rows))?,
         rows: rows_u32,
         a: a.h,
@@ -457,17 +454,11 @@ pub fn route(rows: usize, a: &RouteAddrs, norm: bool) -> Result<MkTaskDescriptor
 /// The factor of the routing weights (`route_scale`, 8). A host test compares it with `ops::ROUTE_SCALE`.
 pub const ROUTE_SCALE: f32 = 8.0;
 
-/// The table of `OP_ROUTE`: the bias (f32, 128), and with the norm, its weight and the row factors.
-pub fn route_table(bias: u64, norm: Option<(u64, u64)>) -> Result<MkTaskTable, String> {
+/// The table of `OP_ROUTE`: the bias (f32, 128).
+pub fn route_table(bias: u64) -> Result<MkTaskTable, String> {
     nonzero("the router bias", bias)?;
     let mut table = MkTaskTable::default();
     table.ptr[ROUTE_TABLE_BIAS] = bias;
-    if let Some((weight, rf)) = norm {
-        nonzero("the norm weight of the router", weight)?;
-        nonzero("the row factors of the router", rf)?;
-        table.ptr[ROUTE_TABLE_NORM_WEIGHT] = weight;
-        table.ptr[ROUTE_TABLE_ROW_FACTOR] = rf;
-    }
     Ok(table)
 }
 
@@ -876,17 +867,16 @@ mod tests {
             table: 128,
         };
         for rows in [1usize, 16, 17, 512] {
-            let d = route(rows, &a, false).unwrap();
+            let d = route(rows, &a).unwrap();
             // items = row tiles * 24, and item_bytes only up to 16 rows.
             assert_eq!(d.items as usize, rows.div_ceil(16) * 24);
             assert_eq!(d.item_bytes, if rows <= 16 { 24_576 } else { 0 });
             assert_eq!((d.n, d.k, d.kt, d.group_items, d.p0), (128, 2304, 768, 3, 8.0));
             assert_eq!(d.flags, FLAG_PAIRS);
         }
-        assert_eq!(route(1, &a, true).unwrap().flags, FLAG_PAIRS | FLAG_NORM);
-        assert!(route(1025, &a, false).unwrap_err().contains("1 to 1024"));
-        let t = route_table(8, Some((16, 24))).unwrap();
-        assert_eq!(&t.ptr[..3], &[8, 16, 24]);
+        assert!(route(1025, &a).unwrap_err().contains("1 to 1024"));
+        let t = route_table(8).unwrap();
+        assert_eq!(&t.ptr[..3], &[8, 0, 0]);
     }
 
     #[test]
