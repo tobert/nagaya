@@ -545,7 +545,7 @@ pub fn down(
     let tiles = EXPERT_ROWS / 64;
     aligned("the pair list", a.pairs, 16)?;
     aligned("the slot rows", a.out, 4)?;
-    aligned("the counters", a.counters, 4)?;
+    aligned("the counters of the down op", a.counters, 8)?;
     aligned("the table", a.table, 128)?;
     Ok(MkTaskDescriptor {
         opcode: expert_opcode(format),
@@ -578,9 +578,10 @@ pub fn down_table(
     conv_weight: u64,
     conv_state: u64,
     out: u64,
+    out_rf: u64,
 ) -> Result<MkTaskTable, String> {
     use nagaya_mk_cuda::experts::{
-        EXPERT_TABLE_CONV_STATE, EXPERT_TABLE_CONV_WEIGHT, EXPERT_TABLE_OUT, EXPERT_TABLE_RESIDUAL,
+        EXPERT_TABLE_CONV_STATE, EXPERT_TABLE_CONV_WEIGHT, EXPERT_TABLE_OUT, EXPERT_TABLE_OUT_RF, EXPERT_TABLE_RESIDUAL,
     };
     let amax = nonzero_if("the amax of the weights", amax)?;
     for (name, at) in [
@@ -588,6 +589,7 @@ pub fn down_table(
         ("the conv weight", conv_weight),
         ("the conv state", conv_state),
         ("the output", out),
+        ("the row factors of the output", out_rf),
     ] {
         nonzero(name, at)?;
     }
@@ -597,6 +599,8 @@ pub fn down_table(
     table.ptr[EXPERT_TABLE_CONV_WEIGHT] = conv_weight;
     table.ptr[EXPERT_TABLE_CONV_STATE] = conv_state;
     table.ptr[EXPERT_TABLE_OUT] = out;
+    aligned("the row factors of the output", out_rf, 4)?;
+    table.ptr[EXPERT_TABLE_OUT_RF] = out_rf;
     Ok(table)
 }
 
@@ -876,7 +880,7 @@ mod tests {
             out: 16,
             table: 128,
             pairs: 16,
-            counters: 4,
+            counters: 8,
         };
         for tokens in [1usize, 7, 16, 512] {
             let bound = expert_pair_bound(tokens);
@@ -901,9 +905,14 @@ mod tests {
         assert_eq!(EXPERT_MAX_ROWS, 16);
         assert!(up_table(Some(0), 16).unwrap_err().contains("amax"));
         assert_eq!(up_table(None, 16).unwrap().ptr[0], 0);
-        let t = down_table(Some(8), 16, 24, 32, 40).unwrap();
-        assert_eq!(&t.ptr[..6], &[8, 0, 16, 24, 32, 40]);
-        assert!(down_table(Some(8), 16, 24, 0, 40).unwrap_err().contains("state"));
+        let t = down_table(Some(8), 16, 24, 32, 40, 48).unwrap();
+        assert_eq!(&t.ptr[..7], &[8, 0, 16, 24, 32, 40, 48]);
+        assert!(
+            down_table(Some(8), 16, 24, 32, 40, 50)
+                .unwrap_err()
+                .contains("row factors")
+        );
+        assert!(down_table(Some(8), 16, 24, 0, 40, 48).unwrap_err().contains("state"));
     }
 
     #[test]

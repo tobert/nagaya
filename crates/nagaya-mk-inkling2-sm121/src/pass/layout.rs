@@ -506,8 +506,11 @@ impl ScratchLayout {
             (ScratchKind::GateUpE, 4 + 36 * max_rows),
             (ScratchKind::Route, route_scratch_words(max_rows)),
             (ScratchKind::Up, nagaya_mk_cuda::protocol::expert_pair_bound(max_rows)),
-            // The 36 counters of the column tiles. The row finisher of the DOWN op adds its own words.
-            (ScratchKind::Down, 36),
+            // The counters of the column tiles and of the row finisher, then the sums of squares of the row factors.
+            (
+                ScratchKind::Down,
+                nagaya_mk_cuda::experts::down_scratch_words(HIDDEN, max_rows),
+            ),
             (ScratchKind::Head, head),
         ];
         let mut at = 0usize;

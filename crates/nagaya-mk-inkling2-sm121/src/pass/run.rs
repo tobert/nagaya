@@ -6,6 +6,7 @@
 use nagaya_mk_cuda::attn::{AttnBuffers, AttnShape, CacheFormat, table as attn_table};
 use nagaya_mk_cuda::experts::{QuantRowsLayout, route_pair_list_bytes, route_picks_bytes};
 use nagaya_mk_cuda::outmix::{self, OutMixBuffers, OutMixShape, OutMixTable};
+use nagaya_mk_cuda::proj::ProjLayout;
 use nagaya_mk_cuda::protocol::{MkTaskTable, expert_pair_bound};
 use nagaya_mk_cuda::ring::Task;
 
@@ -122,6 +123,9 @@ fn add_writes(mut task: Task, spans: &[(u64, usize)]) -> Task {
     }
     task
 }
+
+/// A block of more rows than this runs in the block form of PROJ (`FLAG_BLOCK_FORM`, for 17 to 512 rows).
+pub const BLOCK_FORM_ROWS_ABOVE: usize = 16;
 
 /// The tasks of the run `plan`, in order, for a step of `shape`.
 pub fn run_tasks(
@@ -289,7 +293,15 @@ pub fn run_tasks(
             }
             .build()?,
         )?;
-        let d = layout.descriptor(
+        // A prefill block of 17 to 512 rows runs in the block form: the bits of each row are those of the decode form.
+        let build = if rows > BLOCK_FORM_ROWS_ABOVE {
+            fits(ScratchKind::Proj, layout.block_scratch_floats(rows), region)?;
+            ProjLayout::descriptor_block
+        } else {
+            ProjLayout::descriptor
+        };
+        let d = build(
+            &layout,
             rows,
             shape.pos0 as u32,
             env.slot.plane_rows as u32,
@@ -567,7 +579,13 @@ pub fn run_tasks(
             w.mlp_conv.ptr(),
             env.slot.conv_ptr(3),
             a.addr(plan.x_out),
+            a.rf(plan.x_out),
         )?)?;
+        fits(
+            ScratchKind::Down,
+            nagaya_mk_cuda::experts::down_scratch_words(HIDDEN, rows),
+            region,
+        )?;
         let d = desc::down(
             format,
             rows,
@@ -596,6 +614,7 @@ pub fn run_tasks(
                 &[
                     env.buf(Buf::Slots),
                     env.buf(plan.x_out),
+                    env.rf(plan.x_out, rows),
                     (env.slot.conv_ptr(3), 3 * HIDDEN * 4),
                     (counters, region),
                 ],

@@ -1,9 +1,8 @@
 //! A pass of the model on the device: the embedding, the runs, the output residual and the head (`cuda` feature).
 //!
-//! The pass launches the ring once for the embedding, once for each run, and once for the output residual and the head.
-//! Between two runs the host computes the row factors of the row that the run wrote, because the DOWN op does not give
-//! them yet (the rule "the producer gives the row factor" needs the second-level finisher of lane M2). When that op
-//! lands, the pass becomes one ring, and only `Pass::run` changes.
+//! One launch of one ring runs the whole pass: 1 + the tasks of the runs + 2 tasks. The DOWN op of each run writes the
+//! row factors of the row that it wrote, so no task waits for the host. The waits come from the ranges that each task
+//! declares (`nagaya_mk_cuda::graph`).
 //!
 //! One thread owns a pass. A launch that fails poisons the slot, and the pass refuses the next call until the slot is zeroed.
 
@@ -23,20 +22,14 @@ use super::slot::Slot;
 use super::weights::DeviceWeights;
 use crate::spec::{CYCLE_LAYERS, CYCLE_START, HIDDEN, LOGITS, MAX_LOGIT_ROWS};
 
-/// The tables that a ring can hold: the tasks of a run, or of the embedding, or of the head. A run has at most 12.
-const TABLES: usize = 64;
+/// The tables that a pass can hold: the embedding, 12 for each run of 5 cycles at most, and the output residual and head.
+const TABLES: usize = 1024;
 
 /// The time of a launch.
 #[derive(Clone, Debug)]
 pub struct Launch {
     pub what: String,
     pub wall: Duration,
-}
-
-/// The rows of the stream to the row factor, as the host form computes it: `1 / sqrt(mean(x^2) + eps)`.
-pub fn row_factor(x: &[f32]) -> f32 {
-    let sum: f64 = x.iter().map(|v| f64::from(*v) * f64::from(*v)).sum();
-    1.0 / ((sum / x.len() as f64) as f32 + 1e-6).sqrt()
 }
 
 pub struct Pass<'d> {
@@ -54,6 +47,8 @@ pub struct Pass<'d> {
     pub grid: u32,
     /// The launches of the last call, in order.
     pub launches: Vec<Launch>,
+    /// The count of PROJ tasks of the last call that ran in the block form (a block of more than 16 rows).
+    pub proj_block_form: usize,
 }
 
 impl<'d> Pass<'d> {
@@ -83,6 +78,7 @@ impl<'d> Pass<'d> {
             plans,
             grid: dev.sm_count(),
             launches: Vec::new(),
+            proj_block_form: 0,
         })
     }
 
@@ -177,9 +173,10 @@ impl<'d> Pass<'d> {
         arena
             .ids
             .write(0, &ids.iter().flat_map(|i| i.to_le_bytes()).collect::<Vec<u8>>())?;
+        let mut tables = TableSet::new(self.tables.ptr(), TABLES);
+        let mut list: Vec<Task> = Vec::new();
         // The embedding.
         {
-            let mut tables = TableSet::new(self.tables.ptr(), TABLES);
             let table = tables.add(desc::embed_table(
                 w.embed_norm.ptr(),
                 arena.addr(Buf::B0),
@@ -193,43 +190,37 @@ impl<'d> Pass<'d> {
                 arena.rf(Buf::B0),
             )?;
             d.d = table;
-            let task = Task::with_items(d)
-                .writes(arena.addr(Buf::B0), rows * HIDDEN * 4)
-                .writes(arena.rf(Buf::B0), rows * 4);
-            self.launch("embed", &[task], &tables)?;
+            list.push(
+                Task::with_items(d)
+                    .writes(arena.addr(Buf::B0), rows * HIDDEN * 4)
+                    .writes(arena.rf(Buf::B0), rows * 4),
+            );
         }
         let shape = StepShape { rows, pos0 };
-        let plans = self.plans.clone();
-        for plan in &plans {
-            let mut tables = TableSet::new(self.tables.ptr(), TABLES);
-            let tasks = {
-                let env = RunEnv {
-                    weights: &w.layers[plan.layer],
-                    slot: &self.slot.runs[plan.state],
-                    arena,
-                    scratch: self.ring.scratch(),
-                    scratch_layout: &self.scratch_layout,
-                    format: self.slot.format,
-                    message_queries: if plan.messages {
-                        w.message_queries[plan.layer - CYCLE_START].ptr()
-                    } else {
-                        0
-                    },
-                };
-                run_tasks(plan, &shape, &env, &mut tables)?
+        for plan in &self.plans {
+            let env = RunEnv {
+                weights: &w.layers[plan.layer],
+                slot: &self.slot.runs[plan.state],
+                arena,
+                scratch: self.ring.scratch(),
+                scratch_layout: &self.scratch_layout,
+                format: self.slot.format,
+                message_queries: if plan.messages {
+                    w.message_queries[plan.layer - CYCLE_START].ptr()
+                } else {
+                    0
+                },
             };
-            let list: Vec<Task> = tasks.iter().map(|(_, t)| t.clone()).collect();
+            let tasks = run_tasks(plan, &shape, &env, &mut tables)?;
             debug_assert_eq!(
                 tasks.iter().map(|(k, _)| *k).collect::<Vec<TaskKind>>(),
                 plan.task_kinds()
             );
-            self.launch(&format!("run {} (layer {})", plan.run, plan.layer), &list, &tables)?;
-            self.set_row_factors(arena, plan.x_out, rows)?;
+            list.extend(tasks.into_iter().map(|(_, t)| t));
         }
         // The output residual and the head.
-        let last = self.plans.last().expect("a pass has runs").clone();
+        let last = self.plans.last().expect("a pass has runs");
         let r0 = rows - logit_rows;
-        let mut tables = TableSet::new(self.tables.ptr(), TABLES);
         let stack: Vec<Buf> = {
             let mut s = last.stack_attn.clone();
             // The stack of the output residual: the four block outputs, then the row after the last run.
@@ -256,7 +247,7 @@ impl<'d> Pass<'d> {
                 .reads(arena.addr(*b), rows * HIDDEN * 4)
                 .reads(arena.rf(*b), rows * 4);
         }
-        let mix_task = mix_task.writes(f, rows * HIDDEN * 4).writes(f_rf, rows * 4);
+        list.push(mix_task.writes(f, rows * HIDDEN * 4).writes(f_rf, rows * 4));
         let head_table = tables.add(desc::head_table(w.norm_bf16.ptr())?)?;
         let scratch = self.ring.scratch() + self.scratch_layout.offset(ScratchKind::Head) as u64;
         let mut head_desc = desc::head(
@@ -268,12 +259,21 @@ impl<'d> Pass<'d> {
             scratch,
         )?;
         head_desc.d = head_table;
-        let head_task = Task::with_items(head_desc)
-            .reads(f + (r0 * HIDDEN * 4) as u64, logit_rows * HIDDEN * 4)
-            .reads(f_rf + (r0 * 4) as u64, logit_rows * 4)
-            .writes(arena.addr(Buf::Logits), logit_rows * LOGIT_COLUMNS * 4)
-            .writes(scratch, self.scratch_layout.bytes(ScratchKind::Head));
-        self.launch("output residual and head", &[mix_task, head_task], &tables)?;
+        list.push(
+            Task::with_items(head_desc)
+                .reads(f + (r0 * HIDDEN * 4) as u64, logit_rows * HIDDEN * 4)
+                .reads(f_rf + (r0 * 4) as u64, logit_rows * 4)
+                .writes(arena.addr(Buf::Logits), logit_rows * LOGIT_COLUMNS * 4)
+                .writes(scratch, self.scratch_layout.bytes(ScratchKind::Head)),
+        );
+        self.proj_block_form = list
+            .iter()
+            .filter(|t| {
+                t.desc.opcode == nagaya_mk_cuda::protocol::OP_PROJ
+                    && t.desc.flags & nagaya_mk_cuda::protocol::FLAG_BLOCK_FORM != 0
+            })
+            .count();
+        self.launch("the pass", &list, &tables)?;
         let raw = arena
             .buffer
             .read(arena.layout.offset(Buf::Logits), logit_rows * LOGIT_COLUMNS * 4)?;
@@ -302,35 +302,5 @@ impl<'d> Pass<'d> {
         let route_bytes = 4 * (tiles * 9 + 1).next_multiple_of(4);
         self.dev
             .memset_zero(route, route_bytes.min(self.scratch_layout.bytes(ScratchKind::Route)))
-    }
-
-    /// Compute the row factors of the rows of `buf` on the host and write them.
-    fn set_row_factors(&self, arena: &Arena<'d>, buf: Buf, rows: usize) -> Result<(), String> {
-        let bytes = arena.buffer.read(arena.layout.offset(buf), rows * HIDDEN * 4)?;
-        let values: Vec<f32> = bytes
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|b| f32::from_le_bytes(*b))
-            .collect();
-        let rf: Vec<u8> = values
-            .chunks(HIDDEN)
-            .flat_map(|row| row_factor(row).to_le_bytes())
-            .collect();
-        arena.buffer.write(arena.layout.rf(buf), &rf)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_row_factor_is_the_inverse_root_of_the_mean_square_plus_epsilon() {
-        let ones = vec![1.0f32; 2304];
-        assert_eq!(row_factor(&ones), (1.0f64 / (1.0f64 + 1e-6).sqrt()) as f32);
-        let twos = vec![-2.0f32; 2304];
-        assert_eq!(row_factor(&twos), (1.0f64 / (4.0f64 + 1e-6).sqrt()) as f32);
-        assert!(row_factor(&vec![0.0f32; 2304]).is_finite());
     }
 }

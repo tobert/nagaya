@@ -65,6 +65,13 @@ fn run_split(pass: &mut Pass<'_>, ids: &[u32], split: &[usize], grid: u32) -> Ve
     let mut out = Vec::new();
     for &n in split {
         out = pass.run(&ids[at..at + n], 1).unwrap_or_else(|e| panic!("{e}"));
+        // A block of 17 rows or more runs PROJ in the block form, a block of 16 or fewer in the decode form. The bits of the
+        // two forms are the same, and this gate is what shows it.
+        let want = if n > 16 { 48 } else { 0 };
+        assert_eq!(
+            pass.proj_block_form, want,
+            "a call of {n} rows: the PROJ tasks in the block form"
+        );
         at += n;
     }
     assert_eq!(at, ids.len());

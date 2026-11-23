@@ -56,6 +56,8 @@ const HE_BOUND: f64 = 1.5e-4;
 const MOE_BOUND: f64 = 5.0e-2;
 const OUT_BOUND: f64 = 8.0e-2;
 const EXACT_BOUND: f64 = 4.0e-6;
+/// The row factors that DOWN writes against the host formula: the card sums the squares in a fixed order, the host in f64.
+const RF_BOUND: f64 = 1.0e-6;
 /// The flips of the quantized `h_e` against the tape (measured 1 of 11,520 codes) and of the activation after the up
 /// matmul (measured 702 of 46,080 codes: the weights of the tape are rounded to bf16).
 const X_FLIP_FRACTION: f64 = 5.0e-3;
@@ -135,6 +137,8 @@ struct Measured {
     out: Gap,
     /// The slots of DOWN against the exact block-scaled dot of the host, on the tape rows of the quantized activation.
     exact: Gap,
+    /// The row factors that DOWN wrote, against the factors of the host for the row that it wrote.
+    out_rf: Gap,
     /// The slots of the tape reference against the same exact dots.
     tape_exact: Gap,
 }
@@ -487,6 +491,9 @@ impl<'d> Rig<'d> {
             } else {
                 (gap(&[0.0], &[0.0]), gap(&[0.0], &[0.0]))
             };
+            let out_rf = bytes_f32(&arena.buffer.read(arena.layout.rf(plan.x_out), rows * 4).unwrap());
+            let host_rf: Vec<f32> = out.chunks(HIDDEN).map(row_factor).collect();
+            snap_a.push(("out_rf", f32_bytes(&out_rf)));
             snap_a.push(("slots", f32_bytes(&slots)));
             snap_a.push(("out", f32_bytes(&out)));
             if gi == 0 {
@@ -501,6 +508,7 @@ impl<'d> Rig<'d> {
                     act_flips,
                     moe: gap(&moe, &tape_moe),
                     out: gap(&out, &tape_out),
+                    out_rf: gap(&out_rf, &host_rf),
                     exact: exact.0,
                     tape_exact: exact.1,
                 });
@@ -541,7 +549,7 @@ fn the_runs_match_the_tape_stage_by_stage() {
         let (m, snaps) = rig.exec(run, TAPE_ROWS, &grids);
         eprintln!(
             "run {run:02} layer {:2}: attn {:.2e} ({:.2e} abs) r {:.2e} h_e {:.2e} | route rows wrong {} pairs equal {} (weights {:.1e}) | \
-             x flips {:?} | act flips {:?} | moe {:.2e} out {:.2e} ({:.2e} abs) | DOWN slots vs exact dots {:.2e} ({:.2e} abs), tape moe vs exact {:.2e}",
+             x flips {:?} | act flips {:?} | moe {:.2e} out {:.2e} ({:.2e} abs) | row factors of DOWN {:.1e} | DOWN slots vs exact dots {:.2e} ({:.2e} abs), tape moe vs exact {:.2e}",
             rig.plans[run].layer,
             m.attn.relative(),
             m.attn.max_abs,
@@ -555,6 +563,7 @@ fn the_runs_match_the_tape_stage_by_stage() {
             m.moe.relative(),
             m.out.relative(),
             m.out.max_abs,
+            m.out_rf.relative(),
             m.exact.relative(),
             m.exact.max_abs,
             m.tape_exact.relative(),
@@ -564,6 +573,11 @@ fn the_runs_match_the_tape_stage_by_stage() {
         assert!(m.h_e.relative() < HE_BOUND, "run {run}: h_e {:?}", m.h_e);
         assert_eq!(m.route_mismatch_rows, 0, "run {run}: the picks differ from the tape");
         assert!(m.pairs_equal, "run {run}: the pair list is not the list of the rules");
+        assert!(
+            m.out_rf.relative() < RF_BOUND,
+            "run {run}: the row factors of DOWN {:?}",
+            m.out_rf
+        );
         assert!(
             m.exact.relative() < EXACT_BOUND,
             "run {run}: the slots of DOWN differ from the exact dots: {:?}",
@@ -597,6 +611,7 @@ fn the_runs_match_the_tape_stage_by_stage() {
             ("act", 8 * INTERMEDIATE * 4),
             ("slots", 8 * HIDDEN * 4),
             ("out", HIDDEN * 4),
+            ("out_rf", 4),
         ] {
             assert!(
                 prefix(five, name, bytes) == prefix(one, name, bytes),
