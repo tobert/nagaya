@@ -1,5 +1,5 @@
-//! GPU gate of the row checks of `OP_GATE_DOWN` and `OP_GATE_UP` (milestone 37 step 9, lane M2): a task with more rows
-//! than the op computes traps, and a task with the rows that it computes runs. The task has real buffers of zeros, so
+//! GPU gate of the row checks of `OP_GATE_DOWN` and `OP_GATE_UP` (milestone 37 step 9, lane M2): a task with more than 512
+//! rows traps, and a task with 512 rows or fewer runs. The task has real buffers of zeros, so
 //! a check that is missing lets the launch succeed, and the test shows it. The model is not needed.
 //!
 //! A trap breaks the CUDA context of its process. The test runs each task in a child process: it starts its own
@@ -21,14 +21,18 @@ use nagaya_mk_cuda::ring::{Ring, Task};
 use nagaya_mk_cuda::rows::{GATE_UP_ITEM_BYTES, GATE_UP_TILES, gate_down_shape};
 
 const VARIABLE: &str = "NAGAYA_GATE_VARIANT";
-const TEST: &str = "a_gate_task_with_too_many_rows_traps_and_a_good_task_runs";
+const TEST: &str = "a_gate_task_with_more_than_512_rows_traps_and_a_good_task_runs";
 
 /// The variants: the op, the rows, and whether the launch must run.
-const VARIANTS: [(&str, u32, bool); 4] = [
+const VARIANTS: [(&str, u32, bool); 8] = [
     ("down", 16, true),
-    ("down", 17, false),
+    ("down", 17, true),
+    ("down", 512, true),
+    ("down", 513, false),
     ("up", 16, true),
-    ("up", 17, false),
+    ("up", 17, true),
+    ("up", 512, true),
+    ("up", 513, false),
 ];
 
 /// The child: launch one task, and exit with 0 when the launch did what the variant expects.
@@ -113,7 +117,7 @@ fn child(variant: &str) {
 }
 
 #[test]
-fn a_gate_task_with_too_many_rows_traps_and_a_good_task_runs() {
+fn a_gate_task_with_more_than_512_rows_traps_and_a_good_task_runs() {
     if let Ok(value) = std::env::var(VARIABLE) {
         child(&value);
     }
