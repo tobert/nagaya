@@ -540,6 +540,7 @@ pub fn run_tasks(
             format,
             rows,
             rows,
+            desc::up_tiles_per_item(rows),
             &ExpertAddrs {
                 input: a.addr(Buf::Xq),
                 bank: bank.up.ptr(),
@@ -589,6 +590,7 @@ pub fn run_tasks(
         let d = desc::down(
             format,
             rows,
+            desc::down_tiles_per_item(rows),
             &ExpertAddrs {
                 input: a.addr(Buf::Actq),
                 bank: bank.down.ptr(),
