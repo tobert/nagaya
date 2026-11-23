@@ -396,7 +396,7 @@ __device__ __forceinline__ void op_gate_down(const MkTaskDescriptor& task, const
     const uint32_t g = lane >> 2;
     const uint32_t t = lane & 3;
     const uint8_t* weights = reinterpret_cast<const uint8_t*>(task.b);
-    const uint64_t next = static_cast<uint64_t>(item) + gridDim.x;
+    const uint64_t next = mk_next_item();
     if (worker_id() == 0 && next < task.items) {
         bulk_prefetch_l2(weights + next * task.item_bytes, task.item_bytes);
     }
@@ -527,7 +527,7 @@ __device__ __forceinline__ void op_gate_up(const MkTaskDescriptor& task, const M
     const uint32_t g = lane >> 2;
     const uint32_t t = lane & 3;
     const uint8_t* weights = reinterpret_cast<const uint8_t*>(task.b);
-    const uint64_t next = static_cast<uint64_t>(item) + gridDim.x;
+    const uint64_t next = mk_next_item();
     if (worker_id() == 0 && next < task.items) {
         bulk_prefetch_l2(weights + next * RW_GU_ITEM_BYTES, RW_GU_ITEM_BYTES);
     }

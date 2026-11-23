@@ -2,8 +2,8 @@
 //
 // Launched with one thread block per SM (or a configured grid width). Every block walks the same task ring in order.
 // A task waits on up to two events before the first item of the block, with GPU-scope acquire loads. Block b runs the
-// items b, b + gridDim.x and so on. After the last of its items, the block adds the count of its items to the event
-// `signal`, one time, with a GPU-scope release.
+// item b first, then the items that it claims (see run_items). After the last of its items, the block adds the count of
+// its items to the event `signal`, one time, with a GPU-scope release.
 //
 // A block has one of two shapes (see run_producer_shape and run_flat_shape). The producer shape has 288 threads: a
 // producer warp that fetches the descriptors, waits at the scoreboard and prefetches, and eight consumer warps that
@@ -185,6 +185,7 @@ __device__ __forceinline__ uint32_t worker_count() { return has_producer() ? MK_
 constexpr uint32_t MK_BAR_CONSUMERS = 1;
 constexpr uint32_t MK_BAR_FULL = 2;   // slots 0 and 1: barriers 2 and 3
 constexpr uint32_t MK_BAR_EMPTY = 4;  // slots 0 and 1: barriers 4 and 5
+constexpr uint32_t MK_BAR_CLAIM = 6;  // the lead consumer waits here before it moves the claimed items (run_items)
 
 __device__ __forceinline__ void bar_sync(uint32_t id, uint32_t threads) {
     asm volatile("bar.sync %0, %1;" ::"r"(id), "r"(threads) : "memory");
@@ -202,6 +203,31 @@ __device__ __forceinline__ void worker_sync() {
     } else {
         __syncthreads();
     }
+}
+
+// The claim of the later items of a task. Item b is the first item of block b. A task with more items than blocks gives
+// the later items to the blocks by claim: a block takes the next item from the claim word of the task with an integer
+// atomic add, so a fast block takes more items. The claim word of the task `idx` is `scoreboard[MK_CLAIM_BASE + idx]`.
+// A claim word counts the claims. Claim number k is the item gridDim.x + k. A claim of a number at or beyond the count
+// of the task gives an item that does nothing.
+//
+// A block keeps its state in shared memory, and the lead consumer (worker 0) alone changes it:
+// - mk_claim_cur: the item that the block runs next.
+// - mk_claim_next: the item after it. An op reads this to prefetch the weights of the next item. A task with no claim
+//   has 0xFFFFFFFF here, so an op prefetches nothing.
+// - mk_claim_ran: the count of the items that this block has run.
+__shared__ uint32_t mk_claim_cur;
+__shared__ uint32_t mk_claim_next;
+__shared__ uint32_t mk_claim_ran;
+
+// The item that follows the item of the calling op in this block, for a prefetch. Call it on the lead consumer only.
+__device__ __forceinline__ uint32_t mk_next_item() { return *reinterpret_cast<volatile uint32_t*>(&mk_claim_next); }
+
+// One claim: the number of the claim, before the add. The add is relaxed: it orders nothing, it only gives each number once.
+__device__ __forceinline__ uint32_t claim_one(uint32_t* word) {
+    uint32_t old;
+    asm volatile("atom.relaxed.gpu.global.add.u32 %0, [%1], 1;" : "=r"(old) : "l"(word) : "memory");
+    return old;
 }
 
 // Item `item` copies `n` floats: the floats from `item * n` up to `(item + 1) * n`. The task covers `items * n` floats.
@@ -280,6 +306,24 @@ __device__ __forceinline__ void op_selftest_table(const MkTaskDescriptor& task, 
     }
 }
 
+// Item `item` counts itself in the word `item` at `c`, and it writes the number of its block in the word `item` at `e`. An
+// item with `item % k == 0` spins `n` ns first. An item at or beyond the count of the task does nothing.
+__device__ __forceinline__ void op_selftest_claim(const MkTaskDescriptor& task, uint32_t item) {
+    if (item >= task.items) {
+        return;
+    }
+    if (task.k != 0 && item % task.k == 0 && worker_id() == 0) {
+        const uint64_t until = globaltimer_ns() + task.n;
+        while (globaltimer_ns() < until) {
+        }
+    }
+    worker_sync();
+    if (worker_id() == 0) {
+        atomicAdd(reinterpret_cast<uint32_t*>(task.c) + item, 1u);
+        reinterpret_cast<uint32_t*>(task.e)[item] = blockIdx.x;
+    }
+}
+
 #include "probe_ops.cuh"
 #include "probe_smem.cuh"
 #include "matmul_bf16.cuh"
@@ -327,6 +371,9 @@ __device__ __forceinline__ void run_op(const MkTaskDescriptor& task, const MkTas
             break;
         case OP_SELFTEST_TABLE:
             op_selftest_table(task, table, item);
+            break;
+        case OP_SELFTEST_CLAIM:
+            op_selftest_claim(task, item);
             break;
         case OP_PROBE_READ:
             op_probe_read(task);
@@ -478,23 +525,70 @@ __device__ __forceinline__ uint32_t item_count(const MkTaskDescriptor& task) {
     return task.items == 0 ? 1u : task.items;
 }
 
-// The consumers run the items b, b + G, b + 2G and so on of the task, with b the block and G the grid width. Then the
-// block adds the count of its items to the event of the task, one time. A block with no item adds nothing. The
-// barrier before the add orders the writes of every consumer before the release of the add.
+// The consumers run the items of the task. Then the block adds the count of its items to the event of the task, one
+// time. A block with no item adds nothing. The barrier before the add orders the writes of every consumer before the
+// release of the add.
+//
+// A task with at most gridDim.x items gives block b the item b. A task with more items gives block b the item b first.
+// Then the block runs the items that it claims (see mk_claim_cur), each one while the item before it runs: the add
+// of the claim is in flight during the op, and the block holds the claimed item that follows the item that runs.
+// `idx` is the place of the task in the ring.
 template <bool PRODUCER>
-__device__ __forceinline__ void run_items(const MkTaskDescriptor& task, const MkTaskTable* table) {
-    // The loop keeps the item and no other counter across an op: the count of the items that this block ran follows from
-    // the item at the end, because the item steps from `blockIdx.x` by `gridDim.x`. The count of the task is read from
-    // the task each time, and not kept in a register.
+__device__ __forceinline__ void run_items(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t idx) {
+    // The loop keeps no counter across an op. The count of the task is read from the task each time, and the items and
+    // the counts are in shared memory.
+    if (item_count(task) <= gridDim.x) {
+        if (worker_id() == 0) {
+            mk_claim_next = 0xFFFFFFFFu;
+        }
+        uint32_t item = blockIdx.x;
+        for (; item < item_count(task); item += gridDim.x) {
+            if (task.items != 0) {
+                run_op<PRODUCER>(task, table, item);
+            }
+            worker_sync();
+        }
+        if (worker_id() == 0 && item != blockIdx.x && task.signal != NO_EVENT) {
+            red_release_gpu_add_u32(mk_scoreboard() + (mk_base_event() + task.signal), 1);
+        }
+        return;
+    }
+    uint32_t* claims = mk_scoreboard() + (MK_CLAIM_BASE + idx);
+    if (worker_id() == 0) {
+        mk_claim_next = gridDim.x + claim_one(claims);
+        mk_claim_ran = 0;
+    }
     uint32_t item = blockIdx.x;
-    for (; item < item_count(task); item += gridDim.x) {
-        if (task.items != 0) {
+    for (;;) {
+        uint32_t claimed = 0;
+        if (worker_id() == 0) {
+            // The block that holds an item at or beyond the count needs no more claims.
+            claimed = mk_claim_next < item_count(task) ? gridDim.x + claim_one(claims) : mk_claim_next;
+        }
+        // A barrier counts whole warps, so warp 0 of the consumers waits and the other warps arrive.
+        if (worker_id() >= 32) {
+            bar_arrive(MK_BAR_CLAIM, worker_count());
+        }
+        if (item < item_count(task)) {
             run_op<PRODUCER>(task, table, item);
         }
+        if (worker_id() < 32) {
+            // Every consumer has read mk_claim_cur, so the lead consumer can write it.
+            bar_sync(MK_BAR_CLAIM, worker_count());
+            if (worker_id() == 0) {
+                mk_claim_ran += 1;
+                mk_claim_cur = mk_claim_next;
+                mk_claim_next = claimed;
+            }
+        }
         worker_sync();
+        item = mk_claim_cur;
+        if (item >= item_count(task)) {
+            break;
+        }
     }
-    if (worker_id() == 0 && item != blockIdx.x && task.signal != NO_EVENT) {
-        red_release_gpu_add_u32(mk_scoreboard() + (mk_base_event() + task.signal), (item - blockIdx.x) / gridDim.x);
+    if (worker_id() == 0 && task.signal != NO_EVENT) {
+        red_release_gpu_add_u32(mk_scoreboard() + (mk_base_event() + task.signal), mk_claim_ran);
     }
 }
 
@@ -547,7 +641,7 @@ __device__ __forceinline__ void run_flat_shape(
 
         if (!halt) {
             // The flat shape reads the table from global memory. It is the same for the whole run.
-            run_items<false>(task, task.d != 0 ? reinterpret_cast<const MkTaskTable*>(task.d) : nullptr);
+            run_items<false>(task, task.d != 0 ? reinterpret_cast<const MkTaskTable*>(task.d) : nullptr, idx);
         }
         if (threadIdx.x == 0) {
             const uint64_t t_end = globaltimer_ns();
@@ -656,7 +750,7 @@ __device__ __forceinline__ void run_producer_shape(
         }
         const bool halt = opcode == OP_HALT;
         if (!halt) {
-            run_items<true>(task, task.d != 0 ? &tables[slot] : nullptr);
+            run_items<true>(task, task.d != 0 ? &tables[slot] : nullptr, idx);
         }
         if (lead) {
             const uint64_t t_end = globaltimer_ns();

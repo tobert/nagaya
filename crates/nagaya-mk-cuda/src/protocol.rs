@@ -9,6 +9,14 @@ pub const MAX_TASKS_PER_CARD: usize = 2048;
 /// Task `i` waits on event `i` and signals event `i + 1`.
 pub const NUM_SCOREBOARD_EVENTS: usize = MAX_TASKS_PER_CARD + 1;
 
+/// The claim words follow the events in the scoreboard: the word of the task at place `i` of the ring is the word
+/// `CLAIM_BASE + i`. The kernel adds 1 to it for each claim of a later item (`run_items`). A launch zeroes the events
+/// and the claim words together. The scoreboard has `SCOREBOARD_WORDS` words.
+pub const CLAIM_BASE: usize = NUM_SCOREBOARD_EVENTS;
+
+/// Words in the scoreboard: the events, then one claim word for each task of the ring.
+pub const SCOREBOARD_WORDS: usize = NUM_SCOREBOARD_EVENTS + MAX_TASKS_PER_CARD;
+
 /// Device bytes of the task ring copy read by the kernel.
 pub const RING_DEV_BYTES: usize = MAX_TASKS_PER_CARD * 128;
 
@@ -135,6 +143,10 @@ define_u16_table! {
     OP_SELFTEST_FILL = 250;
     OP_SELFTEST_CHECK = 251;
     OP_SELFTEST_TABLE = 252;
+    // `OP_SELFTEST_CLAIM`: item `i` adds 1 to the word `i` of the counts at `c`, and it writes the block that ran it to
+    // the word `i` at `e`. An item with `i % k == 0` first spins `n` ns, so that its block is slow. `k = 0` has no spin.
+    // An item at or beyond `items` does nothing. It gates the claim of the later items in `tests/cuda_claim.rs`.
+    OP_SELFTEST_CLAIM = 253;
 }
 
 define_u16_table! {

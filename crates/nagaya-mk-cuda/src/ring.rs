@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use crate::driver::{CUdeviceptr, CudaDevice};
 use crate::graph::{self, Node, Planned, Span};
 use crate::protocol::{
-    BlockStats, MAX_TASKS_PER_CARD, MkTaskDescriptor, NO_EVENT, NUM_SCOREBOARD_EVENTS, OP_HALT, PRODUCER_BLOCK_THREADS,
-    PROFILE_WORDS, RING_DEV_BYTES,
+    BlockStats, CLAIM_BASE, MAX_TASKS_PER_CARD, MkTaskDescriptor, NO_EVENT, OP_HALT, PRODUCER_BLOCK_THREADS,
+    PROFILE_WORDS, RING_DEV_BYTES, SCOREBOARD_WORDS,
 };
 
 /// Default thread count per block for the persistent interpreter: the producer shape, with a producer warp and eight
@@ -140,7 +140,7 @@ impl<'d> Ring<'d> {
         };
         ring.host_tasks = dev.alloc_host_pinned(RING_DEV_BYTES)?.cast::<MkTaskDescriptor>();
         ring.dev_tasks = dev.alloc_device(RING_DEV_BYTES)?;
-        ring.scoreboard = dev.alloc_device(NUM_SCOREBOARD_EVENTS * 4)?;
+        ring.scoreboard = dev.alloc_device(SCOREBOARD_WORDS * 4)?;
         ring.dev_stats = dev.alloc_device(grid_blocks as usize * std::mem::size_of::<BlockStats>())?;
         ring.scratch = dev.alloc_device(scratch_bytes)?;
         if with_profile {
@@ -295,10 +295,10 @@ impl<'d> Ring<'d> {
         out
     }
 
-    /// Zero the scoreboard and scratch buffers.
+    /// Zero the scoreboard (the events and the claim words) and scratch buffers.
     pub fn zero_device(&self) -> Result<(), String> {
         let dev = self.dev;
-        dev.memset_zero(self.scoreboard, NUM_SCOREBOARD_EVENTS * 4)?;
+        dev.memset_zero(self.scoreboard, SCOREBOARD_WORDS * 4)?;
         dev.memset_zero(self.scratch, self.scratch_floats * 4)
     }
 
@@ -347,7 +347,8 @@ impl<'d> Ring<'d> {
         let count = descs.len();
         // SAFETY: `host_tasks` holds `MAX_TASKS_PER_CARD` descriptors, and `descs` has fewer.
         unsafe { std::ptr::copy_nonoverlapping(descs.as_ptr(), self.host_tasks, count) };
-        dev.memset_zero(self.scoreboard, (count + 1) * 4)?;
+        // The events of the tasks, and the claim words of the tasks, in one memset (the words between them are not used).
+        dev.memset_zero(self.scoreboard, (CLAIM_BASE + count) * 4)?;
         self.last_grid.store(grid, Ordering::SeqCst);
         unsafe {
             dev.copy_htod(
