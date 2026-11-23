@@ -4,7 +4,7 @@
 //! One test runs a depth: 409,600 and 524,288 positions. Each depth runs a full run (layer 5) and a sliding run (layer 0),
 //! at 1, 16 and 512 rows, in each cache format on the cubin of that format. The block of `rows` rows ends at the last
 //! position, so each row reads the whole cache that is before it. The gates of each case:
-//! - the accuracy against the host form `ops::attend` (bound 4e-6 of the row maximum). The host form reads every
+//! - the accuracy against the host form `ops::attend` (the bound of the binding, 4e-6 of the row maximum, at every depth). The host form reads every
 //!   position of every head, so it checks only a sample of the rows: row 0 at 1 row, rows 0 and 15 at 16 rows, and
 //!   rows 0, 255 and 511 at 512 rows. The device runs all the rows;
 //! - the bits of each sampled row of a block equal the bits of the same position run alone as a decode step, which
@@ -25,12 +25,6 @@ use nagaya_mk_cuda::attn::{self, CacheFormat, HEAD_DIM, HEADS, KV_HEADS, REL_STA
 
 const FORMATS: [CacheFormat; 3] = [CacheFormat::F32, CacheFormat::Bf16, CacheFormat::E4m3];
 const ROWS: [usize; 3] = [1, 16, 512];
-
-/// The ceiling that the test asserts for a full run at depth. It is not a bound: the f32 form of the op drifts from the
-/// host form by 1.1e-5 at 409,600 positions and 2.1e-5 at 524,288 (both measured against a form with `f64` sums, which
-/// the host form follows within 1e-6), over the bound 4e-6. The ceiling is about twice the worst error measured, so that
-/// a change that makes the drift worse fails. The lead decides the bound at depth.
-const FULL_DEPTH_CEILING: f64 = 4e-5;
 
 /// The rows that the host form checks, for a block of `rows` rows.
 fn host_sample(rows: usize) -> Vec<usize> {
@@ -124,19 +118,9 @@ fn long_depth(positions: usize) {
                             host_exact <= ACCURACY_BOUND,
                             "the host form is {host_exact:e} from the f64 form at {positions} positions"
                         );
-                        let limit = if window == 0 {
-                            FULL_DEPTH_CEILING
-                        } else {
-                            ACCURACY_BOUND
-                        };
-                        if rel > ACCURACY_BOUND {
-                            eprintln!(
-                                "cuda_long: over the bound {ACCURACY_BOUND:.0e}: {format:?} {kind} {rows} row {t}: {rel:.2e}"
-                            );
-                        }
                         assert!(
-                            rel <= limit,
-                            "{format:?} {kind} {rows} rows at {positions} positions: row {t} error {rel:e}, limit {limit:e}"
+                            rel <= ACCURACY_BOUND,
+                            "{format:?} {kind} {rows} rows at {positions} positions: row {t} error {rel:e}, bound {ACCURACY_BOUND:e}"
                         );
                     }
                     // The rows alone: the same position as a decode step gives the bits of the block.

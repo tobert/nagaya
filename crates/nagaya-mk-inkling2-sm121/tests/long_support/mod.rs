@@ -4,6 +4,8 @@
 #![allow(dead_code)]
 #![cfg(feature = "cuda")]
 
+pub mod merge_model;
+
 use std::ffi::c_void;
 use std::path::PathBuf;
 use std::sync::OnceLock;

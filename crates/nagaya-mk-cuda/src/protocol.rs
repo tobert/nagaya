@@ -273,7 +273,7 @@ pub const ATTN_CHUNK_KEYS: usize = 256;
 pub const ATTN_SPLIT_ROWS: usize = 16;
 
 /// The dynamic shared bytes that `OP_ATTN` needs, at offset 0.
-pub const ATTN_SMEM_BYTES: usize = 56 * 1024;
+pub const ATTN_SMEM_BYTES: usize = 72 * 1024;
 
 /// The floats of one row of a chunk partial in the scratch of `OP_ATTN`: the maximum, the sum, two spare words, and 128
 /// values.
