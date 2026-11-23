@@ -584,7 +584,9 @@ def replay_moe(experts, fmt, tape, name):
     final = torch.zeros(x_q.shape, dtype=torch.float32)
     down = torch.zeros_like(tape[f"{name}.down_q"])
     for expert in sorted(set(ids.flatten().tolist())):
-        token, slot = torch.where(ids == expert)
+        # The call orders the rows of an expert by slot, then by token. A matrix product gives other bits to a row
+        # that changes its place, so the replay keeps the order.
+        slot, token = torch.where((ids == expert).T)
         state = experts._apply_gate(F.linear(x_q[token], ExpertCalls.weight(experts, "gate_up_proj", expert)))
         state = quant.fake_quantize(state.float() * weights[token, slot, None], fmt)
         down[token, slot] = state
