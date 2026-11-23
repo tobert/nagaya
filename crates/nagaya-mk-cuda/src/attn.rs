@@ -12,7 +12,8 @@
 //! The kernel is `kernels/ops_attn.cuh`. Its fields are the fields of [`AttnShape::descriptor`].
 
 use crate::protocol::{
-    ATTN_CHUNK_KEYS, ATTN_PARTIAL_ROW_FLOATS, ATTN_SPLIT_ROWS, FLAG_F32, MkTaskDescriptor, MkTaskTable, OP_ATTN,
+    ATTN_CHUNK_KEYS, ATTN_PARTIAL_ROW_FLOATS, ATTN_SPLIT_ROWS, FLAG_BF16, FLAG_F32, MkTaskDescriptor, MkTaskTable,
+    OP_ATTN,
 };
 
 /// The query heads of a layer, the KV heads, and the width of a head.
@@ -42,6 +43,8 @@ pub enum CacheFormat {
     F32,
     /// 1 byte for each value, with a unit scale.
     E4m3,
+    /// 2 bytes for each value, with a unit scale: the f32 value rounded to nearest even. Proposed (milestone 37 step 11).
+    Bf16,
 }
 
 impl CacheFormat {
@@ -50,6 +53,27 @@ impl CacheFormat {
         match self {
             CacheFormat::F32 => HEAD_DIM * 4,
             CacheFormat::E4m3 => HEAD_DIM,
+            CacheFormat::Bf16 => HEAD_DIM * 2,
+        }
+    }
+
+    /// The cubin that holds only this format. It traps on a task of another format.
+    #[cfg(feature = "cuda")]
+    pub fn cubin(self) -> &'static [u8] {
+        match self {
+            CacheFormat::F32 => crate::INKLING2_CACHE_F32_CUBIN,
+            CacheFormat::E4m3 => crate::INKLING2_CACHE_E4M3_CUBIN,
+            CacheFormat::Bf16 => crate::INKLING2_CACHE_BF16_CUBIN,
+        }
+    }
+
+    /// The cubin that records the time of each task, for this format. The f32 and e4m3 formats share the profile cubin
+    /// that holds both.
+    #[cfg(feature = "cuda")]
+    pub fn profile_cubin(self) -> &'static [u8] {
+        match self {
+            CacheFormat::Bf16 => crate::INKLING2_PROFILE_CACHE_BF16_CUBIN,
+            CacheFormat::F32 | CacheFormat::E4m3 => crate::INKLING2_PROFILE_CUBIN,
         }
     }
 
@@ -58,6 +82,7 @@ impl CacheFormat {
         match self {
             CacheFormat::F32 => FLAG_F32,
             CacheFormat::E4m3 => 0,
+            CacheFormat::Bf16 => FLAG_BF16,
         }
     }
 }
@@ -282,6 +307,8 @@ mod tests {
         assert_eq!(row_offset(0, 1, 64, f) - row_offset(0, 0, 64, f), 512);
         assert_eq!(row_offset(1, 0, 64, f), 64 * 512);
         assert_eq!(plane_bytes(64, CacheFormat::E4m3), 8 * 64 * 128);
+        assert_eq!(plane_bytes(64, CacheFormat::Bf16), 8 * 64 * 256);
+        assert_eq!(row_offset(2, 5, 64, CacheFormat::Bf16), (2 * 64 + 5) * 256);
     }
 
     #[test]
@@ -344,5 +371,7 @@ mod tests {
         );
         let f = AttnShape::new(3, 700, 1024, 1536, CacheFormat::F32).unwrap();
         assert_eq!(f.descriptor(&b).flags, FLAG_F32);
+        let h = AttnShape::new(3, 700, 1024, 1536, CacheFormat::Bf16).unwrap();
+        assert_eq!((h.descriptor(&b).flags, h.descriptor(&b).scale_bytes), (FLAG_BF16, 256));
     }
 }

@@ -404,6 +404,9 @@ define_u16_table! {
     // columns and 32 rows with all of K. The bits of each row equal those of the decode form. `items` is the count
     // of groups of tiles times the count of blocks of 32 rows.
     FLAG_BLOCK_FORM = 1 << 10;
+    // The cache of the attention holds bf16 values (2 bytes each), rounded to nearest even from the f32 value, with a unit
+    // scale. A cache with `FLAG_F32` holds f32 values, and a cache with neither flag holds e4m3 values.
+    FLAG_BF16 = 1 << 11;
     FLAG_MXFP8 = 1 << 15;
 }
 

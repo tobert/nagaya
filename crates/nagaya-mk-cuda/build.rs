@@ -209,23 +209,34 @@ fn main() {
     let kernels = manifest.join("kernels");
     let source = kernels.join("megakernel.cu");
 
-    compile_cubin(&nvcc, &source, &kernels, &out, "megakernel_inkling2_sm121.cubin", &[]);
-    compile_cubin(
-        &nvcc,
-        &source,
-        &kernels,
-        &out,
-        "megakernel_inkling2_profile_sm121.cubin",
-        &["MK_PROFILE"],
-    );
-    // A cubin with a small spin limit, so that a test can prove that a wait that never ends traps.
-    compile_cubin(
-        &nvcc,
-        &source,
-        &kernels,
-        &out,
-        "megakernel_inkling2_spin_test_sm121.cubin",
-        &["MK_SPIN_LIMIT=65536ull"],
-    );
+    // Each cubin is one nvcc run. The runs go in parallel, because each takes about a minute and a half.
+    //
+    // - The default cubin holds the f32 and the e4m3 formats of the cache, and it picks one with the flags of a task.
+    // - A cubin of a cache format (`MK_CACHE_*`) runs tasks of that format only, and a task of another format traps.
+    // - The profile cubin records the time of each task.
+    // - The spin cubin has a small spin limit, so that a test can prove that a wait that never ends traps.
+    let jobs: &[(&str, &[&str])] = &[
+        ("megakernel_inkling2_sm121.cubin", &[]),
+        ("megakernel_inkling2_profile_sm121.cubin", &["MK_PROFILE"]),
+        ("megakernel_inkling2_spin_test_sm121.cubin", &["MK_SPIN_LIMIT=65536ull"]),
+        ("megakernel_inkling2_sm121_cache_f32.cubin", &["MK_CACHE_F32"]),
+        ("megakernel_inkling2_sm121_cache_bf16.cubin", &["MK_CACHE_BF16"]),
+        ("megakernel_inkling2_sm121_cache_e4m3.cubin", &["MK_CACHE_E4M3"]),
+        (
+            "megakernel_inkling2_profile_sm121_cache_bf16.cubin",
+            &["MK_PROFILE", "MK_CACHE_BF16"],
+        ),
+    ];
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = jobs
+            .iter()
+            .map(|(name, defines)| scope.spawn(|| compile_cubin(&nvcc, &source, &kernels, &out, name, defines)))
+            .collect();
+        for handle in handles {
+            if let Err(panic) = handle.join() {
+                std::panic::resume_unwind(panic);
+            }
+        }
+    });
     println!("cargo:rustc-link-lib=cuda");
 }

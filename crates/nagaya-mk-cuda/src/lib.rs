@@ -28,6 +28,25 @@ pub const KERNEL_ENTRY: &str = "mk_persistent_interpreter";
 #[cfg(feature = "cuda")]
 pub const INKLING2_CUBIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_inkling2_sm121.cubin"));
 
+/// Compiled `sm_121a` `.cubin` for each format of the cache of the attention. Each holds one format only, and it
+/// traps on a task whose flags name another format. `INKLING2_CUBIN` holds the f32 and the e4m3 formats.
+#[cfg(feature = "cuda")]
+pub const INKLING2_CACHE_F32_CUBIN: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_inkling2_sm121_cache_f32.cubin"));
+#[cfg(feature = "cuda")]
+pub const INKLING2_CACHE_BF16_CUBIN: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_inkling2_sm121_cache_bf16.cubin"));
+#[cfg(feature = "cuda")]
+pub const INKLING2_CACHE_E4M3_CUBIN: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_inkling2_sm121_cache_e4m3.cubin"));
+
+/// The profile cubin of the bf16 cache format. The profile cubin above holds the f32 and e4m3 formats.
+#[cfg(feature = "cuda")]
+pub const INKLING2_PROFILE_CACHE_BF16_CUBIN: &[u8] = include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/megakernel_inkling2_profile_sm121_cache_bf16.cubin"
+));
+
 /// Compiled `sm_121a` `.cubin` for Inkling 2 profiling (`MK_PROFILE`).
 #[cfg(feature = "cuda")]
 pub const INKLING2_PROFILE_CUBIN: &[u8] =

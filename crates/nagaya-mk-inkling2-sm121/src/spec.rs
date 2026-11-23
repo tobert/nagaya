@@ -508,6 +508,7 @@ pub fn identity_numbers(config: &Config) -> BTreeMap<String, String> {
         match CACHE_FORMAT {
             CacheFormat::F32 => "f32",
             CacheFormat::E4m3 => "e4m3",
+            CacheFormat::Bf16 => "bf16",
         }
         .to_owned(),
     );
@@ -648,7 +649,13 @@ mod tests {
         assert_eq!(slot_bytes(32_768, 24, e4m3), 666_533_888);
         assert_eq!(slot_bytes(409_600, 24, e4m3), 6_840_549_376);
         assert_eq!(slot_bytes(524_288, 24, e4m3), 8_719_597_568);
+        // A bf16 cache has 2 bytes for each value: between the f32 and the e4m3 cache. Proposed (milestone 37 step 11).
+        let bf16 = CacheFormat::Bf16;
+        assert_eq!(slot_bytes(32_768, 24, bf16), 1_329_233_920);
+        assert_eq!(slot_bytes(409_600, 24, bf16), 13_677_264_896);
+        assert_eq!(slot_bytes(524_288, 24, bf16), 17_435_361_280);
         for seq in [32_768u64, 409_600, 524_288] {
+            assert_eq!(slot_bytes(seq as usize, 24, bf16), formula(seq, 2, 2 * SLIDING_E4M3));
             assert_eq!(slot_bytes(seq as usize, 24, f32_), formula(seq, 4, SLIDING_F32));
             assert_eq!(slot_bytes(seq as usize, 24, e4m3), formula(seq, 1, SLIDING_E4M3));
         }
