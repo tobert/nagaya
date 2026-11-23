@@ -311,8 +311,19 @@ impl Config {
     }
 }
 
-/// State parts declared in `Limits::parts` (matches `docs/engine-abi.md` "Inkling 2").
-pub fn parts(extra: usize) -> Vec<PartLimits> {
+/// The dtype of a key part and a value part: the dtype of the cache format. A snapshot holds the stored bits, so a read
+/// of an e4m3 cache gives e4m3 bytes. Proposed (milestone 37 step 11, Sonnet 5.5).
+pub fn part_dtype(format: CacheFormat) -> Dtype {
+    match format {
+        CacheFormat::F32 => Dtype::F32,
+        CacheFormat::Bf16 => Dtype::BF16,
+        CacheFormat::E4m3 => Dtype::F8E4M3,
+    }
+}
+
+/// State parts declared in `Limits::parts` (matches `docs/engine-abi.md` "Inkling 2"), for a cache in `format`. The
+/// conv part is `f32` in each format.
+pub fn parts(extra: usize, format: CacheFormat) -> Vec<PartLimits> {
     let mut out = Vec::with_capacity((LAYERS + extra) * 3 + 1);
     for s in 0..LAYERS + extra {
         let name = state_name(s);
@@ -324,7 +335,7 @@ pub fn parts(extra: usize) -> Vec<PartLimits> {
         out.push(PartLimits {
             name: format!("k.{name}"),
             kind: row_kind,
-            dtype: Dtype::F32,
+            dtype: part_dtype(format),
             shape: vec![KV_HEADS as u64, HEAD_DIM as u64],
             block_format: None,
             stage: 0,
@@ -332,7 +343,7 @@ pub fn parts(extra: usize) -> Vec<PartLimits> {
         out.push(PartLimits {
             name: format!("v.{name}"),
             kind: row_kind,
-            dtype: Dtype::F32,
+            dtype: part_dtype(format),
             shape: vec![KV_HEADS as u64, HEAD_DIM as u64],
             block_format: None,
             stage: 0,
@@ -416,6 +427,17 @@ fn sum_checkpoint_weights(tensors: &BTreeMap<String, TensorMeta>) -> Result<(u64
     Ok((llm_bytes, vision_bytes))
 }
 
+/// The counts of cycles that a config runs: 1 to `1 + extra_runs / 12`, and 3 by default.
+pub fn cycles_limit(extra_runs: usize) -> CyclesLimit {
+    CyclesLimit {
+        min: 1,
+        max: (1 + extra_runs / CYCLE_LAYERS) as u8,
+        default: DEFAULT_CYCLES as u8,
+        start: CYCLE_START as u32,
+        end: CYCLE_END as u32,
+    }
+}
+
 /// Build `Limits` from `config` and measured weight byte sizes.
 pub fn limits(config: &Config, llm_weights: u64, vision_weights: u64) -> Limits {
     let ring_bytes = (NUM_SCOREBOARD_EVENTS * 4 + RING_DEV_BYTES) as u64;
@@ -427,7 +449,6 @@ pub fn limits(config: &Config, llm_weights: u64, vision_weights: u64) -> Limits 
         layers: LAYERS as u32,
         width: HIDDEN as u32,
     };
-    let max_cycles = (1 + config.extra_runs / CYCLE_LAYERS) as u8;
     Limits {
         capabilities: vec![
             Capability::Parts,
@@ -437,7 +458,7 @@ pub fn limits(config: &Config, llm_weights: u64, vision_weights: u64) -> Limits 
             Capability::Cycles,
             Capability::Control,
         ],
-        parts: parts(config.extra_runs),
+        parts: parts(config.extra_runs, config.cache),
         inputs: Inputs::TokensAndRows,
         devices: vec![0],
         stages: Vec::new(),
@@ -483,13 +504,7 @@ pub fn limits(config: &Config, llm_weights: u64, vision_weights: u64) -> Limits 
             block: config.max_block as u64,
         }),
         layer_loops: None,
-        cycles: Some(CyclesLimit {
-            min: 1,
-            max: max_cycles,
-            default: DEFAULT_CYCLES as u8,
-            start: CYCLE_START as u32,
-            end: CYCLE_END as u32,
-        }),
+        cycles: Some(cycles_limit(config.extra_runs)),
     }
 }
 
@@ -714,7 +729,7 @@ mod tests {
 
     #[test]
     fn parts_follow_the_state_plan() {
-        let list = parts(24);
+        let list = parts(24, CacheFormat::F32);
         assert_eq!(list.len(), 48 * 3 + 1);
         let count = |kind: PartKind| list.iter().filter(|p| p.kind == kind).count();
         assert_eq!(
@@ -744,7 +759,7 @@ mod tests {
             (last.name.as_str(), last.dtype, last.kind),
             ("cycles", Dtype::U32, PartKind::Fixed)
         );
-        assert_eq!(parts(0).len(), 24 * 3 + 1);
+        assert_eq!(parts(0, CacheFormat::F32).len(), 24 * 3 + 1);
     }
 
     #[test]
@@ -891,5 +906,31 @@ mod tests {
         seen.sort();
         seen.dedup();
         assert_eq!(seen.len(), 3, "the three cubins differ");
+    }
+
+    /// The key and value parts hold the stored bits of the cache, so their dtype is the dtype of the format. The conv
+    /// parts stay `f32`, and `cycles` stays `u32`.
+    #[test]
+    fn the_part_dtype_of_the_rows_is_the_dtype_of_the_cache_format() {
+        for (format, dtype) in [
+            (CacheFormat::F32, Dtype::F32),
+            (CacheFormat::Bf16, Dtype::BF16),
+            (CacheFormat::E4m3, Dtype::F8E4M3),
+        ] {
+            let list = parts(24, format);
+            assert_eq!(list.len(), 48 * 3 + 1);
+            for part in &list {
+                let want = match part.name.split('.').next().unwrap() {
+                    "k" | "v" => dtype,
+                    "conv" => Dtype::F32,
+                    "cycles" => Dtype::U32,
+                    other => panic!("a part named {other}"),
+                };
+                assert_eq!(part.dtype, want, "{} in {format:?}", part.name);
+            }
+            // The limits of a config declare the same list.
+            let cfg = config_of(format);
+            assert_eq!(limits(&cfg, 1_000, 0).parts, parts(cfg.extra_runs, format));
+        }
     }
 }
