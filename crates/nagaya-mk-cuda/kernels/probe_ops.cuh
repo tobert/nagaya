@@ -219,6 +219,64 @@ __device__ uint32_t probe_read_smem_bulk(const uint8_t* base, uint32_t items, ui
     return sum;
 }
 
+// Every block reads the same `items` items, `passes` times, through bulk copies into a ring of `stages` stages: the
+// pattern of the prefill, where all the blocks read the same activations from L2. With `rotate` a block starts at
+// item `blockIdx.x * 5 % items`, so the blocks do not read the same stage together. The checksum of a block is the
+// sum of the words of all the items, `passes` times.
+__device__ uint32_t probe_read_smem_l2(const uint8_t* base, uint32_t items, uint32_t stages, uint32_t passes,
+                                       uint32_t rotate) {
+    constexpr uint32_t chunks_per_item = MK_PROBE_ITEM_BYTES / MK_PROBE_STAGE_BYTES;
+    constexpr uint32_t v4_per_chunk = MK_PROBE_STAGE_BYTES / 16;
+    if (stages == 0 || stages > 32 || items == 0 || passes == 0 ||
+        dynamic_smem_bytes() < stages * (MK_PROBE_STAGE_BYTES + 8)) {
+        __trap();  // The launch gave too little shared memory, or the shape is empty.
+    }
+    const uint32_t smem = static_cast<uint32_t>(__cvta_generic_to_shared(mk_smem));
+    const uint32_t barriers = smem + stages * MK_PROBE_STAGE_BYTES;
+    const uint32_t first_item = rotate != 0 ? (blockIdx.x * 5) % items : 0;
+    const uint32_t chunks = passes * items * chunks_per_item;
+    auto issue = [&](uint32_t j) {
+        const uint32_t stage = j % stages;
+        const uint32_t item = (first_item + j / chunks_per_item) % items;
+        const uint8_t* src = base + static_cast<uint64_t>(item) * MK_PROBE_ITEM_BYTES +
+                             (j % chunks_per_item) * MK_PROBE_STAGE_BYTES;
+        mbarrier_arrive_expect_tx(barriers + stage * 8, MK_PROBE_STAGE_BYTES);
+        bulk_copy_to_shared(smem + stage * MK_PROBE_STAGE_BYTES, src, MK_PROBE_STAGE_BYTES, barriers + stage * 8);
+    };
+    if (worker_id() == 0) {
+        for (uint32_t s = 0; s < stages; ++s) {
+            mbarrier_init(barriers + s * 8, 1);
+        }
+        fence_mbarrier_init();
+    }
+    worker_sync();
+    if (worker_id() == 0) {
+        for (uint32_t j = 0; j < chunks && j < stages; ++j) {
+            issue(j);
+        }
+    }
+    uint32_t sum = 0;
+    for (uint32_t j = 0; j < chunks; ++j) {
+        const uint32_t stage = j % stages;
+        mbarrier_wait_parity(barriers + stage * 8, (j / stages) & 1);
+        const uint32_t at = smem + stage * MK_PROBE_STAGE_BYTES;
+        for (uint32_t index = worker_id(); index < v4_per_chunk; index += worker_count()) {
+            sum += sum_words(ld_shared_v4(at + index * 16));
+        }
+        worker_sync();  // Every thread has read the stage, so the copy of a later chunk can overwrite it.
+        if (worker_id() == 0 && j + stages < chunks) {
+            issue(j + stages);
+        }
+    }
+    worker_sync();
+    if (worker_id() == 0) {
+        for (uint32_t s = 0; s < stages; ++s) {
+            mbarrier_inval(barriers + s * 8);
+        }
+    }
+    return sum;
+}
+
 // a = the buffer, c = `u32` checksum of each block (the wrapping sum of the words that the block read),
 // n = items, k = the variant (`PROBE_READ_*`), kt = the distance of a prefetch, or the stages of the bulk copy.
 __device__ __forceinline__ void op_probe_read(const MkTaskDescriptor& task) {
@@ -239,6 +297,9 @@ __device__ __forceinline__ void op_probe_read(const MkTaskDescriptor& task) {
             break;
         case PROBE_READ_SMEM_BULK:
             sum = probe_read_smem_bulk(base, task.n, task.kt);
+            break;
+        case PROBE_READ_SMEM_L2:
+            sum = probe_read_smem_l2(base, task.n, task.kt, task.group_items, task.rows);
             break;
         default:
             __trap();

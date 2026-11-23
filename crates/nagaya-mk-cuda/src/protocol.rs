@@ -110,6 +110,10 @@ define_u16_table! {
     OP_PROBE_TIMER = 232;
     OP_PROBE_MMA_TILE = 233;
     OP_PROBE_MMA_RATE = 234;
+    // `OP_PROBE_SMEM`: every block fills its dynamic shared memory with a pattern, runs `n` iterations of the variant
+    // `k` (`PROBE_SMEM_*`) and writes a `u32` checksum to `c[block]`. For `PROBE_SMEM_MMA_*`, `kt` is the count of
+    // k16 steps for each iteration.
+    OP_PROBE_SMEM = 237;
     // `OP_REDUCE_PROBE`: K-split sums. It tests the merge groups of `tests/cuda_merge.rs`. The vector of group `g` has
     // `n` floats at `a + g * n` floats. An item sums `kt` floats of it, and `group_items` items make a group. The
     // item writes its partial to `f`, and the item that arrives last in its group sums the partials in index order
@@ -143,6 +147,23 @@ define_u16_table! {
     PROBE_READ_PREFETCH_LINE = 2;
     PROBE_READ_PREFETCH_BULK = 3;
     PROBE_READ_SMEM_BULK = 4;
+    // `PROBE_READ_SMEM_L2`: every block reads the same `n` items, `group_items` times, through bulk copies into
+    // `kt` stages. A block starts at item `blockIdx.x * 5 % n` when `rows` is 1, and at item 0 when `rows` is 0.
+    PROBE_READ_SMEM_L2 = 5;
+}
+
+define_u16_table! {
+    PROBE_SMEM_VARIANTS;
+    // The variants of `OP_PROBE_SMEM` in `k`. Loads and stores of one block: v4 and v2 words, with the lanes in
+    // order, so that no bank conflicts. `PROBE_SMEM_MMA_FED` runs the 12 MMAs of one step of the prefill (4
+    // chains, three terms) with the fragments loaded from shared memory, and `PROBE_SMEM_MMA_REGS` runs the same MMAs
+    // with the fragments in registers.
+    PROBE_SMEM_LD_V4 = 0;
+    PROBE_SMEM_LD_V2 = 1;
+    PROBE_SMEM_ST_V4 = 2;
+    PROBE_SMEM_ST_V2 = 3;
+    PROBE_SMEM_MMA_FED = 4;
+    PROBE_SMEM_MMA_REGS = 5;
 }
 
 define_u16_table! {
@@ -367,6 +388,10 @@ define_u16_table! {
     FLAG_F32 = 1 << 8;
     // `OP_PROJ` of a full layer: the dynamic taps of the convolutions, and the log scale of the query.
     FLAG_FULL_LAYER = 1 << 9;
+    // `OP_MATMUL_BF16` and `OP_PROJ` in the block form, for a prefill (`kernels/matmul_block.cuh`): an item is up to 128
+    // columns and 32 rows with all of K. The bits of each row equal those of the decode form. `items` is the count
+    // of groups of tiles times the count of blocks of 32 rows.
+    FLAG_BLOCK_FORM = 1 << 10;
     FLAG_MXFP8 = 1 << 15;
 }
 

@@ -319,6 +319,8 @@ struct Rig<'d> {
     shared: u32,
     /// Every buffer of the rig, so that `free` gives them all back.
     owned: Vec<CUdeviceptr>,
+    /// Run the block form (`FLAG_BLOCK_FORM`) instead of the decode form.
+    block: bool,
 }
 
 impl<'d> Rig<'d> {
@@ -387,25 +389,31 @@ impl<'d> Rig<'d> {
             ring,
             shared: dev.max_dynamic_shared_bytes().unwrap(),
             owned: owned.into_inner(),
+            block: false,
         }
     }
 
     fn task(&self, rows: usize, pos0: u32) -> Task {
         let layout = &self.layer.layout;
-        let desc = layout
-            .descriptor(
-                rows,
-                pos0,
-                self.plane_rows as u32,
-                self.format,
-                self.x[0],
-                self.packed,
-                self.out,
-                self.table,
-                self.rf[0],
-                self.ring.scratch(),
-            )
-            .unwrap();
+        let build = if self.block {
+            ProjLayout::descriptor_block
+        } else {
+            ProjLayout::descriptor
+        };
+        let desc = build(
+            layout,
+            rows,
+            pos0,
+            self.plane_rows as u32,
+            self.format,
+            self.x[0],
+            self.packed,
+            self.out,
+            self.table,
+            self.rf[0],
+            self.ring.scratch(),
+        )
+        .unwrap();
         Task::with_items(desc)
             .reads(self.x[0], rows * HIDDEN * 4)
             .reads(self.packed, layout.shape().packed_bytes())
@@ -626,6 +634,74 @@ fn a_block_of_512_rows_convolves_across_its_own_rows() {
     }
 }
 
+/// The counts of rows of the gate of the block form.
+const FORM_ROWS: [usize; 7] = [1, 7, 16, 17, 100, 511, 512];
+
+#[test]
+fn the_block_form_equals_the_decode_form_and_does_not_depend_on_the_grid() {
+    let Some(ck) = checkpoint("cuda_proj") else { return };
+    let dev = open();
+    // Layer 6 is a full layer, and layer 5 a sliding one. Both formats of the cache run.
+    for l in [5usize, 6] {
+        let layer = load_layer(ck, l);
+        let max = 512;
+        let pos0 = if layer.full() { 9_000u32 } else { 100 };
+        let inputs = make_inputs(&layer, max, 500 + l as u64);
+        for format in [CacheFormat::F32, CacheFormat::E4m3] {
+            let plane_rows = if layer.full() { 9_536 } else { 1_536 };
+            let mut decode = Rig::new(&dev, &layer, &inputs, max, plane_rows, format, false);
+            let mut block = Rig::new(&dev, &layer, &inputs, max, plane_rows, format, false);
+            block.block = true;
+            for rows in FORM_ROWS {
+                let want = decode.run(&inputs, rows, pos0, 48);
+                let got = block.run(&inputs, rows, pos0, 48);
+                assert_eq!(
+                    got.prefix(rows, rows),
+                    want.prefix(rows, rows),
+                    "layer {l} {format:?}: {rows} rows: an output of the block form differs from the decode form"
+                );
+                assert!(
+                    got.k_plane == want.k_plane && got.v_plane == want.v_plane,
+                    "layer {l} {format:?}: {rows} rows: a plane of the cache differs"
+                );
+                assert_eq!(
+                    bits(&got.k_state),
+                    bits(&want.k_state),
+                    "layer {l} {format:?}: {rows} rows: the key state differs"
+                );
+                assert_eq!(
+                    bits(&got.v_state),
+                    bits(&want.v_state),
+                    "layer {l} {format:?}: {rows} rows: the value state differs"
+                );
+            }
+            // The grids: the block form at 512 rows gives the same bits at each width.
+            let full = block.run(&inputs, max, pos0, 48);
+            for grid in &GRIDS[1..] {
+                let part = block.run(&inputs, max, pos0, *grid);
+                assert_eq!(
+                    part.prefix(max, max),
+                    full.prefix(max, max),
+                    "layer {l} {format:?}: grid {grid} differs from grid 48"
+                );
+                assert!(
+                    part.k_plane == full.k_plane && part.v_plane == full.v_plane,
+                    "layer {l} {format:?}: a plane of the cache differs at grid {grid}"
+                );
+                assert!(
+                    bits(&part.k_state) == bits(&full.k_state) && bits(&part.v_state) == bits(&full.v_state),
+                    "layer {l} {format:?}: a conv state differs at grid {grid}"
+                );
+            }
+            eprintln!(
+                "cuda_proj block: layer {l} {format:?}: outputs, cache planes and states equal the decode form at rows {FORM_ROWS:?}, and equal at grids {GRIDS:?}"
+            );
+            decode.free();
+            block.free();
+        }
+    }
+}
+
 #[test]
 fn the_bits_do_not_depend_on_the_rows_or_the_grid() {
     let Some(ck) = checkpoint("cuda_proj") else { return };
@@ -709,9 +785,23 @@ fn the_speed_of_the_projection() {
     for l in [0usize, 6, 5] {
         let layer = load_layer(ck, l);
         let bytes = layer.layout.shape().packed_bytes();
-        for rows in [1usize, 16, 512] {
+        for (rows, block) in [
+            (1usize, false),
+            (16, false),
+            (17, false),
+            (17, true),
+            (33, false),
+            (33, true),
+            (64, false),
+            (64, true),
+            (128, false),
+            (128, true),
+            (512, false),
+            (512, true),
+        ] {
             let inputs = make_inputs(&layer, rows, 400);
             let mut rig = Rig::new(&dev, &layer, &inputs, rows, 1_536, CacheFormat::F32, true);
+            rig.block = block;
             let tasks = 6;
             let list: Vec<Task> = (0..tasks).map(|_| rig.task(rows, 100)).collect();
             rig.ring.set(&list);
@@ -724,9 +814,10 @@ fn the_speed_of_the_projection() {
             let gbps = bytes as f64 / typical as f64;
             let flops = 2.0 * rows as f64 * layer.layout.rows() as f64 * HIDDEN as f64;
             eprintln!(
-                "cuda_proj speed: layer {l} ({}) J {} rows, {rows:>3} rows: {:>8.1} us (best {:>8.1} us), J {:.2} MB, {:.1} GB/s ({:.1}% of {PEAK_GBPS}), {:.1} TFLOP/s of f32-equivalent work",
+                "cuda_proj speed: layer {l} ({}) J {} rows, {rows:>3} rows {}: {:>8.1} us (best {:>8.1} us), J {:.2} MB, {:.1} GB/s ({:.1}% of {PEAK_GBPS}), {:.1} TFLOP/s of f32-equivalent work",
                 if layer.full() { "full" } else { "sliding" },
                 layer.layout.rows(),
+                if block { "block " } else { "decode" },
                 typical as f64 / 1e3,
                 best as f64 / 1e3,
                 bytes as f64 / 1e6,

@@ -218,6 +218,7 @@ mod tests {
         for table in [
             protocol::OPCODES,
             protocol::PROBE_READ_VARIANTS,
+            protocol::PROBE_SMEM_VARIANTS,
             protocol::PROBE_MMA_KINDS,
             protocol::FLAGS,
         ] {
