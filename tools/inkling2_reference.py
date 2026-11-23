@@ -25,6 +25,10 @@ MXFP8 (block 32, ue8m0) for the layers 20 to 23. Two rows are quantized in each 
     routing weight (`ops/activation.py` `_situ_quantize_kernel`), with K = 1152. Thus the quantized mode multiplies
     the routing weight before the down projection. The f32 mode multiplies after it, as transformers does.
 
+The weights of the NVFP4 experts are f32 too: `Nvfp4Source` decodes each expert from the checkpoint as
+`(e2m1 * block_scale) * (w_amax / w_denominator)`, with no bf16 rounding of any term, and the bf16 expansion of
+transformers is dropped after the load. The MXFP8 experts keep the bf16 expansion, which is exact for them.
+
 The reference keeps f32: a quantized row is expanded to f32 (NVFP4: `e2m1 * block_scale * (amax * (1/1536))`; MXFP8:
 `e4m3 * 2^(byte - 127)`), and the f32 linear runs with the expanded weights. The weights hold their exact values, so the
 product equals the quantized dot product up to the order of the f32 sums. vLLM also rounds the gate and up output and
@@ -263,6 +267,57 @@ class QuantTape:
         return taped
 
 
+class Nvfp4Source:
+    """The f32 weights of the NVFP4 experts of one layer, decoded from the checkpoint one expert at a time.
+
+    The binding sums the codes of a block, multiplies by the two block scales, and scales the total by
+    `(x_amax * w_amax) * (1 / (1536 * w_denominator))` (engine-abi "The expert epilogue of NVFP4"). The f32 weight
+    `(e2m1 * block_scale) * (w_amax / w_denominator)` gives the same dot up to the order of the sums. transformers
+    would round `w_amax`, `w_denominator` and each weight to bf16 at load. This reader keeps f32, and it holds no
+    expanded weight: a call decodes the rows of one expert from the memory map of the checkpoint.
+    """
+
+    NAMES = {"gate_up_proj": "w13", "down_proj": "w2"}
+
+    def __init__(self, folder, layer):
+        from safetensors import safe_open
+
+        folder = Path(folder)
+        index = json.loads((folder / "model.safetensors.index.json").read_text())["weight_map"]
+        self.keys = {}
+        for name, short in self.NAMES.items():
+            for part in ("weight", "weight_scale", "weight_amax", "weight_outer_scale_denominator"):
+                key = f"model.llm.layers.{layer}.mlp.experts.{short}_{part}"
+                check(key in index, f"the checkpoint has the tensor {key}")
+                self.keys[(name, part)] = (key, folder / index[key])
+        self.handles = {}
+        self.open = safe_open
+        self.quant = ExpertCalls.quant or quant_module()
+        part = "weight_outer_scale_denominator"
+        self.denominators = {name: self.read(name, part, slice(None)) for name in self.NAMES}
+        for name in self.NAMES:
+            check(self.denominators[name].numel() == 1, f"layer {layer} {name} has one denominator")
+
+    def read(self, name, part, span):
+        key, path = self.keys[(name, part)]
+        if path not in self.handles:
+            self.handles[path] = self.open(str(path), "pt")
+        return self.handles[path].get_slice(key)[span]
+
+    def weight(self, name, expert):
+        """The f32 weight of one expert: `[2 * 1152, 2304]` for "gate_up_proj" (the gate rows, then the up rows, as
+        the loader of transformers interleaves them) and `[2304, 1152]` for "down_proj"."""
+        span = slice(expert, expert + 1)
+        codes = self.read(name, "weight", span)[0]
+        scales = self.read(name, "weight_scale", span)[0]
+        amax = self.read(name, "weight_amax", span)[0]
+        values = self.quant.expand_nvfp4_weight(codes, scales, amax, self.denominators[name].reshape(()))
+        if name == "gate_up_proj":
+            # Checkpoint row 2i is the gate row i, and row 2i + 1 is the up row i.
+            values = torch.cat((values[0::2], values[1::2]), dim=0)
+        return values.contiguous()
+
+
 class ExpertCalls:
     """The expert call of the reference, with every sum in f32. It counts its calls for a self check.
 
@@ -298,6 +353,15 @@ class ExpertCalls:
         return final.to(hidden_states.dtype)
 
     @staticmethod
+    def weight(experts, name, expert):
+        """The f32 weight of one expert. An NVFP4 layer has a source that decodes it from the checkpoint in f32; another
+        layer expands its bf16 parameter."""
+        source = getattr(experts, "nvfp4_source", None)
+        if source is not None:
+            return source.weight(name, int(expert))
+        return getattr(experts, name)[expert].float()
+
+    @staticmethod
     def forward_quantized(self, hidden_states, top_k_index, top_k_weights):
         """The quantized call. The input row is quantized once for each token. The down input is quantized for each
         token and slot, after the routing weight, as vLLM does it."""
@@ -328,7 +392,7 @@ class ExpertCalls:
             if expert == self.num_experts:
                 continue
             position, token = torch.where(mask[expert])
-            state = self._apply_gate(F.linear(rows[token], self.gate_up_proj[expert].float()))
+            state = self._apply_gate(F.linear(rows[token], ExpertCalls.weight(self, "gate_up_proj", expert)))
             state = state.float() * top_k_weights[token, position, None]
             weighted = state
             state = ExpertCalls.quant.fake_quantize(state, fmt)
@@ -337,7 +401,7 @@ class ExpertCalls:
             if tape:
                 state = tape.rows_of("down", visit, first, token.tolist(), position.tolist(), state)
             ExpertCalls.downs[layer] += 1
-            state = F.linear(state, self.down_proj[expert].float())
+            state = F.linear(state, ExpertCalls.weight(self, "down_proj", expert))
             final.index_add_(0, token, state.float())
         if ExpertCalls.record is not None:
             ExpertCalls.record.end_call()
@@ -521,10 +585,10 @@ def replay_moe(experts, fmt, tape, name):
     down = torch.zeros_like(tape[f"{name}.down_q"])
     for expert in sorted(set(ids.flatten().tolist())):
         token, slot = torch.where(ids == expert)
-        state = experts._apply_gate(F.linear(x_q[token], experts.gate_up_proj[expert].float()))
+        state = experts._apply_gate(F.linear(x_q[token], ExpertCalls.weight(experts, "gate_up_proj", expert)))
         state = quant.fake_quantize(state.float() * weights[token, slot, None], fmt)
         down[token, slot] = state
-        final.index_add_(0, token, F.linear(state, experts.down_proj[expert].float()).float())
+        final.index_add_(0, token, F.linear(state, ExpertCalls.weight(experts, "down_proj", expert)).float())
     return final, down
 
 
@@ -587,6 +651,11 @@ def load(folder, quantize):
             experts = text.layers[layer].mlp.experts
             check(isinstance(experts, modeling.Inkling2LoopExperts), f"layer {layer} has the expert module")
             experts.layer_index, experts.activation_format = layer, fmt
+            if fmt == "nvfp4":
+                # The bf16 expansion of transformers goes away: the source decodes each expert in f32 on demand.
+                experts.nvfp4_source = Nvfp4Source(folder, layer)
+                experts.gate_up_proj.data = torch.empty(0)
+                experts.down_proj.data = torch.empty(0)
         ExpertCalls.formats = formats
         log(f"quantized mode: activation formats {''.join(f[0] for f in formats)} (n = nvfp4, m = mxfp8)")
     log(f"loaded {folder}, {model.config.text_config.loop_num_passes} cycles")

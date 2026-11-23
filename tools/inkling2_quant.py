@@ -138,6 +138,25 @@ def dequantize_nvfp4(codes, scale_bytes, amax):
     return ((blocks * scale[..., None]) * (amax * RECIP_1536)[:, None, None]).reshape(rows, width)
 
 
+def expand_nvfp4_weight(codes, scales, amax, denominator):
+    """The f32 values of NVFP4 weight rows: `(e2m1 * block_scale) * (amax / denominator)`, as the binding states it.
+
+    `codes` is u8 `[R, C / 2]` (the even element in the low nibble), `scales` is e4m3 (a float8 tensor, or its u8
+    bytes) `[R, C / 16]`, `amax` and `denominator` are f32 scalars of the checkpoint. The factor is one f32 division.
+    The loader of transformers rounds `amax` and `denominator` to bf16 and the result to bf16: this function does not.
+    The product of a code and a block scale is exact, so the only rounding is the product with the factor.
+    """
+    rows, half = codes.shape
+    width = half * 2
+    low, high = E2M1[(codes & 15).to(torch.int64)], E2M1[(codes >> 4).to(torch.int64)]
+    values = torch.stack((low, high), dim=-1).reshape(rows, width // BLOCK_NVFP4, BLOCK_NVFP4)
+    if scales.dtype == torch.uint8:
+        scales = scales.view(torch.float8_e4m3fn)
+    values = values * scales.to(F32)[..., None]
+    factor = amax.to(F32) / denominator.to(F32)
+    return (values * factor).reshape(rows, width)
+
+
 def ue8m0_values(byte):
     """The f32 scales `2^(byte - 127)` of ue8m0 bytes. The byte 0 is 2^-127, a subnormal. The byte 255 is an error."""
     if bool((byte == 255).any()):
