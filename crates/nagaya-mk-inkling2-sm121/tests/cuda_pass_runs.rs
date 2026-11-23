@@ -11,7 +11,8 @@
 //!
 //! The bits of every stage must not depend on the grid (48, 24, 7, 1), and a row of a run of 1 row must equal the same
 //! row of the run of 5 rows. The rows of the stack and of `Xw` that the run reads come from the tape, with their row
-//! factors computed on the host. A run with messages is not covered yet.
+//! factors computed on the host. A run with messages reads `P` and `y` from the tape too. The tape holds no rows of the messages or of the gates, so the gates
+//! of such a run are gated through the outputs of the run: `attn`, `r`, the picks and `out`.
 //!
 //! `INKLING2_MODEL_DIR=<folder> INKLING2_GOLDEN_DIR=<folder> NAGAYA_TEST_CARDS=<pci address> cargo test -p
 //!  nagaya-mk-inkling2-sm121 --features cuda --test cuda_pass_runs -- --test-threads=1`
@@ -44,14 +45,14 @@ const TAPE_ROWS: usize = 5;
 const SEQ: usize = 256;
 
 /// The bounds of the gates: the worst error over the rms of the tape, about 4 times the worst of the measurement of the runs
-/// 0 to 17 (attn 7.2e-5, r 4.8e-5, h_e 9.6e-6). The tape holds the CPU reference, which rounds each weight of an expert to
+/// 0 to 47 (attn 1.0e-4, r 5.2e-5, h_e 4.0e-5 on the runs with messages). The tape holds the CPU reference, which rounds each weight of an expert to
 /// bf16 (`expand_nvfp4_row`), while the card multiplies the exact block-scaled codes. So `moe` and `out` differ from
 /// the tape by the rounding of the weights (up to 2.6e-2 and 4.2e-2). The slots of DOWN are gated by the exact
 /// block-scaled dot of the host: bit for bit on NVFP4 layers, and within 1.0e-6 on MXFP8 layers, where the host sums in
 /// sequence and the card sums with the MMA (`EXACT_BOUND`).
 const ATTN_BOUND: f64 = 3.0e-4;
 const R_BOUND: f64 = 2.0e-4;
-const HE_BOUND: f64 = 4.0e-5;
+const HE_BOUND: f64 = 1.5e-4;
 const MOE_BOUND: f64 = 5.0e-2;
 const OUT_BOUND: f64 = 8.0e-2;
 const EXACT_BOUND: f64 = 4.0e-6;
@@ -105,6 +106,8 @@ fn tape_run(buf: Buf, plan: &RunPlan) -> usize {
             6 + 12 * c + 5
         }
         Buf::B3 => 6 + 12 * (CYCLES - 1) + 11,
+        // The row after layer 17 of the cycle before.
+        Buf::Y => 6 + 12 * (plan.cycle - 1) + 11,
         Buf::Xw => {
             if plan.layer == 6 {
                 5
@@ -257,6 +260,11 @@ impl<'d> Rig<'d> {
                 scratch: scratch.ptr(),
                 scratch_layout: &scratch_layout,
                 format: CacheFormat::F32,
+                message_queries: if plan.messages {
+                    self.weights.message_queries[plan.layer - 6].ptr()
+                } else {
+                    0
+                },
             };
             run_tasks(&plan, &shape, &env, &mut tables).unwrap_or_else(|e| panic!("{e}"))
         };
@@ -527,7 +535,7 @@ fn the_runs_match_the_tape_stage_by_stage() {
     assert_eq!(rig.ids.len(), TAPE_ROWS);
     let wanted: Vec<usize> = std::env::var("PASS_RUNS")
         .map(|s| s.split(',').map(|x| x.parse().unwrap()).collect())
-        .unwrap_or_else(|_| (0..18).chain(42..48).collect());
+        .unwrap_or_else(|_| (0..48).collect());
     for run in wanted {
         let grids = [48u32, 24, 7, 1];
         let (m, snaps) = rig.exec(run, TAPE_ROWS, &grids);

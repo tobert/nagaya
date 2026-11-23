@@ -10,7 +10,7 @@ use nagaya_mk_cuda::protocol::{MkTaskTable, expert_pair_bound};
 use nagaya_mk_cuda::ring::Task;
 
 use super::arena::Arena;
-use super::desc::{self, ExpertAddrs, MixShape, MixTable, ProjTable, RouteAddrs};
+use super::desc::{self, ExpertAddrs, GateInputs, MixShape, MixTable, ProjTable, RouteAddrs};
 use super::layout::{Buf, RunPlan, ScratchKind, ScratchLayout, TaskKind};
 use super::slot::RunSlot;
 use super::weights::{LayerWeights, expert_format};
@@ -75,6 +75,8 @@ pub struct RunEnv<'a, 'd> {
     pub scratch: u64,
     pub scratch_layout: &'a ScratchLayout,
     pub format: CacheFormat,
+    /// The device address of the message queries of the layer (`f32`, `[4][2304]`), or 0 for a layer with none.
+    pub message_queries: u64,
 }
 
 impl RunEnv<'_, '_> {
@@ -121,17 +123,16 @@ fn add_writes(mut task: Task, spans: &[(u64, usize)]) -> Task {
     task
 }
 
-/// The tasks of the run `plan`, in order, for a step of `shape`. A run with messages is not built yet: the call is an
-/// error.
+/// The tasks of the run `plan`, in order, for a step of `shape`.
 pub fn run_tasks(
     plan: &RunPlan,
     shape: &StepShape,
     env: &RunEnv<'_, '_>,
     tables: &mut TableSet,
 ) -> Result<Vec<(TaskKind, Task)>, String> {
-    if plan.messages {
+    if plan.messages && env.message_queries == 0 {
         return Err(format!(
-            "the run {} has messages, and the builder of the runs has no gates yet. Build a run with no messages",
+            "the run {} has messages, and the environment has no message queries. Give the queries of the layer",
             plan.run
         ));
     }
@@ -142,7 +143,16 @@ pub fn run_tasks(
     let row_bytes = rows * HIDDEN * 4;
 
     // The row that PROJ reads: the input row on layer 0, else the first output of the attention mix.
-    let (proj_x, proj_rf, proj_inputs): ([u64; 3], [u64; 3], Vec<(u64, usize)>) = if plan.layer == 0 {
+    let u_row = |i: usize| a.addr(Buf::U) + (i * row_bytes) as u64;
+    let u_rf = |i: usize| a.rf(Buf::U) + (i * rows * 4) as u64;
+    let (proj_x, proj_rf, proj_inputs): ([u64; 3], [u64; 3], Vec<(u64, usize)>) = if plan.messages {
+        // The three gated inputs: the query, the key and the value.
+        (
+            std::array::from_fn(u_row),
+            std::array::from_fn(u_rf),
+            vec![env.buf(Buf::U), env.rf(Buf::U, rows)],
+        )
+    } else if plan.layer == 0 {
         let x = a.addr(plan.x_in);
         let rf = a.rf(plan.x_in);
         ([x; 3], [rf; 3], vec![env.buf(plan.x_in), env.rf(plan.x_in, rows)])
@@ -160,7 +170,7 @@ pub fn run_tasks(
             rows,
             queries,
             depth: plan.depth_attn(),
-            message_queries: 0,
+            message_queries: if plan.messages { 4 } else { 0 },
         };
         let stack: Vec<(u64, u64)> = plan.stack_attn.iter().map(|b| (a.addr(*b), a.rf(*b))).collect();
         let query = w
@@ -171,20 +181,93 @@ pub fn run_tasks(
         let table = tables.add(
             MixTable {
                 stack,
-                message: Vec::new(),
+                message: plan.p.iter().chain(&plan.y).map(|b| (a.addr(*b), a.rf(*b))).collect(),
                 queries: query,
-                message_queries: 0,
+                message_queries: env.message_queries,
             }
             .build()?,
         )?;
-        let d = desc::mix(&mix_shape, a.addr(Buf::A), a.rf(Buf::A), 0, 0, table)?;
+        let (m, m_rf) = if plan.messages {
+            (a.addr(Buf::M), a.rf(Buf::M))
+        } else {
+            (0, 0)
+        };
+        let d = desc::mix(&mix_shape, a.addr(Buf::A), a.rf(Buf::A), m, m_rf, table)?;
         let mut reads: Vec<(u64, usize)> = plan.stack_attn.iter().map(|b| env.buf(*b)).collect();
         reads.extend(plan.stack_attn.iter().map(|b| env.rf(*b, rows)));
+        for b in plan.p.iter().chain(&plan.y) {
+            reads.push(env.buf(*b));
+            reads.push(env.rf(*b, rows));
+        }
         let task = add_reads(Task::with_items(d), &reads);
-        out.push((
-            TaskKind::Mix,
-            add_writes(task, &[env.buf(Buf::A), env.rf(Buf::A, rows)]),
-        ));
+        let mut writes = vec![env.buf(Buf::A), env.rf(Buf::A, rows)];
+        if plan.messages {
+            writes.extend([env.buf(Buf::M), env.rf(Buf::M, rows)]);
+        }
+        out.push((TaskKind::Mix, add_writes(task, &writes)));
+    }
+
+    // The three message gates of the attention inputs: a gate blends the row of its query with its message.
+    if plan.messages {
+        let queries = if plan.full { 3 } else { 1 };
+        let inputs: Vec<GateInputs> = (0..3)
+            .map(|i| GateInputs {
+                a: a.addr(Buf::A) + (i.min(queries - 1) * row_bytes) as u64,
+                m: a.addr(Buf::M) + (i * row_bytes) as u64,
+                a_rf: a.rf(Buf::A) + (i.min(queries - 1) * rows * 4) as u64,
+                m_rf: a.rf(Buf::M) + (i * rows * 4) as u64,
+            })
+            .collect();
+        let gate_down = w
+            .gate_down
+            .as_ref()
+            .ok_or_else(|| format!("layer {} has no gates", plan.layer))?;
+        let gate_up = w
+            .gate_up
+            .as_ref()
+            .ok_or_else(|| format!("layer {} has no gates", plan.layer))?;
+        let g = a.addr(Buf::G);
+        let g_bytes = a.layout.place(Buf::G).bytes;
+        {
+            let (scratch, region) = env.region(ScratchKind::GateDown3);
+            fits(ScratchKind::GateDown3, 16 + 3 * 24 * rows * 16, region)?;
+            let table = tables.add(desc::gate_down_table(&inputs)?)?;
+            let d = desc::gate_down(rows, 3, gate_down.ptr(), g, scratch, table)?;
+            let task = add_reads(
+                Task::with_items(d),
+                &[
+                    env.buf(Buf::A),
+                    env.rf(Buf::A, rows),
+                    env.buf(Buf::M),
+                    env.rf(Buf::M, rows),
+                ],
+            );
+            out.push((
+                TaskKind::GateDown3,
+                add_writes(task, &[(g, g_bytes), (scratch, region)]),
+            ));
+        }
+        {
+            let (scratch, region) = env.region(ScratchKind::GateUp3);
+            fits(ScratchKind::GateUp3, 4 + 3 * 36 * rows, region)?;
+            let outputs: Vec<(u64, u64)> = (0..3).map(|i| (u_row(i), u_rf(i))).collect();
+            let table = tables.add(desc::gate_up_table(&inputs, &outputs, None)?)?;
+            let d = desc::gate_up(rows, 3, g, gate_up.ptr(), None, scratch, table)?;
+            let task = add_reads(
+                Task::with_items(d),
+                &[
+                    (g, g_bytes),
+                    env.buf(Buf::A),
+                    env.buf(Buf::M),
+                    env.rf(Buf::A, rows),
+                    env.rf(Buf::M, rows),
+                ],
+            );
+            out.push((
+                TaskKind::GateUp3,
+                add_writes(task, &[env.buf(Buf::U), env.rf(Buf::U, rows), (scratch, region)]),
+            ));
+        }
     }
 
     // PROJ.
@@ -276,7 +359,7 @@ pub fn run_tasks(
     {
         let (scratch, region) = env.region(ScratchKind::OutMix);
         let depth = plan.depth_mlp();
-        let om = OutMixShape::new(rows, depth, !plan.first_of_block, true)?;
+        let om = OutMixShape::new(rows, depth, !plan.first_of_block, !plan.messages)?;
         fits(ScratchKind::OutMix, outmix::scratch_floats(rows), region)?;
         let planes: Vec<(u64, u64)> = plan.stack_mlp[..depth - 1]
             .iter()
@@ -289,7 +372,7 @@ pub fn run_tasks(
                 r: a.addr(Buf::R),
                 conv_weight: w.attn_conv.ptr(),
                 conv_state: env.slot.conv_ptr(2),
-                norm_weight: w.mlp_norm.ptr(),
+                norm_weight: if plan.messages { 0 } else { w.mlp_norm.ptr() },
                 out: a.addr(Buf::EOut),
                 query: w.mlp_query.ptr(),
             }
@@ -323,10 +406,70 @@ pub fn run_tasks(
         out.push((TaskKind::OutMix, add_writes(task, &writes)));
     }
 
+    let (_, h_off, rf_off) = a.layout.eout_parts();
     let format = expert_format(plan.layer);
-    let (_, h_off, _) = a.layout.eout_parts();
     let h_e = a.addr(Buf::EOut) + h_off as u64;
     let h_e_span = (h_e, row_bytes);
+    // The fourth gate blends the row `e` of the mlp mix with its message, and writes `h_e`, the input of the experts.
+    if plan.messages {
+        let e = a.addr(Buf::EOut);
+        let inputs = [GateInputs {
+            a: e,
+            m: a.addr(Buf::M) + (3 * row_bytes) as u64,
+            a_rf: a.addr(Buf::EOut) + rf_off as u64,
+            m_rf: a.rf(Buf::M) + (3 * rows * 4) as u64,
+        }];
+        let gate_down = w
+            .gate_down
+            .as_ref()
+            .ok_or_else(|| format!("layer {} has no gates", plan.layer))?;
+        let gate_up = w
+            .gate_up
+            .as_ref()
+            .ok_or_else(|| format!("layer {} has no gates", plan.layer))?;
+        let down_per_gate = nagaya_mk_cuda::rows::gate_down_shape().packed_bytes() as u64;
+        let up_per_gate = (nagaya_mk_cuda::rows::GATE_UP_TILES * nagaya_mk_cuda::rows::GATE_UP_ITEM_BYTES) as u64;
+        let g4 = a.addr(Buf::G) + (3 * rows * 64 * 4) as u64;
+        let g4_bytes = rows * 64 * 4;
+        let e_spans = [
+            (e, row_bytes),
+            (a.addr(Buf::EOut) + rf_off as u64, rows * 4),
+            (a.addr(Buf::M) + (3 * row_bytes) as u64, row_bytes),
+            (a.rf(Buf::M) + (3 * rows * 4) as u64, rows * 4),
+        ];
+        {
+            let (scratch, region) = env.region(ScratchKind::GateDownE);
+            fits(ScratchKind::GateDownE, 16 + 24 * rows * 16, region)?;
+            let table = tables.add(desc::gate_down_table(&inputs)?)?;
+            let d = desc::gate_down(rows, 1, gate_down.ptr() + 3 * down_per_gate, g4, scratch, table)?;
+            out.push((
+                TaskKind::GateDownE,
+                add_writes(
+                    add_reads(Task::with_items(d), &e_spans),
+                    &[(g4, g4_bytes), (scratch, region)],
+                ),
+            ));
+        }
+        {
+            let (scratch, region) = env.region(ScratchKind::GateUpE);
+            fits(ScratchKind::GateUpE, 4 + 36 * rows, region)?;
+            let table = tables.add(desc::gate_up_table(
+                &inputs,
+                &[(u_row(0), u_rf(0))],
+                Some(w.mlp_norm.ptr()),
+            )?)?;
+            let d = desc::gate_up(rows, 1, g4, gate_up.ptr() + 3 * up_per_gate, Some(h_e), scratch, table)?;
+            let mut reads = vec![(g4, g4_bytes)];
+            reads.extend(e_spans);
+            out.push((
+                TaskKind::GateUpE,
+                add_writes(
+                    add_reads(Task::with_items(d), &reads),
+                    &[env.buf(Buf::U), env.rf(Buf::U, rows), h_e_span, (scratch, region)],
+                ),
+            ));
+        }
+    }
     // QUANT of h_e, and ROUTE of h_e, in parallel: they read the same rows and write other buffers.
     let xq_layout = QuantRowsLayout::new(format, rows, HIDDEN)?;
     out.push((
