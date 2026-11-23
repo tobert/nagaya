@@ -148,6 +148,100 @@ class Formats(unittest.TestCase):
         self.assertEqual(quant.layer_formats(folder, 24), ["nvfp4"] * 20 + ["mxfp8"] * 4)
 
 
+class Nvfp4Weights(unittest.TestCase):
+    """The f32 expansion of an NVFP4 expert weight, as engine-abi "The expert epilogue of NVFP4" states it."""
+
+    def crafted(self):
+        # One row of 32 values: block 0 holds the code 2 (1.0) with the scale byte 0x38 (1.0). Block 1 holds the
+        # code 7 (6.0) with the scale byte 0x40 (2.0).
+        codes = torch.tensor([[0x22] * 8 + [0x77] * 8], dtype=torch.uint8)
+        scales = torch.tensor([[0x38, 0x40]], dtype=torch.uint8)
+        return codes, scales
+
+    def test_the_factor_is_not_rounded_to_bf16(self):
+        codes, scales = self.crafted()
+        amax = torch.tensor(1.0 + 2.0**-10)  # not a bf16 value: the bf16 loader makes it 1.0
+        denominator = torch.tensor(1.0)
+        got = quant.expand_nvfp4_weight(codes, scales, amax, denominator)
+        self.assertEqual(got.dtype, torch.float32)
+        self.assertEqual(got[0, 0].item(), 1.0 + 2.0**-10)
+        self.assertEqual(got[0, 16].item(), 12.0 * (1.0 + 2.0**-10))
+        self.assertNotEqual(got[0, 0].to(torch.bfloat16).item(), got[0, 0].item(), "the case must separate f32 from bf16")
+
+    def test_the_factor_is_amax_over_the_denominator_in_f32(self):
+        codes, scales = self.crafted()
+        amax, denominator = torch.tensor(0.1645), torch.tensor(2688.0)
+        got = quant.expand_nvfp4_weight(codes, scales, amax, denominator)
+        factor = amax / denominator
+        self.assertEqual(got[0, 0].item(), (torch.tensor(1.0) * factor).item())
+        self.assertEqual(got[0, 31].item(), (torch.tensor(12.0) * factor).item())
+
+    def test_it_equals_the_loader_of_transformers_when_the_factor_is_a_bf16_value(self):
+        from transformers.core_model_loading import Inkling2LoopDequantizeExperts
+
+        generator = torch.Generator().manual_seed(5)
+        weight = torch.randint(0, 256, (2, 6, 32), generator=generator, dtype=torch.uint8)
+        scale = torch.randint(0x20, 0x50, (2, 6, 4), generator=generator, dtype=torch.uint8).view(torch.float8_e4m3fn)
+        amax, denominator = torch.tensor([0.5, 1.5]), torch.tensor([4.0])
+        op = Inkling2LoopDequantizeExperts()
+        names = ["w", "s", "a", "d"]
+        got = op.convert(dict(zip(names, (weight, scale, amax, denominator))), names, ["out"])["out"]
+        for e in range(2):
+            mine = quant.expand_nvfp4_weight(weight[e], scale[e], amax[e], denominator[0])
+            self.assertTrue(torch.equal(mine.to(torch.bfloat16), got[e]), f"expert {e}")
+
+
+def write_checkpoint(folder, layer, tensors):
+    import json
+
+    from safetensors.torch import save_file
+
+    save_file(tensors, str(folder / "model.safetensors"))
+    index = {"weight_map": {name: "model.safetensors" for name in tensors}}
+    (folder / "model.safetensors.index.json").write_text(json.dumps(index))
+
+
+class Nvfp4Source(unittest.TestCase):
+    """The reader that gives the f32 weights of one expert from the checkpoint, with the order of rows of the loader."""
+
+    def test_it_gives_the_gate_up_rows_as_gate_then_up_and_the_down_rows_as_they_are(self):
+        import tempfile
+
+        generator = torch.Generator().manual_seed(9)
+        experts, rows, cols = 3, 32, 32
+        prefix = "model.llm.layers.4.mlp.experts."
+        tensors = {
+            prefix + "w13_weight": torch.randint(0, 256, (experts, rows, cols // 2), generator=generator, dtype=torch.uint8),
+            prefix + "w13_weight_scale": torch.randint(0x20, 0x50, (experts, rows, cols // 16), generator=generator, dtype=torch.uint8).view(torch.float8_e4m3fn),
+            prefix + "w13_weight_amax": torch.tensor([0.25, 0.3, 0.7]),
+            prefix + "w13_weight_outer_scale_denominator": torch.tensor([3.0]),
+            prefix + "w2_weight": torch.randint(0, 256, (experts, cols, rows // 2), generator=generator, dtype=torch.uint8),
+            prefix + "w2_weight_scale": torch.randint(0x20, 0x50, (experts, cols, rows // 32), generator=generator, dtype=torch.uint8).view(torch.float8_e4m3fn),
+            prefix + "w2_weight_amax": torch.tensor([0.5, 0.6, 0.9]),
+            prefix + "w2_weight_outer_scale_denominator": torch.tensor([5.0]),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            write_checkpoint(Path(tmp), 4, tensors)
+            source = reference.Nvfp4Source(tmp, 4)
+            for e in range(experts):
+                plain = quant.expand_nvfp4_weight(
+                    tensors[prefix + "w13_weight"][e],
+                    tensors[prefix + "w13_weight_scale"][e],
+                    tensors[prefix + "w13_weight_amax"][e],
+                    tensors[prefix + "w13_weight_outer_scale_denominator"][0],
+                )
+                got = source.weight("gate_up_proj", e)
+                self.assertTrue(torch.equal(got[: rows // 2], plain[0::2]), f"expert {e}: the gate rows are the even rows")
+                self.assertTrue(torch.equal(got[rows // 2 :], plain[1::2]), f"expert {e}: the up rows are the odd rows")
+                down = quant.expand_nvfp4_weight(
+                    tensors[prefix + "w2_weight"][e],
+                    tensors[prefix + "w2_weight_scale"][e],
+                    tensors[prefix + "w2_weight_amax"][e],
+                    tensors[prefix + "w2_weight_outer_scale_denominator"][0],
+                )
+                self.assertTrue(torch.equal(source.weight("down_proj", e), down), f"expert {e}: down")
+
+
 def tiny_experts(hidden=64, inter=32, count=4, top=2):
     """A tiny `Inkling2LoopExperts` with random weights, and a routing of random tokens."""
     from transformers.models.inkling2_loop import configuration_inkling2_loop as cfg
@@ -194,6 +288,64 @@ class ExpertCall(unittest.TestCase):
                 want[token] += torch.nn.functional.linear(act, self.experts.down_proj[expert])[0]
             self.assertTrue(torch.allclose(got, want, rtol=1e-5, atol=1e-6), fmt)
             self.assertFalse(torch.allclose(got, self.f32(), rtol=1e-4, atol=1e-6), f"{fmt} changes the result")
+
+    def test_an_nvfp4_layer_takes_its_weights_from_its_source_and_not_from_its_parameters(self):
+        class Source:
+            def __init__(self, experts):
+                self.gate_up, self.down = experts.gate_up_proj.detach() * 1.25, experts.down_proj.detach() * 0.5
+
+            def weight(self, name, expert):
+                return (self.gate_up if name == "gate_up_proj" else self.down)[expert].clone()
+
+        self.experts.activation_format, self.experts.layer_index = "nvfp4", 0
+        plain = self.call()
+        source = Source(self.experts)
+        self.experts.nvfp4_source = source
+        self.experts.gate_up_proj.data = torch.empty(0)
+        self.experts.down_proj.data = torch.empty(0)
+        got = self.call()
+        self.assertFalse(torch.allclose(got, plain, rtol=1e-3, atol=1e-6), "the call must use the source")
+        want = torch.zeros(self.tokens, 64)
+        for token, slot in itertools.product(range(self.tokens), range(2)):
+            expert = int(self.index[token, slot])
+            row = quant.fake_quantize(self.hidden[token : token + 1], "nvfp4")
+            gate, up = torch.nn.functional.linear(row, source.gate_up[expert]).chunk(2, dim=-1)
+            act = quant.fake_quantize(self.experts.act_fn(gate, up) * self.weights[token, slot], "nvfp4")
+            want[token] += torch.nn.functional.linear(act, source.down[expert])[0]
+        self.assertTrue(torch.allclose(got, want, rtol=1e-5, atol=1e-6))
+
+    def test_the_call_and_the_replay_give_the_rows_of_an_expert_to_the_matrix_product_in_the_order_of_the_tokens(self):
+        # A row of a matrix product has other bits when its place in the batch changes (measured on 2026-11-23).
+        # Expert 0 gets token 0 at slot 1 and token 1 at slot 0. The tape orders the slots by expert id, and the call
+        # takes them in the order of the scores. Both must give the tokens in ascending order.
+        self.experts.activation_format, self.experts.layer_index = "nvfp4", 0
+        hidden, index = self.hidden[:2], torch.tensor([[1, 0], [0, 2]])
+        weights = torch.tensor([[0.6, 0.4], [0.7, 0.3]])
+        seen, linear = [], torch.nn.functional.linear
+
+        def spy(x, w, *args):
+            if w.shape[0] == self.experts.gate_up_proj.shape[1]:
+                seen.append(x.clone())
+            return linear(x, w, *args)
+
+        torch.nn.functional.linear = spy
+        try:
+            final = reference.ExpertCalls.forward(self.experts, hidden, index, weights)
+            called, seen[:] = list(seen), []
+            x_q = quant.fake_quantize(hidden, "nvfp4")
+            down = torch.zeros(2, 2, 32)
+            by_id = {"run00.route_ids": torch.tensor([[0, 1], [0, 2]], dtype=torch.int32),
+                     "run00.route_weights": torch.tensor([[0.4, 0.6], [0.7, 0.3]])}
+            tape = {**by_id, "run00.x_q": x_q,
+                    "run00.down_q": down}
+            reference.replay_moe(self.experts, "nvfp4", tape, "run00")
+        finally:
+            torch.nn.functional.linear = linear
+        self.assertTrue(torch.equal(called[0], x_q), "expert 0 gets token 0, then token 1")
+        self.assertEqual(len(called), len(seen))
+        for got, want in zip(seen, called):
+            self.assertTrue(torch.equal(got, want), "the rows of one expert go in the order of the call")
+        self.assertEqual(final.shape, (2, 64))
 
     def f32(self):
         return reference.ExpertCalls.forward_f32(self.experts, self.hidden, self.index, self.weights)

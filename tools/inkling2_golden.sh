@@ -2,8 +2,8 @@
 # Writes the reference files of the Inkling 2 oracle (spec 8.3) for Inkling 2 Mini and the variable-loop model.
 #
 # The reference is transformers at commit 046bdb8cc2, on the CPU, with every sum in f32 and the weights as the
-# checkpoint holds them. One model holds about 74 GiB of RAM, and the tool loads one at a time. Do not run it with a
-# GPU job or with another big Python job.
+# checkpoint holds them. The f32 mode expands the experts to bf16 as transformers does. One model holds about 74 GiB
+# of RAM, and the tool loads one at a time. Do not run it with a GPU job or with another big Python job.
 #
 #   INKLING2_MODEL_DIR=<snapshot of thinkingmachines/Inkling-2-Mini> \
 #   INKLING2_VARLOOP_MODEL_DIR=<snapshot of thinkingmachines/TML-d24-varloop-research> \
@@ -12,8 +12,11 @@
 # The option --quant runs the quantized mode: each expert quantizes its input rows as the checkpoint requires (the rules
 # of tools/inkling2_quant.py, and the layer split of hf_quant_config.json). It writes the same files with the infix
 # ".quant" (inkling2-mini.quant.oracle.json, inkling2-mini.quant.layers.safetensors, quant.facts.json, and so on), so
-# the f32 files stay. Run the script twice, with and without the option, for both sets. Each run takes the time and the
-# RAM of the f32 run.
+# the f32 files stay. In this mode the NVFP4 experts (layers 0 to 19 of Mini) are not the bf16 weights of transformers.
+# Each expert call decodes the codes of the checkpoint to f32 as (e2m1 * block scale) * (w_amax / w_denominator), with
+# no rounding to bf16, as the binding does (engine-abi "The expert epilogue of NVFP4"). The MXFP8 experts stay as they
+# are, because their bf16 expansion is exact.
+# Run the script twice, with and without the option, for both sets. Each run takes the time and the RAM of the f32 run.
 #
 # The pinned revisions are Inkling-2-Mini ed40e7da625f594fc9c4990f5f66be24873c22d7 and TML-d24-varloop-research
 # 657b53ba5da7baefe9ff15dca5cd25f5bd3dbaa2. The script refuses another revision.
