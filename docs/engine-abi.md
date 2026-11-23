@@ -3008,6 +3008,55 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
 
       Lane P builds the run ring. Milestone 37 step 9 lists the oracle of each lane. Each oracle is a host form of
       the B70 crate, through a dev-dependency with no `xe` feature.
+  - **The pass as built** (milestone 37 step 10, `fe396b6e`, `src/pass/` of `nagaya-mk-inkling2-sm121`). The pass
+    builds the task ring of a decode step and of a prefill block at 1 to 5 cycles.
+    - **The tasks.** A run with no messages has 8 tasks: MIX, PROJ, ATTN, OUT_MIX, QUANT, ROUTE, UP and DOWN. Layer 0
+      has 7, with no MIX. A run with messages has 12: the mix with the messages, the three gates down and up, and the
+      gates of the MLP input.
+    - **The count.** A step has `194 + 144 (c - 1)` tasks of the runs at `c` cycles: 194, 338, 482, 626 and 770.
+      EMBED, MIX_OUT and HEAD add 3.
+    - **The quantizer task.** `OP_QUANT_NVFP4` or `OP_QUANT_MXFP8` quantizes `h_e` after OUT_MIX, or after the gate
+      of the MLP input. It runs in parallel with ROUTE, because both read only `h_e`. UP waits on both.
+    - **The buffers.** The names of the buffers remove each COPY task.
+      - EMBED writes `B0`, and the DOWN of layer 5 writes `B1`.
+      - The DOWN of layer 11 in cycle `c` writes `B2[c % 2]`. The DOWN of layer 17 writes `Y`, and `B3` in the last
+        cycle.
+      - Each other run writes `Xw` in place. The messages of cycle `c` read `P = B2[(c - 1) % 2]` and `Y`.
+    - **The row factors.** Each producer of a row writes its row factor. DOWN writes the factor of `x` into slot 6 of
+      its table (`EXPERT_TABLE_OUT_RF`).
+    - **The counters of OP_ATTN and OP_ROUTE.** Their offset depended on the rows, so a call after a smaller call
+      merged too early. The pass zeroes both counter heads before each call. A fix of the layouts removes that.
+    - **The gates of a run** read the tape (milestone 37 step 10). The worst errors, relative to the rms of the tape,
+      are 1.0e-4 for the attention output, 5.2e-5 for `r` and 4.0e-5 for `h_e`. The route picks equal the tape on all
+      240 rows. On NVFP4 runs the MoE output differs from the tape by up to 2.6e-2, because the reference expands the
+      NVFP4 weights to `bf16`. On MXFP8 runs it differs by 2e-6.
+    - **The gate of coherence**, against the quantized golden at 3 cycles, on 15 prompts. Two runs of the CPU
+      reference differ by 1.9 in the last logits, so the bounds are wide:
+      - The top token equals the golden on every prompt. Measured: 15 of 15.
+      - The largest gap over the 64 top ids of the golden is under 6.0. Measured: 0.52 to 2.56.
+      - The gap of the logsumexp is under 4.6. Measured: 0.0006 to 2.3.
+      - A prefill of 17 ids has 7 decode steps after it. At most one greedy token differs, where the golden's margin
+        is under 0.5. Measured: 7 of 8 equal, and the other step has a margin of 0.095.
+    - **Decode equals block.** The splits 16 + 1, 9 + 8 and 17 single steps give the bits of one block of 17. That
+      holds for the last logits and for each plane and state of the 48 runs, at G of 48, 24, 7 and 1.
+    - **Speed** at 3 cycles, an `f32` cache, position about 100. A decode step takes 31.0 ms on the GPU at 1 row,
+      32 tokens each second. 16 rows take 76.7 ms, 209 tokens each second. The host adds about 25 ms to each call,
+      because it plans the ring again.
+
+      | op at 1 row | us in the pass | budget | GB/s |
+      |---|---:|---:|---:|
+      | PROJ | 225 | 165 | 176 |
+      | OUT_MIX | 87 | 61 | 163 |
+      | UP, NVFP4 | 119 | 100 | 202 |
+      | UP, MXFP8 | 194 | 182 | 225 |
+      | DOWN, NVFP4 | 75 | 50 | 160 |
+      | DOWN, MXFP8 | 109 | 91 | 202 |
+      | GATE_DOWN | 7.6 | 7.4 | 233 |
+      | GATE_UP | 14 | 7.4 | 127 |
+      | ROUTE | 15 | 3.5 | 39 |
+      | MIX | 4.9 | 2 | |
+      | HEAD | 3,981 | 3,840 | 232 |
+
 - **Identity and oracle.** Because expert activations are quantized to NVFP4 and MXFP8, this engine has its own
   quantized host oracle and engine identity. Its `numbers` hold `quant` (`nvfp4_fouroversix_mae+mxfp8_ue8m0`),
   `max_block`, `extra_runs`, `state` (`2`), the `nvcc` version, and the BLAKE3 of the `.cubin`.

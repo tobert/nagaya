@@ -986,6 +986,10 @@ Do the steps in this order. Each step ends with the checks green.
       and the logit gap over the oracle prompts. Write the thresholds into the binding with the first measure.
     - Rule 4 keeps the engine consistent with itself: a decode step gives the bits of its position in a block. Thus
       a flip cannot come from the cache path of the engine.
+
+    Status: the pass is built (`fe396b6e`). It is coherent with the golden on 15 prompts, and a decode row gives the
+    bits of its block. A decode step takes 31.0 ms on the GPU at 1 row (32 tokens each second), against the target
+    of about 26 ms. "The pass as built" in the binding gives the gates, the thresholds and the table of the ops.
 11. **The engine and the long context.** The `Engine` trait, cycles 1 to 5, snapshots and the conformance suite.
     Slots of 400K to 512K positions, with gates of latency and accuracy.
     - **The format of the cache.** Decided 2026-11-22: a format of fewer bytes is allowed, and it may move bits, if
