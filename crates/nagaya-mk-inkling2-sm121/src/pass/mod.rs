@@ -2,4 +2,5 @@
 //!
 //! `layout` holds the plan of the runs and the byte layout of the buffers. It needs no GPU.
 
+pub mod desc;
 pub mod layout;
