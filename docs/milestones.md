@@ -988,8 +988,9 @@ Do the steps in this order. Each step ends with the checks green.
       a flip cannot come from the cache path of the engine.
 
     Status: the pass is built (`fe396b6e`). It is coherent with the golden on 15 prompts, and a decode row gives the
-    bits of its block. The cache of the rings and the claim of items followed (`a3ca9153`). Now a decode step at
-    1 row takes 26.9 to 27.9 ms end to end. That is 35.9 to 37.2 tokens each second, against the target of 38.
+    bits of its block. The cache of the rings and the claim of items followed (`a3ca9153`). In a release build
+    a decode step at 1 row takes 26.5 to 26.7 ms end to end (`862460b0`). That is 37.5 to 37.7 tokens each second,
+    and 38.2 to 38.4 in the kernel, against the target of about 38.
     "The pass as built" in the binding gives the gates, the thresholds and the table of the ops.
 11. **The engine and the long context.** The `Engine` trait, cycles 1 to 5, snapshots and the conformance suite.
     Slots of 400K to 512K positions, with gates of latency and accuracy.
@@ -1057,9 +1058,10 @@ tuning pass takes it.
   - The order of the head's items is not tuned. The head takes 31.7 ms at 512 rows.
 - **The speed floor of the attention at 65,536 positions.** It reads 200.4 to 201.3 GB/s against a floor of
   201.6 GB/s, on `main` too. The gate can flake.
-- **The tails of UP and DOWN.** They have one item for each block, so the claim cannot help them: 2.85 ms of a
-  decode step at 1 row. Smaller items change the merge groups and the engine identity.
-- **The host time of a call.** 0.67 ms, mostly the descriptors of all tasks, made again and copied for each launch.
+- **The tails of UP and DOWN.** About 3 ms of a decode step at 1 row. A finer cut of their items moved nothing at
+  1 row (`862460b0`, a sweep of each cut that divides 36).
+- **The host time of a call.** 0.5 ms in a release build, mostly the read of the logits. The descriptors take
+  0.09 ms.
 - **Fixture gaps.** No row decides the order `(v * s) * outer`. No MXFP8 raw scale lies just above a power of two.
 - **Mutants that survived.**
   - The order of the lag 1 and lag 2 terms in the dynamic convolution of `PROJ`.
