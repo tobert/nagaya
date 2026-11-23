@@ -1204,3 +1204,92 @@ fn the_projection_then_the_attention_equal_the_host_forms() {
         }
     }
 }
+
+/// The bf16 cache (cubin of the format `Bf16`): the planes are the host image of the rows that the projection computed,
+/// at the grids that divide no count. The f32 rows come from the f32 cubin, so the test opens each device in turn.
+#[test]
+fn the_bf16_cache_bytes_are_the_host_image() {
+    let Some(ck) = checkpoint("cuda_proj") else { return };
+    for l in LAYERS {
+        let layer = load_layer(ck, l);
+        let (pos0, plane_rows) = if layer.full() {
+            (20_000u32, 20_032usize)
+        } else {
+            (3_060, 1_536)
+        };
+        for rows in [1usize, 16] {
+            let inputs = make_inputs(&layer, rows, 500 + l as u64);
+            let f32_block = {
+                let dev = common::gpu::open_cache(CacheFormat::F32);
+                let mut rig = Rig::new(&dev, &layer, &inputs, rows, plane_rows, CacheFormat::F32, false);
+                let block = rig.run(&inputs, rows, pos0, 48);
+                rig.free();
+                block
+            };
+            let dev = common::gpu::open_cache(CacheFormat::Bf16);
+            let mut rig = Rig::new(&dev, &layer, &inputs, rows, plane_rows, CacheFormat::Bf16, false);
+            let packed = image_of(&layer, &rig, &f32_block, rows, pos0 as usize);
+            assert_eq!(
+                packed.keys.len(),
+                8 * plane_rows * 256,
+                "a bf16 plane has 256 bytes for each row"
+            );
+            for grid in [48, 7] {
+                let block = rig.run(&inputs, rows, pos0, grid);
+                assert!(
+                    block.k_plane == packed.keys && block.v_plane == packed.values,
+                    "layer {l}, {rows} rows, grid {grid}: the bf16 cache is not the pack of the f32 rows"
+                );
+            }
+            eprintln!("cuda_proj cache: layer {l}, {rows} rows: the bf16 planes equal the host image");
+            rig.free();
+        }
+    }
+}
+
+/// The projection then the attention with a bf16 cache: the host form takes the device rows of the projection, rounded to
+/// bf16, so that the error of the projection does not move a code.
+#[test]
+fn the_projection_then_the_attention_equal_the_host_forms_with_a_bf16_cache() {
+    let Some(ck) = checkpoint("cuda_proj") else { return };
+    let dev = common::gpu::open_cache(CacheFormat::Bf16);
+    let history = make_history(CacheFormat::Bf16);
+    for l in [0usize, 5] {
+        let layer = load_layer(ck, l);
+        let (pos0, plane_rows) = if layer.full() {
+            (9_000u32, 9_536usize)
+        } else {
+            (3_060, 1_536)
+        };
+        for rows in [1usize, 16] {
+            let inputs = make_inputs(&layer, rows, 600 + l as u64);
+            let image = history_image(&history, &layer, CacheFormat::Bf16, plane_rows, pos0 as usize);
+            let mut rig = Rig::new(&dev, &layer, &inputs, rows, plane_rows, CacheFormat::Bf16, false);
+            let (got, block) = rig.chain(&inputs, rows, pos0, 48, &image);
+            let want = host_attention(
+                &layer,
+                &history,
+                &AttnInputs {
+                    q: &block.q,
+                    rel: &block.rel,
+                    sink: &block.sink,
+                    gate: &block.gate,
+                    k: &block.k,
+                    v: &block.v,
+                },
+                rows,
+                pos0 as usize,
+            );
+            let error = attn_error(&got, &want);
+            eprintln!(
+                "cuda_proj chain: layer {l}, {rows} rows, bf16 cache: worst error {error:.2e} of the row maximum"
+            );
+            assert!(error <= 4e-6, "layer {l}, {rows} rows, bf16: error {error:e} over 4e-6");
+            for grid in [24, 7, 1] {
+                let (again, _) = rig.chain(&inputs, rows, pos0, grid, &image);
+                assert_eq!(bits(&again), bits(&got), "layer {l}, {rows} rows: grid {grid} differs");
+            }
+            rig.free();
+        }
+    }
+}

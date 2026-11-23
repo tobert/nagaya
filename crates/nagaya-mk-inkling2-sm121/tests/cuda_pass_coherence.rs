@@ -21,6 +21,7 @@ mod pass_support;
 use std::path::PathBuf;
 use std::time::Instant;
 
+use nagaya_mk_cuda::attn::CacheFormat;
 use nagaya_mk_inkling2_sm121::pass::step::Pass;
 use nagaya_mk_inkling2_sm121::pass::weights::DeviceWeights;
 use nagaya_mk_inkling2_sm121::spec::{self, LOGITS};
@@ -152,7 +153,7 @@ fn gap(logits: &[f32], g: &Golden) -> (f64, f64, f64) {
     )
 }
 
-fn open() -> Option<(nagaya_mk_cuda::driver::CudaDevice, std::path::PathBuf)> {
+fn open(format: CacheFormat) -> Option<(nagaya_mk_cuda::driver::CudaDevice, std::path::PathBuf)> {
     let require = std::env::var_os("NAGAYA_REQUIRE_MODELS").is_some();
     let dir = match std::env::var_os("INKLING2_MODEL_DIR") {
         Some(d) if PathBuf::from(&d).join(spec::WEIGHTS_FILE).exists() => PathBuf::from(d),
@@ -165,25 +166,28 @@ fn open() -> Option<(nagaya_mk_cuda::driver::CudaDevice, std::path::PathBuf)> {
             return None;
         }
     };
-    Some((common::gpu::open(), dir))
+    Some((common::gpu::open_cache(format), dir))
 }
 
-#[test]
-fn the_logits_of_the_pass_are_coherent_with_the_golden() {
-    let Some((dev, dir)) = open() else { return };
+/// The coherence of the prefill logits with the golden, for a cache in `format`. Each gap is printed. The test asserts
+/// the bounds after the last prompt, so that one run reports every prompt.
+fn prefill_coherence(format: CacheFormat) {
+    let Some((dev, dir)) = open(format) else { return };
     let Some(mut tape) = tape("cuda_pass_coherence") else {
         return;
     };
     let weights = DeviceWeights::load(&dev, &dir, |_| {}).unwrap_or_else(|e| panic!("{e}"));
     let mut worst_gap = 0.0f64;
     let mut wrong_top = 0usize;
+    let mut broken: Vec<String> = Vec::new();
     let mut cases = read_prompts("inkling2-mini.quant.oracle.json", 3);
     cases.extend(read_prompts("inkling2-mini.quant.cycles.json", 3));
     let tape_last = tape.f32s("logits_last");
     let tape_ids = tape.ids();
     for g in &cases {
         let started = Instant::now();
-        let mut pass = Pass::new(&dev, &weights, SEQ, MAX_ROWS, g.cycles).unwrap_or_else(|e| panic!("{e}"));
+        let mut pass =
+            Pass::with_cache_format(&dev, &weights, SEQ, MAX_ROWS, g.cycles, format).unwrap_or_else(|e| panic!("{e}"));
         let logits = with_watchdog(900, || prefill(&mut pass, &g.ids));
         assert_eq!(logits.len(), LOGITS);
         let top = argmax(&logits);
@@ -209,34 +213,52 @@ fn the_logits_of_the_pass_are_coherent_with_the_golden() {
             g.top_ids[0],
             started.elapsed().as_secs_f64()
         );
-        assert!(
-            d_top < TOP_GAP_BOUND,
-            "{}: the logits of the top ids differ from the golden by {d_top:.3}",
-            g.name
-        );
-        assert!(
-            d_lse < LSE_GAP_BOUND,
-            "{}: the logsumexp differs from the golden by {d_lse:.3}",
-            g.name
-        );
+        if d_top >= TOP_GAP_BOUND {
+            broken.push(format!(
+                "{}: the logits of the top ids differ from the golden by {d_top:.3}",
+                g.name
+            ));
+        }
+        if d_lse >= LSE_GAP_BOUND {
+            broken.push(format!(
+                "{}: the logsumexp differs from the golden by {d_lse:.3}",
+                g.name
+            ));
+        }
         worst_gap = worst_gap.max(d_top);
         wrong_top += usize::from(top != g.top_ids[0]);
-        assert!(
-            logits.iter().all(|v| v.is_finite()),
-            "{}: a logit is not finite",
-            g.name
-        );
+        if !logits.iter().all(|v| v.is_finite()) {
+            broken.push(format!("{}: a logit is not finite", g.name));
+        }
     }
     eprintln!(
-        "worst gap over the 64 top ids: {worst_gap:.3e}; prompts with the wrong top token: {wrong_top} of {}",
+        "{format:?}: worst gap over the 64 top ids: {worst_gap:.3e}; prompts with the wrong top token: {wrong_top} of {}",
         cases.len()
     );
-    assert_eq!(wrong_top, 0, "the top token differs from the golden on a prompt");
+    assert!(broken.is_empty(), "{format:?}: {}", broken.join("; "));
+    assert_eq!(
+        wrong_top, 0,
+        "{format:?}: the top token differs from the golden on a prompt"
+    );
 }
 
 #[test]
-fn a_prefill_and_seven_decode_steps_give_the_greedy_tokens_of_the_golden() {
-    let Some((dev, dir)) = open() else { return };
+fn the_logits_of_the_pass_are_coherent_with_the_golden() {
+    prefill_coherence(CacheFormat::F32);
+}
+
+#[test]
+fn the_logits_of_an_e4m3_cache_are_coherent_with_the_golden() {
+    prefill_coherence(CacheFormat::E4m3);
+}
+
+#[test]
+fn the_logits_of_a_bf16_cache_are_coherent_with_the_golden() {
+    prefill_coherence(CacheFormat::Bf16);
+}
+
+fn decode_coherence(format: CacheFormat) {
+    let Some((dev, dir)) = open(format) else { return };
     let path = golden_dir().join("inkling2-mini.quant.decode.safetensors");
     if !path.exists() {
         assert!(
@@ -274,9 +296,10 @@ fn a_prefill_and_seven_decode_steps_give_the_greedy_tokens_of_the_golden() {
         .map(|b| f32::from_le_bytes(*b))
         .collect();
     let weights = DeviceWeights::load(&dev, &dir, |_| {}).unwrap_or_else(|e| panic!("{e}"));
-    let mut pass = Pass::new(&dev, &weights, SEQ, MAX_ROWS, 3).unwrap_or_else(|e| panic!("{e}"));
+    let mut pass = Pass::with_cache_format(&dev, &weights, SEQ, MAX_ROWS, 3, format).unwrap_or_else(|e| panic!("{e}"));
     let mut worst = 0.0f64;
     let mut mismatches = 0usize;
+    let mut broken: Vec<String> = Vec::new();
     let mut logits = with_watchdog(600, || prefill(&mut pass, &ids));
     for step in 0..tokens.len() {
         let want = &golden[step * LOGITS..(step + 1) * LOGITS];
@@ -301,10 +324,11 @@ fn a_prefill_and_seven_decode_steps_give_the_greedy_tokens_of_the_golden() {
         );
         worst = worst.max(d);
         if got != expect {
-            assert!(
-                margin < TIE_MARGIN,
-                "step {step}: token {got}, golden {expect}, and the golden margin is {margin}, not a near tie"
-            );
+            if margin >= TIE_MARGIN {
+                broken.push(format!(
+                    "step {step}: token {got}, golden {expect}, and the golden margin is {margin}, not a near tie"
+                ));
+            }
             mismatches += 1;
         }
         if step + 1 < tokens.len() {
@@ -312,8 +336,27 @@ fn a_prefill_and_seven_decode_steps_give_the_greedy_tokens_of_the_golden() {
         }
     }
     eprintln!(
-        "worst max |d| over all logits: {worst:.3e}; steps with another token: {mismatches} of {}",
+        "{format:?}: worst max |d| over all logits: {worst:.3e}; steps with another token: {mismatches} of {}",
         tokens.len()
     );
-    assert!(mismatches <= 1, "{mismatches} greedy tokens differ from the golden");
+    assert!(broken.is_empty(), "{format:?}: {}", broken.join("; "));
+    assert!(
+        mismatches <= 1,
+        "{format:?}: {mismatches} greedy tokens differ from the golden"
+    );
+}
+
+#[test]
+fn a_prefill_and_seven_decode_steps_give_the_greedy_tokens_of_the_golden() {
+    decode_coherence(CacheFormat::F32);
+}
+
+#[test]
+fn an_e4m3_cache_gives_the_greedy_tokens_of_the_golden() {
+    decode_coherence(CacheFormat::E4m3);
+}
+
+#[test]
+fn a_bf16_cache_gives_the_greedy_tokens_of_the_golden() {
+    decode_coherence(CacheFormat::Bf16);
 }

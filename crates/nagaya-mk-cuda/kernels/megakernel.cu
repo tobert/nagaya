@@ -553,9 +553,10 @@ __device__ __forceinline__ void run_items(const MkTaskDescriptor& task, const Mk
         }
         return;
     }
-    uint32_t* claims = mk_scoreboard() + (MK_CLAIM_BASE + idx);
+    // The claim word is found again at each use: the pointer takes no register across an op.
+    const auto claims = [&]() { return mk_scoreboard() + (MK_CLAIM_BASE + idx); };
     if (worker_id() == 0) {
-        mk_claim_next = gridDim.x + claim_one(claims);
+        mk_claim_next = gridDim.x + claim_one(claims());
         mk_claim_ran = 0;
     }
     uint32_t item = blockIdx.x;
@@ -563,7 +564,7 @@ __device__ __forceinline__ void run_items(const MkTaskDescriptor& task, const Mk
         uint32_t claimed = 0;
         if (worker_id() == 0) {
             // The block that holds an item at or beyond the count needs no more claims.
-            claimed = mk_claim_next < item_count(task) ? gridDim.x + claim_one(claims) : mk_claim_next;
+            claimed = mk_claim_next < item_count(task) ? gridDim.x + claim_one(claims()) : mk_claim_next;
         }
         // A barrier counts whole warps, so warp 0 of the consumers waits and the other warps arrive.
         if (worker_id() >= 32) {

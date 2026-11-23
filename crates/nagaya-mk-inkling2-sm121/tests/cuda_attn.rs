@@ -526,6 +526,16 @@ fn open() -> CudaDevice {
     CudaDevice::open_by_pci(&test_cards::card(), INKLING2_CUBIN).expect("open the GPU")
 }
 
+/// Open the GPU with the cubin that holds only the cache format `format`.
+fn open_cache(format: CacheFormat) -> CudaDevice {
+    CudaDevice::open_by_pci(&test_cards::card(), format.cubin()).expect("open the GPU with the cubin of the format")
+}
+
+/// Open the GPU with the profile cubin of the cache format `format`.
+fn open_profile_cache(format: CacheFormat) -> CudaDevice {
+    CudaDevice::open_by_pci(&test_cards::card(), format.profile_cubin()).expect("open the GPU with the profile cubin")
+}
+
 fn open_profile() -> CudaDevice {
     CudaDevice::open_by_pci(&test_cards::card(), INKLING2_PROFILE_CUBIN).expect("open the GPU with the profile cubin")
 }
@@ -555,10 +565,23 @@ fn plane_rows_for(window: usize, last: usize) -> usize {
 
 #[test]
 fn a_decode_row_matches_the_host_form_at_each_context_length() {
+    decode_accuracy(None, CacheFormat::F32);
+}
+
+/// The same gate on the cubin of each cache format (milestone 37 step 11).
+#[test]
+fn a_decode_row_matches_the_host_form_in_each_cache_format() {
+    for format in [CacheFormat::F32, CacheFormat::E4m3, CacheFormat::Bf16] {
+        decode_accuracy(Some(format), format);
+    }
+}
+
+/// `cubin` is the format of the cubin, or `None` for the default cubin. `format` is the format of the cache.
+fn decode_accuracy(cubin: Option<CacheFormat>, format: CacheFormat) {
     let (Some(full), Some(slide)) = (layer(5), layer(0)) else {
         return;
     };
-    let dev = open();
+    let dev = cubin.map_or_else(open, open_cache);
     let mut worst = 0f64;
     // A full run at 1, 1,024, 4,096 and 65,536 positions, and a sliding run before and after its ring wraps.
     let cases: [(&Layer, usize, usize); 7] = [
@@ -570,7 +593,7 @@ fn a_decode_row_matches_the_host_form_at_each_context_length() {
         (slide, WINDOW, 5000),
         (slide, WINDOW, 70_000),
     ];
-    let pools = [make_pool(full, CacheFormat::F32), make_pool(slide, CacheFormat::F32)];
+    let pools = [make_pool(full, format), make_pool(slide, format)];
     for (layer, window, positions) in cases {
         let pool = &pools[usize::from(!layer.full)];
         let last = positions - 1;
@@ -580,7 +603,7 @@ fn a_decode_row_matches_the_host_form_at_each_context_length() {
         let run = run_attn(&dev, &planes, &input, 1, last, 48, 0, false);
         let (rel, abs) = worst_error(&run.out, &want);
         eprintln!(
-            "cuda_attn: decode, window {window:4}, {positions:6} positions: worst error {rel:.2e} of the row maximum ({abs:.2e} absolute)"
+            "cuda_attn: decode {format:?}, window {window:4}, {positions:6} positions: worst error {rel:.2e} of the row maximum ({abs:.2e} absolute)"
         );
         assert!(
             rel <= ACCURACY_BOUND,
@@ -589,19 +612,26 @@ fn a_decode_row_matches_the_host_form_at_each_context_length() {
         worst = worst.max(rel);
         planes.free(&dev);
     }
-    eprintln!("cuda_attn: decode: the worst error of all cases is {worst:.2e}, bound {ACCURACY_BOUND:.0e}");
+    eprintln!("cuda_attn: decode {format:?}: the worst error of all cases is {worst:.2e}, bound {ACCURACY_BOUND:.0e}");
 }
 
 /// The bits of every row of a block equal the bits of the same row run alone as a decode step, at every grid.
-fn check_rows_and_grids(layer: &Layer, pool: &Pool, window: usize, pos0: usize, rows: usize, sample: &[usize]) {
-    let dev = open();
+fn check_rows_and_grids(
+    dev: &CudaDevice,
+    layer: &Layer,
+    pool: &Pool,
+    window: usize,
+    pos0: usize,
+    rows: usize,
+    sample: &[usize],
+) {
     let last = pos0 + rows - 1;
-    let planes = Planes::new(&dev, layer, pool, window, plane_rows_for(window, last), last);
+    let planes = Planes::new(dev, layer, pool, window, plane_rows_for(window, last), last);
     let input = make_rows(layer, pos0, rows, 23);
-    let reference = run_attn(&dev, &planes, &input, rows, pos0, 48, 0, false).out;
+    let reference = run_attn(dev, &planes, &input, rows, pos0, 48, 0, false).out;
     let width = HEADS * HEAD_DIM;
     for grid in GRIDS {
-        let again = run_attn(&dev, &planes, &input, rows, pos0, grid, 0, false).out;
+        let again = run_attn(dev, &planes, &input, rows, pos0, grid, 0, false).out;
         assert_eq!(
             bits(&again),
             bits(&reference),
@@ -615,34 +645,49 @@ fn check_rows_and_grids(layer: &Layer, pool: &Pool, window: usize, pos0: usize, 
             sinks: input.sinks[t * HEADS..(t + 1) * HEADS].to_vec(),
             gate: input.gate[t * width..(t + 1) * width].to_vec(),
         };
-        let alone = run_attn(&dev, &planes, &one, 1, pos0 + t, 48, 0, false).out;
+        let alone = run_attn(dev, &planes, &one, 1, pos0 + t, 48, 0, false).out;
         assert_eq!(
             bits(&alone),
             bits(&reference[t * width..(t + 1) * width]),
             "row {t} of {rows} rows from {pos0} differs from the same position as a decode step"
         );
     }
-    planes.free(&dev);
+    planes.free(dev);
 }
 
 #[test]
 fn the_bits_of_a_row_do_not_depend_on_the_rows_or_on_the_grid() {
+    bits_do_not_depend_on_rows_or_grid(None, CacheFormat::F32);
+}
+
+/// The same gate on the cubin of each cache format (milestone 37 step 11).
+#[test]
+fn the_bits_of_a_row_do_not_depend_on_the_rows_or_on_the_grid_in_each_cache_format() {
+    for format in [CacheFormat::F32, CacheFormat::E4m3, CacheFormat::Bf16] {
+        bits_do_not_depend_on_rows_or_grid(Some(format), format);
+    }
+}
+
+fn bits_do_not_depend_on_rows_or_grid(cubin: Option<CacheFormat>, format: CacheFormat) {
     let (Some(full), Some(slide)) = (layer(5), layer(0)) else {
         return;
     };
-    let full_pool = make_pool(full, CacheFormat::F32);
-    let slide_pool = make_pool(slide, CacheFormat::F32);
+    let dev = &cubin.map_or_else(open, open_cache);
+    let full_pool = make_pool(full, format);
+    let slide_pool = make_pool(slide, format);
     // The split mode: 1, 7 and 16 rows. A block of 7 rows is 21 rows of the MMA, and 16 rows are 3 tiles.
     for rows in [7usize, 16] {
         let sample: Vec<usize> = (0..rows).collect();
-        check_rows_and_grids(full, &full_pool, 0, 4000, rows, &sample);
-        check_rows_and_grids(slide, &slide_pool, WINDOW, 5000, rows, &sample);
+        check_rows_and_grids(dev, full, &full_pool, 0, 4000, rows, &sample);
+        check_rows_and_grids(dev, slide, &slide_pool, WINDOW, 5000, rows, &sample);
     }
     // The whole mode: a block of 17 rows, and a block of 512 rows from a position that is not on a chunk.
-    check_rows_and_grids(full, &full_pool, 0, 1000, 17, &[0, 1, 8, 16]);
-    check_rows_and_grids(full, &full_pool, 0, 3000, 512, &[0, 1, 255, 256, 300, 511]);
-    check_rows_and_grids(slide, &slide_pool, WINDOW, 3000, 512, &[0, 1, 255, 511]);
-    eprintln!("cuda_attn: the bits are equal for 7, 16, 17 and 512 rows against a decode step, and at grids {GRIDS:?}");
+    check_rows_and_grids(dev, full, &full_pool, 0, 1000, 17, &[0, 1, 8, 16]);
+    check_rows_and_grids(dev, full, &full_pool, 0, 3000, 512, &[0, 1, 255, 256, 300, 511]);
+    check_rows_and_grids(dev, slide, &slide_pool, WINDOW, 3000, 512, &[0, 1, 255, 511]);
+    eprintln!(
+        "cuda_attn: {format:?}: the bits are equal for 7, 16, 17 and 512 rows against a decode step, and at grids {GRIDS:?}"
+    );
 }
 
 /// A call of few rows leaves partials in the scratch where a call of more rows has its counters. The counters sit at
@@ -683,11 +728,23 @@ fn a_call_after_a_call_of_other_rows_on_the_same_scratch_gives_the_bits_of_a_fre
 
 #[test]
 fn a_block_of_rows_matches_the_host_form() {
+    block_accuracy(None, CacheFormat::F32);
+}
+
+/// The same gate on the cubin of each cache format (milestone 37 step 11).
+#[test]
+fn a_block_of_rows_matches_the_host_form_in_each_cache_format() {
+    for format in [CacheFormat::F32, CacheFormat::E4m3, CacheFormat::Bf16] {
+        block_accuracy(Some(format), format);
+    }
+}
+
+fn block_accuracy(cubin: Option<CacheFormat>, format: CacheFormat) {
     let (Some(full), Some(slide)) = (layer(5), layer(0)) else {
         return;
     };
-    let dev = open();
-    let pools = [make_pool(full, CacheFormat::F32), make_pool(slide, CacheFormat::F32)];
+    let dev = cubin.map_or_else(open, open_cache);
+    let pools = [make_pool(full, format), make_pool(slide, format)];
     let mut worst = 0f64;
     // A block from position 0 has the causal mask of its own rows. A block later also reads the cache before it.
     for (layer, window, pos0, rows, sample) in [
@@ -714,7 +771,9 @@ fn a_block_of_rows_matches_the_host_form() {
         }
         planes.free(&dev);
     }
-    eprintln!("cuda_attn: blocks: the worst error of the sampled rows is {worst:.2e}, bound {ACCURACY_BOUND:.0e}");
+    eprintln!(
+        "cuda_attn: blocks {format:?}: the worst error of the sampled rows is {worst:.2e}, bound {ACCURACY_BOUND:.0e}"
+    );
 }
 
 #[test]
@@ -787,6 +846,86 @@ fn an_e4m3_cache_gives_the_bits_of_the_f32_form_on_the_same_packed_cache() {
     eprintln!("cuda_attn: e4m3: the largest gap to the f32 cache is {worst_gap:.2e} of the row maximum");
 }
 
+/// A pool of f32 rows that hold the values of `pool` (a bf16 or an e4m3 pool): the expansion is exact.
+fn expanded(pool: &Pool) -> Pool {
+    let bytes = |rows: &[Vec<f32>]| -> Vec<Vec<u8>> {
+        rows.iter()
+            .map(|r| r.iter().flat_map(|v| v.to_le_bytes()).collect())
+            .collect()
+    };
+    Pool {
+        format: CacheFormat::F32,
+        keys: pool.keys.clone(),
+        values: pool.values.clone(),
+        packed_keys: bytes(&pool.keys),
+        packed_values: bytes(&pool.values),
+    }
+}
+
+/// A bf16 cache gives the bits of the f32 form on the same values (the expansion is exact, and the terms that the f32 form
+/// adds are zero). The two forms run on the cubin of their own format, one after the other. The gap to the f32 cache of the
+/// unrounded values and the error against the host form are reported.
+#[test]
+fn a_bf16_cache_gives_the_bits_of_the_f32_form_on_the_same_values() {
+    let (Some(full), Some(slide)) = (layer(5), layer(0)) else {
+        return;
+    };
+    let mut worst_gap = 0f64;
+    let mut worst_rel = 0f64;
+    for (layer, window, pos0, rows) in [
+        (full, 0usize, 4095usize, 1usize),
+        (full, 0, 20_000, 1),
+        (full, 0, 3000, 16),
+        (full, 0, 1000, 64),
+        (slide, WINDOW, 5000, 1),
+        (slide, WINDOW, 3000, 40),
+    ] {
+        let wide_pool = make_pool(layer, CacheFormat::F32);
+        let bf_pool = make_pool(layer, CacheFormat::Bf16);
+        let same_values = expanded(&bf_pool);
+        let last = pos0 + rows - 1;
+        let plane_rows = plane_rows_for(window, last);
+        let input = make_rows(layer, pos0, rows, 41);
+        let run = |format: CacheFormat, pool: &Pool| {
+            let dev = open_cache(format);
+            let planes = Planes::new(&dev, layer, pool, window, plane_rows, last);
+            let out = run_attn(&dev, &planes, &input, rows, pos0, 48, 0, false).out;
+            planes.free(&dev);
+            out
+        };
+        let got = run(CacheFormat::Bf16, &bf_pool);
+        let reference = run(CacheFormat::F32, &same_values);
+        assert_eq!(
+            bits(&got),
+            bits(&reference),
+            "the bf16 form differs from the f32 form on the same values: {rows} rows from {pos0}, window {window}"
+        );
+        let wide = run(CacheFormat::F32, &wide_pool);
+        let width = HEADS * HEAD_DIM;
+        let gap = (0..rows)
+            .map(|t| worst_error_of(&got[t * width..(t + 1) * width], &wide[t * width..(t + 1) * width]))
+            .fold(0f64, f64::max);
+        let want = host_row(layer, &bf_pool, &input, 0, pos0, window);
+        let (rel, _) = worst_error(&got[..width], &want);
+        assert!(
+            rel <= ACCURACY_BOUND,
+            "the bf16 form against the host form: error {rel:e}"
+        );
+        eprintln!(
+            "cuda_attn: bf16 {rows:3} rows from {pos0:6}, window {window:4}: bits equal to the f32 form; gap to the f32 cache {gap:.2e}; error of row 0 against the host form {rel:.2e}"
+        );
+        worst_gap = worst_gap.max(gap);
+        worst_rel = worst_rel.max(rel);
+    }
+    eprintln!(
+        "cuda_attn: bf16: the largest gap to the f32 cache is {worst_gap:.2e} of the row maximum; the worst error against the host form is {worst_rel:.2e}"
+    );
+}
+
+fn worst_error_of(got: &[f32], want: &[f32]) -> f64 {
+    worst_error(got, want).0
+}
+
 /// The bytes that a decode step reads from the cache: both planes over the visible positions of the 8 KV heads.
 fn decode_bytes(format: CacheFormat, positions: usize, window: usize) -> usize {
     let visible = positions - attn::lowest_key(positions - 1, window);
@@ -796,10 +935,10 @@ fn decode_bytes(format: CacheFormat, positions: usize, window: usize) -> usize {
 #[test]
 fn the_cache_read_of_a_decode_step_holds_the_speed_gate_at_65536_positions() {
     let Some(full) = layer(5) else { return };
-    let dev = open_profile();
     let positions = 65_536usize;
     let mut table = Vec::new();
-    for format in [CacheFormat::F32, CacheFormat::E4m3] {
+    for format in [CacheFormat::F32, CacheFormat::E4m3, CacheFormat::Bf16] {
+        let dev = open_profile_cache(format);
         let pool = make_pool(full, format);
         let planes = Planes::new(&dev, full, &pool, 0, plane_rows_for(0, positions - 1), positions - 1);
         let input = make_rows(full, positions - 1, 1, 7);
@@ -817,7 +956,7 @@ fn the_cache_read_of_a_decode_step_holds_the_speed_gate_at_65536_positions() {
         table.push((format, gbps));
         planes.free(&dev);
     }
-    // The floor is on the f32 cache. The e4m3 number is reported: it is bound by the same pipeline.
+    // The floor is on the f32 cache. The e4m3 and bf16 numbers are reported: they are bound by the same pipeline.
     assert!(
         table[0].1 >= SPEED_GATE * PEAK_GBPS,
         "an f32 decode step reads {:.1} GB/s, under {:.1} GB/s",
@@ -834,8 +973,11 @@ fn the_time_of_the_decode_steps_and_the_blocks_of_a_run_is_reported() {
     let dev = open_profile();
     let pools = [make_pool(full, CacheFormat::F32), make_pool(slide, CacheFormat::F32)];
     let e4 = [make_pool(full, CacheFormat::E4m3), make_pool(slide, CacheFormat::E4m3)];
+    let bf = [make_pool(full, CacheFormat::Bf16), make_pool(slide, CacheFormat::Bf16)];
+    let dev_bf = open_profile_cache(CacheFormat::Bf16);
     eprintln!("cuda_attn: time table (kernel time of the task, least of 5 launches)");
-    for (pools, name) in [(&pools, "f32"), (&e4, "e4m3")] {
+    for (pools, name) in [(&pools, "f32"), (&e4, "e4m3"), (&bf, "bf16")] {
+        let dev = if name == "bf16" { &dev_bf } else { &dev };
         for (layer, window, pos0, rows) in [
             (full, 0usize, 1023usize, 1usize),
             (full, 0, 4095, 1),
@@ -850,9 +992,9 @@ fn the_time_of_the_decode_steps_and_the_blocks_of_a_run_is_reported() {
         ] {
             let pool = &pools[usize::from(!layer.full)];
             let last = pos0 + rows - 1;
-            let planes = Planes::new(&dev, layer, pool, window, plane_rows_for(window, last), last);
+            let planes = Planes::new(dev, layer, pool, window, plane_rows_for(window, last), last);
             let input = make_rows(layer, pos0, rows, 5);
-            let run = run_attn(&dev, &planes, &input, rows, pos0, 48, 4, true);
+            let run = run_attn(dev, &planes, &input, rows, pos0, 48, 4, true);
             let shape = AttnShape::new(rows, pos0, window, planes.plane_rows, pool.format).unwrap();
             let read = decode_bytes(pool.format, last + 1, window);
             eprintln!(
@@ -863,7 +1005,7 @@ fn the_time_of_the_decode_steps_and_the_blocks_of_a_run_is_reported() {
                 read as f64 / 1e6,
                 read as f64 / run.kernel_ns as f64
             );
-            planes.free(&dev);
+            planes.free(dev);
         }
     }
 }

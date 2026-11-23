@@ -91,6 +91,17 @@ pub mod gpu {
         CudaDevice::open_by_pci(&test_cards::card(), INKLING2_CUBIN).expect("open the GPU")
     }
 
+    /// Open the GPU with the interpreter that holds only the cache format `format`.
+    pub fn open_cache(format: nagaya_mk_cuda::attn::CacheFormat) -> CudaDevice {
+        CudaDevice::open_by_pci(&test_cards::card(), format.cubin()).expect("open the GPU with the cubin of the format")
+    }
+
+    /// Open the GPU with the profile interpreter that holds the cache format `format`.
+    pub fn open_profile_cache(format: nagaya_mk_cuda::attn::CacheFormat) -> CudaDevice {
+        CudaDevice::open_by_pci(&test_cards::card(), format.profile_cubin())
+            .expect("open the GPU with the profile cubin of the format")
+    }
+
     /// Open the GPU with the interpreter that writes a profile of each task.
     pub fn open_profile() -> CudaDevice {
         CudaDevice::open_by_pci(&test_cards::card(), INKLING2_PROFILE_CUBIN)

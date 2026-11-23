@@ -42,7 +42,7 @@
 //          taps tile too, on a full layer) runs the finisher: for each row, the short convolution with the
 //          3 rows before it (the raw rows of the block, then the conv state), then the clip of the key to 22.627417 or the
 //          rms of the value, written to the cache of the attention (see `cache_layout.cuh`): row `pos0 + row` of the head, modulo `layer` rows on a
-//          sliding layer, in f32 (FLAG_F32) or e4m3 with a unit scale (no flag).
+//          sliding layer, in f32 (FLAG_F32), bf16 (FLAG_BF16) or e4m3 with a unit scale (no flag).
 //          After the last row it pushes the last 3 raw rows into the conv state. A sliding layer has a fixed
 //          convolution (`[1024][4]`, tap 3 on the current row, divisor sqrt(5)). A full layer has a dynamic one
 //          (`[4][1024]` plus the 4 taps of the head, lag 0 on the current row, divisor 3).
@@ -51,7 +51,7 @@
 // n = rows of J, k = 2304, kt = 768, group_items = 3, item_bytes = 16 * kt * 2, items = (n / 16) * 3, rows = the count of
 // rows (1 to 512), pos0 = the position of the first row, layer = the rows of a plane of the cache (a multiple of 64), scale_bytes = the
 // floats of the scratch that the host gives (checked: the op traps when it needs more), flags = FLAG_NORM, on a full
-// layer FLAG_FULL_LAYER, and FLAG_F32 for an f32 cache.
+// layer FLAG_FULL_LAYER, and FLAG_F32 or FLAG_BF16 for the cache. A cubin of one cache format traps on the flags of another.
 //
 // The output at `c`, in floats: q `[rows][3072]`, then rel `[rows][384]`, then sink `[rows][24]`, then gate `[rows][3072]`.
 // The scratch at `f`, in floats: one counter for each tile, then 64 counters (24 heads of q, 8 of k, 8 of v, 24 spare), then
@@ -191,7 +191,6 @@ __device__ __forceinline__ void pr_finish_kv(const MkTaskDescriptor& task, const
     const uint16_t* conv_w = reinterpret_cast<const uint16_t*>(table->ptr[key ? MK_PROJ_TABLE_K_CONV : MK_PROJ_TABLE_V_CONV]);
     float* state = reinterpret_cast<float*>(table->ptr[key ? MK_PROJ_TABLE_K_STATE : MK_PROJ_TABLE_V_STATE]);
     uint8_t* out = reinterpret_cast<uint8_t*>(table->ptr[key ? MK_PROJ_TABLE_K_OUT : MK_PROJ_TABLE_V_OUT]);
-    const bool f32_cache = (task.flags & FLAG_F32) != 0;
     const uint32_t rows = task.rows;
     const uint32_t rsel = worker_id() >> 7;
     const uint32_t channel = head * PR_HEAD_DIM + (worker_id() & (PR_HEAD_DIM - 1));
@@ -239,12 +238,7 @@ __device__ __forceinline__ void pr_finish_kv(const MkTaskDescriptor& task, const
                                 : 1.0f / sqrtf(total / static_cast<float>(PR_HEAD_DIM) + PR_EPS);
             // The row of the head in the plane of the cache: the layout of `cache_layout.cuh`, in the format of the task.
             const uint32_t row = cache_row_of(task.pos0 + r, !full, task.layer);
-            const uint64_t at = cache_value_offset(head, row, task.layer, worker_id() & (PR_HEAD_DIM - 1), f32_cache);
-            if (f32_cache) {
-                *reinterpret_cast<float*>(out + at) = result * f;
-            } else {
-                out[at] = static_cast<uint8_t>(cvt_e4m3(result * f));
-            }
+            cache_store(task.flags, out, head, row, task.layer, worker_id() & (PR_HEAD_DIM - 1), result * f);
         }
     }
     worker_sync();
@@ -272,7 +266,7 @@ __device__ __forceinline__ void pr_check(const MkTaskDescriptor& task, const MkT
     if (worker_count() != MK_WORKERS || table == nullptr || rows == 0 || rows > MM_MAX_ROWS || task.kt != 768 ||
         task.k != 2304 || task.group_items != 3 || tiles != pr_tiles(full).end || task.items != tiles * 3 ||
         task.item_bytes != MM_TILE * 768 * 2 || dynamic_smem_bytes() < MM_SMEM_BYTES ||
-        (task.flags & ~(FLAG_NORM | FLAG_FULL_LAYER | FLAG_F32)) != 0 ||
+        (task.flags & ~(FLAG_NORM | FLAG_FULL_LAYER | FLAG_F32 | FLAG_BF16)) != 0 || !cache_flags_ok(task.flags) ||
         task.layer == 0 || task.layer % 64 != 0 || (full ? task.pos0 + rows > task.layer : rows > task.layer) ||
         (table->ptr[MK_PROJ_TABLE_K_OUT] & 15) != 0 || (table->ptr[MK_PROJ_TABLE_V_OUT] & 15) != 0 || (task.flags & FLAG_NORM) == 0 || (task.a & 7) != 0 ||
         (task.b & 15) != 0 || (task.c & 3) != 0 || (task.e & 3) != 0 || (task.f & 3) != 0 || task.a == 0 ||
@@ -500,7 +494,8 @@ __device__ __forceinline__ void prb_check(const MkTaskDescriptor& task, const Mk
         task.k != 2304 || task.group_items != 3 || tiles != pr_tiles(full).end ||
         task.items != prb_groups(full) * row_blocks || task.item_bytes != MM_TILE * 768 * 2 ||
         dynamic_smem_bytes() < MB_SMEM_BYTES ||
-        (task.flags & ~(FLAG_NORM | FLAG_FULL_LAYER | FLAG_F32 | FLAG_BLOCK_FORM)) != 0 || task.layer == 0 ||
+        (task.flags & ~(FLAG_NORM | FLAG_FULL_LAYER | FLAG_F32 | FLAG_BF16 | FLAG_BLOCK_FORM)) != 0 ||
+        !cache_flags_ok(task.flags) || task.layer == 0 ||
         task.layer % 64 != 0 || (full ? task.pos0 + rows > task.layer : rows > task.layer) ||
         (table->ptr[MK_PROJ_TABLE_K_OUT] & 15) != 0 || (table->ptr[MK_PROJ_TABLE_V_OUT] & 15) != 0 ||
         (task.flags & FLAG_NORM) == 0 || (task.a & 15) != 0 || (task.b & 15) != 0 || (task.c & 3) != 0 ||

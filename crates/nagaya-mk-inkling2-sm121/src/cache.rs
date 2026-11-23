@@ -1,7 +1,7 @@
 //! The host image of the cache of one run (milestone 37 step 11, "The layout of the cache"), and the pack of its rows.
 //!
 //! The layout is in `nagaya_mk_cuda::attn`: a plane for the keys and a plane for the values, a block of rows for each KV
-//! head, and one row of 128 values for each position. A row is `f32` (the oracle) or `e4m3` with a unit scale. A scale
+//! head, and one row of 128 values for each position. A row is `f32` (the oracle), `bf16` or `e4m3`, the last two with a unit scale. A scale
 //! never covers more than one position, so the row of a new token is complete when its projection writes it.
 //!
 //! The device writes its rows in the epilogue of the projection. This image is the host form of that write. The tests of
@@ -42,6 +42,22 @@ pub fn pack_e4m3(value: f32) -> Result<u8, FormatError> {
     Ok(sign | code as u8)
 }
 
+/// The bf16 value of a finite `f32`: the nearest value, ties to the even code. It is the rounding of the device
+/// (`cvt.rn.bf16.f32`). A value that is too large for bf16 is an error, as the device would write an infinity.
+pub fn pack_bf16(value: f32) -> Result<u16, FormatError> {
+    if !value.is_finite() {
+        return Err(FormatError::NonFinite);
+    }
+    let bits = value.to_bits();
+    // Add the half of the dropped bits, and one more when the kept lowest bit is 1: ties go to the even code.
+    let rounded = bits.wrapping_add(0x7FFF + ((bits >> 16) & 1));
+    let code = (rounded >> 16) as u16;
+    if !f32::from_bits(u32::from(code) << 16).is_finite() {
+        return Err(FormatError::NonFinite);
+    }
+    Ok(code)
+}
+
 /// Pack one row of 128 values in `format`, and write it to `out` (`format.row_bytes()` bytes).
 pub fn pack_row(format: CacheFormat, row: &[f32], out: &mut [u8]) -> Result<(), FormatError> {
     assert_eq!(row.len(), HEAD_DIM, "a cache row has {HEAD_DIM} values");
@@ -60,11 +76,16 @@ pub fn pack_row(format: CacheFormat, row: &[f32], out: &mut [u8]) -> Result<(), 
                 *o = pack_e4m3(*v)?;
             }
         }
+        CacheFormat::Bf16 => {
+            for (v, o) in row.iter().zip(out.as_chunks_mut::<2>().0) {
+                *o = pack_bf16(*v)?.to_le_bytes();
+            }
+        }
     }
     Ok(())
 }
 
-/// Unpack one row to `f32`. The result is exact for both formats.
+/// Unpack one row to `f32`. The result is exact for each format.
 pub fn unpack_row(format: CacheFormat, bytes: &[u8]) -> Result<Vec<f32>, FormatError> {
     assert_eq!(
         bytes.len(),
@@ -79,6 +100,12 @@ pub fn unpack_row(format: CacheFormat, bytes: &[u8]) -> Result<Vec<f32>, FormatE
             .map(|b| f32::from_le_bytes(*b))
             .collect()),
         CacheFormat::E4m3 => bytes.iter().map(|b| decode_e4m3(*b)).collect(),
+        CacheFormat::Bf16 => Ok(bytes
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|b| f32::from_bits(u32::from(u16::from_le_bytes(*b)) << 16))
+            .collect()),
     }
 }
 
@@ -159,6 +186,39 @@ mod tests {
         fn unit(&mut self) -> f32 {
             (self.next() >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0
         }
+    }
+
+    #[test]
+    fn a_bf16_value_is_the_f32_value_rounded_to_nearest_even() {
+        // The bits of f32 1.0 are 0x3F80_0000. Half a step above is a tie: the even code 0x3F80 wins.
+        assert_eq!(pack_bf16(1.0), Ok(0x3F80));
+        assert_eq!(pack_bf16(f32::from_bits(0x3F80_8000)), Ok(0x3F80));
+        // A tie above an odd code rounds up to the even code.
+        assert_eq!(pack_bf16(f32::from_bits(0x3F81_8000)), Ok(0x3F82));
+        // Just under and just over the tie.
+        assert_eq!(pack_bf16(f32::from_bits(0x3F80_7FFF)), Ok(0x3F80));
+        assert_eq!(pack_bf16(f32::from_bits(0x3F80_8001)), Ok(0x3F81));
+        assert_eq!(pack_bf16(-0.0), Ok(0x8000));
+        assert_eq!(pack_bf16(f32::MAX), Err(FormatError::NonFinite));
+        assert_eq!(pack_bf16(f32::NAN), Err(FormatError::NonFinite));
+        // A bf16 row round-trips exactly and takes 2 bytes for each value.
+        let row: Vec<f32> = (0..HEAD_DIM).map(|i| (i as f32 - 60.0) * 0.37).collect();
+        let mut bytes = vec![0u8; CacheFormat::Bf16.row_bytes()];
+        pack_row(CacheFormat::Bf16, &row, &mut bytes).unwrap();
+        assert_eq!(bytes.len(), 256);
+        let back = unpack_row(CacheFormat::Bf16, &bytes).unwrap();
+        for (v, b) in row.iter().zip(&back) {
+            assert_eq!(*b, f32::from_bits(u32::from(pack_bf16(*v).unwrap()) << 16));
+            assert!((b - v).abs() <= v.abs() * 2f32.powi(-8), "{v} -> {b}");
+        }
+        let again = pack_row_bytes(&back);
+        assert_eq!(again, bytes, "an unpacked row packs to the same bytes");
+    }
+
+    fn pack_row_bytes(row: &[f32]) -> Vec<u8> {
+        let mut bytes = vec![0u8; CacheFormat::Bf16.row_bytes()];
+        pack_row(CacheFormat::Bf16, row, &mut bytes).unwrap();
+        bytes
     }
 
     #[test]

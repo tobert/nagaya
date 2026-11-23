@@ -13,6 +13,7 @@ mod common;
 
 use std::path::PathBuf;
 
+use nagaya_mk_cuda::attn::CacheFormat;
 use nagaya_mk_inkling2_sm121::pass::step::Pass;
 use nagaya_mk_inkling2_sm121::pass::weights::DeviceWeights;
 use nagaya_mk_inkling2_sm121::spec;
@@ -104,6 +105,19 @@ fn compare(pass: &mut Pass<'_>, chat: &[u32], rows_list: &[usize], label: &str) 
 
 #[test]
 fn a_cached_ring_gives_the_bits_of_a_fresh_ring() {
+    cached_ring_bits(None, CacheFormat::F32);
+}
+
+/// The same gate on the cubin of each cache format (milestone 37 step 11).
+#[test]
+fn a_cached_ring_gives_the_bits_of_a_fresh_ring_in_each_cache_format() {
+    for format in [CacheFormat::F32, CacheFormat::E4m3, CacheFormat::Bf16] {
+        cached_ring_bits(Some(format), format);
+    }
+}
+
+/// `cubin` is the format of the cubin, or `None` for the default cubin. `format` is the format of the cache.
+fn cached_ring_bits(cubin: Option<CacheFormat>, format: CacheFormat) {
     let require = std::env::var_os("NAGAYA_REQUIRE_MODELS").is_some();
     let dir = match std::env::var_os("INKLING2_MODEL_DIR") {
         Some(d) if PathBuf::from(&d).join(spec::WEIGHTS_FILE).exists() => PathBuf::from(d),
@@ -116,9 +130,10 @@ fn a_cached_ring_gives_the_bits_of_a_fresh_ring() {
             return;
         }
     };
-    let dev = common::gpu::open();
+    let dev = cubin.map_or_else(common::gpu::open, common::gpu::open_cache);
     let weights = DeviceWeights::load(&dev, &dir, |_| {}).unwrap_or_else(|e| panic!("{e}"));
-    let mut pass = Pass::new(&dev, &weights, SEQ, 512, 3).unwrap_or_else(|e| panic!("{e}"));
+    let mut pass = Pass::with_cache_format(&dev, &weights, SEQ, 512, 3, format).unwrap_or_else(|e| panic!("{e}"));
+    eprintln!("cuda_pass_cache: cache format {format:?}");
     let chat = chat_ids();
     assert_eq!(chat.len(), 17);
     // The prompt, then decode steps at the positions 17 to 40.
@@ -173,6 +188,18 @@ fn time_calls(pass: &mut Pass<'_>, chat: &[u32], rows: usize, calls: usize) -> (
 /// The host time of a call that finds its ring is under 1 ms, and the end to end rate follows the kernel.
 #[test]
 fn the_host_time_of_a_cached_call_is_reported_and_under_a_millisecond() {
+    host_time(None, CacheFormat::F32);
+}
+
+/// The same report on the cubin of each cache format (milestone 37 step 11): the rate of the pass for each format.
+#[test]
+fn the_rate_of_the_pass_is_reported_for_each_cache_format() {
+    for format in [CacheFormat::F32, CacheFormat::E4m3, CacheFormat::Bf16] {
+        host_time(Some(format), format);
+    }
+}
+
+fn host_time(cubin: Option<CacheFormat>, format: CacheFormat) {
     let require = std::env::var_os("NAGAYA_REQUIRE_MODELS").is_some();
     let dir = match std::env::var_os("INKLING2_MODEL_DIR") {
         Some(d) if PathBuf::from(&d).join(spec::WEIGHTS_FILE).exists() => PathBuf::from(d),
@@ -185,9 +212,9 @@ fn the_host_time_of_a_cached_call_is_reported_and_under_a_millisecond() {
             return;
         }
     };
-    let dev = common::gpu::open();
+    let dev = cubin.map_or_else(common::gpu::open, common::gpu::open_cache);
     let weights = DeviceWeights::load(&dev, &dir, |_| {}).unwrap_or_else(|e| panic!("{e}"));
-    let mut pass = Pass::new(&dev, &weights, SEQ, 512, 3).unwrap_or_else(|e| panic!("{e}"));
+    let mut pass = Pass::with_cache_format(&dev, &weights, SEQ, 512, 3, format).unwrap_or_else(|e| panic!("{e}"));
     let chat = chat_ids();
     // The build of a ring, for the report.
     pass.slot.zero().unwrap();
@@ -203,7 +230,7 @@ fn the_host_time_of_a_cached_call_is_reported_and_under_a_millisecond() {
         let (host, patch, wall) = time_calls(&mut pass, &chat, rows, 20);
         let gpu = wall - host;
         eprintln!(
-            "cuda_pass_cache: {rows} rows: host {host:.3} ms (patch {patch:.3} ms), wall {wall:.2} ms, kernel {gpu:.2} ms: \
+            "cuda_pass_cache: {format:?} {rows} rows: host {host:.3} ms (patch {patch:.3} ms), wall {wall:.2} ms, kernel {gpu:.2} ms: \
              {:.1} tokens/s end to end, {:.1} tokens/s kernel only",
             rows as f64 * 1e3 / wall,
             rows as f64 * 1e3 / gpu

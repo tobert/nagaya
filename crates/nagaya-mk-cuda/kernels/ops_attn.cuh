@@ -11,7 +11,7 @@
 // - n: the window of a sliding run (1,024), or 0 for a full run. k: the rows of a plane for each head. A sliding run
 //   keeps position j in row j % k. A full run keeps it in row j.
 // - kt: the keys of one chunk (MK_ATTN_CHUNK_KEYS). p0: the scale of a score, 1 / sqrt(128). group_items: the chunks.
-// - flags: FLAG_F32 for an f32 cache, or no flag for e4m3 with a unit scale. scale_bytes: the bytes of one cache row.
+// - flags: FLAG_F32 for an f32 cache, FLAG_BF16 for a bf16 cache, or no flag for e4m3 with a unit scale. scale_bytes: the bytes of one cache row.
 //
 // The cut. A row of the MMA is a pair (position, query head): row i of a tile of 16 is position i / 3 and the head
 // 3 * kvh + i % 3 of its KV head. So the 3 query heads of a KV head share one read of the cache, and 16 rows are
@@ -31,16 +31,16 @@
 // the chunks in the same order, so the bits are the same, and they do not depend on the rows or on the grid.
 //
 // The MMA. A score is a sum over 128 channels of products of f32 values. Each f32 is three bf16 terms (design rule 9).
-// An f32 cache gives 6 MMAs for each product tile (the terms that are not below 2^-24), and an e4m3 cache gives 3,
-// because an e4m3 value is exact in bf16. The expansion of a cache value happens in registers.
+// An f32 cache gives 6 MMAs for each product tile (the terms that are not below 2^-24), and an e4m3 or bf16 cache gives
+// 3, because such a value is exact in bf16. The expansion of a cache value happens in registers.
 //
 // This header needs `matmul_bf16.cuh` (the MMA helpers) and the worker functions of `megakernel.cu`.
 
 #pragma once
 
 // The keys of one step of the loop: TPI tiles of 16.
-template <bool F32>
-constexpr uint32_t AtTilesKeys() { return 16 * (F32 ? 1 : 1); }
+template <uint32_t FMT>
+constexpr uint32_t AtTilesKeys() { return 16; }
 
 constexpr uint32_t AT_HEADS = 24;
 constexpr uint32_t AT_KV_HEADS = 8;
@@ -67,7 +67,7 @@ constexpr uint32_t AT_SM_FLAG = AT_SM_LC + 16;          // one word
 constexpr uint32_t AT_SM_RUN = AT_SM_FLAG + 4;          // [m, l, o][8][256]: the merged state of the whole mode
 constexpr uint32_t AT_SM_QA = AT_SM_RUN + 3 * 8 * 256;  // [12][256]: the terms of the queries of each thread
 static_assert((AT_SM_QA + 12 * 256) * 4 <= MK_ATTN_SMEM_BYTES, "the shared memory of OP_ATTN is too small");
-static_assert(AtTilesKeys<false>() <= AT_MAX_STEP && AtTilesKeys<true>() <= AT_MAX_STEP, "a step has at most AT_MAX_STEP keys");
+static_assert(AtTilesKeys<CF_F32>() <= AT_MAX_STEP && AtTilesKeys<CF_BF16>() <= AT_MAX_STEP, "a step has at most AT_MAX_STEP keys");
 static_assert(AT_CHUNK % 64 == 0, "a chunk is a whole count of steps");
 
 // Two e4m3 values (the low 16 bits of `two`, the first value in the low byte) to two f32 values. The expansion is exact.
@@ -104,10 +104,10 @@ __device__ __forceinline__ AtA at_a_terms(float2 g_lo, float2 g8_lo, float2 g_hi
 }
 
 // The B operand for the slots 2t, 2t + 1 (x0, x1) and 2t + 8, 2t + 9 (x2, x3) of one column.
-template <bool F32>
+template <uint32_t FMT>
 __device__ __forceinline__ AtB at_b_terms(float x0, float x1, float x2, float x3) {
     AtB b;
-    if (F32) {
+    if (FMT == CF_F32) {
         const MmTerms t0 = mm_split(x0, x1);
         const MmTerms t1 = mm_split(x2, x3);
         b = {t0.hi, t1.hi, t0.mid, t1.mid, t0.lo, t1.lo};
@@ -118,9 +118,9 @@ __device__ __forceinline__ AtB at_b_terms(float x0, float x1, float x2, float x3
 }
 
 // d += A B over the terms, the small terms first. The terms below 2^-24 of the product are left out.
-template <bool F32>
+template <uint32_t FMT>
 __device__ __forceinline__ void at_mma(float (&d)[4], const AtA& a, const AtB& b) {
-    if (F32) {
+    if (FMT == CF_F32) {
         mm_mma(d, a.l, b.h0, b.h1);
         mm_mma(d, a.h, b.l0, b.l1);
         mm_mma(d, a.m, b.m0, b.m1);
@@ -136,34 +136,38 @@ __device__ __forceinline__ void at_mma(float (&d)[4], const AtA& a, const AtB& b
 
 // The registers of the cache values that one step of the loop loads. A step is TPI tiles of 16 keys. Lane (g, t) holds,
 // for each tile, the 4 channels 16 w + 4 t .. + 3 of the keys g and 8 + g (`k`), and the channels 16 w + 2 g and + 1 of
-// the keys 2t, 2t + 1, 2t + 8 and 2t + 9 (`v`). An f32 value fills a register, and an e4m3 value a byte.
-template <bool F32>
+// the keys 2t, 2t + 1, 2t + 8 and 2t + 9 (`v`). An f32 value fills a register, a bf16 value half of one, and an e4m3 value a byte.
+template <uint32_t FMT>
 struct AtTiles {
-    static constexpr uint32_t TPI = F32 ? 1 : 1;
-    static constexpr uint32_t KEYS = AtTilesKeys<F32>();
+    static constexpr uint32_t TPI = 1;
+    static constexpr uint32_t KEYS = AtTilesKeys<FMT>();
     uint4 k[TPI][2];
     uint2 v[TPI][4];
 };
 
 // Load the keys of the step whose first key is at position `key_base` and in row `row_base` of the plane. A key outside
 // of [klo, khi] reads as zero: its row can hold no finite value, and a zero keeps the masked products exact.
-template <bool F32>
+template <uint32_t FMT>
 __device__ __forceinline__ void at_load_k(
-    AtTiles<F32>& buf, const uint8_t* kp, uint32_t row_base, uint32_t key_base, uint32_t klo, uint32_t khi, uint32_t d0,
+    AtTiles<FMT>& buf, const uint8_t* kp, uint32_t row_base, uint32_t key_base, uint32_t klo, uint32_t khi, uint32_t d0,
     uint32_t g, uint32_t t4) {
-    constexpr uint32_t ROW = F32 ? 512 : 128;
+    constexpr uint32_t ROW = 128 * cache_value_bytes(FMT);
 #pragma unroll
-    for (uint32_t u = 0; u < AtTiles<F32>::TPI; ++u) {
+    for (uint32_t u = 0; u < AtTiles<FMT>::TPI; ++u) {
 #pragma unroll
         for (uint32_t nt = 0; nt < 2; ++nt) {
             const uint32_t off = 16 * u + 8 * nt + g;
             const uint32_t j = key_base + off;
             uint4 raw = make_uint4(0, 0, 0, 0);
             if (j >= klo && j <= khi) {
-                const uint8_t* p = kp + static_cast<uint64_t>(row_base + off) * ROW + (F32 ? (d0 + 4 * t4) * 4 : d0 + 4 * t4);
-                if (F32) {
+                const uint8_t* p = kp + static_cast<uint64_t>(row_base + off) * ROW + (d0 + 4 * t4) * cache_value_bytes(FMT);
+                if constexpr (FMT == CF_F32) {
                     const float4 x = __ldcg(reinterpret_cast<const float4*>(p));
                     raw = make_uint4(__float_as_uint(x.x), __float_as_uint(x.y), __float_as_uint(x.z), __float_as_uint(x.w));
+                } else if constexpr (FMT == CF_BF16) {
+                    const uint2 x = __ldcg(reinterpret_cast<const uint2*>(p));
+                    raw.x = x.x;
+                    raw.y = x.y;
                 } else {
                     raw.x = __ldcg(reinterpret_cast<const unsigned int*>(p));
                 }
@@ -174,23 +178,25 @@ __device__ __forceinline__ void at_load_k(
 }
 
 // The same for the values.
-template <bool F32>
+template <uint32_t FMT>
 __device__ __forceinline__ void at_load_v(
-    AtTiles<F32>& buf, const uint8_t* vp, uint32_t row_base, uint32_t key_base, uint32_t klo, uint32_t khi, uint32_t d0,
+    AtTiles<FMT>& buf, const uint8_t* vp, uint32_t row_base, uint32_t key_base, uint32_t klo, uint32_t khi, uint32_t d0,
     uint32_t g, uint32_t t4) {
-    constexpr uint32_t ROW = F32 ? 512 : 128;
+    constexpr uint32_t ROW = 128 * cache_value_bytes(FMT);
 #pragma unroll
-    for (uint32_t u = 0; u < AtTiles<F32>::TPI; ++u) {
+    for (uint32_t u = 0; u < AtTiles<FMT>::TPI; ++u) {
 #pragma unroll
         for (uint32_t q = 0; q < 4; ++q) {
             const uint32_t off = 16 * u + 2 * t4 + (q & 1) + 8 * (q >> 1);
             const uint32_t j = key_base + off;
             uint2 raw = make_uint2(0, 0);
             if (j >= klo && j <= khi) {
-                const uint8_t* p = vp + static_cast<uint64_t>(row_base + off) * ROW + (F32 ? (d0 + 2 * g) * 4 : d0 + 2 * g);
-                if (F32) {
+                const uint8_t* p = vp + static_cast<uint64_t>(row_base + off) * ROW + (d0 + 2 * g) * cache_value_bytes(FMT);
+                if constexpr (FMT == CF_F32) {
                     const float2 x = __ldcg(reinterpret_cast<const float2*>(p));
                     raw = make_uint2(__float_as_uint(x.x), __float_as_uint(x.y));
+                } else if constexpr (FMT == CF_BF16) {
+                    raw.x = __ldcg(reinterpret_cast<const unsigned int*>(p));
                 } else {
                     raw.x = __ldcg(reinterpret_cast<const unsigned short*>(p));
                 }
@@ -247,13 +253,13 @@ __device__ __forceinline__ void at_run_init(AtRun& run, const float* sinks, uint
     }
 }
 
-template <bool F32>
+template <uint32_t FMT>
 __device__ __forceinline__ void op_attn_item(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
-    using Tiles = AtTiles<F32>;
+    using Tiles = AtTiles<FMT>;
     constexpr uint32_t TPI = Tiles::TPI;
     constexpr uint32_t KT = Tiles::KEYS;
     constexpr uint32_t KTP = KT + 4;
-    constexpr uint32_t ROW = F32 ? 512 : 128;
+    constexpr uint32_t ROW = 128 * cache_value_bytes(FMT);
 
     const uint32_t rows = task.rows;
     const uint32_t pos0 = task.pos0;
@@ -368,8 +374,8 @@ __device__ __forceinline__ void op_attn_item(const MkTaskDescriptor& task, const
             uint32_t row_cur = window != 0 ? base0 % plane_rows : base0;
             uint32_t row_1 = next_row(row_cur);
             uint32_t row_2 = next_row(row_1);
-            at_load_k<F32>(cur, kp, row_cur, base0, item_lo, item_hi, d0, g, t4);
-            at_load_v<F32>(cur, vp, row_cur, base0, item_lo, item_hi, d0, g, t4);
+            at_load_k<FMT>(cur, kp, row_cur, base0, item_lo, item_hi, d0, g, t4);
+            at_load_v<FMT>(cur, vp, row_cur, base0, item_lo, item_hi, d0, g, t4);
             // The blocks after the next one go to L2 ahead of the loads, so the loads hit L2.
             if (wid == 0 && b0 < b1) {
                 at_prefetch(kp + static_cast<uint64_t>(row_1) * ROW, KT * ROW);
@@ -386,25 +392,33 @@ __device__ __forceinline__ void op_attn_item(const MkTaskDescriptor& task, const
                 for (uint32_t u = 0; u < TPI; ++u) {
 #pragma unroll
                     for (uint32_t nt = 0; nt < 2; ++nt) {
-                        float x0, x1, x2, x3;
-                        if (F32) {
-                            x0 = __uint_as_float(cur.k[u][nt].x);
-                            x1 = __uint_as_float(cur.k[u][nt].y);
-                            x2 = __uint_as_float(cur.k[u][nt].z);
-                            x3 = __uint_as_float(cur.k[u][nt].w);
-                        } else {
-                            const float2 lo2 = at_e4m3x2(cur.k[u][nt].x);
-                            const float2 hi2 = at_e4m3x2(cur.k[u][nt].x >> 16);
-                            x0 = lo2.x;
-                            x1 = lo2.y;
-                            x2 = hi2.x;
-                            x3 = hi2.y;
+                        AtB kb;
+                        {
+                            float x0, x1, x2, x3;
+                            if constexpr (FMT == CF_BF16) {
+                                x0 = __uint_as_float(cur.k[u][nt].x << 16);
+                                x1 = __uint_as_float(cur.k[u][nt].x & 0xFFFF0000u);
+                                x2 = __uint_as_float(cur.k[u][nt].y << 16);
+                                x3 = __uint_as_float(cur.k[u][nt].y & 0xFFFF0000u);
+                            } else if constexpr (FMT == CF_F32) {
+                                x0 = __uint_as_float(cur.k[u][nt].x);
+                                x1 = __uint_as_float(cur.k[u][nt].y);
+                                x2 = __uint_as_float(cur.k[u][nt].z);
+                                x3 = __uint_as_float(cur.k[u][nt].w);
+                            } else {
+                                const float2 lo2 = at_e4m3x2(cur.k[u][nt].x);
+                                const float2 hi2 = at_e4m3x2(cur.k[u][nt].x >> 16);
+                                x0 = lo2.x;
+                                x1 = lo2.y;
+                                x2 = hi2.x;
+                                x3 = hi2.y;
+                            }
+                            kb = at_b_terms<FMT>(x0, x1, x2, x3);
                         }
-                        const AtB kb = at_b_terms<F32>(x0, x1, x2, x3);
                         const uint4* qslot = reinterpret_cast<const uint4*>(sm + AT_SM_QA) + wid;
                         const AtA qa = {qslot[0], qslot[256], qslot[512]};
                         float s[4] = {};
-                        at_mma<F32>(s, qa, kb);
+                        at_mma<FMT>(s, qa, kb);
                         float* part = sm + AT_SM_PART + (warp * 16 + g) * KT + 16 * u + 8 * nt + 2 * t4;
                         *reinterpret_cast<float2*>(part) = make_float2(s[0], s[1]);
                         *reinterpret_cast<float2*>(part + 8 * KT) = make_float2(s[2], s[3]);
@@ -413,7 +427,7 @@ __device__ __forceinline__ void op_attn_item(const MkTaskDescriptor& task, const
                 // The keys of the next step are on the way while this step does its softmax and its values.
                 if (blk < b1) {
                     const uint32_t nb = key_base + KT;
-                    at_load_k<F32>(cur, kp, row_1, nb, item_lo, item_hi, d0, g, t4);
+                    at_load_k<FMT>(cur, kp, row_1, nb, item_lo, item_hi, d0, g, t4);
                 }
                 worker_sync();
 
@@ -486,21 +500,25 @@ __device__ __forceinline__ void op_attn_item(const MkTaskDescriptor& task, const
                     const AtA pa = at_a_terms(
                         *reinterpret_cast<const float2*>(pr + g * KTP), *reinterpret_cast<const float2*>(pr + (g + 8) * KTP),
                         *reinterpret_cast<const float2*>(pr + g * KTP + 8), *reinterpret_cast<const float2*>(pr + (g + 8) * KTP + 8));
-                    float2 v[4];
+                    {
+                        float2 v[4];
 #pragma unroll
-                    for (uint32_t q = 0; q < 4; ++q) {
-                        v[q] = F32 ? make_float2(__uint_as_float(cur.v[u][q].x), __uint_as_float(cur.v[u][q].y)) : at_e4m3x2(cur.v[u][q].x);
-                    }
+                        for (uint32_t q = 0; q < 4; ++q) {
+                            v[q] = FMT == CF_F32 ? make_float2(__uint_as_float(cur.v[u][q].x), __uint_as_float(cur.v[u][q].y))
+                                 : (FMT == CF_BF16 ? make_float2(__uint_as_float(cur.v[u][q].x << 16), __uint_as_float(cur.v[u][q].x & 0xFFFF0000u))
+                                                   : at_e4m3x2(cur.v[u][q].x));
+                        }
 #pragma unroll
-                    for (uint32_t j = 0; j < 2; ++j) {
-                        const AtB vb = at_b_terms<F32>(j == 0 ? v[0].x : v[0].y, j == 0 ? v[1].x : v[1].y,
-                                                       j == 0 ? v[2].x : v[2].y, j == 0 ? v[3].x : v[3].y);
-                        at_mma<F32>(o[j], pa, vb);
+                        for (uint32_t j = 0; j < 2; ++j) {
+                            const AtB vb = at_b_terms<FMT>(j == 0 ? v[0].x : v[0].y, j == 0 ? v[1].x : v[1].y,
+                                                           j == 0 ? v[2].x : v[2].y, j == 0 ? v[3].x : v[3].y);
+                            at_mma<FMT>(o[j], pa, vb);
+                        }
                     }
                 }
                 if (blk < b1) {
                     const uint32_t nb = key_base + KT;
-                    at_load_v<F32>(cur, vp, row_1, nb, item_lo, item_hi, d0, g, t4);
+                    at_load_v<FMT>(cur, vp, row_1, nb, item_lo, item_hi, d0, g, t4);
                 }
                 row_1 = row_2;
                 row_2 = next_row(row_2);
@@ -615,10 +633,15 @@ __device__ __forceinline__ void op_attn_item(const MkTaskDescriptor& task, const
 
 // Run work item `item` of OP_ATTN. Every field is checked: a shape that the op does not cover traps.
 __device__ __forceinline__ void op_attn(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
-    const bool f32 = (task.flags & FLAG_F32) != 0;
+#ifdef MK_CACHE_BF16
+    constexpr uint32_t fmt = CF_BF16;
+#else
+    const uint32_t fmt = (task.flags & FLAG_F32) != 0 ? CF_F32 : CF_E4M3;
+#endif
     const uint32_t rows = task.rows;
     if (worker_count() != MK_WORKERS || table == nullptr || rows == 0 || rows > AT_MAX_ROWS || task.kt != AT_CHUNK ||
-        (task.flags & ~static_cast<uint32_t>(FLAG_F32)) != 0 || task.scale_bytes != (f32 ? 512u : 128u) || task.k == 0 ||
+        !cache_flags_ok(task.flags) || (task.flags & ~static_cast<uint32_t>(FLAG_F32 | FLAG_BF16)) != 0 ||
+        task.scale_bytes != 128 * cache_value_bytes(fmt) || task.k == 0 ||
         task.k % 64 != 0 || dynamic_smem_bytes() < MK_ATTN_SMEM_BYTES || (task.a & 15) != 0 || (task.b & 15) != 0 ||
         (task.e & 15) != 0 || (task.c & 3) != 0 || (task.f & 15) != 0) {
         __trap();
@@ -636,9 +659,20 @@ __device__ __forceinline__ void op_attn(const MkTaskDescriptor& task, const MkTa
     if (task.items != items || task.group_items != chunks) {
         __trap();
     }
-    if (f32) {
-        op_attn_item<true>(task, table, item);
+    // The shape of the dispatch is a tuned fact. ptxas spills a value of the interpreter when a cubin has one instance of
+    // the op (or three), and it does not spill with this pair of instances (milestone 37 step 11). The check above traps
+    // on the flags that the cubin does not hold, so the second instance of a fixed cubin never runs.
+#ifdef MK_CACHE_BF16
+    if ((task.flags & FLAG_BF16) != 0) {
+        op_attn_item<CF_BF16>(task, table, item);
     } else {
-        op_attn_item<false>(task, table, item);
+        op_attn_item<CF_E4M3>(task, table, item);
     }
+#else
+    if (fmt == CF_F32) {
+        op_attn_item<CF_F32>(task, table, item);
+    } else {
+        op_attn_item<CF_E4M3>(task, table, item);
+    }
+#endif
 }
