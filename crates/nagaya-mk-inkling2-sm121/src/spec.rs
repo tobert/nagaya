@@ -7,8 +7,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use nagaya_abi::{
-    CONTROL_TERM, Capability, ChainLimits, ControlLimit, CyclesLimit, Determinism, Dtype, FeedRule, Inputs, Kind,
-    Lifetime, Limits, MandatoryTerm, MemoryLimits, PartKind, PartLimits, SlotLimit, TapLimit, Tier,
+    BitClass, BitSetting, CONTROL_TERM, Capability, ChainLimits, ControlLimit, CyclesLimit, Determinism, Dtype,
+    FeedRule, Inputs, Kind, Lifetime, Limits, MandatoryTerm, MemoryLimits, PartKind, PartLimits, SlotLimit, TapLimit,
+    Tier,
 };
 use nagaya_mk_cuda::attn::{AttnShape, CacheFormat, plane_bytes, sliding_ring_rows};
 use nagaya_mk_cuda::protocol::{ATTN_CHUNK_KEYS, ATTN_SPLIT_ROWS, NUM_EXPERTS, NUM_SCOREBOARD_EVENTS, RING_DEV_BYTES};
@@ -60,9 +61,8 @@ pub const INTERMEDIATE: usize = 1152;
 /// The rows of the ring of a sliding state: the window and the longest block, rounded up to a chunk of the attention.
 /// The projection writes a new row over the row that is one ring older, so the ring has no spill.
 pub const RING_ROWS: usize = sliding_ring_rows(WINDOW, MAX_BLOCK);
-/// The format of the cache that the plan counts. An f32 cache is the oracle form, and e4m3 is the form of the long
-/// slots (`nagaya_mk_cuda::attn::CacheFormat`).
-pub const CACHE_FORMAT: CacheFormat = CacheFormat::F32;
+/// The format of the cache when the config names none. An f32 cache is the oracle form (`CacheFormat`).
+pub const DEFAULT_CACHE: CacheFormat = CacheFormat::F32;
 pub const MAX_QUANTUM_MS: u32 = 5_000;
 pub const MAX_SEGMENTS: u32 = 1;
 pub const MAX_LOGIT_ROWS: usize = 16;
@@ -236,6 +236,23 @@ impl Model {
     }
 }
 
+/// The name of a cache format in the config and in the identity: `f32`, `bf16` or `e4m3`.
+pub fn cache_name(format: CacheFormat) -> &'static str {
+    match format {
+        CacheFormat::F32 => "f32",
+        CacheFormat::Bf16 => "bf16",
+        CacheFormat::E4m3 => "e4m3",
+    }
+}
+
+/// The cache format that `name` names.
+pub fn parse_cache(name: &str) -> Result<CacheFormat, String> {
+    [CacheFormat::F32, CacheFormat::Bf16, CacheFormat::E4m3]
+        .into_iter()
+        .find(|&format| cache_name(format) == name)
+        .ok_or_else(|| format!("cache is `{name}`; it must be `f32`, `bf16` or `e4m3`"))
+}
+
 /// Configuration for one `mk-inkling2-sm121` engine instance.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
@@ -243,6 +260,8 @@ pub struct Config {
     pub slots: Vec<usize>,
     pub max_block: usize,
     pub extra_runs: usize,
+    /// The format of the values in the cache. It defines the reference bits, and it selects the cubin.
+    pub cache: CacheFormat,
 }
 
 impl Config {
@@ -283,11 +302,11 @@ impl Config {
         self.slots.iter().copied().max().unwrap_or(0)
     }
 
-    /// Total KV and conv bytes across all configured slots, for a cache in `format`.
-    pub fn slots_bytes(&self, format: CacheFormat) -> u64 {
+    /// Total KV and conv bytes across all configured slots, in the cache format of the config.
+    pub fn slots_bytes(&self) -> u64 {
         self.slots
             .iter()
-            .map(|&seq| slot_bytes(seq, self.extra_runs, format))
+            .map(|&seq| slot_bytes(seq, self.extra_runs, self.cache))
             .sum()
     }
 }
@@ -425,7 +444,7 @@ pub fn limits(config: &Config, llm_weights: u64, vision_weights: u64) -> Limits 
         max_segments: MAX_SEGMENTS,
         max_pass_inputs: config.max_block as u32,
         max_logit_rows: MAX_LOGIT_ROWS as u32,
-        slots: slot_limits(&config.seqs(), config.extra_runs, CACHE_FORMAT),
+        slots: slot_limits(&config.seqs(), config.extra_runs, config.cache),
         max_quantum_ms: MAX_QUANTUM_MS,
         // No long pass until the vision tower runs here (milestone 37 step 13).
         max_long_quantum_ms: None,
@@ -433,7 +452,7 @@ pub fn limits(config: &Config, llm_weights: u64, vision_weights: u64) -> Limits 
             mandatory: vec![
                 term("weights", Tier::Device(0), llm_weights),
                 term("vision", Tier::Device(0), vision_weights),
-                term("kv", Tier::Device(0), config.slots_bytes(CACHE_FORMAT)),
+                term("kv", Tier::Device(0), config.slots_bytes()),
                 term("work", Tier::Device(0), work),
                 term("pinned", Tier::Host, pinned),
                 term(CONTROL_TERM, Tier::Device(0), control.table_bytes()),
@@ -474,6 +493,22 @@ pub fn limits(config: &Config, llm_weights: u64, vision_weights: u64) -> Limits 
     }
 }
 
+/// The bit settings of the identity (D11 rule 3). The block and the cache format define the reference bits.
+pub fn bit_settings(config: &Config) -> Vec<BitSetting> {
+    vec![
+        BitSetting {
+            name: "feed.block".to_owned(),
+            value: config.max_block.to_string(),
+            class: BitClass::ReferenceDefining,
+        },
+        BitSetting {
+            name: "cache".to_owned(),
+            value: cache_name(config.cache).to_owned(),
+            class: BitClass::ReferenceDefining,
+        },
+    ]
+}
+
 /// Plan `Limits` from `config.model_dir` without reading weight bytes (spec 2.4).
 pub fn plan(config: &Config) -> Result<Limits, String> {
     config.check()?;
@@ -503,15 +538,7 @@ pub fn identity_numbers(config: &Config) -> BTreeMap<String, String> {
     map.insert("quant".to_owned(), QUANT_MODE.to_owned());
     map.insert("max_block".to_owned(), config.max_block.to_string());
     map.insert("ring_rows".to_owned(), RING_ROWS.to_string());
-    map.insert(
-        "cache".to_owned(),
-        match CACHE_FORMAT {
-            CacheFormat::F32 => "f32",
-            CacheFormat::E4m3 => "e4m3",
-            CacheFormat::Bf16 => "bf16",
-        }
-        .to_owned(),
-    );
+    map.insert("cache".to_owned(), cache_name(config.cache).to_owned());
     map.insert("cycles".to_owned(), DEFAULT_CYCLES.to_string());
     map.insert("extra_runs".to_owned(), config.extra_runs.to_string());
     map.insert("state".to_owned(), STATE_LAYOUT.to_string());
@@ -520,7 +547,7 @@ pub fn identity_numbers(config: &Config) -> BTreeMap<String, String> {
         map.insert("nvcc".to_owned(), nagaya_mk_cuda::NVCC_VERSION.to_owned());
         map.insert(
             "cubin_blake3".to_owned(),
-            blake3::hash(nagaya_mk_cuda::INKLING2_CUBIN).to_hex().to_string(),
+            blake3::hash(config.cache.cubin()).to_hex().to_string(),
         );
     }
     map
@@ -537,6 +564,7 @@ mod tests {
             slots: vec![SLOT_TOKENS],
             max_block: DEFAULT_MAX_BLOCK,
             extra_runs: DEFAULT_EXTRA_RUNS,
+            cache: DEFAULT_CACHE,
         };
         assert!(base.check().is_ok());
         assert!(
@@ -726,6 +754,7 @@ mod tests {
             slots: vec![524_288],
             max_block: 512,
             extra_runs: 24,
+            cache: DEFAULT_CACHE,
         };
         // The sums of the Inkling 2 Mini header, with each tensor rounded up to 64 bytes.
         let lim = limits(&cfg, 18_889_360_896, 636_512_256);
@@ -756,6 +785,7 @@ mod tests {
             slots: vec![SLOT_TOKENS],
             max_block: 256,
             extra_runs: 36,
+            cache: DEFAULT_CACHE,
         };
         let nums = identity_numbers(&cfg);
         let host: Vec<(&str, &str)> = nums
@@ -778,5 +808,88 @@ mod tests {
         );
         assert_eq!(nums.contains_key("nvcc"), cfg!(feature = "cuda"));
         assert_eq!(nums.contains_key("cubin_blake3"), cfg!(feature = "cuda"));
+    }
+
+    fn config_of(cache: CacheFormat) -> Config {
+        Config {
+            model_dir: PathBuf::from("unused"),
+            slots: vec![SLOT_TOKENS, 409_600],
+            max_block: 256,
+            extra_runs: 24,
+            cache,
+        }
+    }
+
+    #[test]
+    fn the_cache_names_round_trip_and_a_bad_name_says_what_to_write() {
+        for format in [CacheFormat::F32, CacheFormat::Bf16, CacheFormat::E4m3] {
+            assert_eq!(parse_cache(cache_name(format)), Ok(format));
+        }
+        let names: Vec<&str> = [CacheFormat::F32, CacheFormat::Bf16, CacheFormat::E4m3]
+            .into_iter()
+            .map(cache_name)
+            .collect();
+        assert_eq!(names, vec!["f32", "bf16", "e4m3"]);
+        let error = parse_cache("fp8").unwrap_err();
+        assert!(error.contains("`fp8`") && error.contains("`bf16`"), "{error}");
+        assert_eq!(DEFAULT_CACHE, CacheFormat::F32);
+    }
+
+    #[test]
+    fn the_limits_and_the_identity_follow_the_cache_format_of_the_config() {
+        for format in [CacheFormat::F32, CacheFormat::Bf16, CacheFormat::E4m3] {
+            let cfg = config_of(format);
+            let lim = limits(&cfg, 1_000, 0);
+            lim.check().unwrap();
+            let kv = lim.memory.mandatory.iter().find(|t| t.name == "kv").unwrap().bytes;
+            assert_eq!(
+                kv,
+                slot_bytes(SLOT_TOKENS, 24, format) + slot_bytes(409_600, 24, format)
+            );
+            let by_tokens: Vec<(u64, u64)> = lim.slots.iter().map(|s| (s.tokens, s.bytes)).collect();
+            assert_eq!(
+                by_tokens,
+                vec![
+                    (SLOT_TOKENS as u64, slot_bytes(SLOT_TOKENS, 24, format)),
+                    (409_600, slot_bytes(409_600, 24, format)),
+                ]
+            );
+            assert_eq!(identity_numbers(&cfg)["cache"], cache_name(format));
+        }
+        let f32_kv = config_of(CacheFormat::F32).slots_bytes();
+        assert!(config_of(CacheFormat::Bf16).slots_bytes() < f32_kv);
+        assert!(config_of(CacheFormat::E4m3).slots_bytes() < config_of(CacheFormat::Bf16).slots_bytes());
+    }
+
+    #[test]
+    fn the_bit_settings_name_the_block_and_the_cache_as_reference_defining() {
+        let settings = bit_settings(&config_of(CacheFormat::Bf16));
+        let found: Vec<(&str, &str, BitClass)> = settings
+            .iter()
+            .map(|s| (s.name.as_str(), s.value.as_str(), s.class))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                ("feed.block", "256", BitClass::ReferenceDefining),
+                ("cache", "bf16", BitClass::ReferenceDefining),
+            ]
+        );
+    }
+
+    /// The cubin of a format holds only that format, so each format has its own hash in the identity.
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn the_identity_hashes_the_cubin_of_the_cache_format() {
+        let mut seen = Vec::new();
+        for format in [CacheFormat::F32, CacheFormat::Bf16, CacheFormat::E4m3] {
+            let nums = identity_numbers(&config_of(format));
+            let want = blake3::hash(format.cubin()).to_hex().to_string();
+            assert_eq!(nums["cubin_blake3"], want, "{}", cache_name(format));
+            seen.push(want);
+        }
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), 3, "the three cubins differ");
     }
 }

@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use nagaya_mk_inkling2_sm121::spec::{self, Config, DEFAULT_EXTRA_RUNS, DEFAULT_MAX_BLOCK};
+use nagaya_mk_inkling2_sm121::spec::{self, Config, DEFAULT_CACHE, DEFAULT_EXTRA_RUNS, DEFAULT_MAX_BLOCK};
 
 const CONFIG: &str = include_str!("fixtures/config.json");
 
@@ -60,6 +60,7 @@ fn config(dir: &Path, slots: Vec<usize>) -> Config {
         slots,
         max_block: DEFAULT_MAX_BLOCK,
         extra_runs: DEFAULT_EXTRA_RUNS,
+        cache: DEFAULT_CACHE,
     }
 }
 

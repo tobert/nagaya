@@ -15,7 +15,7 @@ use crate::admission::{GroupDevice, PlanError};
 pub const KIND: &str = spec::KIND;
 
 /// Allowed keys of the engine config table.
-const KEYS: [&str; 4] = ["model_dir", "slots", "max_block", "extra_runs"];
+const KEYS: [&str; 5] = ["model_dir", "slots", "max_block", "extra_runs", "cache"];
 
 /// Read `model_dir` from `table` and verify that it names an existing directory.
 pub fn model_dir(table: &toml::Table, what: &str) -> Result<PathBuf, String> {
@@ -43,7 +43,7 @@ pub fn config(table: &toml::Table) -> Result<Config, PlanError> {
     if let Some(key) = table.keys().find(|key| !KEYS.contains(&key.as_str())) {
         return Err(fail(format!(
             "{what} has the key `{key}`, which the engine does not know; the keys are `model_dir`, `slots`, \
-             `max_block` and `extra_runs`"
+             `max_block`, `extra_runs` and `cache`"
         )));
     }
     let model_dir = model_dir(table, &what).map_err(fail)?;
@@ -80,11 +80,23 @@ pub fn config(table: &toml::Table) -> Result<Config, PlanError> {
         None => spec::DEFAULT_EXTRA_RUNS,
         Some(value) => count("extra_runs", value)?,
     };
+    let cache = match table.get("cache") {
+        None => spec::DEFAULT_CACHE,
+        Some(toml::Value::String(name)) => {
+            spec::parse_cache(name).map_err(|message| fail(format!("{what}: {message}")))?
+        }
+        Some(value) => {
+            return Err(fail(format!(
+                "`cache` in {what} is {value}; write `\"f32\"`, `\"bf16\"` or `\"e4m3\"`"
+            )));
+        }
+    };
     let config = Config {
         model_dir,
         slots,
         max_block,
         extra_runs,
+        cache,
     };
     config.check().map_err(|message| fail(format!("{what}: {message}")))?;
     Ok(config)
