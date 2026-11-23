@@ -52,6 +52,19 @@ pub const INKLING2_PROFILE_CACHE_BF16_CUBIN: &[u8] = include_bytes!(concat!(
 pub const INKLING2_PROFILE_CUBIN: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_inkling2_profile_sm121.cubin"));
 
+/// The probe cubin (`MK_PROBES`): the engine ops and the probe ops (`OP_PROBE_*`, `OP_REDUCE_PROBE`, `OP_ROWS_PROBE`). An
+/// engine cubin has no probe op, and it traps on a probe opcode.
+#[cfg(feature = "cuda")]
+pub const INKLING2_PROBE_CUBIN: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/megakernel_inkling2_probe_sm121.cubin"));
+
+/// The probe cubin that also records the time of each task (`MK_PROBES` and `MK_PROFILE`).
+#[cfg(feature = "cuda")]
+pub const INKLING2_PROBE_PROFILE_CUBIN: &[u8] = include_bytes!(concat!(
+    env!("OUT_DIR"),
+    "/megakernel_inkling2_probe_profile_sm121.cubin"
+));
+
 /// Test cubin with a spin limit of 65,536 polls (`MK_SPIN_LIMIT`). A wait that never ends traps in about 10 ms.
 /// A production engine must not load it.
 #[cfg(feature = "cuda")]
@@ -306,20 +319,13 @@ mod tests {
             assert_eq!(seen & value, 0, "{name} = {value:#x} shares a bit with an earlier flag");
             seen |= value;
         }
-        for name in [
-            "FLAG_NORM",
-            "FLAG_NORM_UNWEIGHTED",
-            "FLAG_PAIRS",
-            "FLAG_UP",
-            "FLAG_DOWN",
-        ] {
+        for name in ["FLAG_NORM", "FLAG_PAIRS", "FLAG_UP", "FLAG_DOWN"] {
             assert!(
                 protocol::FLAGS.iter().any(|(known, _)| *known == name),
                 "{name} is not in the table"
             );
         }
         assert_eq!(protocol::FLAG_NORM, 1 << 3);
-        assert_eq!(protocol::FLAG_NORM_UNWEIGHTED, 1 << 4);
         assert_eq!(protocol::FLAG_PAIRS, 1 << 5);
     }
 

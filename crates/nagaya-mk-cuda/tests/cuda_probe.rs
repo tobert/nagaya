@@ -18,10 +18,11 @@ use nagaya_mk_cuda::protocol::{
     PRODUCER_BLOCK_THREADS, PROFILE_WORDS, probe_smem_bytes,
 };
 use nagaya_mk_cuda::ring::{Ring, chained};
-use nagaya_mk_cuda::{INKLING2_CUBIN, INKLING2_PROFILE_CUBIN, test_cards};
+use nagaya_mk_cuda::{INKLING2_CUBIN, INKLING2_PROBE_PROFILE_CUBIN, test_cards};
 
 fn open() -> CudaDevice {
-    CudaDevice::open_by_pci(&test_cards::card(), INKLING2_PROFILE_CUBIN).expect("open the GPU with the profile cubin")
+    CudaDevice::open_by_pci(&test_cards::card(), INKLING2_PROBE_PROFILE_CUBIN)
+        .expect("open the GPU with the profile cubin")
 }
 
 fn upload<T: Copy>(dev: &CudaDevice, data: &[T]) -> CUdeviceptr {

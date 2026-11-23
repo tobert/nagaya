@@ -81,7 +81,9 @@ pub mod gpu {
 
     use nagaya_mk_cuda::driver::{CUdeviceptr, CudaDevice};
     use nagaya_mk_cuda::ring::Ring;
-    use nagaya_mk_cuda::{INKLING2_CUBIN, INKLING2_PROFILE_CUBIN, test_cards};
+    use nagaya_mk_cuda::{
+        INKLING2_CUBIN, INKLING2_PROBE_CUBIN, INKLING2_PROBE_PROFILE_CUBIN, INKLING2_PROFILE_CUBIN, test_cards,
+    };
 
     /// The grid widths of a gate: the width of the GPU, and widths that divide no count of items.
     pub const GRIDS: [u32; 4] = [48, 24, 7, 1];
@@ -106,6 +108,17 @@ pub mod gpu {
     pub fn open_profile() -> CudaDevice {
         CudaDevice::open_by_pci(&test_cards::card(), INKLING2_PROFILE_CUBIN)
             .expect("open the GPU with the profile cubin")
+    }
+
+    /// Open the GPU with the probe interpreter. It holds the probe ops, and no engine cubin does.
+    pub fn open_probe() -> CudaDevice {
+        CudaDevice::open_by_pci(&test_cards::card(), INKLING2_PROBE_CUBIN).expect("open the GPU with the probe cubin")
+    }
+
+    /// Open the GPU with the probe interpreter that also writes a profile of each task.
+    pub fn open_probe_profile() -> CudaDevice {
+        CudaDevice::open_by_pci(&test_cards::card(), INKLING2_PROBE_PROFILE_CUBIN)
+            .expect("open the GPU with the probe profile cubin")
     }
 
     pub fn upload<T: Copy>(dev: &CudaDevice, data: &[T]) -> CUdeviceptr {
