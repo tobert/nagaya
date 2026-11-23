@@ -949,9 +949,23 @@ Do the steps in this order. Each step ends with the checks green.
 
      Lanes D, R, M and A run in parallel after the foundation. Lane P starts with the run of layer 0, then a
      sliding run, a full run and a run with messages.
+
+     Status of wave B: the ops of lanes D, R and M are done, and lane P is open.
+     - The foundation merged as `ef9fb430`. The ops merged with the dense, row and MoE lanes in `6b3066ee`. That
+       merge also holds the register structure: one kernel, 168 registers, 0 spill ("The register structure" in the
+       binding).
+     - `PROJ` writes the head-major cache of the attention (`32589716`, merged in `eb0bf566`).
+     - `OP_OUT_MIX` (45) is open. It is not merged. The kernel traps on it.
+     - "The ops of wave B" in `docs/engine-abi.md` gives each op with its gates and its speed.
    - **Wave C, the attention.** Lane A. The sliding layers, and the full layers over key chunks of a fixed size on
      all SMs, with a merge in a fixed order. The cache follows "The layout of the cache" of step 11. Build `f32` and the
      first packed format together, so that the gate of step 11 can compare them.
+
+     Status of wave C: done for the attention op (`946ddebc`, merged in `4f01b40f`). It builds `f32` and `e4m3` with
+     a unit scale.
+     - An `f32` decode step at 65,536 positions reads 204 GB/s, 81% of 252 GB/s.
+     - An `e4m3` decode step reads at 49%. One step of 16 keys for each sync limits it.
+     - The `e4m3` form gives the bits of the `f32` form on the same packed values.
 10. **The pass.** The task ring of a decode step and of a prefill block, at 1 to 5 cycles. Gates: the oracle of
     step 8, and a row of a decode step gives the bits of its position in a block. Print the table of the ops, and
     compare each op with its budget.
@@ -1006,6 +1020,25 @@ Do the steps in this order. Each step ends with the checks green.
 13. **Vision and the lab.** The vision tower, the taps and the control vectors.
 14. **Deploy and review.** Add `deploy/dgx-spark/` and a `nagaya.service` on sm121host. Run `gogi-conformance`. Run
     kaibo review rounds with a cast of another model family.
+
+### The tuning list
+
+The owner put the tuning after the plan, in later passes. The plan comes first: the pass of step 10, and the engine
+of step 11. Each item below is a gap that the card gates of wave B and wave C measured. Each stays open until a
+tuning pass takes it.
+
+- **`PROJ` at 188 us, against the budget of 165 us.**
+- **`MIX` at 4 us, and the gates at 12 to 13 us.** Latency chains limit them.
+- **`ROUTE` at 8 us.** Three serial merges limit it.
+- **The tail of the finisher of `DOWN`.**
+- **The `e4m3` attention at 49% of the peak.** One step of 16 keys for each sync limits it.
+- **The attention prefill at depth.** 512 rows at 8,192 positions take 9.78 ms.
+- **The tail of 8% in the head.**
+- **The floor of 80% for the NVFP4 `UP` op.** The op runs at 82 to 88%, so the gate can flake.
+- **Fixture gaps.** No row decides the order `(v * s) * outer`. No MXFP8 raw scale lies just above a power of two.
+- **Mutants that survived.**
+  - The order of the lag 1 and lag 2 terms in the dynamic convolution of `PROJ`.
+  - The order of the slices in the merge of `GATE_DOWN`. No host model gives that rounding.
 
 ### The lanes
 
