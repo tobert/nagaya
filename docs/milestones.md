@@ -1043,6 +1043,15 @@ tuning pass takes it.
 - **The attention prefill at depth.** 512 rows at 8,192 positions take 9.78 ms.
 - **The tail of 8% in the head.**
 - **The floor of 80% for the NVFP4 `UP` op.** The op runs at 82 to 88%, so the gate can flake.
+- **The finisher of `OP_OUT_MIX` at many rows.** One block runs the rows one after another: 151 us at 16 rows and
+  4.3 ms at 512 rows (`7a0d74f8`).
+- **The block form of the matmul.** `OP_PROJ` takes 3.03 ms at 512 rows, against the design's 0.7 ms (`a59e4adf`).
+  - The copies and the MMAs do not overlap well. The causes: one sync for each stage, and the split and the A loads
+    in the chain of each warp.
+  - A repack by group puts the 8 tiles of a stage together, so that one bulk copy loads a stage.
+  - The order of the head's items is not tuned. The head takes 31.7 ms at 512 rows.
+- **The speed floor of the attention at 65,536 positions.** It reads 200.4 to 201.3 GB/s against a floor of
+  201.6 GB/s, on `main` too. The gate can flake.
 - **Fixture gaps.** No row decides the order `(v * s) * outer`. No MXFP8 raw scale lies just above a power of two.
 - **Mutants that survived.**
   - The order of the lag 1 and lag 2 terms in the dynamic convolution of `PROJ`.
