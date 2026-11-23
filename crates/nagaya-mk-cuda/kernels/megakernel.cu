@@ -283,6 +283,7 @@ __device__ __forceinline__ void op_selftest_table(const MkTaskDescriptor& task, 
 #include "probe_ops.cuh"
 #include "probe_smem.cuh"
 #include "matmul_bf16.cuh"
+#include "matmul_block.cuh"
 #include "quant.cuh"
 #include "cache_layout.cuh"
 #include "experts.cuh"
@@ -303,6 +304,7 @@ __device__ __forceinline__ void wait_for_event(const uint32_t* event, uint32_t t
 
 // Run work item `item` of the task. `table` is the task table, or null when `d` is 0. A per-item op uses `item`. The probe and test ops run once in each block, so their
 // item is blockIdx.x, and they read that.
+template <bool PRODUCER>
 __device__ __forceinline__ void run_op(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
     switch (task.opcode) {
         case OP_NOP:
@@ -311,6 +313,9 @@ __device__ __forceinline__ void run_op(const MkTaskDescriptor& task, const MkTas
             op_copy(task, item);
             break;
         case OP_MATMUL_BF16:
+            if ((task.flags & FLAG_BLOCK_FORM) != 0) {
+                goto block_form;
+            }
             op_matmul_bf16(task, table, item);
             break;
         case OP_SELFTEST_FILL:
@@ -359,6 +364,9 @@ __device__ __forceinline__ void run_op(const MkTaskDescriptor& task, const MkTas
         // The cases below are reserved for the lanes of wave B. Each calls a stub that traps, in the file of its lane.
         // A lane changes the stub of its own ops, and not this switch.
         case OP_PROJ:
+            if ((task.flags & FLAG_BLOCK_FORM) != 0) {
+                goto block_form;
+            }
             op_proj(task, table, item);
             break;
 
@@ -402,6 +410,15 @@ __device__ __forceinline__ void run_op(const MkTaskDescriptor& task, const MkTas
             // Unknown opcode: trap rather than silently corrupt state (spec 8.5).
             __trap();
             break;
+    }
+    return;
+block_form:
+    // The block form of the matmul and of the projection (a prefill) runs in the producer shape only: the flat shape
+    // keeps the task in registers, and the heavy loop of the block form needs them. Both ops share one copy of the loop.
+    if constexpr (PRODUCER) {
+        op_block_form(task, table, item);
+    } else {
+        __trap();
     }
 }
 
@@ -463,13 +480,15 @@ __device__ __forceinline__ uint32_t item_count(const MkTaskDescriptor& task) {
 // The consumers run the items b, b + G, b + 2G and so on of the task, with b the block and G the grid width. Then the
 // block adds the count of its items to the event of the task, one time. A block with no item adds nothing. The
 // barrier before the add orders the writes of every consumer before the release of the add.
-__device__ __forceinline__ void run_items(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t count) {
+template <bool PRODUCER>
+__device__ __forceinline__ void run_items(const MkTaskDescriptor& task, const MkTaskTable* table) {
     // The loop keeps the item and no other counter across an op: the count of the items that this block ran follows from
-    // the item at the end, because the item steps from `blockIdx.x` by `gridDim.x`.
+    // the item at the end, because the item steps from `blockIdx.x` by `gridDim.x`. The count of the task is read from
+    // the task each time, and not kept in a register.
     uint32_t item = blockIdx.x;
-    for (; item < count; item += gridDim.x) {
+    for (; item < item_count(task); item += gridDim.x) {
         if (task.items != 0) {
-            run_op(task, table, item);
+            run_op<PRODUCER>(task, table, item);
         }
         worker_sync();
     }
@@ -525,7 +544,7 @@ __device__ __forceinline__ void run_flat_shape(
 
         if (!halt) {
             // The flat shape reads the table from global memory. It is the same for the whole run.
-            run_items(task, task.d != 0 ? reinterpret_cast<const MkTaskTable*>(task.d) : nullptr, count);
+            run_items<false>(task, task.d != 0 ? reinterpret_cast<const MkTaskTable*>(task.d) : nullptr);
         }
         if (threadIdx.x == 0) {
             const uint64_t t_end = globaltimer_ns();
@@ -634,16 +653,16 @@ __device__ __forceinline__ void run_producer_shape(
         }
         const bool halt = opcode == OP_HALT;
         if (!halt) {
-            run_items(task, task.d != 0 ? &tables[slot] : nullptr, item_count(task));
+            run_items<true>(task, task.d != 0 ? &tables[slot] : nullptr);
         }
         if (lead) {
             const uint64_t t_end = globaltimer_ns();
             clocks[1] += clocks[4] - clocks[3];
             clocks[2] += t_end - clocks[4];
             record_profile(mk_profile(), idx, clocks[3], clocks[4], t_end);
-            clocks[0] += halt ? 0 : 1;
+            clocks[0] += task.opcode == OP_HALT ? 0 : 1;
         }
-        if (halt) {
+        if (task.opcode == OP_HALT) {
             break;
         }
         bar_arrive(MK_BAR_EMPTY + slot, MK_BAR_THREADS);

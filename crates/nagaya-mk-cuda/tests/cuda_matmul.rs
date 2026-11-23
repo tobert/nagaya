@@ -227,6 +227,8 @@ struct Rig<'d> {
     ring: Ring<'d>,
     shared: u32,
     max_rows: usize,
+    /// Run the block form (`FLAG_BLOCK_FORM`) instead of the decode form.
+    block: bool,
 }
 
 impl<'d> Rig<'d> {
@@ -253,6 +255,7 @@ impl<'d> Rig<'d> {
             ring,
             shared,
             max_rows,
+            block: false,
         }
     }
 
@@ -261,7 +264,11 @@ impl<'d> Rig<'d> {
         let shape = &self.shape;
         let w = self.weights[copy % self.weights.len()];
         let x = self.x + (row0 * shape.k * 4) as u64;
-        let desc = shape.descriptor(rows, x, w, self.y, self.ring.scratch()).unwrap();
+        let desc = if self.block {
+            shape.descriptor_block(rows, x, w, self.y).unwrap()
+        } else {
+            shape.descriptor(rows, x, w, self.y, self.ring.scratch()).unwrap()
+        };
         Task::with_items(desc)
             .reads(x, rows * shape.k * 4)
             .reads(w, shape.packed_bytes())
@@ -774,5 +781,158 @@ fn the_speed_of_a_block_of_512_rows() {
             bytes as f64 / typical as f64
         );
         rig.free();
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The block form (`FLAG_BLOCK_FORM`, lane F): the bits of each row equal those of the decode form.
+// ---------------------------------------------------------------------------------------------------------------
+
+/// The counts of rows of the gate of the block form: more than a tile of 16 rows, one block of 32 rows, a part of the
+/// next, a few blocks, and a block of a prefill.
+const FORM_ROWS: [usize; 6] = [17, 32, 33, 100, 511, 512];
+
+/// The rows and the columns that the host model checks in the block form.
+const FORM_MODEL_ROWS: [usize; 8] = [0, 16, 17, 31, 32, 33, 100, 511];
+
+#[test]
+fn the_block_form_equals_the_decode_form_and_the_host_model() {
+    let Some(matrices) = matrices() else { return };
+    let dev = open();
+    for m in matrices {
+        let n = m.shape.n;
+        let k = m.shape.k;
+        // The head has 201,024 columns: the decode form takes long, so it runs fewer counts.
+        let counts: &[usize] = if m.name == "head" { &[33, 100] } else { &FORM_ROWS };
+        let x = make_x(512, k, 11);
+        let mut decode = Rig::with_rows(&dev, m, &x, 1, false, 512);
+        let mut block = Rig::with_rows(&dev, m, &x, 1, false, 512);
+        block.block = true;
+        for &rows in counts {
+            let want = decode.run(rows, 0, 48);
+            let got = block.run(rows, 0, 48);
+            assert_eq!(
+                bits(&got),
+                bits(&want),
+                "{}: {rows} rows: the block form differs from the decode form",
+                m.name
+            );
+        }
+        // The host model of the order of the sums (`dot_bits`) gives the same bits as both forms.
+        let rows = 512.min(if m.name == "head" { 100 } else { 512 });
+        let y = block.run(rows, 0, 48);
+        let tiles = m.shape.tiles();
+        let columns: Vec<usize> = (0..16).map(|i| (i * 977 % tiles) * 16 + (i % 16)).collect();
+        for r in FORM_MODEL_ROWS.into_iter().filter(|r| *r < rows) {
+            for &c in &columns {
+                let want = host_matmul(m, &x[r * k..(r + 1) * k], c);
+                let got = y[r * n + c];
+                assert_eq!(
+                    got.to_bits(),
+                    want.to_bits(),
+                    "{}: row {r} column {c}: the block form gives {got:e}, the host model gives {want:e}",
+                    m.name
+                );
+            }
+        }
+        eprintln!(
+            "cuda_matmul block: {:<6} rows {counts:?}: equal to the decode form; {} rows x {} columns equal to the host model",
+            m.name,
+            FORM_MODEL_ROWS.iter().filter(|r| **r < rows).count(),
+            columns.len()
+        );
+        decode.free();
+        block.free();
+    }
+}
+
+#[test]
+fn the_bits_of_a_block_form_row_do_not_depend_on_the_count_of_rows_or_the_grid() {
+    let Some(matrices) = matrices() else { return };
+    let dev = open();
+    for m in matrices {
+        let n = m.shape.n;
+        let rows = if m.name == "head" { 100 } else { 512 };
+        let x = make_x(rows, m.shape.k, 12);
+        let mut rig = Rig::with_rows(&dev, m, &x, 1, false, rows);
+        rig.block = true;
+        let first = rig.run(rows, 0, GRIDS[0]);
+        for &grid in &GRIDS[1..] {
+            assert_eq!(
+                bits(&rig.run(rows, 0, grid)),
+                bits(&first),
+                "{}: {rows} rows at grid {grid} differ from grid 48",
+                m.name
+            );
+        }
+        // A part of the rows, from the start and from the middle of the block.
+        for count in FORM_ROWS.into_iter().filter(|c| *c <= rows) {
+            assert_eq!(
+                bits(&rig.run(count, 0, 48)),
+                bits(&first[..count * n]),
+                "{}: {count} rows differ from the first {count} rows of {rows}",
+                m.name
+            );
+        }
+        for (count, row0) in [(12, rows - 12), (1, rows - 1), (17, 33), (40, 31)] {
+            assert_eq!(
+                bits(&rig.run(count, row0, 48)),
+                bits(&first[row0 * n..(row0 + count) * n]),
+                "{}: {count} rows from row {row0} differ",
+                m.name
+            );
+        }
+        eprintln!(
+            "cuda_matmul block: {:<6} {rows} rows: the bits at grids {GRIDS:?} and at other counts and places of rows are equal",
+            m.name
+        );
+        rig.free();
+    }
+}
+
+#[test]
+fn the_speed_of_the_block_form() {
+    let Some(matrices) = matrices() else { return };
+    let dev = CudaDevice::open_by_pci(&test_cards::card(), INKLING2_PROFILE_CUBIN).expect("open the GPU");
+    let blocks = dev.sm_count() as usize;
+    for m in matrices {
+        let bytes = m.shape.packed_bytes();
+        // The head at 512 rows takes 100 ms in the decode form: it runs the decode form at 33 rows only.
+        let counts: &[usize] = if m.name == "head" {
+            &[33, 512]
+        } else {
+            &[17, 33, 64, 128, 256, 512]
+        };
+        for &rows in counts {
+            let x = make_x(512, m.shape.k, 13);
+            for block in [false, true] {
+                if m.name == "head" && !block && rows == 512 {
+                    continue;
+                }
+                let mut rig = Rig::with_rows(&dev, m, &x, 1, true, 512);
+                rig.block = block;
+                let tasks = 5;
+                let list: Vec<Task> = (0..tasks).map(|_| rig.task(rows, 0, 0)).collect();
+                rig.ring.set(&list);
+                run_with_watchdog(&rig.ring, blocks as u32, rig.shared, 120);
+                let profile = rig.ring.read_profile().unwrap();
+                let spans: Vec<u64> = (1..tasks)
+                    .map(|t| task_ns(&profile, blocks, rig.ring.ring_index(t)))
+                    .collect();
+                let typical = median(spans);
+                let flops = 2.0 * rows as f64 * m.shape.n as f64 * m.shape.k as f64;
+                eprintln!(
+                    "cuda_matmul block speed: {:<6} N {:>5} K {} {rows:>3} rows {:<6}: {:>8.1} us, {:>5.1} TFLOP/s (f32-equivalent; the bf16 peak with 3 terms is 127/3 = 42), W {:>6.1} GB/s",
+                    m.name,
+                    m.shape.n,
+                    m.shape.k,
+                    if block { "block" } else { "decode" },
+                    typical as f64 / 1e3,
+                    flops / typical as f64 / 1e3,
+                    bytes as f64 / typical as f64
+                );
+                rig.free();
+            }
+        }
     }
 }

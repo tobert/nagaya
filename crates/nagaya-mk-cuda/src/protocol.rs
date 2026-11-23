@@ -367,6 +367,10 @@ define_u16_table! {
     FLAG_F32 = 1 << 8;
     // `OP_PROJ` of a full layer: the dynamic taps of the convolutions, and the log scale of the query.
     FLAG_FULL_LAYER = 1 << 9;
+    // `OP_MATMUL_BF16` and `OP_PROJ` in the block form, for a prefill (`kernels/matmul_block.cuh`): an item is up to 128
+    // columns and 32 rows with all of K. The bits of each row equal those of the decode form. `items` is the count
+    // of groups of tiles times the count of blocks of 32 rows.
+    FLAG_BLOCK_FORM = 1 << 10;
     FLAG_MXFP8 = 1 << 15;
 }
 
