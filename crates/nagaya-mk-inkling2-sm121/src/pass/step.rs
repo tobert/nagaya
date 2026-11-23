@@ -32,6 +32,63 @@ pub struct Launch {
     pub wall: Duration,
 }
 
+/// What the pass knows of a task: its kind, its run, and the bytes of weights that it reads for one row.
+#[derive(Clone, Debug)]
+pub struct OpTag {
+    pub name: &'static str,
+    pub run: Option<usize>,
+    pub layer: Option<usize>,
+    /// The bytes of weights that the task reads for a call of 1 row. The cache of the attention is not counted.
+    pub weight_bytes: usize,
+}
+
+/// The time of one task in the last call that the pass profiled: from the first wait that ended to the last end of an item.
+#[derive(Clone, Debug)]
+pub struct OpSpan {
+    pub tag: OpTag,
+    pub items: u32,
+    pub ns: u64,
+}
+
+fn kind_name(kind: TaskKind) -> &'static str {
+    match kind {
+        TaskKind::Mix => "MIX",
+        TaskKind::GateDown3 => "GATE_DOWN",
+        TaskKind::GateUp3 => "GATE_UP",
+        TaskKind::Proj => "PROJ",
+        TaskKind::Attn => "ATTN",
+        TaskKind::OutMix => "OUT_MIX",
+        TaskKind::GateDownE => "GATE_DOWN_e",
+        TaskKind::GateUpE => "GATE_UP_e",
+        TaskKind::Quant => "QUANT",
+        TaskKind::Route => "ROUTE",
+        TaskKind::Up => "UP",
+        TaskKind::Down => "DOWN",
+    }
+}
+
+/// The bytes of weights that a task reads for a call of 1 row (8 experts, each read once).
+fn weight_bytes(kind: TaskKind, plan: &RunPlan) -> usize {
+    let nvfp4 = super::weights::expert_format(plan.layer) == nagaya_mk_cuda::experts::ExpertFormat::Nvfp4;
+    // The bytes of one expert of 2,304 rows and `k` values: the codes and the scales.
+    let expert = |k: usize| {
+        let (codes, scales) = if nvfp4 { (k / 2, k / 16) } else { (k, k / 32) };
+        HIDDEN * (codes + scales)
+    };
+    match kind {
+        TaskKind::Mix | TaskKind::Attn | TaskKind::Quant => 0,
+        TaskKind::GateDown3 => 3 * 64 * 2 * HIDDEN * 2,
+        TaskKind::GateUp3 => 3 * 2 * HIDDEN * 64 * 2,
+        TaskKind::GateDownE => 64 * 2 * HIDDEN * 2,
+        TaskKind::GateUpE => 2 * HIDDEN * 64 * 2,
+        TaskKind::Proj => super::desc::proj_layout(plan.full).rows() * HIDDEN * 2,
+        TaskKind::OutMix => HIDDEN * 3072 * 2,
+        TaskKind::Route => 128 * HIDDEN * 2,
+        TaskKind::Up => 8 * expert(HIDDEN),
+        TaskKind::Down => 8 * expert(crate::spec::INTERMEDIATE),
+    }
+}
+
 pub struct Pass<'d> {
     dev: &'d CudaDevice,
     weights: &'d DeviceWeights<'d>,
@@ -49,6 +106,8 @@ pub struct Pass<'d> {
     pub launches: Vec<Launch>,
     /// The count of PROJ tasks of the last call that ran in the block form (a block of more than 16 rows).
     pub proj_block_form: usize,
+    tags: Vec<OpTag>,
+    profiled: bool,
 }
 
 impl<'d> Pass<'d> {
@@ -60,9 +119,22 @@ impl<'d> Pass<'d> {
         max_rows: usize,
         cycles: usize,
     ) -> Result<Self, String> {
+        Self::with_profile(dev, weights, seq, max_rows, cycles, false)
+    }
+
+    /// Like [`Pass::new`]. With `profile` the ring records the time of each task, and the device must be open with the
+    /// profile cubin.
+    pub fn with_profile(
+        dev: &'d CudaDevice,
+        weights: &'d DeviceWeights<'d>,
+        seq: usize,
+        max_rows: usize,
+        cycles: usize,
+        profile: bool,
+    ) -> Result<Self, String> {
         let plans = runs(cycles);
         let scratch_layout = ScratchLayout::new(max_rows, seq);
-        let ring = Ring::new(dev, scratch_layout.total_floats(), false)?;
+        let ring = Ring::new(dev, scratch_layout.total_floats(), profile)?;
         ring.zero_device()?;
         let extra = (cycles - 1) * CYCLE_LAYERS;
         Ok(Self {
@@ -79,6 +151,8 @@ impl<'d> Pass<'d> {
             grid: dev.sm_count(),
             launches: Vec::new(),
             proj_block_form: 0,
+            tags: Vec::new(),
+            profiled: profile,
         })
     }
 
@@ -175,6 +249,7 @@ impl<'d> Pass<'d> {
             .write(0, &ids.iter().flat_map(|i| i.to_le_bytes()).collect::<Vec<u8>>())?;
         let mut tables = TableSet::new(self.tables.ptr(), TABLES);
         let mut list: Vec<Task> = Vec::new();
+        let mut tags: Vec<OpTag> = Vec::new();
         // The embedding.
         {
             let table = tables.add(desc::embed_table(
@@ -195,6 +270,12 @@ impl<'d> Pass<'d> {
                     .writes(arena.addr(Buf::B0), rows * HIDDEN * 4)
                     .writes(arena.rf(Buf::B0), rows * 4),
             );
+            tags.push(OpTag {
+                name: "EMBED",
+                run: None,
+                layer: None,
+                weight_bytes: HIDDEN * 2,
+            });
         }
         let shape = StepShape { rows, pos0 };
         for plan in &self.plans {
@@ -216,7 +297,15 @@ impl<'d> Pass<'d> {
                 tasks.iter().map(|(k, _)| *k).collect::<Vec<TaskKind>>(),
                 plan.task_kinds()
             );
-            list.extend(tasks.into_iter().map(|(_, t)| t));
+            for (kind, task) in tasks {
+                tags.push(OpTag {
+                    name: kind_name(kind),
+                    run: Some(plan.run),
+                    layer: Some(plan.layer),
+                    weight_bytes: weight_bytes(kind, plan),
+                });
+                list.push(task);
+            }
         }
         // The output residual and the head.
         let last = self.plans.last().expect("a pass has runs");
@@ -248,6 +337,12 @@ impl<'d> Pass<'d> {
                 .reads(arena.rf(*b), rows * 4);
         }
         list.push(mix_task.writes(f, rows * HIDDEN * 4).writes(f_rf, rows * 4));
+        tags.push(OpTag {
+            name: "MIX_OUT",
+            run: None,
+            layer: None,
+            weight_bytes: 0,
+        });
         let head_table = tables.add(desc::head_table(w.norm_bf16.ptr())?)?;
         let scratch = self.ring.scratch() + self.scratch_layout.offset(ScratchKind::Head) as u64;
         let mut head_desc = desc::head(
@@ -266,6 +361,13 @@ impl<'d> Pass<'d> {
                 .writes(arena.addr(Buf::Logits), logit_rows * LOGIT_COLUMNS * 4)
                 .writes(scratch, self.scratch_layout.bytes(ScratchKind::Head)),
         );
+        tags.push(OpTag {
+            name: "HEAD",
+            run: None,
+            layer: None,
+            weight_bytes: LOGIT_COLUMNS * HIDDEN * 2,
+        });
+        self.tags = tags;
         self.proj_block_form = list
             .iter()
             .filter(|t| {
@@ -281,6 +383,32 @@ impl<'d> Pass<'d> {
         Ok((0..logit_rows)
             .flat_map(|r| all[r * LOGIT_COLUMNS..r * LOGIT_COLUMNS + LOGITS].to_vec())
             .collect())
+    }
+
+    /// The time of each task in the last call, when the pass was made with a profile. Only the blocks that had an item count.
+    pub fn spans(&self) -> Result<Vec<OpSpan>, String> {
+        if !self.profiled {
+            return Err("the pass has no profile. Make it with Pass::with_profile".to_owned());
+        }
+        let profile = self.ring.read_profile()?;
+        let blocks = self.ring.last_grid() as usize;
+        let mut out = Vec::new();
+        for (index, planned) in self.ring.planned(self.ring.last_grid()).iter().enumerate() {
+            let Some(origin) = planned.origin else { continue };
+            let used = (planned.items as usize).min(blocks);
+            if used == 0 {
+                continue;
+            }
+            let slots = &profile[index * blocks * 3..(index + 1) * blocks * 3];
+            let begin = slots.chunks(3).take(used).map(|s| s[1]).min().expect("a block");
+            let end = slots.chunks(3).take(used).map(|s| s[2]).max().expect("a block");
+            out.push(OpSpan {
+                tag: self.tags[origin].clone(),
+                items: planned.items,
+                ns: end.saturating_sub(begin),
+            });
+        }
+        Ok(out)
     }
 
     /// Zero the counters of the scratch of the attention and of the router before a call.
