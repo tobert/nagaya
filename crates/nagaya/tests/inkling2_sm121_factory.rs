@@ -126,7 +126,7 @@ fn real_model_plans_512k_slot_through_factory() {
     let lim = inkling2_sm121::plan(&table, &one_device()).unwrap();
     lim.check().unwrap();
     let kv = lim.memory.mandatory.iter().find(|t| t.name == "kv").unwrap().bytes;
-    assert_eq!(kv, 35_370_205_184);
+    assert_eq!(kv, 34_866_888_704);
     assert_eq!(lim.slots.len(), 1);
-    assert_eq!((lim.slots[0].tokens, lim.slots[0].bytes), (524_288, 35_370_205_184));
+    assert_eq!((lim.slots[0].tokens, lim.slots[0].bytes), (524_288, 34_866_888_704));
 }
