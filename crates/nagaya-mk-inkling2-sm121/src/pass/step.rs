@@ -50,6 +50,14 @@ pub struct OpSpan {
     pub ns: u64,
 }
 
+/// The times of the blocks of one task: `[t_start, t_after_wait, t_end]` in nanoseconds of the device timer, for each block.
+#[derive(Clone, Debug)]
+pub struct TaskTimes {
+    pub tag: OpTag,
+    pub items: u32,
+    pub blocks: Vec<[u64; 3]>,
+}
+
 fn kind_name(kind: TaskKind) -> &'static str {
     match kind {
         TaskKind::Mix => "MIX",
@@ -383,6 +391,28 @@ impl<'d> Pass<'d> {
         Ok((0..logit_rows)
             .flat_map(|r| all[r * LOGIT_COLUMNS..r * LOGIT_COLUMNS + LOGITS].to_vec())
             .collect())
+    }
+
+    /// The times of each block of each task of the last profiled call. A block that had no item of the task is left out.
+    pub fn block_times(&self) -> Result<Vec<TaskTimes>, String> {
+        if !self.profiled {
+            return Err("the pass has no profile. Make it with Pass::with_profile".to_owned());
+        }
+        let profile = self.ring.read_profile()?;
+        let blocks = self.ring.last_grid() as usize;
+        let mut out = Vec::new();
+        for (index, planned) in self.ring.planned(self.ring.last_grid()).iter().enumerate() {
+            let Some(origin) = planned.origin else { continue };
+            let used = (planned.items as usize).min(blocks);
+            let slots = &profile[index * blocks * 3..(index + 1) * blocks * 3];
+            let times = slots.chunks(3).take(used).map(|s| [s[0], s[1], s[2]]).collect();
+            out.push(TaskTimes {
+                tag: self.tags[origin].clone(),
+                items: planned.items,
+                blocks: times,
+            });
+        }
+        Ok(out)
     }
 
     /// The time of each task in the last call, when the pass was made with a profile. Only the blocks that had an item count.
