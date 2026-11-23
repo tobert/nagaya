@@ -16,6 +16,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use common::gpu::open;
+use nagaya_mk_cuda::attn::CacheFormat;
 use nagaya_mk_cuda::proj::ProjLayout;
 use nagaya_mk_cuda::protocol::{
     FLAG_ACCUMULATE, FLAG_FULL_LAYER, FLAG_NORM, MkTaskTable, PROJ_TABLE_K_CONV, PROJ_TABLE_K_OUT, PROJ_TABLE_K_STATE,
@@ -28,7 +29,7 @@ const VARIABLE: &str = "NAGAYA_PROJ_VARIANT";
 const TEST: &str = "a_task_that_the_op_cannot_run_traps_and_a_good_task_runs";
 
 /// The variants: a name, and what it is expected to do.
-const VARIANTS: [(&str, bool); 9] = [
+const VARIANTS: [(&str, bool); 12] = [
     ("none", true),
     ("scratch", false),
     ("rows", false),
@@ -38,6 +39,9 @@ const VARIANTS: [(&str, bool); 9] = [
     ("full", false),
     ("no_norm", false),
     ("items", false),
+    ("plane_zero", false),
+    ("plane_odd", false),
+    ("plane_align", false),
 ];
 
 /// The child: launch one task, and exit with 0 when the launch did what the variant expects.
@@ -61,7 +65,8 @@ fn child(variant: &str) {
     let scale = zeros(24 * 128 * 2);
     let conv = zeros(1024 * 4 * 2);
     let state = zeros(3 * 1024 * 4);
-    let slot = zeros(rows * 1024 * 4);
+    // Two planes of 64 rows for 8 heads, f32.
+    let slot = zeros(8 * 64 * 512);
     let mut table = MkTaskTable::default();
     for (slot_index, p) in [
         (PROJ_TABLE_NORM_Q, norm),
@@ -85,12 +90,24 @@ fn child(variant: &str) {
     match variant {
         "slot" => table.ptr[PROJ_TABLE_V_STATE] = 0,
         "align" => table.ptr[PROJ_TABLE_X_K] += 4,
+        "plane_align" => table.ptr[PROJ_TABLE_K_OUT] += 4,
         _ => {}
     }
     let table_ptr = dev.alloc_device(std::mem::size_of::<MkTaskTable>()).unwrap();
     unsafe { dev.copy_htod(table_ptr, (&raw const table).cast(), std::mem::size_of::<MkTaskTable>()) }.unwrap();
     let mut desc = layout
-        .descriptor(rows, 0, 0, x, packed, out, table_ptr, rf, ring.scratch())
+        .descriptor(
+            rows,
+            0,
+            64,
+            CacheFormat::F32,
+            x,
+            packed,
+            out,
+            table_ptr,
+            rf,
+            ring.scratch(),
+        )
         .unwrap();
     match variant {
         "scratch" => desc.scale_bytes -= 1,
@@ -99,6 +116,8 @@ fn child(variant: &str) {
         "full" => desc.flags |= FLAG_FULL_LAYER,
         "no_norm" => desc.flags &= !FLAG_NORM,
         "items" => desc.items -= 3,
+        "plane_zero" => desc.layer = 0,
+        "plane_odd" => desc.layer = 96,
         _ => {}
     }
     let mut ring = ring;

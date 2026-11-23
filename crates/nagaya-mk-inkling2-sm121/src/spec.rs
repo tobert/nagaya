@@ -10,7 +10,8 @@ use nagaya_abi::{
     CONTROL_TERM, Capability, ChainLimits, ControlLimit, CyclesLimit, Determinism, Dtype, FeedRule, Inputs, Kind,
     Lifetime, Limits, MandatoryTerm, MemoryLimits, PartKind, PartLimits, SlotLimit, TapLimit, Tier,
 };
-use nagaya_mk_cuda::protocol::{NUM_EXPERTS, NUM_SCOREBOARD_EVENTS, RING_DEV_BYTES};
+use nagaya_mk_cuda::attn::{AttnShape, CacheFormat, plane_bytes, sliding_ring_rows};
+use nagaya_mk_cuda::protocol::{ATTN_CHUNK_KEYS, ATTN_SPLIT_ROWS, NUM_EXPERTS, NUM_SCOREBOARD_EVENTS, RING_DEV_BYTES};
 use nagaya_mk_cuda::safetensors::{SafeTensorsHeader, TensorMeta};
 
 /// Engine kind name in a placement profile (`AGENTS.md`, "Layout").
@@ -22,8 +23,9 @@ pub const FAMILY: &str = "inkling2";
 /// Quantization mode string recorded in engine identity `numbers` (spec 12.1).
 pub const QUANT_MODE: &str = "nvfp4_fouroversix_mae+mxfp8_ue8m0";
 
-/// State layout version in engine identity `numbers` (version 2 includes `cycles`).
-pub const STATE_LAYOUT: u32 = 2;
+/// State layout version in engine identity `numbers` (version 2 includes `cycles`; version 3 has the head-major cache
+/// planes and a ring with no spill).
+pub const STATE_LAYOUT: u32 = 3;
 
 /// Weight file inside the model folder.
 pub const WEIGHTS_FILE: &str = "model-00001-of-00001.safetensors";
@@ -55,8 +57,12 @@ pub const WINDOW: usize = 1024;
 /// Routed experts in each layer, and the width of one expert (`n_routed_experts`, `intermediate_size`).
 pub const EXPERTS: usize = NUM_EXPERTS;
 pub const INTERMEDIATE: usize = 1152;
-pub const RING_ROWS: usize = 2048;
-pub const RING_SPILL: usize = 1024;
+/// The rows of the ring of a sliding state: the window and the longest block, rounded up to a chunk of the attention.
+/// The projection writes a new row over the row that is one ring older, so the ring has no spill.
+pub const RING_ROWS: usize = sliding_ring_rows(WINDOW, MAX_BLOCK);
+/// The format of the cache that the plan counts. An f32 cache is the oracle form, and e4m3 is the form of the long
+/// slots (`nagaya_mk_cuda::attn::CacheFormat`).
+pub const CACHE_FORMAT: CacheFormat = CacheFormat::F32;
 pub const MAX_QUANTUM_MS: u32 = 5_000;
 pub const MAX_SEGMENTS: u32 = 1;
 pub const MAX_LOGIT_ROWS: usize = 16;
@@ -94,12 +100,13 @@ fn state_name(s: usize) -> String {
     }
 }
 
-/// Rows allocated per key or value plane of state `s` in a slot of `seq` positions.
+/// Rows allocated per key or value plane of state `s` in a slot of `seq` positions: a full state holds each position,
+/// rounded up to a chunk of the attention, and a sliding state holds its ring.
 pub fn plane_rows(seq: usize, s: usize) -> usize {
     if is_full(state_layer(s)) {
-        seq
+        seq.next_multiple_of(ATTN_CHUNK_KEYS)
     } else {
-        RING_ROWS + RING_SPILL
+        RING_ROWS
     }
 }
 
@@ -108,18 +115,29 @@ pub fn rounded(bytes: usize) -> usize {
     bytes.max(64).next_multiple_of(64)
 }
 
-/// Device bytes of one slot of `seq` positions with a reserve of `extra` runs.
-pub fn slot_bytes(seq: usize, extra: usize) -> u64 {
+/// Device bytes of one slot of `seq` positions with a reserve of `extra` runs, for a cache in `format`. A conv state
+/// is always f32.
+pub fn slot_bytes(seq: usize, extra: usize, format: CacheFormat) -> u64 {
     (0..LAYERS + extra)
-        .map(|s| (rounded(2 * plane_rows(seq, s) * KV_ROW * 4) + rounded(CONV_ROWS * CONV_ROW * 4)) as u64)
+        .map(|s| (rounded(plane_bytes(plane_rows(seq, s), format) * 2) + rounded(CONV_ROWS * CONV_ROW * 4)) as u64)
         .sum()
 }
 
-/// Attention scratch bytes for `max_seq` keys, at 3,120 bytes for each position.
+/// The bytes of the scratch of the attention for slots of `max_seq` positions and blocks of `max_block` rows.
 ///
-/// Provisional: this is the B70 bound until wave C designs the GB10 attention. It has no basis on the GB10 yet.
-pub fn attn_scratch_bytes(max_seq: usize) -> u64 {
-    (max_seq as u64).saturating_mul(3_120)
+/// A block of at most `ATTN_SPLIT_ROWS` rows runs in the split mode: each chunk of keys writes a partial of 16 rows of
+/// `ATTN_PARTIAL_ROW_FLOATS` floats for each (KV head, tile), and one counter for each group. The bound is the block of
+/// the most rows in the split mode, at the end of a full run of `max_seq` positions. A larger block runs in the whole
+/// mode, and it needs no scratch (`AttnShape::scratch_floats`).
+pub fn attn_scratch_bytes(max_seq: usize, max_block: usize) -> u64 {
+    let rows = max_block.min(ATTN_SPLIT_ROWS).min(max_seq);
+    if rows == 0 {
+        return 0;
+    }
+    let plane = max_seq.next_multiple_of(ATTN_CHUNK_KEYS);
+    let shape = AttnShape::new(rows, max_seq - rows, 0, plane, CacheFormat::F32)
+        .expect("a block of the split mode fits a full run of the longest slot");
+    (shape.scratch_floats() as u64).saturating_mul(4)
 }
 
 /// Supported Inkling 2 model variants.
@@ -265,9 +283,12 @@ impl Config {
         self.slots.iter().copied().max().unwrap_or(0)
     }
 
-    /// Total KV and conv bytes across all configured slots.
-    pub fn slots_bytes(&self) -> u64 {
-        self.slots.iter().map(|&seq| slot_bytes(seq, self.extra_runs)).sum()
+    /// Total KV and conv bytes across all configured slots, for a cache in `format`.
+    pub fn slots_bytes(&self, format: CacheFormat) -> u64 {
+        self.slots
+            .iter()
+            .map(|&seq| slot_bytes(seq, self.extra_runs, format))
+            .sum()
     }
 }
 
@@ -317,7 +338,7 @@ pub fn parts(extra: usize) -> Vec<PartLimits> {
     out
 }
 
-fn slot_limits(seqs: &[usize], extra: usize) -> Vec<SlotLimit> {
+fn slot_limits(seqs: &[usize], extra: usize, format: CacheFormat) -> Vec<SlotLimit> {
     let mut by_seq: BTreeMap<usize, u32> = BTreeMap::new();
     for &seq in seqs {
         *by_seq.entry(seq).or_insert(0) += 1;
@@ -327,7 +348,7 @@ fn slot_limits(seqs: &[usize], extra: usize) -> Vec<SlotLimit> {
         .map(|(seq, count)| SlotLimit {
             count,
             tokens: seq as u64,
-            bytes: slot_bytes(seq, extra),
+            bytes: slot_bytes(seq, extra, format),
         })
         .collect()
 }
@@ -380,7 +401,7 @@ fn sum_checkpoint_weights(tensors: &BTreeMap<String, TensorMeta>) -> Result<(u64
 pub fn limits(config: &Config, llm_weights: u64, vision_weights: u64) -> Limits {
     let ring_bytes = (NUM_SCOREBOARD_EVENTS * 4 + RING_DEV_BYTES) as u64;
     let block_work = (config.max_block * BLOCK_WORK_FLOATS_PER_TOKEN * 4) as u64;
-    let work = block_work + attn_scratch_bytes(config.max_seq()) + ring_bytes + VISION_WORK_BYTES;
+    let work = block_work + attn_scratch_bytes(config.max_seq(), config.max_block) + ring_bytes + VISION_WORK_BYTES;
     let pinned = (RING_DEV_BYTES + 256 * 24 + STAGING_BYTES) as u64;
     let control = ControlLimit {
         tables: CONTROL_TABLES,
@@ -404,7 +425,7 @@ pub fn limits(config: &Config, llm_weights: u64, vision_weights: u64) -> Limits 
         max_segments: MAX_SEGMENTS,
         max_pass_inputs: config.max_block as u32,
         max_logit_rows: MAX_LOGIT_ROWS as u32,
-        slots: slot_limits(&config.seqs(), config.extra_runs),
+        slots: slot_limits(&config.seqs(), config.extra_runs, CACHE_FORMAT),
         max_quantum_ms: MAX_QUANTUM_MS,
         // No long pass until the vision tower runs here (milestone 37 step 13).
         max_long_quantum_ms: None,
@@ -412,7 +433,7 @@ pub fn limits(config: &Config, llm_weights: u64, vision_weights: u64) -> Limits 
             mandatory: vec![
                 term("weights", Tier::Device(0), llm_weights),
                 term("vision", Tier::Device(0), vision_weights),
-                term("kv", Tier::Device(0), config.slots_bytes()),
+                term("kv", Tier::Device(0), config.slots_bytes(CACHE_FORMAT)),
                 term("work", Tier::Device(0), work),
                 term("pinned", Tier::Host, pinned),
                 term(CONTROL_TERM, Tier::Device(0), control.table_bytes()),
@@ -482,6 +503,14 @@ pub fn identity_numbers(config: &Config) -> BTreeMap<String, String> {
     map.insert("quant".to_owned(), QUANT_MODE.to_owned());
     map.insert("max_block".to_owned(), config.max_block.to_string());
     map.insert("ring_rows".to_owned(), RING_ROWS.to_string());
+    map.insert(
+        "cache".to_owned(),
+        match CACHE_FORMAT {
+            CacheFormat::F32 => "f32",
+            CacheFormat::E4m3 => "e4m3",
+        }
+        .to_owned(),
+    );
     map.insert("cycles".to_owned(), DEFAULT_CYCLES.to_string());
     map.insert("extra_runs".to_owned(), config.extra_runs.to_string());
     map.insert("state".to_owned(), STATE_LAYOUT.to_string());
@@ -570,8 +599,9 @@ mod tests {
 
     /// The bytes of the conv part of one state: 3 rows of 6,656 `f32` values.
     const CONV_BYTES: u64 = 3 * 6_656 * 4;
-    /// The bytes of the two planes of a sliding state: 3,072 rows of 1,024 `f32` values, for the keys and the values.
-    const SLIDING_BYTES: u64 = 2 * 3_072 * 1_024 * 4;
+    /// The bytes of the two planes of a sliding state: 1,536 rows of 1,024 values, for the keys and the values.
+    const SLIDING_F32: u64 = 2 * 1_536 * 1_024 * 4;
+    const SLIDING_E4M3: u64 = 2 * 1_536 * 1_024;
 
     #[test]
     fn the_state_plan_holds_eight_full_and_forty_sliding_states() {
@@ -591,37 +621,60 @@ mod tests {
         // One row of a key plane holds 8 heads of 128 `f32` values.
         assert_eq!(KV_ROW, 1_024);
         assert_eq!(plane_rows(409_600, 5), 409_600);
-        assert_eq!(plane_rows(409_600, 0), 3_072);
-        assert_eq!(plane_rows(409_600, 24), 3_072, "state 24 is layer 6, a sliding layer");
+        assert_eq!(
+            plane_rows(409_600, 0),
+            1_536,
+            "a ring of the window and a block of 512, with no spill"
+        );
+        assert_eq!(plane_rows(409_600, 24), 1_536, "state 24 is layer 6, a sliding layer");
+        assert_eq!(plane_rows(1_000, 5), 1_024, "a full state rounds up to a chunk of 256");
         assert_eq!(plane_rows(409_600, 29), 409_600, "state 29 is layer 11, a full layer");
     }
 
     #[test]
-    fn slot_bytes_are_exact_for_each_length() {
-        // Each full state holds two planes of `seq` rows of 1,024 `f32` values. Rows are 64-byte multiples.
-        let formula = |seq: u64| 8 * (2 * seq * 1_024 * 4) + 40 * SLIDING_BYTES + 48 * CONV_BYTES;
-        assert_eq!(SLIDING_BYTES, 25_165_824);
+    fn slot_bytes_are_exact_for_each_length_and_format() {
+        // Each full state holds two planes of `seq` rows of 1,024 values, and each sliding state two planes of 1,536
+        // rows. A value is 4 bytes in an f32 cache and 1 byte in an e4m3 cache. Rows are 64-byte multiples.
+        let formula =
+            |seq: u64, per_value: u64, sliding: u64| 8 * (2 * seq * 1_024 * per_value) + 40 * sliding + 48 * CONV_BYTES;
+        assert_eq!(SLIDING_F32, 12_582_912);
+        assert_eq!(SLIDING_E4M3, 3_145_728);
         assert_eq!(CONV_BYTES, 79_872);
-        assert_eq!(slot_bytes(32_768, 24), 3_157_950_464);
-        assert_eq!(slot_bytes(409_600, 24), 27_854_012_416);
-        assert_eq!(slot_bytes(524_288, 24), 35_370_205_184);
+        let f32_ = CacheFormat::F32;
+        let e4m3 = CacheFormat::E4m3;
+        assert_eq!(slot_bytes(32_768, 24, f32_), 2_654_633_984);
+        assert_eq!(slot_bytes(409_600, 24, f32_), 27_350_695_936);
+        assert_eq!(slot_bytes(524_288, 24, f32_), 34_866_888_704);
+        assert_eq!(slot_bytes(32_768, 24, e4m3), 666_533_888);
+        assert_eq!(slot_bytes(409_600, 24, e4m3), 6_840_549_376);
+        assert_eq!(slot_bytes(524_288, 24, e4m3), 8_719_597_568);
         for seq in [32_768u64, 409_600, 524_288] {
-            assert_eq!(slot_bytes(seq as usize, 24), formula(seq));
+            assert_eq!(slot_bytes(seq as usize, 24, f32_), formula(seq, 4, SLIDING_F32));
+            assert_eq!(slot_bytes(seq as usize, 24, e4m3), formula(seq, 1, SLIDING_E4M3));
         }
         // More cycles add states: 36 extra runs are 12 more states, 2 of them full, and 10 sliding.
         assert_eq!(
-            slot_bytes(409_600, 36) - slot_bytes(409_600, 24),
-            2 * (2 * 409_600 * 1_024 * 4) + 10 * SLIDING_BYTES + 12 * CONV_BYTES
+            slot_bytes(409_600, 36, f32_) - slot_bytes(409_600, 24, f32_),
+            2 * (2 * 409_600 * 1_024 * 4) + 10 * SLIDING_F32 + 12 * CONV_BYTES
+        );
+        assert_eq!(
+            slot_bytes(409_600, 36, e4m3) - slot_bytes(409_600, 24, e4m3),
+            2 * (2 * 409_600 * 1_024) + 10 * SLIDING_E4M3 + 12 * CONV_BYTES
         );
     }
 
     #[test]
-    fn attention_scratch_is_provisional_and_linear() {
-        assert_eq!(attn_scratch_bytes(0), 0);
-        assert_eq!(attn_scratch_bytes(1), 3_120);
-        assert_eq!(attn_scratch_bytes(409_600), 1_277_952_000);
-        assert_eq!(attn_scratch_bytes(524_288), 1_635_778_560);
-        assert_eq!(attn_scratch_bytes(usize::MAX), u64::MAX, "the product saturates");
+    fn attention_scratch_is_the_partials_of_the_split_mode() {
+        // A block of 16 rows is 48 rows of the MMA: 3 tiles, so 24 groups. Each group holds a partial of
+        // 16 x 132 floats for each chunk of 256 keys of a full run, after the 24 counters.
+        assert_eq!(attn_scratch_bytes(0, 512), 0);
+        assert_eq!(attn_scratch_bytes(409_600, 512), (24 + 24 * 1_600 * 16 * 132) * 4);
+        assert_eq!(attn_scratch_bytes(524_288, 512), 415_236_192);
+        assert_eq!(attn_scratch_bytes(524_288, 512), (24 + 24 * 2_048 * 16 * 132) * 4);
+        // A decode row is 3 rows of the MMA: 1 tile, 8 groups.
+        assert_eq!(attn_scratch_bytes(524_288, 1), (8 + 8 * 2_048 * 16 * 132) * 4);
+        // A block of 1 row in a slot of 1 position: one chunk.
+        assert_eq!(attn_scratch_bytes(1, 512), (8 + 8 * 16 * 132) * 4);
     }
 
     #[test]
@@ -673,17 +726,17 @@ mod tests {
         let bytes = |name: &str| lim.memory.mandatory.iter().find(|t| t.name == name).unwrap().bytes;
         assert_eq!(bytes("weights"), 18_889_360_896);
         assert_eq!(bytes("vision"), 636_512_256);
-        assert_eq!(bytes("kv"), 35_370_205_184);
+        assert_eq!(bytes("kv"), 34_866_888_704);
         // The work: 512 rows of 65,536 `f32` values, the scratch, the ring, and the vision tower.
         assert_eq!(
             bytes("work"),
-            134_217_728 + 1_635_778_560 + (2_049 * 4 + 262_144) + 1_870_588_096
+            134_217_728 + 415_236_192 + (2_049 * 4 + 262_144) + 1_870_588_096
         );
         assert_eq!(bytes("pinned"), 262_144 + 6_144 + 67_108_864);
         assert_eq!(lim.slots.len(), 1);
         assert_eq!(
             (lim.slots[0].count, lim.slots[0].tokens, lim.slots[0].bytes),
-            (1, 524_288, 35_370_205_184)
+            (1, 524_288, 34_866_888_704)
         );
         let cycles = lim.cycles.unwrap();
         assert_eq!((cycles.min, cycles.max, cycles.default), (1, 3, 3));
@@ -707,12 +760,13 @@ mod tests {
         assert_eq!(
             host,
             vec![
+                ("cache", "f32"),
                 ("cycles", "3"),
                 ("extra_runs", "36"),
                 ("max_block", "256"),
                 ("quant", QUANT_MODE),
-                ("ring_rows", "2048"),
-                ("state", "2"),
+                ("ring_rows", "1536"),
+                ("state", "3"),
             ]
         );
         assert_eq!(nums.contains_key("nvcc"), cfg!(feature = "cuda"));

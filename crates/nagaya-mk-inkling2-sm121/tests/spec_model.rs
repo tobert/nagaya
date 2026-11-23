@@ -45,8 +45,8 @@ fn real_checkpoint_plans_512k_slot_without_reading_weights() {
     lim.check().unwrap();
     let bytes = |name: &str| lim.memory.mandatory.iter().find(|t| t.name == name).expect(name).bytes;
     // The slot is exact for any checkpoint of the two models: 8 full and 40 sliding states at 3 cycles.
-    assert_eq!(bytes("kv"), 35_370_205_184);
-    assert_eq!(lim.slots[0].bytes, 35_370_205_184);
+    assert_eq!(bytes("kv"), 34_866_888_704);
+    assert_eq!(lim.slots[0].bytes, 34_866_888_704);
     // The sums of the header of Inkling 2 Mini, each tensor rounded up to 64 bytes. The research model differs.
     if spec::Model::read(&cfg.model_dir).unwrap() == spec::Model::Mini {
         assert_eq!(bytes("weights"), 18_889_360_896);
