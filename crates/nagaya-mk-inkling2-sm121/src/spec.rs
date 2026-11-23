@@ -671,10 +671,10 @@ mod tests {
         assert_eq!(attn_scratch_bytes(409_600, 512), (24 + 24 * 1_600 * 16 * 132) * 4);
         assert_eq!(attn_scratch_bytes(524_288, 512), 415_236_192);
         assert_eq!(attn_scratch_bytes(524_288, 512), (24 + 24 * 2_048 * 16 * 132) * 4);
-        // A decode row is 3 rows of the MMA: 1 tile, 8 groups.
-        assert_eq!(attn_scratch_bytes(524_288, 1), (8 + 8 * 2_048 * 16 * 132) * 4);
+        // A decode row is 3 rows of the MMA: 1 tile, 8 groups. The 24 counters are the same for every row count.
+        assert_eq!(attn_scratch_bytes(524_288, 1), (24 + 8 * 2_048 * 16 * 132) * 4);
         // A block of 1 row in a slot of 1 position: one chunk.
-        assert_eq!(attn_scratch_bytes(1, 512), (8 + 8 * 16 * 132) * 4);
+        assert_eq!(attn_scratch_bytes(1, 512), (24 + 8 * 16 * 132) * 4);
     }
 
     #[test]

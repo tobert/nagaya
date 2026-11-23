@@ -426,7 +426,29 @@ fn run_attn(
     launches: usize,
     profile: bool,
 ) -> Run {
+    run_attn_after(dev, planes, input, rows, pos0, grid, launches, profile, None)
+}
+
+/// Like [`run_attn`]. With `before` the ring first runs another task on the same scratch: the rows of its input, their
+/// count and the position of the first. The ring is not zeroed between the two, as in a pass.
+#[allow(clippy::too_many_arguments)]
+fn run_attn_after(
+    dev: &CudaDevice,
+    planes: &Planes,
+    input: &Rows,
+    rows: usize,
+    pos0: usize,
+    grid: u32,
+    launches: usize,
+    profile: bool,
+    before: Option<(&Rows, usize, usize)>,
+) -> Run {
     let shape = AttnShape::new(rows, pos0, planes.window, planes.plane_rows, planes.format).unwrap();
+    let before_shape =
+        before.map(|(_, r, p)| AttnShape::new(r, p, planes.window, planes.plane_rows, planes.format).unwrap());
+    let scratch_floats = shape
+        .scratch_floats()
+        .max(before_shape.as_ref().map_or(0, |s| s.scratch_floats()));
     let q = upload(dev, &input.q);
     let rel = upload(dev, &input.rel);
     let sinks = upload(dev, &input.sinks);
@@ -435,8 +457,33 @@ fn run_attn(
     dev.memset_zero(out, rows * HEADS * HEAD_DIM * 4).unwrap();
     let table_host: [MkTaskTable; 1] = [attn::table(rel, sinks, gate, planes.proj)];
     let table = upload(dev, &table_host);
-    let mut ring = Ring::new(dev, shape.scratch_floats(), profile).unwrap();
+    let mut ring = Ring::new(dev, scratch_floats, profile).unwrap();
     ring.zero_device().unwrap();
+    let shared = dev.max_dynamic_shared_bytes().unwrap();
+    if let (Some((rows_in, r, p)), Some(bshape)) = (before, before_shape) {
+        let bq = upload(dev, &rows_in.q);
+        let brel = upload(dev, &rows_in.rel);
+        let bsinks = upload(dev, &rows_in.sinks);
+        let bgate = upload(dev, &rows_in.gate);
+        let bout = dev.alloc_device(r * HEADS * HEAD_DIM * 4).unwrap();
+        let btable = upload(dev, &[attn::table(brel, bsinks, bgate, planes.proj)]);
+        let _ = p;
+        let desc = bshape.descriptor(&attn::AttnBuffers {
+            q: bq,
+            k: planes.k,
+            v: planes.v,
+            out: bout,
+            scratch: ring.scratch(),
+            table: btable,
+        });
+        ring.set(&[Task::with_items(desc)
+            .reads(bq, rows_in.q.len() * 4)
+            .writes(bout, r * HEADS * HEAD_DIM * 4)]);
+        run_with_watchdog(&ring, grid, shared, 120);
+        for ptr in [bq, brel, bsinks, bgate, bout, btable] {
+            dev.free_device(ptr).unwrap();
+        }
+    }
     let desc = shape.descriptor(&attn::AttnBuffers {
         q,
         k: planes.k,
@@ -449,7 +496,6 @@ fn run_attn(
         .reads(q, input.q.len() * 4)
         .writes(out, rows * HEADS * HEAD_DIM * 4);
     ring.set(&[task]);
-    let shared = dev.max_dynamic_shared_bytes().unwrap();
     let (mut wall, mut kernel) = (u64::MAX, u64::MAX);
     for _ in 0..=launches {
         let t0 = std::time::Instant::now();
@@ -597,6 +643,42 @@ fn the_bits_of_a_row_do_not_depend_on_the_rows_or_on_the_grid() {
     check_rows_and_grids(full, &full_pool, 0, 3000, 512, &[0, 1, 255, 256, 300, 511]);
     check_rows_and_grids(slide, &slide_pool, WINDOW, 3000, 512, &[0, 1, 255, 511]);
     eprintln!("cuda_attn: the bits are equal for 7, 16, 17 and 512 rows against a decode step, and at grids {GRIDS:?}");
+}
+
+/// A call of few rows leaves partials in the scratch where a call of more rows has its counters. The counters sit at
+/// a place that does not depend on the rows, so the second call gives the bits of a fresh ring.
+#[test]
+fn a_call_after_a_call_of_other_rows_on_the_same_scratch_gives_the_bits_of_a_fresh_ring() {
+    let Some(full) = layer(5) else {
+        return;
+    };
+    let pool = make_pool(full, CacheFormat::F32);
+    let dev = open();
+    let planes = Planes::new(&dev, full, &pool, 0, plane_rows_for(0, 4100), 4100);
+    for (first, second) in [(1usize, 16usize), (1, 7), (7, 16), (16, 1)] {
+        let pos0 = 3000;
+        let a = make_rows(full, pos0, first, 31);
+        let b = make_rows(full, pos0 + first, second, 32);
+        let fresh = run_attn(&dev, &planes, &b, second, pos0 + first, 48, 0, false).out;
+        let after = run_attn_after(
+            &dev,
+            &planes,
+            &b,
+            second,
+            pos0 + first,
+            48,
+            0,
+            false,
+            Some((&a, first, pos0)),
+        )
+        .out;
+        assert_eq!(
+            bits(&after),
+            bits(&fresh),
+            "{second} rows after {first} rows on the same scratch give other bits than a fresh ring"
+        );
+    }
+    planes.free(&dev);
 }
 
 #[test]

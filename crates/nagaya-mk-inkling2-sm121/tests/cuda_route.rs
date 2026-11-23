@@ -23,8 +23,8 @@ use common::gpu::{GRIDS, download, open, open_profile, run_with_watchdog, upload
 use moe_support::{Checkpoint, Rng, activation_row, download_pairs, model_dir, widen_bf16};
 use nagaya_mk_cuda::driver::{CUdeviceptr, CudaDevice};
 use nagaya_mk_cuda::experts::{
-    ROUTE_ITEMS_PER_ROW_TILE, ROUTE_TABLE_BIAS, ROUTE_TABLE_NORM_WEIGHT, ROUTE_TABLE_ROW_FACTOR, route_items,
-    route_pair_list_bytes, route_picks_bytes, route_scratch_words,
+    ROUTE_COUNTER_WORDS, ROUTE_ITEMS_PER_ROW_TILE, ROUTE_TABLE_BIAS, ROUTE_TABLE_NORM_WEIGHT, ROUTE_TABLE_ROW_FACTOR,
+    route_items, route_pair_list_bytes, route_picks_bytes, route_scratch_words,
 };
 use nagaya_mk_cuda::protocol::{
     EXPERT_MAX_ROWS, ExpertPair, FLAG_NORM, FLAG_PAIRS, MkTaskDescriptor, MkTaskTable, OP_PROBE_READ, OP_ROUTE,
@@ -205,7 +205,7 @@ impl<'d> Device<'d> {
             );
             let words = route_scratch_words(rows);
             let all: Vec<u32> = download(self.dev, scratch, words);
-            let counter_words = (rows.div_ceil(16) * 9 + 1).next_multiple_of(4);
+            let counter_words = ROUTE_COUNTER_WORDS;
             let raw: Vec<u32> = download(self.dev, picks, rows * TOP_K * 2);
             out = Some(Picks {
                 logits: all[counter_words..counter_words + rows * EXPERTS]
@@ -220,6 +220,65 @@ impl<'d> Device<'d> {
         }
         ring.free().unwrap();
         for ptr in [x_ptr, scratch, picks, pairs, rf, table_ptr] {
+            self.dev.free_device(ptr).unwrap();
+        }
+        out.unwrap()
+    }
+}
+
+impl Device<'_> {
+    /// Run the op over `before`, then over `x`, on one scratch that nothing zeroes between the runs, and return the
+    /// result of `x`. A call of other rows must leave the counters at 0.
+    fn run_after(&self, before: &[Vec<f32>], x: &[Vec<f32>], grid: u32) -> Picks {
+        let most = before.len().max(x.len());
+        let scratch = upload(self.dev, &vec![0u32; route_scratch_words(most)]);
+        let rf = upload(self.dev, &[0.0f32]);
+        let mut table = MkTaskTable::default();
+        table.ptr[ROUTE_TABLE_BIAS] = self.bias;
+        table.ptr[ROUTE_TABLE_NORM_WEIGHT] = self.norm_weight;
+        table.ptr[ROUTE_TABLE_ROW_FACTOR] = rf;
+        let table_ptr = upload(self.dev, &[table]);
+        let mut ring = Ring::new(self.dev, 1, false).unwrap();
+        let mut out = None;
+        for rows_in in [before, x] {
+            let rows = rows_in.len();
+            let flat: Vec<f32> = rows_in.iter().flatten().copied().collect();
+            let x_ptr = upload(self.dev, &flat);
+            let picks = upload(self.dev, &vec![0xFFu8; route_picks_bytes(rows)]);
+            let pairs = upload(self.dev, &vec![0u8; route_pair_list_bytes(rows)]);
+            ring.set(&[
+                Task::with_items(self.task(rows, x_ptr, picks, pairs, scratch, table_ptr, false))
+                    .reads(x_ptr, flat.len() * 4)
+                    .writes(picks, route_picks_bytes(rows))
+                    .writes(pairs, route_pair_list_bytes(rows))
+                    .writes(scratch, route_scratch_words(rows) * 4),
+            ]);
+            ring.zero_device().unwrap();
+            run_with_watchdog(
+                &ring,
+                grid,
+                DEFAULT_BLOCK_THREADS,
+                self.dev.max_dynamic_shared_bytes().unwrap(),
+            );
+            let all: Vec<u32> = download(self.dev, scratch, route_scratch_words(most));
+            let counter_words = ROUTE_COUNTER_WORDS;
+            let raw: Vec<u32> = download(self.dev, picks, rows * TOP_K * 2);
+            out = Some(Picks {
+                logits: all[counter_words..counter_words + rows * EXPERTS]
+                    .iter()
+                    .map(|b| f32::from_bits(*b))
+                    .collect(),
+                experts: raw[..rows * TOP_K].to_vec(),
+                weights: raw[rows * TOP_K..].iter().map(|b| f32::from_bits(*b)).collect(),
+                pairs: download_pairs(self.dev, pairs, expert_pair_bound(rows)),
+                scratch_head: all[..counter_words].to_vec(),
+            });
+            for ptr in [x_ptr, picks, pairs] {
+                self.dev.free_device(ptr).unwrap();
+            }
+        }
+        ring.free().unwrap();
+        for ptr in [scratch, rf, table_ptr] {
             self.dev.free_device(ptr).unwrap();
         }
         out.unwrap()
@@ -452,6 +511,41 @@ const PINNED_HASHES: [&str; 2] = [
     "e7f1e660433d538dd1ca5179540872b40ccaa92eb0c4433e951a5b6680b90712",
     "5b7c97c65910cde4ce479f55df7aff7253bd198148a12c03df58dd9a9a14f8ce",
 ];
+
+/// A call of few rows leaves logits where a call of more rows has its counters. The counters sit at a place that does
+/// not depend on the rows, so the second call gives the bits of a call on a fresh scratch.
+#[test]
+fn a_call_after_a_call_of_other_rows_on_the_same_scratch_gives_the_bits_of_a_fresh_scratch() {
+    let Some(routers) = routers() else { return };
+    let dev = open();
+    for router in &routers {
+        let device = Device::new(&dev, router);
+        for (first, second) in [(1usize, 17usize), (9, 17), (17, 1), (16, 512)] {
+            let a = rows_of(first, 5);
+            let b = rows_of(second, 6);
+            let fresh = device.run(&b, None, 48, 1);
+            let after = device.run_after(&a, &b, 48);
+            assert_eq!(
+                bits(&after.logits),
+                bits(&fresh.logits),
+                "{}: {second} rows after {first} rows: the logits differ from a fresh scratch",
+                router.name
+            );
+            assert_eq!(
+                after.experts, fresh.experts,
+                "{}: {second} rows after {first}: picks",
+                router.name
+            );
+            assert_eq!(
+                bits(&after.weights),
+                bits(&fresh.weights),
+                "{}: {second} rows after {first}: weights",
+                router.name
+            );
+        }
+        device.free();
+    }
+}
 
 #[test]
 fn the_bits_of_the_logits_and_the_picks_are_pinned() {

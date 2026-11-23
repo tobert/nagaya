@@ -9,15 +9,15 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use nagaya_mk_cuda::attn::CacheFormat;
+use nagaya_mk_cuda::attn::{AttnShape, CacheFormat};
 use nagaya_mk_cuda::driver::CudaDevice;
-use nagaya_mk_cuda::ring::{Ring, Task};
+use nagaya_mk_cuda::ring::{Ring, RingList, Task};
 
 use super::arena::Arena;
 use super::desc::{self, MixTable};
 use super::dev::Dev;
 use super::layout::{Buf, LOGIT_COLUMNS, RunPlan, ScratchKind, ScratchLayout, TaskKind, runs};
-use super::run::{RunEnv, StepShape, TableSet, run_tasks};
+use super::run::{BLOCK_FORM_ROWS_ABOVE, RunEnv, StepShape, TableSet, run_tasks};
 use super::slot::Slot;
 use super::weights::DeviceWeights;
 use crate::spec::{CYCLE_LAYERS, CYCLE_START, HIDDEN, LOGITS, MAX_LOGIT_ROWS};
@@ -89,6 +89,50 @@ fn weight_bytes(kind: TaskKind, plan: &RunPlan) -> usize {
     }
 }
 
+/// What makes two calls share a ring: the arena and the tasks differ only in the fields that [`Pass::patch`] sets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct ShapeKey {
+    rows: usize,
+    cycles: usize,
+    logit_rows: usize,
+    /// The block form of PROJ (more than `BLOCK_FORM_ROWS_ABOVE` rows) has other descriptors and other scratch.
+    block: bool,
+}
+
+/// A field of a task that moves between calls of one shape.
+#[derive(Clone, Copy, Debug)]
+struct Patch {
+    /// The number of the task in the list of the ring.
+    input: usize,
+    kind: TaskKind,
+    /// The index of the run in `plans`.
+    plan: usize,
+}
+
+/// A ring list of one shape, with what the pass needs to launch it again.
+struct Built {
+    /// The list, while another shape holds the ring. It is empty while this shape holds the ring.
+    list: RingList,
+    /// The task tables, as bytes for the device array.
+    tables: Vec<u8>,
+    tags: Vec<OpTag>,
+    proj_block_form: usize,
+    patches: Vec<Patch>,
+}
+
+/// The host time of the last call, by part. The kernel time is in `Launch::wall` less `prep`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct HostTime {
+    /// The whole call, from the checks to the logits.
+    pub call: Duration,
+    /// The build of the ring: zero when the call found the ring of its shape.
+    pub build: Duration,
+    /// The patches of the tasks that move between calls.
+    pub patch: Duration,
+    /// The descriptors and their copy to the device, inside the launch.
+    pub prep: Duration,
+}
+
 pub struct Pass<'d> {
     dev: &'d CudaDevice,
     weights: &'d DeviceWeights<'d>,
@@ -108,6 +152,11 @@ pub struct Pass<'d> {
     pub proj_block_form: usize,
     tags: Vec<OpTag>,
     profiled: bool,
+    /// The lists of the shapes that the pass has run. The list of the shape in `loaded` is in the ring.
+    built: HashMap<ShapeKey, Built>,
+    loaded: Option<ShapeKey>,
+    /// The host time of the last call.
+    pub host: HostTime,
 }
 
 impl<'d> Pass<'d> {
@@ -153,6 +202,9 @@ impl<'d> Pass<'d> {
             proj_block_form: 0,
             tags: Vec::new(),
             profiled: profile,
+            built: HashMap::new(),
+            loaded: None,
+            host: HostTime::default(),
         })
     }
 
@@ -160,14 +212,7 @@ impl<'d> Pass<'d> {
         self.cycles
     }
 
-    fn launch(&mut self, what: &str, tasks: &[Task], tables: &TableSet) -> Result<(), String> {
-        let host: Vec<u8> = tables
-            .host()
-            .iter()
-            .flat_map(|t| t.ptr.iter().flat_map(|p| p.to_le_bytes()))
-            .collect();
-        self.tables.write(0, &host)?;
-        self.ring.set(tasks);
+    fn launch(&mut self, what: &str) -> Result<(), String> {
         let started = Instant::now();
         let result = unsafe {
             self.ring.run_grid(
@@ -189,9 +234,17 @@ impl<'d> Pass<'d> {
         Ok(())
     }
 
+    /// Drop the rings of all shapes. The next call builds its ring again.
+    pub fn forget_rings(&mut self) {
+        drop(self.ring.take_list());
+        self.built.clear();
+        self.loaded = None;
+    }
+
     /// Run the rows `ids` at the next positions of the slot, and return the logits of the last `logit_rows` rows,
     /// `LOGITS` values each. The position of the slot moves by the count of rows.
     pub fn run(&mut self, ids: &[u32], logit_rows: usize) -> Result<Vec<f32>, String> {
+        let call = Instant::now();
         let rows = ids.len();
         if self.slot.poisoned {
             return Err("the slot is poisoned by a failed launch. Zero the slot before the next call".to_owned());
@@ -223,7 +276,7 @@ impl<'d> Pass<'d> {
             ));
         }
         self.launches.clear();
-        self.zero_counter_heads()?;
+        self.host = HostTime::default();
         if !self.arenas.contains_key(&(rows, logit_rows)) {
             let arena = Arena::new(self.dev, rows, logit_rows)?;
             self.arenas.insert((rows, logit_rows), arena);
@@ -238,18 +291,113 @@ impl<'d> Pass<'d> {
         if result.is_ok() {
             self.slot.position += rows;
         }
+        if let Some(launch) = self.launches.last() {
+            self.host.prep = self.ring.last_prep();
+            self.host.call = call.elapsed().saturating_sub(launch.wall) + self.host.prep;
+        }
         result
     }
 
     fn run_with(&mut self, arena: &Arena<'d>, ids: &[u32], logit_rows: usize, pos0: usize) -> Result<Vec<f32>, String> {
         let rows = ids.len();
-        let w = self.weights;
         arena
             .ids
             .write(0, &ids.iter().flat_map(|i| i.to_le_bytes()).collect::<Vec<u8>>())?;
+        let key = ShapeKey {
+            rows,
+            cycles: self.cycles,
+            logit_rows,
+            block: rows > BLOCK_FORM_ROWS_ABOVE,
+        };
+        let started = Instant::now();
+        if self.loaded == Some(key) {
+            self.patch(key, rows, pos0)?;
+            self.host.patch = started.elapsed();
+        } else {
+            self.activate(key, arena, pos0)?;
+            self.host.build = started.elapsed();
+        }
+        self.launch("the pass")?;
+        let raw = arena
+            .buffer
+            .read(arena.layout.offset(Buf::Logits), logit_rows * LOGIT_COLUMNS * 4)?;
+        let all: Vec<f32> = raw.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
+        Ok((0..logit_rows)
+            .flat_map(|r| all[r * LOGIT_COLUMNS..r * LOGIT_COLUMNS + LOGITS].to_vec())
+            .collect())
+    }
+
+    /// Put the list of the shape `key` in the ring: the list that an earlier call built, or a new one. The ring then
+    /// holds this shape, and the device holds its task tables.
+    fn activate(&mut self, key: ShapeKey, arena: &Arena<'d>, pos0: usize) -> Result<(), String> {
+        if let Some(old) = self.loaded.take() {
+            let list = self.ring.take_list();
+            self.built.get_mut(&old).expect("the loaded shape is in the map").list = list;
+        }
+        let parked = self.built.contains_key(&key);
+        if parked {
+            let built = self.built.get_mut(&key).expect("the shape was just found");
+            self.ring.put_list(std::mem::take(&mut built.list));
+        } else {
+            let (built, tasks) = self.build(arena, key.rows, key.logit_rows, pos0)?;
+            self.ring.set(&tasks);
+            self.built.insert(key, built);
+        }
+        let built = &self.built[&key];
+        self.tables.write(0, &built.tables)?;
+        self.tags = built.tags.clone();
+        self.proj_block_form = built.proj_block_form;
+        self.loaded = Some(key);
+        if parked {
+            self.patch(key, key.rows, pos0)?;
+        }
+        Ok(())
+    }
+
+    /// Set the fields of the loaded shape that move between calls: the position of the first row in PROJ and ATTN, and
+    /// the chunks of ATTN with the count of its items. The ranges of each task stay as they were, so the ring plans
+    /// nothing (`Ring::patch`). A task that writes the cache or the scratch declares the whole plane or region.
+    fn patch(&mut self, key: ShapeKey, rows: usize, pos0: usize) -> Result<(), String> {
+        let built = &self.built[&key];
+        for p in &built.patches {
+            let mut task = self.ring.task(p.input).clone();
+            match p.kind {
+                TaskKind::Proj => task.desc.pos0 = pos0 as u32,
+                TaskKind::Attn => {
+                    let run = &self.slot.runs[self.plans[p.plan].state];
+                    let shape = AttnShape::new(rows, pos0, run.window, run.plane_rows, self.slot.format)?;
+                    let region = self.scratch_layout.bytes(ScratchKind::Attn);
+                    if shape.scratch_floats() * 4 > region {
+                        return Err(format!(
+                            "the attention of {rows} rows at position {pos0} needs {} bytes of scratch, and its region has {region}. \
+                             Make the scratch layout for a longer slot",
+                            shape.scratch_floats() * 4
+                        ));
+                    }
+                    task.desc.items = shape.items() as u32;
+                    task.desc.group_items = shape.chunks() as u32;
+                    task.desc.pos0 = pos0 as u32;
+                }
+                other => unreachable!("the task kind {other:?} has no field that moves"),
+            }
+            self.ring.patch(p.input, task);
+        }
+        Ok(())
+    }
+
+    /// Build the tasks of a pass for `rows` rows at `pos0`, with their task tables.
+    fn build(
+        &self,
+        arena: &Arena<'d>,
+        rows: usize,
+        logit_rows: usize,
+        pos0: usize,
+    ) -> Result<(Built, Vec<Task>), String> {
+        let w = self.weights;
         let mut tables = TableSet::new(self.tables.ptr(), TABLES);
         let mut list: Vec<Task> = Vec::new();
         let mut tags: Vec<OpTag> = Vec::new();
+        let mut patches: Vec<Patch> = Vec::new();
         // The embedding.
         {
             let table = tables.add(desc::embed_table(
@@ -278,7 +426,7 @@ impl<'d> Pass<'d> {
             });
         }
         let shape = StepShape { rows, pos0 };
-        for plan in &self.plans {
+        for (plan_index, plan) in self.plans.iter().enumerate() {
             let env = RunEnv {
                 weights: &w.layers[plan.layer],
                 slot: &self.slot.runs[plan.state],
@@ -298,6 +446,13 @@ impl<'d> Pass<'d> {
                 plan.task_kinds()
             );
             for (kind, task) in tasks {
+                if matches!(kind, TaskKind::Proj | TaskKind::Attn) {
+                    patches.push(Patch {
+                        input: list.len(),
+                        kind,
+                        plan: plan_index,
+                    });
+                }
                 tags.push(OpTag {
                     name: kind_name(kind),
                     run: Some(plan.run),
@@ -367,22 +522,26 @@ impl<'d> Pass<'d> {
             layer: None,
             weight_bytes: LOGIT_COLUMNS * HIDDEN * 2,
         });
-        self.tags = tags;
-        self.proj_block_form = list
+        let proj_block_form = list
             .iter()
             .filter(|t| {
                 t.desc.opcode == nagaya_mk_cuda::protocol::OP_PROJ
                     && t.desc.flags & nagaya_mk_cuda::protocol::FLAG_BLOCK_FORM != 0
             })
             .count();
-        self.launch("the pass", &list, &tables)?;
-        let raw = arena
-            .buffer
-            .read(arena.layout.offset(Buf::Logits), logit_rows * LOGIT_COLUMNS * 4)?;
-        let all: Vec<f32> = raw.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
-        Ok((0..logit_rows)
-            .flat_map(|r| all[r * LOGIT_COLUMNS..r * LOGIT_COLUMNS + LOGITS].to_vec())
-            .collect())
+        let host: Vec<u8> = tables
+            .host()
+            .iter()
+            .flat_map(|t| t.ptr.iter().flat_map(|p| p.to_le_bytes()))
+            .collect();
+        let built = Built {
+            list: RingList::default(),
+            tables: host,
+            tags,
+            proj_block_form,
+            patches,
+        };
+        Ok((built, list))
     }
 
     /// The time of each task in the last call, when the pass was made with a profile. Only the blocks that had an item count.
@@ -409,26 +568,5 @@ impl<'d> Pass<'d> {
             });
         }
         Ok(out)
-    }
-
-    /// Zero the counters of the scratch of the attention and of the router before a call.
-    ///
-    /// The ring is zero once, and each merger resets its counter, so a counter should stay zero. These two ops break
-    /// the rule across calls of different row counts: the counters of the attention are `8 * tiles` words, the
-    /// partials follow them (`ops_attn.cuh` `counter_ptr` and `partials_ptr`, and `AttnShape::scratch_floats`), and the
-    /// counters of the router are `9 * tiles + 1` words, with the logits after them (`route_scratch_words`). A call
-    /// with fewer tiles writes partials or logits where a call with more tiles has counters. Then the second call
-    /// starts with a counter that is not zero, merges too early, and gives other bits. The heads are small, so the
-    /// pass zeroes them for the most tiles that a call can have. A fix of the two layouts (counters at a place that
-    /// does not depend on the rows) makes this call unneeded.
-    fn zero_counter_heads(&self) -> Result<(), String> {
-        let attn = self.ring.scratch() + self.scratch_layout.offset(ScratchKind::Attn) as u64;
-        let attn_bytes = (4 * 8 * 3 + 16).min(self.scratch_layout.bytes(ScratchKind::Attn));
-        self.dev.memset_zero(attn, attn_bytes)?;
-        let route = self.ring.scratch() + self.scratch_layout.offset(ScratchKind::Route) as u64;
-        let tiles = self.max_rows.div_ceil(16);
-        let route_bytes = 4 * (tiles * 9 + 1).next_multiple_of(4);
-        self.dev
-            .memset_zero(route, route_bytes.min(self.scratch_layout.bytes(ScratchKind::Route)))
     }
 }

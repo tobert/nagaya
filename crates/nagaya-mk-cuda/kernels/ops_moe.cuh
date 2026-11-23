@@ -70,10 +70,9 @@ constexpr uint32_t RT_SMEM_BYTES = RT_OFF_WSUM + RT_WARPS * 4;
 static_assert(RT_OFF_TREE + RT_WARPS * 2 * 32 * 4 * 4 <= RT_SMEM_BYTES, "the tree of the MMAs must fit the region");
 
 // The words of the scratch, as `route_scratch_words` in src/experts.rs has them. The counters come first: a counter for
-// each (row tile, column tile), a counter for each row tile, and one for the plan, rounded to 4 words.
-__device__ __forceinline__ uint32_t rt_counter_words(uint32_t row_tiles) {
-    return (row_tiles * RT_COL_TILES + row_tiles + 1 + 3) & ~3u;
-}
+// each (row tile, column tile), a counter for each row tile, and one for the plan, rounded to 4 words. Their room is for
+// the most rows, so the logits start at a place that does not depend on the rows (`ROUTE_COUNTER_WORDS`).
+constexpr uint32_t RT_COUNTER_WORDS = ((RT_MAX_TOKENS / 16) * RT_COL_TILES + RT_MAX_TOKENS / 16 + 1 + 3) & ~3u;
 
 // The same bound as `expert_pair_bound` in src/protocol.rs.
 __device__ __forceinline__ uint32_t rt_pair_bound(uint32_t rows) {
@@ -378,7 +377,7 @@ __device__ __forceinline__ void op_route(const MkTaskDescriptor& task, const MkT
     const uint32_t token = (i >> 7) * 8 + 2 * ((i >> 2) & 3) + (i & 1);
     const uint32_t column = ((i >> 2) & 31) / 4 + 8 * ((i >> 1) & 1);
     uint32_t* counters = reinterpret_cast<uint32_t*>(task.f);
-    float* logits = reinterpret_cast<float*>(task.f) + rt_counter_words(row_tiles);
+    float* logits = reinterpret_cast<float*>(task.f) + RT_COUNTER_WORDS;
     float* partials = logits + static_cast<uint64_t>(rows) * RT_EXPERTS;
     if (token < live_rows) {
         const float p01 = tree[i] + tree[256 + i];
