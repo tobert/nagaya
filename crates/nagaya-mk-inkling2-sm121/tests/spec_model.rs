@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use nagaya_mk_inkling2_sm121::spec::{self, Config, DEFAULT_EXTRA_RUNS, DEFAULT_MAX_BLOCK};
+use nagaya_mk_inkling2_sm121::spec::{self, Config, DEFAULT_CACHE, DEFAULT_EXTRA_RUNS, DEFAULT_MAX_BLOCK};
 
 const VAR: &str = "INKLING2_MODEL_DIR";
 
@@ -40,16 +40,18 @@ fn real_checkpoint_plans_512k_slot_without_reading_weights() {
         slots: vec![524_288],
         max_block: DEFAULT_MAX_BLOCK,
         extra_runs: DEFAULT_EXTRA_RUNS,
+        cache: DEFAULT_CACHE,
     };
     let lim = spec::plan(&cfg).unwrap();
     lim.check().unwrap();
     let bytes = |name: &str| lim.memory.mandatory.iter().find(|t| t.name == name).expect(name).bytes;
+    // The engine runs no tower of images yet, so the plan holds no term for its weights.
+    assert!(lim.memory.mandatory.iter().all(|t| t.name != "vision"));
     // The slot is exact for any checkpoint of the two models: 8 full and 40 sliding states at 3 cycles.
     assert_eq!(bytes("kv"), 34_866_888_704);
     assert_eq!(lim.slots[0].bytes, 34_866_888_704);
     // The sums of the header of Inkling 2 Mini, each tensor rounded up to 64 bytes. The research model differs.
     if spec::Model::read(&cfg.model_dir).unwrap() == spec::Model::Mini {
         assert_eq!(bytes("weights"), 18_889_360_896);
-        assert_eq!(bytes("vision"), 636_512_256);
     }
 }
