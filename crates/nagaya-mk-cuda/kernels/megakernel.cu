@@ -281,6 +281,7 @@ __device__ __forceinline__ void op_selftest_table(const MkTaskDescriptor& task, 
 }
 
 #include "probe_ops.cuh"
+#include "probe_smem.cuh"
 #include "matmul_bf16.cuh"
 #include "quant.cuh"
 #include "cache_layout.cuh"
@@ -335,6 +336,9 @@ __device__ __forceinline__ void run_op(const MkTaskDescriptor& task, const MkTas
             break;
         case OP_PROBE_MMA_RATE:
             op_probe_mma_rate(task);
+            break;
+        case OP_PROBE_SMEM:
+            op_probe_smem(task);
             break;
         case OP_REDUCE_PROBE:
             op_reduce_probe(task, item);

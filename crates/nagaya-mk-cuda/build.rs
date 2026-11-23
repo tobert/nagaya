@@ -106,6 +106,7 @@ fn protocol_header() -> String {
     for (name, value) in protocol::OPCODES
         .iter()
         .chain(protocol::PROBE_READ_VARIANTS)
+        .chain(protocol::PROBE_SMEM_VARIANTS)
         .chain(protocol::PROBE_MMA_KINDS)
         .chain(protocol::FLAGS)
     {
