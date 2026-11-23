@@ -7,6 +7,7 @@
 
 pub mod cache;
 pub mod held;
+pub mod identity;
 pub mod pass;
 pub mod quant;
 pub mod spec;
