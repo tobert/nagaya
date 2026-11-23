@@ -314,9 +314,10 @@ class ExpertCall(unittest.TestCase):
             want[token] += torch.nn.functional.linear(act, source.down[expert])[0]
         self.assertTrue(torch.allclose(got, want, rtol=1e-5, atol=1e-6))
 
-    def test_the_replay_gives_the_rows_of_an_expert_to_the_matrix_product_in_the_order_of_the_call(self):
+    def test_the_call_and_the_replay_give_the_rows_of_an_expert_to_the_matrix_product_in_the_order_of_the_tokens(self):
         # A row of a matrix product has other bits when its place in the batch changes (measured on 2026-11-23).
-        # Expert 0 gets token 0 at slot 1 and token 1 at slot 0. The call orders them by slot, so token 1 comes first.
+        # Expert 0 gets token 0 at slot 1 and token 1 at slot 0. The tape orders the slots by expert id, and the call
+        # takes them in the order of the scores. Both must give the tokens in ascending order.
         self.experts.activation_format, self.experts.layer_index = "nvfp4", 0
         hidden, index = self.hidden[:2], torch.tensor([[1, 0], [0, 2]])
         weights = torch.tensor([[0.6, 0.4], [0.7, 0.3]])
@@ -333,11 +334,14 @@ class ExpertCall(unittest.TestCase):
             called, seen[:] = list(seen), []
             x_q = quant.fake_quantize(hidden, "nvfp4")
             down = torch.zeros(2, 2, 32)
-            tape = {"run00.route_ids": index.to(torch.int32), "run00.route_weights": weights, "run00.x_q": x_q,
+            by_id = {"run00.route_ids": torch.tensor([[0, 1], [0, 2]], dtype=torch.int32),
+                     "run00.route_weights": torch.tensor([[0.4, 0.6], [0.7, 0.3]])}
+            tape = {**by_id, "run00.x_q": x_q,
                     "run00.down_q": down}
             reference.replay_moe(self.experts, "nvfp4", tape, "run00")
         finally:
             torch.nn.functional.linear = linear
+        self.assertTrue(torch.equal(called[0], x_q), "expert 0 gets token 0, then token 1")
         self.assertEqual(len(called), len(seen))
         for got, want in zip(seen, called):
             self.assertTrue(torch.equal(got, want), "the rows of one expert go in the order of the call")
