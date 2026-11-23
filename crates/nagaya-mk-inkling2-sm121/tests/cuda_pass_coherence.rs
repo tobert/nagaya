@@ -83,7 +83,7 @@ fn with_watchdog<T>(seconds: u64, body: impl FnOnce() -> T) -> T {
 
 /// Prefill `ids` in blocks and return the logits of the last row.
 fn prefill(pass: &mut Pass<'_>, ids: &[u32]) -> Vec<f32> {
-    pass.slot.zero().unwrap();
+    pass.slots[0].zero().unwrap();
     let mut out = Vec::new();
     for block in ids.chunks(MAX_ROWS) {
         out = pass.run(block, 1).unwrap_or_else(|e| panic!("{e}"));

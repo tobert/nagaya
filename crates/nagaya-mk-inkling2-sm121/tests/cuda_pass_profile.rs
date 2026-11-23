@@ -148,7 +148,7 @@ fn the_time_of_each_op_and_the_tokens_a_second_at_1_and_16_rows() {
     let mean = |v: &[Duration]| v.iter().sum::<Duration>().as_secs_f64() / v.len() as f64;
 
     // A block of 16 rows, 6 times at the positions 0, 16, ... 80. The first call is a warm-up and does not count.
-    pass.slot.zero().unwrap();
+    pass.slots[0].zero().unwrap();
     let (mut walls, mut calls) = (Vec::new(), Vec::new());
     let mut last_spans = Vec::new();
     for i in 0..6 {
