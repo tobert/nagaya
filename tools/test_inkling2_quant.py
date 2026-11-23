@@ -335,5 +335,132 @@ class DecodeWithCache(unittest.TestCase):
         self.assertLess(gap, 1e-3)
 
 
+class TapeOfOps(unittest.TestCase):
+    """The tape of the ops (`OpTape`): the rows that a device gate reads, and the replay that checks them."""
+
+    ids = list(range(12))
+
+    def tearDown(self):
+        reference.ExpertCalls.formats = None
+        reference.ExpertCalls.record = None
+        reference.ExpertCalls.tape = None
+
+    def record(self, seed=0, tie=False):
+        model, _config = tiny_model(seed, True)
+        text = model.model
+        if tie:
+            with torch.no_grad():
+                for layer in text.layers:
+                    layer.mlp.gate.weight[1:] = layer.mlp.gate.weight[1]
+        ops = reference.OpTape(text)
+        reference.forward(model, self.ids)
+        ops.remove()
+        order = [call["layer"] for call in ops.calls]
+        tensors, formats = ops.tensors(order)
+        return model, text, ops, order, tensors, formats
+
+    def test_the_tape_has_each_key_of_each_run_with_the_shapes_of_the_docstring(self):
+        _model, _text, _ops, order, tensors, formats = self.record()
+        self.assertEqual(order, [0, 1, 2, 3, 2, 3, 2, 3, 4, 5])
+        count = len(self.ids)
+        for run, layer in enumerate(order):
+            name = f"run{run:02}"
+            nvfp4 = formats[run] == "nvfp4"
+            self.assertEqual(tensors[f"{name}.h_e"].shape, (count, 64))
+            self.assertEqual(tensors[f"{name}.r"].shape, (count, 64))
+            self.assertEqual(tensors[f"{name}.moe"].shape, (count, 64))
+            self.assertEqual(tensors[f"{name}.attn"].shape, (count, 4 * 16))
+            self.assertEqual(tensors[f"{name}.route_ids"].dtype, torch.int32)
+            self.assertEqual(tensors[f"{name}.route_ids"].shape, (count, 2))
+            self.assertEqual(tensors[f"{name}.route_weights"].shape, (count, 2))
+            self.assertEqual(tensors[f"{name}.down_q"].shape, (count, 2, 32))
+            self.assertEqual(tensors[f"{name}.x_codes"].shape, (count, 32 if nvfp4 else 64))
+            self.assertEqual(tensors[f"{name}.x_scales"].shape, (count, 4 if nvfp4 else 2))
+            self.assertEqual(f"{name}.x_amax" in tensors, nvfp4)
+            self.assertEqual(f"{name}.down_amax" in tensors, nvfp4)
+            self.assertEqual(tensors[f"{name}.down_codes"].shape, (count, 2, 16 if nvfp4 else 32))
+
+    def test_the_picks_go_in_ascending_expert_order_with_their_own_weights(self):
+        _model, _text, ops, _order, tensors, _formats = self.record()
+        for run, call in enumerate(ops.calls):
+            ids = tensors[f"run{run:02}.route_ids"]
+            self.assertTrue(bool((ids[:, 1:] > ids[:, :-1]).all()), f"run {run}: ids ascend")
+            self.assertTrue(bool((tensors[f"run{run:02}.route_weights"] > 0).all()))
+
+    def test_the_routing_weight_acts_before_the_down_quantizer(self):
+        # The down row of a slot is the quantized SwiGLU row times the weight of that slot: the rows differ from the
+        # quantized rows of the f32 mode, which multiplies after the down projection.
+        _model, text, _ops, _order, tensors, formats = self.record()
+        experts = text.layers[0].mlp.experts
+        quant = reference.quant_module()
+        ids, weights, x_q = tensors["run00.route_ids"].long(), tensors["run00.route_weights"], tensors["run00.x_q"]
+        token, slot = 3, 1
+        gate_up = torch.nn.functional.linear(x_q[token : token + 1], experts.gate_up_proj[int(ids[token, slot])])
+        want = quant.fake_quantize(experts._apply_gate(gate_up).float() * weights[token, slot], formats[0])
+        self.assertTrue(torch.equal(tensors["run00.down_q"][token, slot], want[0]))
+
+    def test_the_raw_parts_expand_to_the_fake_quantized_rows(self):
+        _model, _text, _ops, order, tensors, formats = self.record()
+        quant = reference.quant_module()
+        for run, fmt in enumerate(formats):
+            name = f"run{run:02}"
+            codes, scales = tensors[f"{name}.x_codes"], tensors[f"{name}.x_scales"]
+            if fmt == "nvfp4":
+                packed = codes.to(torch.int64)
+                unpacked = torch.stack([packed & 15, packed >> 4], dim=-1).reshape(codes.shape[0], -1)
+                got = quant.dequantize_nvfp4(unpacked, scales, tensors[f"{name}.x_amax"])
+            else:
+                got = quant.dequantize_mxfp8(codes, scales)
+            self.assertTrue(torch.equal(got, tensors[f"{name}.x_q"]), f"run {run} {fmt}")
+
+    def test_the_buffers_hold_codes_then_scales_then_amax(self):
+        _model, _text, _ops, _order, tensors, formats = self.record()
+        for run, fmt in enumerate(formats):
+            name = f"run{run:02}"
+            for part, rows in (("x", 12), ("down", 24)):
+                buf = tensors[f"{name}.{part}_buf"]
+                codes = tensors[f"{name}.{part}_codes"].reshape(-1)
+                scales = tensors[f"{name}.{part}_scales"].reshape(-1)
+                self.assertTrue(torch.equal(buf[: codes.numel()], codes))
+                self.assertTrue(torch.equal(buf[codes.numel() : codes.numel() + scales.numel()], scales))
+                tail = buf[codes.numel() + scales.numel() :]
+                if fmt == "nvfp4":
+                    self.assertTrue(torch.equal(tail.view(torch.float32), tensors[f"{name}.{part}_amax"].reshape(-1)))
+                else:
+                    self.assertEqual(tail.numel(), 0)
+
+    def test_each_run_replays_to_its_down_rows_and_its_output_bit_for_bit(self):
+        _model, text, _ops, order, tensors, formats = self.record()
+        reference.check_replay(text, tensors, order, formats)
+
+    def test_the_replay_stops_on_a_changed_row(self):
+        _model, text, _ops, order, tensors, formats = self.record()
+        tensors["run04.moe"] = tensors["run04.moe"].clone()
+        tensors["run04.moe"][0, 0] += 1e-6
+        with self.assertRaises(AssertionError):
+            reference.check_replay(text, tensors, order, formats)
+
+    def test_the_attention_output_and_the_moe_output_join_the_run_output(self):
+        # Layer 0 has no history: its run output is `r + post_mlp_convolution(moe)`, and `r` is the output of the
+        # post attention convolution of `wo(attn)`. The test uses the first run of the tape for both.
+        model, text, _ops, _order, tensors, _formats = self.record()
+        layer = text.layers[0]
+        with torch.no_grad():
+            first = layer.post_attention_convolution(layer.self_attn.o_proj.linear(tensors["run00.attn"])[None])[0]
+            self.assertTrue(torch.equal(first.float(), tensors["run00.r"]), "r follows wo(attn)")
+            out = layer.post_mlp_convolution(tensors["run00.moe"][None])[0].float()
+            seen = []
+            handle = layer.register_forward_hook(lambda _m, _a, output: seen.append(output[0] if isinstance(output, tuple) else output))
+            reference.forward(model, self.ids)
+            handle.remove()
+        self.assertTrue(torch.equal(tensors["run00.r"] + out, seen[0][0].float()), "run 0 is r + conv(moe)")
+
+    def test_a_tie_at_the_last_place_is_marked(self):
+        _model, _text, _ops, _order, tensors, _formats = self.record(tie=True)
+        self.assertTrue(bool((tensors["run00.route_tie"] == 1).all()))
+        _model, _text, _ops, _order, tensors, _formats = self.record()
+        self.assertTrue(bool((tensors["run00.route_tie"] == 0).all()))
+
+
 if __name__ == "__main__":
     unittest.main()
