@@ -162,6 +162,33 @@ impl<'d> Ring<'d> {
         self.len = self.plan.len();
     }
 
+    /// Replace the task number `input` of the list of [`Ring::set`] with `task`, which has the same ranges, the same
+    /// order and the same kind of count of items. The descriptor may differ in any field, and so the count of items
+    /// and the addresses of a later pass can change with no new plan. The waits of the tasks after it follow the new
+    /// count.
+    ///
+    /// # Panics
+    /// The number is not in the list, or the task has other ranges, another `after` list or another `per_block` than
+    /// the task that it replaces: the plan of the waits would change, and the ring needs a new [`Ring::set`].
+    pub fn patch(&mut self, input: usize, task: Task) {
+        assert!(
+            input < self.tasks.len(),
+            "the ring holds {} tasks, and there is no task number {input} to patch",
+            self.tasks.len()
+        );
+        let old = &self.tasks[input];
+        assert!(
+            old.reads == task.reads
+                && old.writes == task.writes
+                && old.after == task.after
+                && old.per_block == task.per_block,
+            "the patch of task {input} changes its ranges, its order or its kind of count. Call set again with the new list"
+        );
+        let index = self.ring_index(input);
+        self.plan[index].items = task.desc.items;
+        self.tasks[input] = task;
+    }
+
     fn plan_for(&self, grid: u32) -> Vec<Planned> {
         let nodes: Vec<Node> = self
             .tasks
