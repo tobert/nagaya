@@ -9,6 +9,8 @@ pub mod desc;
 pub mod dev;
 pub mod layout;
 #[cfg(feature = "cuda")]
+pub mod run;
+#[cfg(feature = "cuda")]
 pub mod slot;
 #[cfg(feature = "cuda")]
 pub mod weights;

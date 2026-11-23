@@ -70,6 +70,14 @@ fn nonzero(name: &str, address: u64) -> Result<(), String> {
     }
 }
 
+/// An address that an NVFP4 layer gives and an MXFP8 layer leaves out: `None` is 0.
+fn nonzero_if(name: &str, address: Option<u64>) -> Result<u64, String> {
+    match address {
+        Some(at) => nonzero(name, at).map(|()| at),
+        None => Ok(0),
+    }
+}
+
 fn rows_in(name: &str, rows: usize, most: usize) -> Result<u32, String> {
     if rows == 0 || rows > most {
         return Err(format!(
@@ -516,8 +524,8 @@ pub fn up(
 }
 
 /// The table of the up op: the amax of the weights and the buffer of the quantized activations.
-pub fn up_table(amax: u64, qact: u64) -> Result<MkTaskTable, String> {
-    nonzero("the amax of the weights", amax)?;
+pub fn up_table(amax: Option<u64>, qact: u64) -> Result<MkTaskTable, String> {
+    let amax = nonzero_if("the amax of the weights", amax)?;
     aligned("the quantized activations", qact, 16)?;
     nonzero("the quantized activations", qact)?;
     let mut table = MkTaskTable::default();
@@ -565,7 +573,7 @@ pub fn down(
 
 /// The table of the down op: the amax, the residual `r`, the weight and the state of the conv, and the output.
 pub fn down_table(
-    amax: u64,
+    amax: Option<u64>,
     residual: u64,
     conv_weight: u64,
     conv_state: u64,
@@ -574,8 +582,8 @@ pub fn down_table(
     use nagaya_mk_cuda::experts::{
         EXPERT_TABLE_CONV_STATE, EXPERT_TABLE_CONV_WEIGHT, EXPERT_TABLE_OUT, EXPERT_TABLE_RESIDUAL,
     };
+    let amax = nonzero_if("the amax of the weights", amax)?;
     for (name, at) in [
-        ("the amax of the weights", amax),
         ("the residual", residual),
         ("the conv weight", conv_weight),
         ("the conv state", conv_state),
@@ -890,10 +898,11 @@ mod tests {
         // A token has 8 pairs at most, so a decode step has 8 pairs of 6 items: 48.
         assert_eq!(up(ExpertFormat::Nvfp4, 1, 1, &a, 1.0).unwrap().items, 48);
         assert_eq!(EXPERT_MAX_ROWS, 16);
-        assert!(up_table(0, 16).unwrap_err().contains("amax"));
-        let t = down_table(8, 16, 24, 32, 40).unwrap();
+        assert!(up_table(Some(0), 16).unwrap_err().contains("amax"));
+        assert_eq!(up_table(None, 16).unwrap().ptr[0], 0);
+        let t = down_table(Some(8), 16, 24, 32, 40).unwrap();
         assert_eq!(&t.ptr[..6], &[8, 0, 16, 24, 32, 40]);
-        assert!(down_table(8, 16, 24, 0, 40).unwrap_err().contains("state"));
+        assert!(down_table(Some(8), 16, 24, 0, 40).unwrap_err().contains("state"));
     }
 
     #[test]

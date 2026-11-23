@@ -54,7 +54,7 @@ pub enum Buf {
     ProjOut,
     /// The output of the attention.
     AttnOut,
-    /// The row `e` of the mlp mix, its row factor, and `h_e`.
+    /// The output of `OP_OUT_MIX` (`outmix::out_floats`): `e`, then `h_e`, then the row factor of `e`.
     EOut,
     /// The 8 picks and weights of each row.
     Picks,
@@ -393,7 +393,7 @@ impl StepLayout {
             Buf::ProjOut => ProjLayout::output_floats(rows) * 4,
             Buf::AttnOut => rows * 3072 * 4,
             // `e`, then `h_e`, each of `rows` rows. The row factor of `e` follows them.
-            Buf::EOut => 2 * rows * row + rows * 4,
+            Buf::EOut => nagaya_mk_cuda::outmix::out_floats(rows) * 4,
             Buf::Picks => route_picks_bytes(rows),
             Buf::Pairs => route_pair_list_bytes(rows),
             // The larger of the two formats, so that one place serves every layer.
@@ -415,6 +415,12 @@ impl StepLayout {
             })
             .max()
             .expect("two formats")
+    }
+
+    /// The byte offsets in `EOut` of `e`, `h_e` and the row factors of `e` (`outmix::out_offsets`).
+    pub fn eout_parts(&self) -> (usize, usize, usize) {
+        let (e, h, rf) = nagaya_mk_cuda::outmix::out_offsets(self.rows);
+        (e * 4, h * 4, rf * 4)
     }
 
     /// The place of `buf`.
@@ -457,6 +463,7 @@ impl StepLayout {
 pub enum ScratchKind {
     Proj,
     Attn,
+    OutMix,
     GateDown3,
     GateUp3,
     GateDownE,
@@ -492,6 +499,7 @@ impl ScratchLayout {
                 ScratchKind::Attn,
                 usize::try_from(attn_scratch_bytes(max_seq, max_rows) / 4).expect("fits"),
             ),
+            (ScratchKind::OutMix, nagaya_mk_cuda::outmix::scratch_floats(max_rows)),
             (ScratchKind::GateDown3, 16 + 3 * 24 * max_rows * 16),
             (ScratchKind::GateUp3, 4 + 3 * 36 * max_rows),
             (ScratchKind::GateDownE, 16 + 24 * max_rows * 16),
@@ -765,6 +773,9 @@ mod tests {
         let big = StepLayout::new(512, 1);
         assert!(big.total_bytes() < 220_000_000, "{}", big.total_bytes());
         assert_eq!(big.place(Buf::A).bytes, 3 * 512 * 9216);
+        // `EOut` is the output of OP_OUT_MIX: e, h_e and the row factors of e.
+        assert_eq!(big.place(Buf::EOut).bytes, (2 * 512 * 2304 + 512) * 4);
+        assert_eq!(big.eout_parts(), (0, 512 * 2304 * 4, 2 * 512 * 2304 * 4));
         // The gates 0 to 2 and the gate of the mlp mix: 4 gates of 64 values for each row.
         assert_eq!(big.place(Buf::G).bytes, 4 * 512 * 256);
     }
@@ -781,6 +792,7 @@ mod tests {
         let kinds = [
             ScratchKind::Proj,
             ScratchKind::Attn,
+            ScratchKind::OutMix,
             ScratchKind::GateDown3,
             ScratchKind::GateUp3,
             ScratchKind::GateDownE,
