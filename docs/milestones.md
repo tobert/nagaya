@@ -974,6 +974,14 @@ Do the steps in this order. Each step ends with the checks green.
       reference. Thus a pass of the engine cannot give the logits of the quantized oracle within a tight bound.
     - Thus each op has a card gate that reads the quantized rows of the oracle, not rows that it quantized itself.
       The reference records them (its tape of quantized rows).
+      - The `layers` stage of the quantized mode writes the tape, `inkling2-mini.quant.tape.safetensors`
+        (`ebc6f51e`). For each run it holds the attention output, `r`, `h_e`, the route, the MoE output and the run
+        output. It holds the expert input and the down input as bytes in the form of `QuantRowsLayout`.
+      - The route picks are in ascending expert id. The key `route_tie` marks a tie at the eighth place. The route
+        weight acts before the down quantizer.
+      - The tape is a realization of its own. Another Python and CPU build moved run 0 by 2e-5 (measured on
+        2026-11-22). The flips grew that to 1.9 in the last logits. Thus a gate reads only the tape, and never
+        mixes it with the rows of the layers file.
     - The gate of a whole pass is a gate of coherence, as in step 11. It compares the top token, the greedy text
       and the logit gap over the oracle prompts. Write the thresholds into the binding with the first measure.
     - Rule 4 keeps the engine consistent with itself: a decode step gives the bits of its position in a block. Thus

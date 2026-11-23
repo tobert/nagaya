@@ -2960,11 +2960,18 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   gives the bytes, in `f32`:
   - A full run holds 2 planes of one row of 1,024 values for each position. The 8 full runs of 409,600 positions
     take 26,844,184,576 bytes with their convolution state.
-  - Each of the 40 sliding runs holds a fixed ring of 3,072 rows. The 40 rings take 1,009,827,840 bytes.
-  - A slot of 409,600 positions takes 27,854,012,416 bytes (27.854 GB). A slot of 524,288 positions takes
-    35,370,205,184 bytes (35.370 GB).
-  - The attention scratch on top is a provisional bound from the B70 engine: 3,120 bytes for each position. It
-    stays until the GB10 attention exists (milestone 37 step 9, wave C).
+  - Each of the 40 sliding runs holds a ring of 1,536 rows, with no spill copy (`32589716`). The ring is the least
+    multiple of the chunk of 256 keys that holds the window and a block of 512 rows (`sliding_ring_rows`, `attn.rs`).
+  - The bytes of a slot, from the tests of `spec.rs` (`e4m3` has a unit scale):
+
+    | positions | `f32` | `e4m3` |
+    |---:|---:|---:|
+    | 409,600 | 27,350,695,936 | 6,840,549,376 |
+    | 524,288 | 34,866,888,704 | 8,719,597,568 |
+
+  - The attention scratch on top holds the partials of the split mode: 24 groups, each chunk of 256 keys, 16 rows of
+    132 floats. At 512 rows it takes 324,403,296 bytes for 409,600 positions and 415,236,192 bytes for 524,288
+    (`attn_scratch_bytes`, `spec.rs`).
 
 ## Not covered yet
 
