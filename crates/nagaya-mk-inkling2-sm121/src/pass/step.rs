@@ -189,6 +189,30 @@ impl<'d> Pass<'d> {
         cycles: usize,
         profile: bool,
     ) -> Result<Self, String> {
+        Self::with_options(dev, weights, seq, max_rows, cycles, profile, CacheFormat::F32)
+    }
+
+    /// Like [`Pass::new`], with the cache in `format`. The default format of the pass is `CacheFormat::F32`.
+    pub fn with_cache_format(
+        dev: &'d CudaDevice,
+        weights: &'d DeviceWeights<'d>,
+        seq: usize,
+        max_rows: usize,
+        cycles: usize,
+        format: CacheFormat,
+    ) -> Result<Self, String> {
+        Self::with_options(dev, weights, seq, max_rows, cycles, false, format)
+    }
+
+    fn with_options(
+        dev: &'d CudaDevice,
+        weights: &'d DeviceWeights<'d>,
+        seq: usize,
+        max_rows: usize,
+        cycles: usize,
+        profile: bool,
+        format: CacheFormat,
+    ) -> Result<Self, String> {
         let plans = runs(cycles);
         let scratch_layout = ScratchLayout::new(max_rows, seq);
         let ring = Ring::new(dev, scratch_layout.total_floats(), profile)?;
@@ -197,7 +221,7 @@ impl<'d> Pass<'d> {
         Ok(Self {
             dev,
             weights,
-            slot: Slot::new(dev, seq, extra, CacheFormat::F32)?,
+            slot: Slot::new(dev, seq, extra, format)?,
             cycles,
             max_rows,
             scratch_layout,
