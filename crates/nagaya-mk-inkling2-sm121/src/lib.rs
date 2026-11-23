@@ -5,5 +5,6 @@
 //! None of these needs a GPU.
 
 pub mod cache;
+pub mod pass;
 pub mod quant;
 pub mod spec;
