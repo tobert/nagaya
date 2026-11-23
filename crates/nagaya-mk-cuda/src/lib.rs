@@ -10,6 +10,7 @@ pub mod driver;
 pub mod experts;
 pub mod graph;
 pub mod mma_model;
+pub mod outmix;
 pub mod proj;
 pub mod protocol;
 pub mod ptxas;
