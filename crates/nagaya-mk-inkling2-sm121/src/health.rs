@@ -1,20 +1,25 @@
 //! The rules of the engine that need no GPU: which driver errors are sticky, and which rows of logits a pass takes.
 
+use nagaya_mk_cuda::memory::Count;
+
 use crate::spec::MAX_LOGIT_ROWS;
 
-/// The free bytes that the GPU must still hold after an open: 2 GiB. On a GPU with unified memory the free bytes are
-/// the memory of the whole machine. An open that leaves less starves the system.
+/// The available bytes that the machine must still hold after an open: 2 GiB. On a GPU with unified memory the
+/// available bytes are the memory of the whole machine, and an open that leaves less starves the system. The count is
+/// `MemAvailable` of the host there, and the free bytes of the GPU on a discrete GPU (`nagaya_mk_cuda::memory`).
 pub const MIN_FREE_AFTER_BYTES: u64 = 2 << 30;
 
-/// The refusal of an open that left too little free memory, or `None`. `counted` is the bytes of weights and slots that
-/// the open allocated. The free bytes before and after are not compared: another process frees and takes memory while
-/// the open reads the checkpoint, and a measured open saw the free bytes rise by 34 GB.
-pub fn after_open_problem(counted: u64, free_before: u64, free_after: u64) -> Option<String> {
-    (free_after < MIN_FREE_AFTER_BYTES).then(|| {
+/// The refusal of an open that left too little memory, or `None`. `counted` is the bytes of weights and slots that the
+/// open allocated. `count` says which count the two available figures are. They are not compared: another process
+/// frees and takes memory while the open reads the checkpoint, and a measured open saw the free bytes rise by 34 GB.
+pub fn after_open_problem(counted: u64, available_before: u64, available_after: u64, count: Count) -> Option<String> {
+    let label = count.label();
+    (available_after < MIN_FREE_AFTER_BYTES).then(|| {
         format!(
-            "the open took {counted} bytes of GPU memory for weights and slots, and {free_after} bytes are free after it, \
-             from {free_before} bytes before. The machine needs {MIN_FREE_AFTER_BYTES} bytes free. Name fewer slots or \
-             slots of fewer positions in `slots`, or stop the programs that hold GPU memory"
+            "the open took {counted} bytes of GPU memory for weights and slots, and the {label} is {available_after} \
+             bytes after it, from {available_before} bytes before. The machine needs {MIN_FREE_AFTER_BYTES} bytes \
+             available. Name fewer slots or slots of fewer positions in `slots`, or stop the programs that hold GPU \
+             memory"
         )
     })
 }
@@ -75,15 +80,25 @@ mod tests {
 
     #[test]
     fn an_open_that_leaves_less_than_2_gib_free_is_refused_with_the_bytes() {
-        assert_eq!(after_open_problem(20_000_000_000, 60_000_000_000, 40_000_000_000), None);
+        let host = Count::MemAvailable;
+        assert_eq!(
+            after_open_problem(20_000_000_000, 60_000_000_000, 40_000_000_000, host),
+            None
+        );
         // The free bytes may rise during an open: that is not a refusal.
-        assert_eq!(after_open_problem(20_000_000_000, 27_000_000_000, 61_000_000_000), None);
-        assert_eq!(after_open_problem(1, 3 << 30, 2 << 30), None);
-        let message = after_open_problem(20_000_000_000, 22_000_000_000, (2 << 30) - 1).unwrap();
+        assert_eq!(
+            after_open_problem(20_000_000_000, 27_000_000_000, 61_000_000_000, host),
+            None
+        );
+        assert_eq!(after_open_problem(1, 3 << 30, 2 << 30, host), None);
+        let message = after_open_problem(20_000_000_000, 22_000_000_000, (2 << 30) - 1, host).unwrap();
         assert!(
             message.contains("20000000000") && message.contains("2147483647"),
             "{message}"
         );
+        assert!(message.contains("MemAvailable of the host"), "{message}");
+        let message = after_open_problem(1, 5, 0, Count::GpuFree).unwrap();
+        assert!(message.contains("free bytes of the GPU"), "{message}");
         assert!(message.contains("`slots`"), "{message}");
     }
 

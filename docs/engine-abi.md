@@ -3166,11 +3166,20 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
 - **The engine** (milestone 37 step 11, merged in `e2e6cbdb`).
   - The engine opens one GPU with the cubin of its cache format. It owns the device, the weights and the pass. It
     frees them in this order: pass, weights, device. A drop that leaves a device buffer panics.
-  - The open refuses before it reads the weights when the planned device bytes pass the free bytes. After the load
-    it refuses when fewer than 2 GiB stay free, and when the weights take more device bytes than the plan. Real
-    weights take 18,886,376,960 bytes against a plan of 18,889,360,896. Each message names the bytes.
-  - Reason: on unified memory, other work and the page cache move the free bytes by tens of GB while an open runs.
-    Thus a comparison of the free bytes before and after the load cannot hold.
+  - The open refuses before it reads the weights when the planned device bytes pass the available bytes. After the
+    load it refuses when fewer than 2 GiB stay available, and when the weights take more device bytes than the plan.
+    Real weights take 18,886,376,960 bytes against a plan of 18,889,360,896. Each message names the bytes and the count.
+  - The available bytes are `MemAvailable` of `/proc/meminfo`, capped at the total of `cuMemGetInfo`, on a device with
+    `CU_DEVICE_ATTRIBUTE_INTEGRATED` of 1. On a discrete device they are the free bytes of `cuMemGetInfo`. A missing
+    `MemAvailable` line or a bad number is an error. The rule lives in `nagaya_mk_cuda::memory`.
+  - Reason, measured in a probe of 2026-11-24: on the GB10, `cuMemGetInfo` leaves the page cache out of the free
+    bytes. The kernel reclaims the page cache for a GPU allocation.
+    - CUDA gave 41.4 GiB free, and `MemAvailable` was 113.6 GiB. The probe allocated and wrote 104 GiB of device
+      memory in 9.9 s.
+    - The page cache fell from 70.7 to 0.7 GiB. After the free, CUDA gave 113.0 GiB free.
+    - Thus the free bytes of the driver refuse an open that fits.
+  - Other work moves the available bytes by tens of GB while an open runs. So the open does not compare the count
+    before and after the load.
   - The limits are the plan of the factory. A refused call changes nothing.
   - A failed launch poisons the slot. The pass, the part writes and `set_n` above 0 are refused until `slot_clear`
     or `set_n(0)`. Reads and other slots work.
@@ -3198,7 +3207,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
       never guesses a digest.
     - `describe` gives the identity and the limits with no load of weights. It opens the GPU for its driver version
       and its multiprocessor count, and it reads the digest through the cache. `open_problem` compares the planned
-      device bytes with the free bytes of the GPU and `freed_bytes`, and it keeps the floor of 2 GiB.
+      device bytes with the available bytes of the GPU and `freed_bytes`, and it keeps the floor of 2 GiB.
 - **The quality of the cache formats at depth** (milestone 37 step 11, merged in `ae89d9bb`). The reference is the
   `f32` cache, on the PG-19 text, in windows of 16 rows at 4K, 32K and 128K positions.
   - `bf16` kept the top token on 48 of 48 rows. The mean KL was 3.5e-2 to 8.1e-3.
