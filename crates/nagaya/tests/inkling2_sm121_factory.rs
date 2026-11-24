@@ -77,7 +77,7 @@ fn config_reads_the_cache_format_and_refuses_a_bad_one() {
 
 #[cfg(feature = "cuda")]
 #[test]
-fn open_says_which_milestone_steps_are_missing() {
+fn open_refuses_a_folder_that_holds_no_model_before_it_touches_the_gpu() {
     use nagaya::admission::Factory;
 
     let dir = tempfile::tempdir().unwrap();
@@ -88,12 +88,14 @@ fn open_says_which_milestone_steps_are_missing() {
     );
     table.insert("slots".to_owned(), toml::Value::Integer(1));
     let error = match inkling2_sm121::Inkling2Sm121Factory.open(&table, &one_device()) {
-        Ok(_) => panic!("open must refuse until the engine exists"),
+        Ok(_) => panic!("the open must refuse a folder with no model"),
         Err(error) => error.message,
     };
-    assert!(error.contains("step 9"), "{error}");
-    assert!(error.contains("step 11"), "{error}");
-    assert!(!error.contains("step 8"), "{error}");
+    assert!(error.contains("config.json"), "{error}");
+    assert!(
+        !error.contains("step 9") && !error.contains("cannot open yet"),
+        "{error}"
+    );
 }
 
 #[test]

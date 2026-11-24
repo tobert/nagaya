@@ -72,6 +72,8 @@ unsafe extern "C" {
     fn cuMemAlloc(dptr: *mut CUdeviceptr, bytesize: usize) -> CUresult;
     #[link_name = "cuMemFree_v2"]
     fn cuMemFree(dptr: CUdeviceptr) -> CUresult;
+    #[link_name = "cuMemGetInfo_v2"]
+    fn cuMemGetInfo(free: *mut usize, total: *mut usize) -> CUresult;
     #[link_name = "cuMemAllocHost_v2"]
     fn cuMemAllocHost(pp: *mut *mut c_void, bytesize: usize) -> CUresult;
     fn cuMemFreeHost(p: *mut c_void) -> CUresult;
@@ -335,6 +337,16 @@ impl CudaDevice {
         unsafe { check(cuMemAlloc(&mut ptr, bytes.max(1)), "cuMemAlloc")? };
         self.live_buffers.set(self.live_buffers.get() + 1);
         Ok(ptr)
+    }
+
+    /// The free and the total bytes of device memory, as the driver reports them: `(free, total)`. On a GPU with
+    /// unified memory the free bytes are the bytes that the system can still give.
+    pub fn memory_info(&self) -> Result<(usize, usize), String> {
+        self.set_current()?;
+        let (mut free, mut total) = (0usize, 0usize);
+        // SAFETY: both pointers name live `usize` values, and the context of this device is current.
+        unsafe { check(cuMemGetInfo(&mut free, &mut total), "cuMemGetInfo")? };
+        Ok((free, total))
     }
 
     /// Free device memory allocated by [`Self::alloc_device`].
