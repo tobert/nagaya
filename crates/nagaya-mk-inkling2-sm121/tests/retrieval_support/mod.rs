@@ -6,3 +6,6 @@
 pub mod haystack;
 pub mod needles;
 pub mod snapshot;
+
+#[cfg(feature = "cuda")]
+pub mod gpu;
