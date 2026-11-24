@@ -3191,34 +3191,48 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   - The test `cuda_kv_quality` runs only with `--ignored` and `NAGAYA_HAYSTACK_DIR`, the folder of the PG-19 test
     split. The binding names no path. `cuda_retrieval` covers retrieval.
 - **The retrieval of a fact from early in 400K positions** (milestone 37 step 11, measured 2026-11-24). The test
-  `cuda_retrieval` builds one context of 408,975 tokens: one user message of PG-19 books with seven needles, then an
-  assistant turn. A needle is a registry entry with a code word and an access number from a fixed seed. Each question
+  `cuda_retrieval` builds one context of about 409,000 tokens: one user message of PG-19 books with seven needles, then
+  an assistant turn. A needle is a registry entry with a code word and an access number from a seed. Each question
   is a later user turn. The template writes the effort `none`, and the model still reasons first.
   A retrieval is right when the parsed content holds the code word and the number, within 512 tokens.
   - The prefill pays once for each format. The test reads the slot through the part calls. It writes a snapshot
-    file, keyed by the identity digest, the hash of the context tokens and the format. The engine does not go back,
-    so each question restores every part again. The restore checks the BLAKE3 of the file.
-  - After a restore, the first four logit rows have the bits of the pass after the prefill, in each format. A second
-    process that restores the snapshot gives the same bits.
-  - The results for 408,975 positions, with `f32` as the reference:
+    file, keyed by the identity digest, the hash of the context tokens, the format and the seed. The engine does not
+    go back, so each question restores every part again. The restore checks the BLAKE3 of the file.
+  - After a restore, the first four logit rows have the bits of the pass after the prefill, in each format and in
+    both contexts. A second process that restores the snapshot gives the same bits.
+  - The first context has 408,975 tokens, with the seed 20261124 and the books from 0. The second has 409,434 tokens,
+    with the seed 20261125 and the books from 15. The seed changes the needles and the books. Both have the same
+    seven depths. The results, with `f32` as the reference. `=` marks the same text as `f32`, and a number is the
+    first token that differs:
 
-    | needle at | `f32` | `bf16` | `e4m3` | greedy text of `bf16` and `e4m3` equals `f32` from token |
-    |---:|---|---|---|---|
-    | 0.91% | right | right | right | 40 and 91 |
-    | 4.54% | right | right | right | 39 and 105 |
-    | 9.19% | right | right | right | 117 and 109 |
-    | 24.53% | right | right | right | 105 and 97 |
-    | 50.34% | right | right | right | 5 and 5 |
-    | 73.67% | right | right | right | equal and 22 |
-    | 89.31% | right | right | right | 39 and 39 |
+    | context | needle at | `f32` | `bf16` | `e4m3` | text of `bf16` and `e4m3` |
+    |---|---:|---|---|---|---|
+    | 1 | 0.91% | right | right | right | 40 and 91 |
+    | 1 | 4.54% | right | right | right | 39 and 105 |
+    | 1 | 9.19% | right | right | right | 117 and 109 |
+    | 1 | 24.53% | right | right | right | 105 and 97 |
+    | 1 | 50.34% | right | right | right | 5 and 5 |
+    | 1 | 73.67% | right | right | right | = and 22 |
+    | 1 | 89.31% | right | right | right | 39 and 39 |
+    | 2 | 1.00% | right | right | right | 6 and 5 |
+    | 2 | 5.02% | right | right | right | 6 and 6 |
+    | 2 | 10.36% | right | right | right | 6 and 20 |
+    | 2 | 26.33% | right | wrong | right | 6 and 6 |
+    | 2 | 51.54% | wrong | right | right | 5 and 5 |
+    | 2 | 75.91% | right | right | wrong | 6 and 6 |
+    | 2 | 90.44% | right | right | right | 42 and 42 |
 
-  - The three formats find each of the seven needles. The greedy text of `bf16` equals `f32` for one question, and
-    the text of `e4m3` for none. Each difference is a change of wording, such as "the code word is" against a list.
-    The answers hold the same code word and number.
+  - The count of right answers in the 14 needles is 13 for `f32`, 12 for `bf16` and 12 for `e4m3`. In the first
+    context all three formats found all seven needles. In the second, `bf16` and `e4m3` each lost one needle that
+    `f32` found, and each found one that `f32` missed.
+  - Each of the three wrong answers gave the code word or the number of another needle of the context. The wrong
+    answer of `f32` at 51.54% is the answer of the needle at 75.91%. The wrong number of `bf16` and of `e4m3` is the
+    number of the needle at 90.44%. The three formats confuse entries of the registry, and `f32` does it too.
+  - The greedy text of `bf16` equals `f32` for 1 of 14 questions, and the text of `e4m3` for none. Most differences
+    are a change of wording, such as "the code word is" against a list.
   - A context of 15,888 tokens, with the same questions, gave `bf16` 7 of 7 and `e4m3` 6 of 7. `e4m3` failed the
-    needle at 74.93%, where `f32` found it. The 408,975-token context had no such failure, so one run does not rank
-    the formats.
-  - The costs at 408,975 positions:
+    needle at 74.93%, where `f32` found it.
+  - The costs at about 409,000 positions, from the first context. The second gives the same within 2%:
 
     | format | prefill | snapshot file | read of the parts | restore | decode step |
     |---|---:|---:|---:|---:|---:|
@@ -3226,15 +3240,14 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     | `bf16` | 1,804 s | 13,656,794,697 bytes | 62 s | 17 s | 112 ms |
     | `e4m3` | 1,853 s | 6,830,319,176 bytes | 47 s | 10 s | 86 ms |
 
-  - **Proposed** (Claude Sonnet 5.5, 2026-11-24). The gate of retrieval passes a format when its retrievals match
-    those of `f32`, and `f32` is right where the format is right. It does not need the greedy text to equal `f32`.
-    Reason: at 16K and at 409K positions, each format changes its wording at a near tie, within 7 to 117 tokens.
-    A gate on the text would fail a format for a harmless change. The retrieval of the facts is the part that the
-    cache can break.
-  - **Proposed** (Claude Sonnet 5.5, 2026-11-24). Run the gate of retrieval with more than one context before it
-    decides on `e4m3`. Reason: one needle failed at a shallow depth, and none failed at 400K. One context of seven
-    needles is too small to give a rate. The test takes `NAGAYA_RET_DEPTHS` and the seed is a constant, so a second
-    run needs a second seed.
+  - The gate of retrieval passes a format when its retrievals match those of `f32`, and the format is right where
+    `f32` is right. It does not need the greedy text to equal `f32`. Each format changes its wording at a near tie,
+    within 5 to 117 tokens. A gate on the text would fail a format for a harmless change. The retrieval of the facts
+    is the part that the cache can break.
+  - Run the gate of retrieval with more than one context before it decides on a format. One context of seven needles
+    is too small to give a rate. `NAGAYA_RET_SEED` makes another context.
+  - By this rule `bf16` and `e4m3` pass the first context and fail the second. The second shows that `f32` also
+    misses a needle, so the failures are not only a loss of the cache format. No format is ranked by 14 needles.
 
 - **Identity and oracle.** Because expert activations are quantized to NVFP4 and MXFP8, this engine has its own
   quantized host oracle and engine identity. Its `numbers` hold `quant` (`nvfp4_fouroversix_mae+mxfp8_ue8m0`),
