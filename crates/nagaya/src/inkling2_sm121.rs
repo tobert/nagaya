@@ -200,6 +200,18 @@ mod factory {
             Ok(Some((identity, limits)))
         }
 
+        /// The problem that an open on the GPU of the group would meet now (spec 3.3b). It reads no weights.
+        fn open_problem(&self, table: &toml::Table, devices: &[GroupDevice], freed_bytes: u64) -> Option<String> {
+            if let Err(error) = check_devices(devices) {
+                return Some(error.message);
+            }
+            let config = match config(table) {
+                Ok(config) => config,
+                Err(error) => return Some(error.message),
+            };
+            nagaya_mk_inkling2_sm121::describe::open_problem(&config, &devices[0].pci_address, freed_bytes)
+        }
+
         fn open(&self, table: &toml::Table, devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
             let err = |message: String| OpenError {
                 kind: OpenErrorKind::Other,

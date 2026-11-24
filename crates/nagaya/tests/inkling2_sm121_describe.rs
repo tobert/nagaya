@@ -112,3 +112,45 @@ fn the_open_prints_its_time() {
     eprintln!("open with no description: {} ms", start.elapsed().as_millis());
     drop(engine);
 }
+
+#[test]
+fn open_problem_names_the_bytes_of_a_plan_that_the_gpu_cannot_hold() {
+    let Some((dir, device)) = setup() else { return };
+    let devices = [device];
+    let factory = Inkling2Sm121Factory::default();
+    let small = table(&dir, "f32");
+    assert_eq!(
+        factory.open_problem(&small, &devices, 0),
+        None,
+        "a small plan fits an idle GPU"
+    );
+    // Four slots of 512K positions need far more than the GPU holds. The call opens no weights and allocates nothing.
+    let mut large = table(&dir, "f32");
+    large.insert(
+        "slots".to_owned(),
+        toml::Value::Array(vec![toml::Value::Integer(524_288); 4]),
+    );
+    let planned = factory.plan(&large, &devices).unwrap();
+    let bytes: u64 = planned
+        .memory
+        .mandatory
+        .iter()
+        .filter(|term| matches!(term.tier, nagaya_abi::Tier::Device(_)))
+        .map(|term| term.bytes)
+        .sum();
+    let problem = factory
+        .open_problem(&large, &devices, 0)
+        .expect("the plan must not fit the GPU");
+    assert!(problem.contains(&bytes.to_string()), "{problem}");
+    assert_eq!(
+        factory.open_problem(&large, &devices, u64::MAX / 2),
+        None,
+        "freed bytes count as free"
+    );
+    let mut wrong = small;
+    wrong.insert("bogus".to_owned(), toml::Value::Integer(1));
+    let problem = factory
+        .open_problem(&wrong, &devices, 0)
+        .expect("a bad config is a problem");
+    assert!(problem.contains("bogus"), "{problem}");
+}
