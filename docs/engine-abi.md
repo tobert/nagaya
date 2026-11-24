@@ -3218,6 +3218,83 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   - The test `cuda_kv_quality` runs only with `--ignored` and `NAGAYA_HAYSTACK_DIR`, the folder of the PG-19 test
     split. The binding names no path. The test does not cover 400K positions or retrieval.
 
+- **The latency by position and format** (milestone 37 step 11, `tests/cuda_latency.rs`, 2026-11-24). A slot is
+  filled to a position with seeded finite rows through the part calls, with no prefill. The planes are never read
+  above the position. Each cell is the wall time of one call of the engine after a warm-up call, in ms.
+  - The calls have 1, 16, 128 and 512 rows. The call of 16 rows gives 16 logit rows, and each other call gives one.
+    The cycles are 3 (the default) and 5 (the most).
+  - A block of 512 rows takes more than `max_quantum_ms` in 10 of the 12 cells at 409,600 positions or more. The
+    longest is 8,393 ms (`f32`, 5 cycles, 524,288 positions).
+  - The depth cost of a block of many tiles does not depend on the format: the MMA bounds it. A step of 1 row
+    depends on the bytes of the format. At 524,288 positions and 5 cycles it takes 305 ms (`f32`) or 159 ms
+    (`e4m3`).
+  - The same block in two runs differed by up to 14%. The ceiling of a cell in the test is its largest measure
+    plus 20% and 25 ms. The test also asserts the model of the next entry, and that a call past the quantum has
+    its bound.
+  - A slot of 524,288 positions with an `f32` cache and 5 cycles needs 71.8 GB of free GPU memory. The page cache of
+    the machine held the free memory at 67.5 GB in one run, and the open refused. So the ordinary gate measures
+    that position at 3 cycles with a second engine, and the full run is the test marked `ignore`. The full matrix
+    takes about 11 minutes.
+  - Times in ms for 1, 16, 128 and 512 rows:
+
+    | format | cycles | positions | 1 | 16 | 128 | 512 |
+    |---|---:|---:|---:|---:|---:|---:|
+    | `f32` | 3 | 1,024 | 30 | 102 | 250 | 771 |
+    | `f32` | 3 | 32,768 | 42 | 100 | 297 | 1,044 |
+    | `f32` | 3 | 131,072 | 74 | 155 | 526 | 1,951 |
+    | `f32` | 3 | 409,600 | 172 | 368 | 1,166 | 5,136 |
+    | `f32` | 3 | 524,288 | 206 | 425 | 1,453 | 5,728 |
+    | `f32` | 5 | 1,024 | 44 | 170 | 388 | 1,183 |
+    | `f32` | 5 | 32,768 | 61 | 143 | 438 | 1,573 |
+    | `f32` | 5 | 131,072 | 109 | 227 | 783 | 2,944 |
+    | `f32` | 5 | 409,600 | 247 | 520 | 1,743 | 7,193 |
+    | `f32` | 5 | 524,288 | 305 | 692 | 2,199 | 8,393 |
+    | `bf16` | 3 | 1,024 | 31 | 101 | 243 | 755 |
+    | `bf16` | 3 | 32,768 | 37 | 94 | 277 | 963 |
+    | `bf16` | 3 | 131,072 | 56 | 144 | 460 | 1,706 |
+    | `bf16` | 3 | 409,600 | 111 | 304 | 971 | 3,709 |
+    | `bf16` | 3 | 524,288 | 150 | 405 | 1,312 | 5,124 |
+    | `bf16` | 5 | 1,024 | 43 | 170 | 384 | 1,166 |
+    | `bf16` | 5 | 32,768 | 53 | 134 | 409 | 1,447 |
+    | `bf16` | 5 | 131,072 | 85 | 214 | 687 | 2,678 |
+    | `bf16` | 5 | 409,600 | 165 | 445 | 1,457 | 5,669 |
+    | `bf16` | 5 | 524,288 | 214 | 617 | 1,770 | 7,698 |
+    | `e4m3` | 3 | 1,024 | 30 | 99 | 246 | 764 |
+    | `e4m3` | 3 | 32,768 | 35 | 94 | 278 | 976 |
+    | `e4m3` | 3 | 131,072 | 48 | 150 | 468 | 1,719 |
+    | `e4m3` | 3 | 409,600 | 88 | 312 | 995 | 3,815 |
+    | `e4m3` | 3 | 524,288 | 104 | 409 | 1,211 | 5,121 |
+    | `e4m3` | 5 | 1,024 | 42 | 169 | 384 | 1,179 |
+    | `e4m3` | 5 | 32,768 | 50 | 137 | 411 | 1,462 |
+    | `e4m3` | 5 | 131,072 | 71 | 210 | 699 | 2,591 |
+    | `e4m3` | 5 | 409,600 | 132 | 459 | 1,488 | 6,391 |
+    | `e4m3` | 5 | 524,288 | 159 | 569 | 1,813 | 7,651 |
+
+- **The bound of a block at depth.** **Proposed** (Claude Sonnet 5.5, 2026-11-24). The engine declares a bound for
+  a pass that its model of time puts above `max_quantum_ms`, and it splits no block.
+  - The need: the first measure of the latency gate gave 8,391 ms for a block of 512 rows. The block was at 524,288
+    positions, in an `f32` cache, with 5 cycles. At 3 cycles it gave 4,965 to 5,567 ms. `max_quantum_ms` is 5,000 ms,
+    so such a block is a long pass (D8, "A long pass with a declared bound").
+  - The limits declare `max_long_quantum_ms` of 60,000 ms. The largest block that a slot can hold is 512 rows at
+    1,048,576 positions with 5 cycles. Its estimate is 18,107 ms and its bound is 27,161 ms, so the bound never
+    clamps below its estimate. A host test checks this.
+  - `pass_bound_ms` reads the one segment through the checks of the held state: its first position, its rows and its
+    cycles. A pass that the checks refuse, or a pass with taps, gives `Ok(None)`. The pass then refuses itself.
+  - The model gives microseconds: `(100,000 + 1,350 * rows) * runs / 48 + full * (pos0 + rows) * rate / 1,000`.
+    - `runs` is 24 + 12 * (cycles - 1), and `full` is 4 + 2 * (cycles - 1): the runs with a full cache.
+    - `rate` in ns is the larger of 90 and 42 times the 16-row tiles of the block. One tile reads the keys of a run
+      once, so a block of 16 rows or fewer pays the 90.
+    - The formats take the same constants. The `f32` cache sets the 90 and the 42, and the others are faster.
+    - The model is above each cell of the table of the latency gate. It is at most 1.5 times the time of a block of
+      512 rows at 131,072 positions or more.
+  - The bound is 1.5 times the estimate, rounded up to a whole millisecond. The engine declares none when that is
+    5,000 ms or less. Then the estimate is at most 3,334 ms, and the model is above each measure.
+  - A block of 512 rows declares a bound from position 235,904 at 3 cycles, and from position 132,608 at 5 cycles.
+  - Reason: D8 gives chunks of 1 to 10 s, and a long pass where the work needs it. A block of 512 rows at depth is
+    such work. A smaller block does not cut the cost of the attention in proportion, because each tile of 16 rows
+    reads the keys again. A profile can still set `max_block` lower.
+  - The open question for @tobert: a long pass here, or a smaller `max_block` for a slot at depth.
+
 - **Identity and oracle.** Because expert activations are quantized to NVFP4 and MXFP8, this engine has its own
   quantized host oracle and engine identity. Its `numbers` hold `quant` (`nvfp4_fouroversix_mae+mxfp8_ue8m0`),
   `max_block`, `extra_runs`, `cache`, and `state` (`3`, `STATE_LAYOUT` in `spec.rs:28`). They also hold the `nvcc`
