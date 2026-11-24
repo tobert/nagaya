@@ -3192,8 +3192,8 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     - A user tool cannot set `ctime`, and any write changes it. So a changed file misses the cache.
     - A missing file, a file that does not parse and a key that differs are each a miss. A miss computes the digest
       and writes the file again, through a temporary file and a rename.
-    - The engine takes the key before it reads, and it takes it again after. When the two differ, it does not store
-      the digest.
+    - The engine takes the key before it reads. A file that changes during the read gets a new `ctime`, so no later
+      call finds the digest that the read gave.
     - An I/O error of the cache folder is a warning in the log. The open goes on with a computed digest. The engine
       never guesses a digest.
     - `describe` gives the identity and the limits with no load of weights. It opens the GPU for its driver version
