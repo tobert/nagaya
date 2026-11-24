@@ -39,6 +39,9 @@ const STRIX: &str = "strix-halo";
 /// The folder of the B70 example: two Intel Arc Pro B70 cards and an iGPU that drives the display.
 const B70: &str = "b70-pair";
 
+/// The folder of the DGX Spark example: one NVIDIA GB10 GPU with unified memory.
+const SPARK: &str = "dgx-spark";
+
 /// The path of the bootstrap config that each unit names. The install copies the example there (docs/deploy.md).
 const CONFIG: &str = "NAGAYA_CONFIG=%h/.config/nagaya/nagaya.toml";
 
@@ -655,5 +658,137 @@ fn the_address_wait_passes_a_present_address_and_fails_an_absent_one() {
     assert!(
         message.contains("192.0.2.1"),
         "the message names the address: {message}"
+    );
+}
+
+fn spark_bootstrap() -> Bootstrap {
+    Bootstrap::read(&deploy(SPARK).join("nagaya.toml")).unwrap()
+}
+
+fn spark_profile() -> PlacementProfile {
+    PlacementProfile::read(&deploy(SPARK).join(PROFILE_FILE)).unwrap()
+}
+
+fn spark_unit() -> String {
+    std::fs::read_to_string(deploy(SPARK).join("nagaya.service")).unwrap()
+}
+
+#[test]
+fn the_dgx_spark_config_binds_an_example_address_and_an_absolute_store() {
+    let config = spark_bootstrap();
+    assert!(is_documentation_address(config.http_bind), "{}", config.http_bind);
+    assert_eq!(config.http_bind.port(), 8091);
+    assert_eq!(config.gossip_bind.ip(), config.http_bind.ip());
+    assert_ne!(config.gossip_bind.port(), config.http_bind.port());
+    assert!(config.store_dir.is_absolute(), "the loader does not expand `~`");
+    assert!(config.ignore_devices.is_empty(), "the one GPU of the machine serves");
+}
+
+#[test]
+fn the_dgx_spark_profile_names_one_resident_engine_of_four_slots_of_128k() {
+    let profile = spark_profile();
+    assert_eq!(profile.engines.len(), 1);
+    let engine = &profile.engines[0];
+    assert_eq!(engine.name, "inkling2-mini-gb10");
+    assert_eq!(engine.kind, nagaya::inkling2_sm121::KIND);
+    assert_eq!(engine.residency, Residency::Resident);
+    assert_eq!(engine.devices, vec![0]);
+    // The model folder is of this machine's layout, so the test points the config at an empty folder.
+    let folder = tempfile::tempdir().unwrap();
+    let mut table = engine.config.clone();
+    table.insert(
+        "model_dir".to_owned(),
+        toml::Value::String(folder.path().display().to_string()),
+    );
+    let config = nagaya::inkling2_sm121::config(&table).unwrap();
+    assert_eq!(config.slots, vec![131_072; 4]);
+    assert_eq!(nagaya_mk_inkling2_sm121::spec::cache_name(config.cache), "e4m3");
+    assert!(
+        engine.family.contains_key("model_dir"),
+        "a resident engine has a family table"
+    );
+    let store = profile.store.expect("an engine needs a [store] table (spec 4.1a)");
+    assert!(store.nvme > 0);
+    assert_eq!(store.objects, Some(200 << 30));
+}
+
+/// The plan of the engine, from the model folder and no GPU.
+struct SparkPlanOnly;
+
+impl Factory for SparkPlanOnly {
+    fn plan(&self, config: &toml::Table, devices: &[GroupDevice]) -> Result<Limits, PlanError> {
+        nagaya::inkling2_sm121::plan(config, devices)
+    }
+
+    fn served_names(&self, engine: &str, config: &toml::Table) -> Option<Vec<String>> {
+        nagaya::inkling2_sm121::served_names(engine, config)
+    }
+
+    fn open(&self, _config: &toml::Table, _devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
+        panic!("a deploy test opens no engine")
+    }
+}
+
+/// The DGX Spark profile admits on the probed GB10 machine. The plan reads the model folder, so the test takes it from
+/// `INKLING2_MODEL_DIR`, and it skips when the variable is unset (AGENTS.md, "Tests that need a model file").
+#[test]
+fn the_dgx_spark_profile_admits_on_the_probed_gb10_machine() {
+    let Some(model) = std::env::var_os("INKLING2_MODEL_DIR") else {
+        if std::env::var("NAGAYA_REQUIRE_MODELS").is_ok_and(|v| v == "1") {
+            panic!("INKLING2_MODEL_DIR is not set and NAGAYA_REQUIRE_MODELS is set; name the Inkling 2 Mini folder");
+        }
+        eprintln!("skipped: INKLING2_MODEL_DIR is not set; set it to the Inkling 2 Mini folder");
+        return;
+    };
+    let mut profile = spark_profile();
+    let model = toml::Value::String(model.to_string_lossy().into_owned());
+    let engine = &mut profile.engines[0];
+    engine.config.insert("model_dir".to_owned(), model.clone());
+    engine.family.insert("model_dir".to_owned(), model);
+    let inventory = FileProbe::new(repo().join("crates/nagaya/tests/fixtures/probe").join(SPARK))
+        .probe()
+        .unwrap();
+    let mut registry = Registry::new();
+    registry.register(nagaya::inkling2_sm121::KIND, Box::new(SparkPlanOnly));
+    let admitted = admit(&profile, &registry, &inventory, &mut Ledger::new()).expect("the DGX Spark profile admits");
+    assert_eq!(admitted.engines.len(), 1);
+    assert_eq!(admitted.engines[0].served, Some(vec!["inkling2-mini-gb10".to_owned()]));
+    let planned: u64 = admitted.engines[0]
+        .limits
+        .memory
+        .mandatory
+        .iter()
+        .map(|term| term.bytes)
+        .sum();
+    let pool = [TierSpec::from(Tier::Device(0)), TierSpec::from(Tier::Host)];
+    let budget = profile
+        .budgets
+        .iter()
+        .find(|budget| budget.tiers == pool)
+        .expect("one pool of unified memory");
+    let store = profile.store.as_ref().unwrap().host.unwrap();
+    println!(
+        "the engine plans {planned} bytes; the store takes {store}; the pool is {}",
+        budget.bytes
+    );
+    assert!(planned + store <= budget.bytes);
+    assert!(
+        budget.bytes + FLOOR <= inventory.host_bytes,
+        "the pool keeps the host safety floor free"
+    );
+}
+
+#[test]
+fn the_dgx_spark_unit_is_a_cuda_unit_with_the_restart_policy_and_the_address_wait() {
+    let unit = spark_unit();
+    check_restart_policy(&unit);
+    check_address_wait(&unit, &spark_bootstrap());
+    let environment = environment(&unit);
+    assert!(environment.contains(&CONFIG), "{environment:?}");
+    assert!(
+        environment
+            .iter()
+            .all(|value| !value.starts_with("QWEN38_") && !value.starts_with("ZE_")),
+        "the GB10 unit sets no variable of another engine: {environment:?}"
     );
 }

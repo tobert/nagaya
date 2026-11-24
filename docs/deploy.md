@@ -1,15 +1,18 @@
 # Deploy
 
 This doc tells how to build the nagaya and install it as a systemd user unit. The rules are in `docs/spec.md` 2.1,
-2.4, 3.3 and 10.1-10.4. The directory `deploy/` holds two examples:
+2.4, 3.3 and 10.1-10.4. The directory `deploy/` holds three examples:
 
 - `deploy/strix-halo/`: an AMD Strix Halo machine, with one gfx1151 GPU and 128 GB of unified memory. Qwen-Image 2.1
   is resident, and the Qwen3.8 engine is on demand.
 - `deploy/b70-pair/`: a machine with two Intel Arc Pro B70 cards and an iGPU that drives the display. LFM3, LFM3-Omni,
   SDXL and EmbeddingGemma 2 are resident. Gemma 4 is on demand on both cards, and Inkling 2 Mini on card 0.
+- `deploy/dgx-spark/`: an NVIDIA DGX Spark, with one GB10 GPU and 128 GB of unified memory. One engine,
+  `inkling2-mini-gb10`, is resident: Inkling 2 Mini in 4 slots of 131,072 positions, with the `e4m3` cache.
 
-The two examples form one cluster: each names the gossip address of the other as its seed peer. The addresses are of
-RFC 5737, and the paths under `/srv` are examples. Change them for your machine.
+The first two examples form one cluster: each names the gossip address of the other as its seed peer. The DGX Spark
+example has no seed peer, so its first start is a cluster of one. To join, write the gossip address of a member in
+`seed_peers`. The addresses are of RFC 5737, and the paths under `/srv` are examples. Change them for your machine.
 
 ## The files
 
@@ -62,10 +65,19 @@ cd ~/src/nagaya
 nice -n 10 cargo build --release -p nagaya --features xe,video
 ```
 
+For the DGX Spark example:
+
+```
+cd ~/src/nagaya
+PATH=/usr/local/cuda/bin:$PATH nice -n 10 cargo build --release -p nagaya --features cuda
+```
+
 - The feature `hip` registers the kinds `mk-qwen38-gfx1151` and `qwenimage21`. The build compiles the HIP code of
   the Qwen3.8 engine with ROCm's `clang++` and links it statically. It needs ROCm at `/opt/rocm`.
 - The feature `xe` registers the kinds `mk-gemma4-bmg`, `qwen3tts-bmg`, `mk-sdxl-bmg`, `mk-embeddinggemma2-bmg`,
   `mk-lfm3-bmg` and `mk-inkling2-bmg`. `build.rs` compiles the kernels with `ocloc`.
+- The feature `cuda` registers the kind `mk-inkling2-sm121`. `build.rs` compiles the kernels with `nvcc` 13.2 for
+  `sm_121a`, and the build needs the CUDA Driver API library `libcuda`. The run needs no `nvcc`.
 - The feature `video` lets `lfm3-omni` read video parts with ffmpeg's libraries (spec 11.11). The machine needs
   ffmpeg and libclang.
 - A build without an engine feature has no engine. It exits 3 with the message "this build has no engine".
@@ -79,7 +91,7 @@ this. A probe error exits 3 with the message "cannot read the inventory of this 
 
 ## Install
 
-Do these steps once. The example commands are for `strix-halo`; use `b70-pair` for the B70 example.
+Do these steps once. The example commands are for `strix-halo`; use `b70-pair` or `dgx-spark` for the others.
 
 1. Copy the bootstrap config. Change `http_bind`, `gossip_bind`, `store_dir` and `seed_peers`. On the B70 example,
    change `ignore_devices` to the PCI address of your display GPU. The loader does not expand `~`, so `store_dir`
@@ -157,6 +169,9 @@ remove the line. In the B70 unit the line is a comment. Remove the `#` when a co
 - Never start a second process that uses the GPU. On the Strix Halo machine, a second process on the GPU can stop the
   SMU (spec 3.1).
 - On the B70 example, do not run work on the iGPU. It drives the display.
+- On the DGX Spark example, the nagaya is the only compute client of the GB10 (spec 3.1). Check
+  `nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv` before a start. Stop the unit before
+  each GPU test.
 - A new profile that loads or reloads an engine makes the process exit with code 4 and restart (spec 3.3, "Which
   actions run in place", 10.4). systemd counts that start.
 - systemd allows 3 starts of the unit in 600 s. A fourth start in 600 s fails, and the unit stays down.
@@ -330,6 +345,28 @@ The way back is a load of `lfm3` with `{"unload": ["inkling2-mini"]}`. The start
 the council serves it as `unloaded` (spec 3.3a). The description reads each tensor of the checkpoint for its digest,
 about 20 GB at each start. The research model is a second engine of the same kind, with its own folder. A reserve of
 48 runs (`extra_runs = 48`) lets a context run 1 to 5 cycles, and it adds 1,578,975,232 bytes to each slot.
+
+## The DGX Spark example
+
+The profile has one engine, `inkling2-mini-gb10`, of the kind `mk-inkling2-sm121`. It is resident, so each start loads
+the weights. The name differs from `inkling2-mini` of the B70 example, so both can serve in one cluster.
+
+- The slots are a list: `slots = [131072, 131072, 131072, 131072]` gives 4 slots of 128K positions. A count of slots
+  gives slots of 32,768 positions.
+- The cache is `e4m3`. The slots take 9,108,586,496 bytes. An `f32` cache takes about four times as many.
+- The plan is 28,303,621,732 bytes. It has four terms:
+  - the weights: 18,889,360,896 bytes;
+  - the slots: 9,108,586,496 bytes;
+  - the work of a pass: 238,297,188 bytes;
+  - pinned host memory: 67,377,152 bytes.
+- The pool of `device(0)` and `host` is 109 GiB, or 117,037,858,816 bytes. The host has 127,598,640 kB, and the safety
+  floor is 12 GiB (spec 4.7). The store takes 4 GiB of host memory from the pool.
+- The profile names the model folder twice: in `model_dir` of the engine, and in the family table. The unit sets no
+  model variable.
+- The unit has no fd store, because the engine exports no arena. The unit stops in 60 s at most.
+
+The test `the_dgx_spark_profile_admits_on_the_probed_gb10_machine` plans the profile on a recorded GB10 machine. It
+reads the model folder from `INKLING2_MODEL_DIR`, and it skips when the variable is unset.
 
 ## A card test beside the service
 

@@ -1,0 +1,47 @@
+# The placement profile of the DGX Spark example (docs/spec.md 2.4): one NVIDIA GB10 GPU with 128 GB of unified
+# memory. The nagaya reads the accepted profile from `<store_dir>/profile.toml`, so copy this file there once
+# (docs/deploy.md). The loader is `crates/nagaya/src/profile.rs`, and `crates/nagaya/tests/deploy.rs` reads this file.
+#
+# Inkling 2 Mini on the GB10 (docs/spec.md 11.18; docs/engine-abi.md, "The GB10 Inkling 2 binding"). The engine name
+# is the served name. The name differs from the engine of the B70 example (`inkling2-mini`), so both can serve in one
+# cluster. The engine is resident, so each start loads its weights.
+#
+# The choices:
+# - Four slots of 131,072 positions (128K). A list of four numbers gives each slot its own length.
+# - The cache is `e4m3`: one byte for each value, with a unit scale. It takes a quarter of the bytes of the `f32`
+#   cache and half of the `bf16` cache. The binding ("The GB10 Inkling 2 binding", `OP_ATTN`) gives the bytes of a
+#   slot and the gap of each format to the `f32` cache. The test `cuda_kv_quality` of the engine crate measures that
+#   gap up to 128K positions. The smaller cache also cuts the bytes that a decode step reads.
+# - One family table names the model folder, because a resident engine has no other source for it. The same folder
+#   goes in `model_dir` of the engine.
+# - The plan is 28,303,621,732 bytes: 18,889,360,896 for the weights, 9,108,586,496 for the four slots, 238,297,188
+#   for the work of a pass (all on `device(0)`), and 67,377,152 of pinned host memory. The slots of the `f32` cache
+#   would take about four times the slot bytes, and that is too much for four slots of 128K.
+[[engines]]
+name = "inkling2-mini-gb10"
+kind = "mk-inkling2-sm121"
+devices = [0]
+share = 1
+
+[engines.config]
+model_dir = "/srv/models/huggingface/hub/models--thinkingmachines--Inkling-2-Mini/snapshots/ed40e7da625f594fc9c4990f5f66be24873c22d7"
+slots = [131072, 131072, 131072, 131072]
+cache = "e4m3"
+
+[engines.family]
+model_dir = "/srv/models/huggingface/hub/models--thinkingmachines--Inkling-2-Mini/snapshots/ed40e7da625f594fc9c4990f5f66be24873c22d7"
+
+# One pool of unified memory (spec 4.1): `device(0)` and `host` share the memory of the GB10. The host has 127,598,640
+# kB (about 121.7 GiB, `proc/meminfo`), and the safety floor of spec 4.7 is 12 GiB. The pool is 109 GiB, the whole
+# count of GiB below the floor. The engine and the store take 32.6 GB of it, so the rest is free room.
+[[budgets]]
+tiers = ["device(0)", "host"]
+bytes = 117037858816
+
+# The store (spec 4.1a): 4 GiB in host memory and 100 GiB on NVMe. Objects have their own budget of 200 GiB on the
+# same disk (spec 6.15).
+[store]
+nvme = 107374182400
+host = 4294967296
+interval_copies = 0
+objects = 214748364800
