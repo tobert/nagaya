@@ -3191,6 +3191,29 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   - The test `cuda_kv_quality` runs only with `--ignored` and `NAGAYA_HAYSTACK_DIR`, the folder of the PG-19 test
     split. The binding names no path. The test does not cover 400K positions or retrieval.
 
+- **The bound of a block at depth.** **Proposed** (Claude Sonnet 5.5, 2026-11-24). The engine declares a bound for
+  a pass that its model of time puts above `max_quantum_ms`, and it splits no block.
+  - The need: the first measure of the latency gate gave 8,391 ms for a block of 512 rows. The block was at 524,288
+    positions, in an `f32` cache, with 5 cycles. At 3 cycles it gave 4,965 to 5,567 ms. `max_quantum_ms` is 5,000 ms,
+    so such a block is a long pass (D8, "A long pass with a declared bound").
+  - The limits declare `max_long_quantum_ms` of 60,000 ms. The largest block that a slot can hold is 512 rows at
+    1,048,576 positions with 5 cycles. Its model gives under 40,000 ms, so the bound never clamps below its
+    estimate. A host test checks this.
+  - `pass_bound_ms` reads the one segment through the checks of the held state: its first position, its rows and its
+    cycles. A pass that the checks refuse, or a pass with taps, gives `Ok(None)`. The pass then refuses itself.
+  - The model gives microseconds: `(90,000 + 1,350 * rows) * runs / 48 + full * (pos0 + rows) * rate / 1,000`.
+    - `runs` is 24 + 12 * (cycles - 1), and `full` is 4 + 2 * (cycles - 1): the runs with a full cache.
+    - `rate` in ns is the larger of 80 and 42 times the 16-row tiles of the block. One tile reads the keys of a run
+      once, so a block of 16 rows or fewer pays the 80.
+    - The formats take the same constants. The times of a block differ by at most 20% between them.
+  - The bound is 1.5 times the estimate, rounded up to a whole millisecond. The engine declares none when that is
+    5,000 ms or less. Then the pass is an ordinary quantum: the estimate is at most 3,334 ms, and the model is above
+    each measure.
+  - Reason: D8 gives chunks of 1 to 10 s, and a long pass where the work needs it. A block of 512 rows at depth is
+    such work. A smaller block does not cut the cost of the attention in proportion, because each tile of 16 rows
+    reads the keys again. A profile can still set `max_block` lower.
+  - The open question for @tobert: a long pass here, or a smaller `max_block` for a slot at depth.
+
 - **Identity and oracle.** Because expert activations are quantized to NVFP4 and MXFP8, this engine has its own
   quantized host oracle and engine identity. Its `numbers` hold `quant` (`nvfp4_fouroversix_mae+mxfp8_ue8m0`),
   `max_block`, `extra_runs`, `cache`, and `state` (`3`, `STATE_LAYOUT` in `spec.rs:28`). They also hold the `nvcc`
