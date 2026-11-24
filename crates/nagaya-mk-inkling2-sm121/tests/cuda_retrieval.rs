@@ -33,7 +33,7 @@
 //!   every retrieval must then be wrong. `zero_conv` and `flip_row` damage the restore, and the check of the bits must
 //!   then fail.
 //!
-//! `~/nagaya-lead/gpu-run <lane> <minutes> -- cargo test -p nagaya-mk-inkling2-sm121 --features cuda --test
+//! `flock <lock> cargo test -p nagaya-mk-inkling2-sm121 --features cuda --test
 //!  cuda_retrieval -- --ignored --test-threads=1 --nocapture`
 //!
 //! The first run is a measurement of hours, so the test runs only with `--ignored`.

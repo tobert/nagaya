@@ -5,8 +5,9 @@
 //! - an open of a plan that is larger than the free bytes of the driver, and smaller than the available bytes less the
 //!   floor, succeeds.
 //!
+//! The gate writes a filler file of up to 160 GiB to fill the page cache, so it runs only with `--ignored`:
 //! `INKLING2_MODEL_DIR=<folder> NAGAYA_TEST_CARDS=<pci address> cargo test -p nagaya-mk-inkling2-sm121 --features cuda
-//!  --test cuda_memavail -- --test-threads=1 --nocapture`
+//!  --test cuda_memavail -- --ignored --test-threads=1 --nocapture`
 
 #![cfg(feature = "cuda")]
 
@@ -46,6 +47,7 @@ fn planned_bytes(dir: &std::path::Path, slots: &[usize]) -> Option<u64> {
 }
 
 #[test]
+#[ignore = "it writes up to 160 GiB of filler to the disk; run it with --ignored"]
 fn an_open_that_the_driver_count_refuses_but_the_host_count_allows_succeeds() {
     let Some(dir) = model_dir("cuda_memavail") else {
         return;
