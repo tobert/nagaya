@@ -16,7 +16,8 @@
 #   goes in `model_dir` of the engine.
 # - The plan is 28,303,621,732 bytes: 18,889,360,896 for the weights, 9,108,586,496 for the four slots, 238,297,188
 #   for the work of a pass (all on `device(0)`), and 67,377,152 of pinned host memory. The slots of the `f32` cache
-#   would take about four times the slot bytes, and that is too much for four slots of 128K.
+#   would take about four times the slot bytes (about 36 GB). That fits the pool too, but each decode step at depth
+#   would read four times the bytes.
 [[engines]]
 name = "inkling2-mini-gb10"
 kind = "mk-inkling2-sm121"
