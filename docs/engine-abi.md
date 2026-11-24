@@ -3216,7 +3216,52 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     a near tie, with a margin of 0.33 or less.
   - The prefill to 131,072 positions takes 368 s for `f32` and 335 s for `bf16` and `e4m3`.
   - The test `cuda_kv_quality` runs only with `--ignored` and `NAGAYA_HAYSTACK_DIR`, the folder of the PG-19 test
-    split. The binding names no path. The test does not cover 400K positions or retrieval.
+    split. The binding names no path. `cuda_retrieval` covers retrieval.
+- **The retrieval of a fact from early in 400K positions** (milestone 37 step 11, measured 2026-11-24). The test
+  `cuda_retrieval` builds one context of 408,975 tokens: one user message of PG-19 books with seven needles, then an
+  assistant turn. A needle is a registry entry with a code word and an access number from a fixed seed. Each question
+  is a later user turn. The template writes the effort `none`, and the model still reasons first.
+  A retrieval is right when the parsed content holds the code word and the number, within 512 tokens.
+  - The prefill pays once for each format. The test reads the slot through the part calls. It writes a snapshot
+    file, keyed by the identity digest, the hash of the context tokens and the format. The engine does not go back,
+    so each question restores every part again. The restore checks the BLAKE3 of the file.
+  - After a restore, the first four logit rows have the bits of the pass after the prefill, in each format. A second
+    process that restores the snapshot gives the same bits.
+  - The results for 408,975 positions, with `f32` as the reference:
+
+    | needle at | `f32` | `bf16` | `e4m3` | greedy text of `bf16` and `e4m3` equals `f32` from token |
+    |---:|---|---|---|---|
+    | 0.91% | right | right | right | 40 and 91 |
+    | 4.54% | right | right | right | 39 and 105 |
+    | 9.19% | right | right | right | 117 and 109 |
+    | 24.53% | right | right | right | 105 and 97 |
+    | 50.34% | right | right | right | 5 and 5 |
+    | 73.67% | right | right | right | equal and 22 |
+    | 89.31% | right | right | right | 39 and 39 |
+
+  - The three formats find each of the seven needles. The greedy text of `bf16` equals `f32` for one question, and
+    the text of `e4m3` for none. Each difference is a change of wording, such as "the code word is" against a list.
+    The answers hold the same code word and number.
+  - A context of 15,888 tokens, with the same questions, gave `bf16` 7 of 7 and `e4m3` 6 of 7. `e4m3` failed the
+    needle at 74.93%, where `f32` found it. The 408,975-token context had no such failure, so one run does not rank
+    the formats.
+  - The costs at 408,975 positions:
+
+    | format | prefill | snapshot file | read of the parts | restore | decode step |
+    |---|---:|---:|---:|---:|---:|
+    | `f32` | 2,143 s | 27,309,745,752 bytes | 98 s | 28 s | 165 ms |
+    | `bf16` | 1,804 s | 13,656,794,697 bytes | 62 s | 17 s | 112 ms |
+    | `e4m3` | 1,853 s | 6,830,319,176 bytes | 47 s | 10 s | 86 ms |
+
+  - **Proposed** (Claude Sonnet 5.5, 2026-11-24). The gate of retrieval passes a format when its retrievals match
+    those of `f32`, and `f32` is right where the format is right. It does not need the greedy text to equal `f32`.
+    Reason: at 16K and at 409K positions, each format changes its wording at a near tie, within 7 to 117 tokens.
+    A gate on the text would fail a format for a harmless change. The retrieval of the facts is the part that the
+    cache can break.
+  - **Proposed** (Claude Sonnet 5.5, 2026-11-24). Run the gate of retrieval with more than one context before it
+    decides on `e4m3`. Reason: one needle failed at a shallow depth, and none failed at 400K. One context of seven
+    needles is too small to give a rate. The test takes `NAGAYA_RET_DEPTHS` and the seed is a constant, so a second
+    run needs a second seed.
 
 - **The latency by position and format** (milestone 37 step 11, `tests/cuda_latency.rs`, 2026-11-24). A slot is
   filled to a position with seeded finite rows through the part calls, with no prefill. The planes are never read
