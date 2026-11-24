@@ -765,6 +765,48 @@ The experts take 33.2 ms, 11 times their floor of about 3 ms. Two small ops run 
     before item 2). A work-group of 1,024 threads cannot use the large GRF. Thus the time of each op depends on the
     compiler. Find the ops that spill most, and measure a binary with fewer threads in each work-group.
 
+**What the GB10 engine teaches** (2026-11-24). The GB10 engine of milestone 37 runs the same model. A decode step at
+one row takes 26.5 ms there, at 252 GB/s, and 32.0 ms here, at 608 GB/s. Thus it reads at about 85% of its peak,
+and this engine at about 28%. Most of the gap is in the interpreter, not in the ops. The items below take its
+lessons, and each one says what changes for an Xe2 core.
+
+- **The bytes of a step do not agree.** The ceiling above estimates 0.5 to 1 GB of dense weights. Milestone 37
+  counts 2.79 GB from the checkpoint header. With 2.79 GB, the floor of a step is about 9 ms. Item 13 settles it.
+
+15. **A graph of dependencies in place of the chain.** `Ring::set` makes each task wait on the task before it
+    (`nagaya-mk-bmg/src/ring.rs`). Each task is then a barrier of all 32 work-groups, and the slowest one sets the
+    pace. The GB10 builder (`nagaya-mk-cuda/src/graph.rs`) makes each task wait only on the tasks whose bytes it
+    reads or overwrites.
+    - Here each work-group signals each task, and each one runs the ring in order. Thus the end of a task implies
+      the end of each task before it. One wait, on the latest hazard, is exact. The card needs no second wait and no
+      JOIN task. The Gemma 4 ring already waits this way (`nagaya-mk-gemma4-bmg/src/gemma4.rs`).
+    - The wait changes only the timing. The ops give rows to subgroups as before, so no bit moves.
+    - The acquire of a wait clears the whole L1 of an Xe2 core. A wait that the builder drops keeps L1 warm. For
+      example, the projections after a norm all read the normed row.
+    - The gain at one row is small, because the spread of most decode ops is small. A prefill block has 57.5 ms of
+      spread in its matmuls (item 5), and the projections of a run can overlap there.
+16. **Claimed items, to cut the tails.** The GB10 gives the items past the first round by an atomic claim. Its tails
+    fell from 9.9 ms to 5.1 ms of a step (`122c2fa7`). Here the ops take their rows by a fixed stride. A claim
+    needs ops that know their items, so it comes after item 15, one op at a time.
+17. **Prefetch of the next weights during a wait.** A weight never depends on the task before it. One subgroup polls
+    the scoreboard, and 63 subgroups wait at the barrier. They can prefetch the first weights of the next task.
+    Check first that the OpenCL C of `ocloc` gives a prefetch of Xe2.
+18. **Fusion by design.** A run of the GB10 has 8 to 12 tasks, and a decode step has 485 tasks against 1,635 here. A
+    norm runs in the prologue of the matmul that reads it, and the producer of a row writes its rms factor. Clips,
+    gates and the residual run in the epilogue. Items 6 and 7 are the first steps.
+19. **A spill gate in the build.** The GB10 `build.rs` fails on any spill (`nagaya-mk-cuda/src/ptxas.rs`). Its
+    interpreter holds no state in registers across an op. It measured that ops as `__noinline__` functions are
+    slower. Read the spill report of `ocloc` in `build.rs`, and gate each binary on it, with item 14.
+20. **The ring in device memory.** The ring of tasks is in host USM (`Ring::new`), and the card is discrete. Thus
+    each work-group can read its descriptor over PCIe at each task. Measure the ring in device USM. It moves no bit.
+21. **The order of each sum from the shapes.** The GB10 cuts each op into items by its shapes, and each merge has a
+    fixed tree. Thus a row gets the same bits at any count of rows and any grid size. Write each new op of this card
+    that way, so that it needs no `FLAG_TILED` later (item 10).
+
+Two lessons do not carry over. The GB10 runs one path on its tensor cores for 1 to 16 rows, because its MMA takes
+NVFP4 in hardware. Here the expansion of NVFP4 sets the cost of one row (item 1), and a cheaper expansion is the
+fix. The split of an `f32` row into three `bf16` terms came from this engine: the GB10 took it from here.
+
 ## Milestone 37: Inkling 2 on GB10 (`sm_121`)
 
 The first NVIDIA engine of the nagaya runs Inkling 2 Mini on one GB10 (`sm_121`) of a DGX Spark. The machine has
