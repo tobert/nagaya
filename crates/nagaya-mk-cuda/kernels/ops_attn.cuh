@@ -66,7 +66,8 @@ constexpr uint32_t AT_SM_LC = AT_SM_MC + 16;            // [16]
 constexpr uint32_t AT_SM_FLAG = AT_SM_LC + 16;          // one word
 constexpr uint32_t AT_SM_RUN = AT_SM_FLAG + 4;          // [m, l, o][8][256]: the merged state of the whole mode
 constexpr uint32_t AT_SM_QA = AT_SM_RUN + 3 * 8 * 256;  // [12][256]: the terms of the queries of each thread
-static_assert((AT_SM_QA + 12 * 256) * 4 <= MK_ATTN_SMEM_BYTES, "the shared memory of OP_ATTN is too small");
+constexpr uint32_t AT_SM_RLO = AT_SM_QA + 12 * 256;     // [l, o][8][256]: the low words of the merged state of the whole mode
+static_assert((AT_SM_RLO + 2 * 8 * 256) * 4 <= MK_ATTN_SMEM_BYTES, "the shared memory of OP_ATTN is too small");
 static_assert(AtTilesKeys<CF_F32>() <= AT_MAX_STEP && AtTilesKeys<CF_BF16>() <= AT_MAX_STEP, "a step has at most AT_MAX_STEP keys");
 static_assert(AT_CHUNK % 64 == 0, "a chunk is a whole count of steps");
 
@@ -212,23 +213,44 @@ __device__ __forceinline__ void at_prefetch(const uint8_t* p, uint32_t bytes) {
     asm volatile("cp.async.bulk.prefetch.L2.global [%0], %1;" ::"l"(p), "r"(bytes));
 }
 
-// The merge of a chunk partial (mc, lc, oc) into the state (m, l, o) of one output value. A chunk with no key of the
-// row has the sum 0, and it is skipped. The order of the chunks is the order of the calls.
-__device__ __forceinline__ void at_merge(float& m, float& l, float& o, float mc, float lc, float oc) {
+// d = d * a + t, where d is the double-float value h + l and t is the exact value of a product (its rounded value t and the
+// error te of the rounding). The result is correct to about 2^-46 of the larger term. The intrinsics keep the compiler
+// from fusing or reordering the steps: both modes of the op must give the same bits.
+__device__ __forceinline__ void at_df_scale_add(float& h, float& l, float a, float t, float te) {
+    const float ph = __fmul_rn(h, a);
+    const float pe = __fmaf_rn(h, a, -ph);
+    const float pl = __fadd_rn(__fmul_rn(l, a), pe);
+    const float s = __fadd_rn(ph, t);
+    const float bb = __fsub_rn(s, ph);
+    const float err = __fadd_rn(__fsub_rn(ph, __fsub_rn(s, bb)), __fsub_rn(t, bb));
+    const float lo = __fadd_rn(__fadd_rn(pl, err), te);
+    const float hh = __fadd_rn(s, lo);
+    l = __fsub_rn(lo, __fsub_rn(hh, s));
+    h = hh;
+}
+
+// The merge of a chunk partial (mc, lc, oc) into the state (m, l, o) of one output value. The sum l and the output o are
+// double-float values (high word, low word): a serial f32 sum of 2,048 chunks drifts with the depth (2.1e-5 of the row
+// maximum at 524,288 positions). A chunk with no key of the row has the sum 0, and it is skipped. The order of the chunks is
+// the order of the calls: the bits depend only on the chunk indices.
+__device__ __forceinline__ void at_merge(
+    float& m, float& lh, float& ll, float& oh, float& ol, float mc, float lc, float oc) {
     if (lc > 0.0f) {
         const float nm = fmaxf(m, mc);
         const float a = expf(m - nm);
         const float b = expf(mc - nm);
-        l = l * a + lc * b;
-        o = o * a + oc * b;
+        const float tl = __fmul_rn(lc, b);
+        at_df_scale_add(lh, ll, a, tl, __fmaf_rn(lc, b, -tl));
+        const float to = __fmul_rn(oc, b);
+        at_df_scale_add(oh, ol, a, to, __fmaf_rn(oc, b, -to));
         m = nm;
     }
 }
 
 // The state of the 8 output values of a thread of the merge: the values (row 2u + w / 128, channel w % 128), with
-// u from 0 to 7 and w the worker.
+// u from 0 to 7 and w the worker. The sum l and the output o have a low word each.
 struct AtRun {
-    float m[8], l[8], o[8];
+    float m[8], l[8], ll[8], o[8], ol[8];
 };
 
 // The position, the query head and the liveness of row `row_in_tile` of the tile `mt`.
@@ -249,7 +271,9 @@ __device__ __forceinline__ void at_run_init(AtRun& run, const float* sinks, uint
         at_row_of(mt, 2 * u + (worker_id() >> 7), rows, kvh, live, t, h);
         run.m[u] = live ? __ldcg(sinks + static_cast<uint64_t>(t) * AT_HEADS + h) : 0.0f;
         run.l[u] = 1.0f;
+        run.ll[u] = 0.0f;
         run.o[u] = 0.0f;
+        run.ol[u] = 0.0f;
     }
 }
 
@@ -349,6 +373,8 @@ __device__ __forceinline__ void op_attn_item(const MkTaskDescriptor& task, const
             run_sm[(0 * 8 + u) * 256 + wid] = init.m[u];
             run_sm[(1 * 8 + u) * 256 + wid] = init.l[u];
             run_sm[(2 * 8 + u) * 256 + wid] = init.o[u];
+            sm[AT_SM_RLO + (0 * 8 + u) * 256 + wid] = 0.0f;
+            sm[AT_SM_RLO + (1 * 8 + u) * 256 + wid] = 0.0f;
         }
     }
 
@@ -568,10 +594,14 @@ __device__ __forceinline__ void op_attn_item(const MkTaskDescriptor& task, const
                 float m = run_sm[(0 * 8 + u) * 256 + wid];
                 float l = run_sm[(1 * 8 + u) * 256 + wid];
                 float ov = run_sm[(2 * 8 + u) * 256 + wid];
-                at_merge(m, l, ov, sm[AT_SM_MC + row], sm[AT_SM_LC + row], sm[AT_SM_OC + row * 128 + (wid & 127)]);
+                float ll = sm[AT_SM_RLO + (0 * 8 + u) * 256 + wid];
+                float ol = sm[AT_SM_RLO + (1 * 8 + u) * 256 + wid];
+                at_merge(m, l, ll, ov, ol, sm[AT_SM_MC + row], sm[AT_SM_LC + row], sm[AT_SM_OC + row * 128 + (wid & 127)]);
                 run_sm[(0 * 8 + u) * 256 + wid] = m;
                 run_sm[(1 * 8 + u) * 256 + wid] = l;
                 run_sm[(2 * 8 + u) * 256 + wid] = ov;
+                sm[AT_SM_RLO + (0 * 8 + u) * 256 + wid] = ll;
+                sm[AT_SM_RLO + (1 * 8 + u) * 256 + wid] = ol;
             }
             worker_sync();
         }
@@ -585,6 +615,8 @@ __device__ __forceinline__ void op_attn_item(const MkTaskDescriptor& task, const
             run.m[u] = run_sm[(0 * 8 + u) * 256 + wid];
             run.l[u] = run_sm[(1 * 8 + u) * 256 + wid];
             run.o[u] = run_sm[(2 * 8 + u) * 256 + wid];
+            run.ll[u] = sm[AT_SM_RLO + (0 * 8 + u) * 256 + wid];
+            run.ol[u] = sm[AT_SM_RLO + (1 * 8 + u) * 256 + wid];
         }
     }
     if (split_mode) {
@@ -607,7 +639,7 @@ __device__ __forceinline__ void op_attn_item(const MkTaskDescriptor& task, const
                         const float mc = __ldcg(pr + row * AT_PARTIAL_ROW);
                         const float lc = __ldcg(pr + row * AT_PARTIAL_ROW + 1);
                         if (lc > 0.0f) {
-                            at_merge(run.m[u], run.l[u], run.o[u], mc, lc, __ldcg(pr + row * AT_PARTIAL_ROW + 4 + (wid & 127)));
+                            at_merge(run.m[u], run.l[u], run.ll[u], run.o[u], run.ol[u], mc, lc, __ldcg(pr + row * AT_PARTIAL_ROW + 4 + (wid & 127)));
                         }
                     }
                 }
@@ -625,7 +657,7 @@ __device__ __forceinline__ void op_attn_item(const MkTaskDescriptor& task, const
                 const uint64_t at = (static_cast<uint64_t>(t) * AT_HEADS + h) * AT_DIM + (wid & 127);
                 const float gate = __ldcg(gate_ptr() + at);
                 const float sig = 1.0f / (1.0f + expf(-gate));
-                out_ptr()[at] = (run.o[u] / run.l[u]) * sig;
+                out_ptr()[at] = ((run.o[u] + run.ol[u]) / (run.l[u] + run.ll[u])) * sig;
             }
         }
     }
