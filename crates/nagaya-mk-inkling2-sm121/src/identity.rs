@@ -86,6 +86,18 @@ pub fn checkpoint_digest(config_text: &str, weights: &Path) -> Result<String, St
     )
 }
 
+/// `checkpoint_digest` through the memo of the process and the cache file (`digest_cache`). The first call for a file
+/// reads it. A later call for the same file, in this process or in another, reads nothing.
+pub fn checkpoint_digest_cached(config_text: &str, weights: &Path) -> Result<String, String> {
+    crate::digest_cache::cached_digest(
+        &crate::digest_cache::PROCESS_MEMO,
+        crate::digest_cache::cache_dir_from_env().as_deref(),
+        config_text,
+        weights,
+        || checkpoint_digest(config_text, weights),
+    )
+}
+
 /// `checkpoint_digest` with `workers` threads. The digest does not depend on the count.
 pub fn checkpoint_digest_with(config_text: &str, weights: &Path, workers: usize) -> Result<String, String> {
     let config: serde_json::Value =

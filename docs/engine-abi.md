@@ -3180,7 +3180,25 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   - A pass at position 0 starts from conv zeros.
   - The conformance suite passes with 2 slots of 2,048 positions. Four gates do not apply, the same four as for
     LFM3: `seal_only_at_boundaries`, `quantum_same_boundaries`, `segments_exact_bits` and `stage_path_bits`.
-  - The digest of the checkpoint takes 15.9 s at each open.
+  - The digest of the checkpoint takes 15.9 s when the engine reads the whole file.
+  - **Proposed** (Claude Sonnet 5.5, 2026-11-24): the digest has a memo and a cache file, so `describe` and the open
+    do not read the checkpoint again. Reason: the open and `describe` need the same digest, and a read takes 15.9 s.
+    - A memo in the process keeps each digest by its key. One process reads a checkpoint once.
+    - A cache file keeps the digest across starts. It lives in `$XDG_CACHE_HOME/nagaya/digests/`, or in
+      `~/.cache/nagaya/digests/` when the variable is not set. Each checkpoint has one small file.
+    - The key holds these facts. The weights file gives the canonical path, `st_dev`, `st_ino`, the size, and `mtime`
+      and `ctime` in nanoseconds. The key also holds the BLAKE3 of the text of `config.json` and the version of the
+      digest key.
+    - A user tool cannot set `ctime`, and any write changes it. So a changed file misses the cache.
+    - A missing file, a file that does not parse and a key that differs are each a miss. A miss computes the digest
+      and writes the file again, through a temporary file and a rename.
+    - The engine takes the key before it reads. A file that changes during the read gets a new `ctime`, so no later
+      call finds the digest that the read gave.
+    - An I/O error of the cache folder is a warning in the log. The open goes on with a computed digest. The engine
+      never guesses a digest.
+    - `describe` gives the identity and the limits with no load of weights. It opens the GPU for its driver version
+      and its multiprocessor count, and it reads the digest through the cache. `open_problem` compares the planned
+      device bytes with the free bytes of the GPU and `freed_bytes`, and it keeps the floor of 2 GiB.
 - **The quality of the cache formats at depth** (milestone 37 step 11, merged in `ae89d9bb`). The reference is the
   `f32` cache, on the PG-19 text, in windows of 16 rows at 4K, 32K and 128K positions.
   - `bf16` kept the top token on 48 of 48 rows. The mean KL was 3.5e-2 to 8.1e-3.

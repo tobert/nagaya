@@ -16,6 +16,7 @@ nagaya-text-inkling2 = { version = "0.1.0", path = "../nagaya-text-inkling2" }
 serde_json = { version = "1.0.154", features = ["float_roundtrip", "preserve_order"] }
 
 [dev-dependencies]
+tempfile = "3"
 # The host forms of the B70 crate (`host::ops`) are the oracle of the GB10 ops. With no feature it builds with no Level
 # Zero and needs no card.
 nagaya-mk-bmg = { version = "0.1.0", path = "../nagaya-mk-bmg" }

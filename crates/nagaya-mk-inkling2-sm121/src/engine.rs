@@ -147,7 +147,7 @@ impl Drop for Inkling2Sm121Engine {
 }
 
 /// The identity of an engine of `config` on a device with the driver `driver` and `sms` multiprocessors (spec 12.1).
-fn identity_of(
+pub(crate) fn identity_of(
     model: Model,
     checkpoint_digest: String,
     facts: TextFacts,
@@ -173,7 +173,7 @@ fn identity_of(
 }
 
 /// The bytes of device memory that `limits` declares: the weights, the slots and the work.
-fn device_bytes(limits: &Limits) -> u64 {
+pub(crate) fn device_bytes(limits: &Limits) -> u64 {
     limits
         .memory
         .mandatory
@@ -220,7 +220,7 @@ impl Inkling2Sm121Engine {
             .map_err(|e| format!("cannot read `{}`: {e}", config_path.display()))?;
         let facts = identity::text_facts(&dir)?;
         let digest_start = Instant::now();
-        let digest = identity::checkpoint_digest(&config_text, &dir.join(WEIGHTS_FILE))?;
+        let digest = identity::checkpoint_digest_cached(&config_text, &dir.join(WEIGHTS_FILE))?;
         let digest_ms = digest_start.elapsed().as_millis() as u64;
 
         let mut owner = Owner::new(device);

@@ -1353,6 +1353,7 @@ dependencies = [
  "nagaya-mk-inkling2-bmg",
  "nagaya-text-inkling2",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
