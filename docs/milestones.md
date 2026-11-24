@@ -1028,6 +1028,22 @@ Do the steps in this order. Each step ends with the checks green.
       match those of `f32`. The thresholds of the gap go into the binding with the first measure.
     - Start with `e4m3` with a unit scale, because it is the format that ships. If it fails the gate, try the scale
       per 32 channels, then `float16`. The `e2m1` format is an experiment for the gate. It comes after the others.
+
+    Status, 2026-11-23: the engine, the pass for many slots and the measure of the formats are merged.
+    - Done:
+      - the host spec with the `cache` key (lane A, `ded4cfd9`);
+      - the pass for many slots (lane B, `3829bc2a`);
+      - the engine and its conformance suite (lane C, `e2e6cbdb`);
+      - the attention at 524,288 positions, with the double-float merge (lane D, with the fix of lane T, `bba9771f`);
+      - the measure of the cache formats at depth (lane E, `ae89d9bb`);
+      - the probe cubins and the removed flags (lane X, `5def986c`).
+    - Open:
+      - the gate of latency by position and by format;
+      - the retrieval test at 400K positions, with snapshots of the PG-19 prefill, so that the prefill cost is paid
+        once;
+      - `pass_bound_ms` for a block at depth;
+      - the `describe` and `open_problem` of the factory;
+      - a cache of the digest of the checkpoint.
 12. **Rows.** A ring of several slots, as LFM3's `model::batch`. The ops take 16 rows from wave A, so this step is
     work of the ring and the scheduler. Measure tokens each second at 1, 2, 4, 8 and 16 rows. The MTP head waits
     for Amy's word (milestone 35 step 10).
@@ -1048,10 +1064,19 @@ tuning pass takes it.
 - **The `e4m3` attention at 49% of the peak, and `bf16` at 68%.** One step of 16 keys for each sync limits them.
 - **The register knife edge.** Each cache cubin keeps a pair of attention instances, because one instance spills
   (`173a126e`). The peak sits in `quant.cuh` and `ops_moe.cuh`.
-- **The register audit** (2026-11-23). The ops at the limit have no flag that a cubin could remove. The candidates
-  that a launch fixes: decode against block as two cubins, and the probe ops in a cubin of their own. The engine
-  never sets `FLAG_NORM` on `ROUTE` or `FLAG_NORM_UNWEIGHTED`. Measure the peak of ptxas before a cut.
+- **The register audit** (2026-11-23). The probe ops moved to cubins of their own (`5def986c`), and the flags
+  `FLAG_NORM` on `ROUTE` and `FLAG_NORM_UNWEIGHTED` are gone (`2a48f4f1`, `e564c82e`). The five row ops together
+  set the peak: a natural demand of 226 registers, and 183 without them. No single op sets it, and removing
+  `OUT_MIX` or `GATE_UP` alone spills.
+  - The shared row finisher is the place to save.
+  - An open candidate: decode against block as two cubins. Measure the peak of ptxas before a cut.
 - **The attention prefill at depth.** 512 rows at 8,192 positions take 9.78 ms.
+  - At depth, 60 to 70% of a step is the latency of one step of 16 keys. The two syncs take 14%, the score MMA 15
+    to 18%, and `expf` 5 to 8%.
+  - A step of 32 keys spills. The next idea is a pipelined step with one sync, which saves 14% at most.
+- **The merge of the partials.** It takes 3.6 to 4.3 ms of a decode step at 524,288 positions. A tree across the
+  items of the split mode can cut it.
+- **The digest at each open.** The digest of the checkpoint takes 15.9 s.
 - **The tail of 8% in the head.**
 - **The floor of 80% for the NVFP4 `UP` op.** The op runs at 82 to 88%, so the gate can flake.
 - **The finisher of `OP_OUT_MIX` at many rows.** One block runs the rows one after another: 151 us at 16 rows and
