@@ -100,3 +100,13 @@ impl Needle {
         word && number
     }
 }
+
+/// The number of the first book of a context. The first context, with the default seed, starts at book 0. Another seed
+/// starts at a book from 10 to 89, so that its text is not the text of the first context.
+pub fn first_book(seed: u64, default_seed: u64) -> usize {
+    if seed == default_seed {
+        0
+    } else {
+        10 + (seed % 80) as usize
+    }
+}

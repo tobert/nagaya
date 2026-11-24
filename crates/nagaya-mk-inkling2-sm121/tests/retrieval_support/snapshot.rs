@@ -22,12 +22,15 @@ pub struct Key {
     /// The BLAKE3 of the context tokens, as `u32` values in little-endian bytes.
     pub tokens: [u8; 32],
     pub format: String,
+    /// The seed of a context that is not the first one. The first context has `None`, so its files keep their names.
+    pub seed: Option<u64>,
 }
 
 impl Key {
     pub fn file_name(&self) -> String {
+        let seed = self.seed.map_or(String::new(), |s| format!("-s{s}"));
         format!(
-            "snap-{}-{}-{}.bin",
+            "snap-{}-{}-{}{seed}.bin",
             self.format,
             hex(&self.tokens)[..16].to_owned(),
             hex(&self.identity)[..16].to_owned()
@@ -39,7 +42,12 @@ impl Key {
     }
 
     fn json(&self) -> serde_json::Value {
-        serde_json::json!({"identity": hex(&self.identity), "tokens": hex(&self.tokens), "format": self.format})
+        let mut json =
+            serde_json::json!({"identity": hex(&self.identity), "tokens": hex(&self.tokens), "format": self.format});
+        if let Some(seed) = self.seed {
+            json["seed"] = seed.into();
+        }
+        json
     }
 }
 

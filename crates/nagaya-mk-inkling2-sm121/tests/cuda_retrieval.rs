@@ -20,6 +20,9 @@
 //! - `NAGAYA_SNAPSHOT_DIR`: the folder of the snapshots and the results. Unset: the test skips; with
 //!   `NAGAYA_REQUIRE_MODELS` it fails. `NAGAYA_HAYSTACK_DIR`: the folder of the PG-19 `NNN.txt` files, the same way.
 //!   `INKLING2_MODEL_DIR`, and the card.
+//! - `NAGAYA_RET_SEED`: the seed of the needles and of the first book. The default is the constant `SEED` of the first
+//!   context, which starts at book 0. Another seed gives other needles and other books, so the context is a new text. The
+//!   seed goes into the key of each snapshot.
 //! - `NAGAYA_RET_MODE`: `prefill` (make the snapshots that are missing), `ask` (ask the questions of the snapshots),
 //!   `both` (default), or `report` (print the table of the saved results).
 //! - `NAGAYA_RET_FORMATS`: a list of `f32`, `bf16`, `e4m3` (default all three, in this order).
@@ -102,8 +105,15 @@ fn format_of(name: &str) -> CacheFormat {
     }
 }
 
+/// The seed of a run: `NAGAYA_RET_SEED`, or the constant `SEED` of the first context.
+fn seed_of_run() -> u64 {
+    std::env::var("NAGAYA_RET_SEED").map_or(SEED, |v| v.parse().expect("NAGAYA_RET_SEED is not a number"))
+}
+
 /// The context and the questions of one run.
 struct Plan {
+    /// `None` for the first context, and the seed for another one. It goes into the key of each snapshot.
+    seed: Option<u64>,
     needles: Vec<Needle>,
     /// The context tokens, and their hash.
     context: Vec<u32>,
@@ -115,7 +125,7 @@ struct Plan {
     max_tail: usize,
 }
 
-fn make_plan(model: &Path, haystack: &Path, mutate: &str) -> Plan {
+fn make_plan(model: &Path, haystack: &Path, mutate: &str, seed: u64) -> Plan {
     let tok = Arc::new(Tokenizer::from_file(&model.join("tokenizer.json")).unwrap_or_else(|e| panic!("{e}")));
     let template = std::fs::read_to_string(model.join("chat_template.jinja")).expect("the template");
     let chat = Chat::new(&template, Arc::clone(&tok)).unwrap_or_else(|e| panic!("{e}"));
@@ -127,13 +137,14 @@ fn make_plan(model: &Path, haystack: &Path, mutate: &str) -> Plan {
         .split(',')
         .map(|d| d.trim().parse().expect("a depth in percent"))
         .collect();
-    let needles = needles::make(SEED, &percents);
+    let needles = needles::make(seed, &percents);
+    let first = needles::first_book(seed, SEED);
     let put: &[Needle] = if mutate == "no_needles" { &[] } else { &needles };
     let target = env_usize("NAGAYA_RET_CONTEXT", 409_600);
     let started = Instant::now();
     let hay = assemble(
         |n| {
-            let path = haystack.join(format!("{n:03}.txt"));
+            let path = haystack.join(format!("{:03}.txt", (first + n) % 100));
             std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
         },
         |text| tok.encode_content(text).unwrap_or_else(|e| panic!("{e}")).len(),
@@ -190,6 +201,7 @@ fn make_plan(model: &Path, haystack: &Path, mutate: &str) -> Plan {
         started.elapsed()
     );
     Plan {
+        seed: (seed != SEED).then_some(seed),
         needles,
         hash: token_hash(&context),
         context,
@@ -295,6 +307,7 @@ fn prefill_format(model: &Path, dir: &Path, name: &str, plan: &Plan, family: &In
         identity: gpu::identity_digest(&engine.identity()),
         tokens: plan.hash,
         format: name.to_owned(),
+        seed: plan.seed,
     };
     eprintln!(
         "RET {name}: open {:.1?}; identity {}, context {}, slot of {slot_len} positions",
@@ -381,6 +394,7 @@ fn ask_format(model: &Path, dir: &Path, name: &str, plan: &Plan, family: &Inklin
         identity: gpu::identity_digest(&engine.identity()),
         tokens: plan.hash,
         format: name.to_owned(),
+        seed: plan.seed,
     };
     let note = Reader::open(dir, &key)
         .unwrap_or_else(|e| panic!("{e}"))
@@ -556,7 +570,7 @@ fn each_cache_format_finds_a_fact_from_early_in_a_long_context() {
     let list = std::env::var("NAGAYA_RET_FORMATS").unwrap_or_else(|_| "f32,bf16,e4m3".to_owned());
     let formats: Vec<&str> = list.split(',').map(str::trim).collect();
     let family = Inkling2Family::from_dir(&model).unwrap_or_else(|e| panic!("{e}"));
-    let plan = make_plan(&model, &haystack, &mutate);
+    let plan = make_plan(&model, &haystack, &mutate, seed_of_run());
     let total = Instant::now();
     for name in &formats {
         if mode != "ask" && mode != "report" {

@@ -19,6 +19,7 @@ fn key(format: &str) -> Key {
         identity: [7; 32],
         tokens: token_hash(&[1, 2, 3]),
         format: format.to_owned(),
+        seed: None,
     }
 }
 
@@ -177,4 +178,34 @@ fn the_check_of_the_prefix_names_the_first_token_that_changes() {
     let error = check_prefix(&[1, 2, 3], &[1, 9, 3, 4], "the render").unwrap_err();
     assert!(error.contains("token 1 differs"), "{error}");
     assert!(check_prefix(&[1, 2, 3], &[1, 2], "the render").is_err());
+}
+
+#[test]
+fn the_seed_is_in_the_key_and_a_file_of_another_seed_is_refused() {
+    let dir = temp("seed");
+    let first = key("f32");
+    let second = Key {
+        seed: Some(7),
+        ..key("f32")
+    };
+    assert_ne!(first.file_name(), second.file_name());
+    assert_ne!(first.path(&dir), second.path(&dir));
+    // The first context keeps the name that it had before the seed existed.
+    assert!(!first.file_name().contains("-s"), "{}", first.file_name());
+    write_two(&dir, &first);
+    assert!(Reader::open(&dir, &second).unwrap().is_none());
+    // A file of the first context under the name of the second holds another key, and the open refuses it.
+    std::fs::rename(first.path(&dir), second.path(&dir)).unwrap();
+    let error = Reader::open(&dir, &second).err().expect("the open must refuse");
+    assert!(error.contains("key inside the file"), "{error}");
+}
+
+#[test]
+fn another_seed_gives_other_needles_and_other_books() {
+    assert_eq!(needles::first_book(5, 5), 0);
+    for seed in [1, 2, 20_261_125, u64::MAX] {
+        let first = needles::first_book(seed, 20_261_124);
+        assert!((10..90).contains(&first), "seed {seed} starts at book {first}");
+    }
+    assert_ne!(needles::make(1, &[10]), needles::make(2, &[10]));
 }
