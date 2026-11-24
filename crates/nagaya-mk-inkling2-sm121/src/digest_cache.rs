@@ -1,5 +1,5 @@
 //! The memo and the cache file of the digest of the checkpoint (engine-abi "The GB10 Inkling 2 binding", "The host
-//! spec"; **Proposed**).
+//! spec").
 //!
 //! A read of the whole checkpoint takes 15.9 s. The open and `describe` of the factory both need the digest, so they
 //! share it in two ways:

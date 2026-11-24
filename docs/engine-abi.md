@@ -3181,8 +3181,8 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   - The conformance suite passes with 2 slots of 2,048 positions. Four gates do not apply, the same four as for
     LFM3: `seal_only_at_boundaries`, `quantum_same_boundaries`, `segments_exact_bits` and `stage_path_bits`.
   - The digest of the checkpoint takes 15.9 s when the engine reads the whole file.
-  - **Proposed** (Claude Sonnet 5.5, 2026-11-24): the digest has a memo and a cache file, so `describe` and the open
-    do not read the checkpoint again. Reason: the open and `describe` need the same digest, and a read takes 15.9 s.
+  - The digest has a memo and a cache file, so `describe` and the open do not read the checkpoint again.
+    Reason: the open and `describe` need the same digest, and a read takes 15.9 s.
     - A memo in the process keeps each digest by its key. One process reads a checkpoint once.
     - A cache file keeps the digest across starts. It lives in `$XDG_CACHE_HOME/nagaya/digests/`, or in
       `~/.cache/nagaya/digests/` when the variable is not set. Each checkpoint has one small file.
