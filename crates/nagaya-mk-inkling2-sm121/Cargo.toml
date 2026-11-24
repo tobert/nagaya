@@ -21,3 +21,6 @@ serde_json = { version = "1.0.154", features = ["float_roundtrip", "preserve_ord
 nagaya-mk-bmg = { version = "0.1.0", path = "../nagaya-mk-bmg" }
 nagaya-mk-inkling2-bmg = { version = "0.1.0", path = "../nagaya-mk-inkling2-bmg" }
 nagaya-conformance = { version = "0.1.0", path = "../nagaya-conformance" }
+# The retrieval test (milestone 37 step 11) renders chats with the family library and parses replies with its parser.
+nagaya-council = { version = "0.1.0", path = "../nagaya-council" }
+nagaya-jinja = { version = "0.1.0", path = "../nagaya-jinja" }
