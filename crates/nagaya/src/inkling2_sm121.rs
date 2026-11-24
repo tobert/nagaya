@@ -132,8 +132,9 @@ pub use factory::Inkling2Sm121Factory;
 #[cfg(feature = "cuda")]
 mod factory {
     use nagaya_abi::{Engine, Limits};
+    use nagaya_mk_inkling2_sm121::engine::Inkling2Sm121Engine;
 
-    use super::{KIND, check_devices, config};
+    use super::{check_devices, config};
     use crate::admission::{Factory, GroupDevice, OpenError, OpenErrorKind, PlanError};
 
     /// Factory for `mk-inkling2-sm121`.
@@ -155,11 +156,9 @@ mod factory {
                 message,
             };
             check_devices(devices).map_err(|e| err(e.message))?;
-            let _config = config(table).map_err(|e| err(e.message))?;
-            Err(err(format!(
-                "`{KIND}` cannot open yet: the device ops are step 9 of milestone 37 and the engine is step 11. \
-                 Remove this engine from the profile until step 11 is done"
-            )))
+            let config = config(table).map_err(|e| err(e.message))?;
+            let engine = Inkling2Sm121Engine::open(config, &devices[0].pci_address).map_err(err)?;
+            Ok(Box::new(engine))
         }
     }
 }
