@@ -1,0 +1,52 @@
+# The nagaya as a systemd user unit on the DGX Spark example (docs/spec.md 10.1; docs/deploy.md has the install).
+# Install: copy this file to ~/.config/systemd/user/nagaya.service, and change the address and the paths. Copy
+#          `deploy/dgx-spark/nagaya.toml` to ~/.config/nagaya/nagaya.toml, and `profile.toml` into the store
+#          directory. Then `systemctl --user daemon-reload` (docs/deploy.md).
+# The unit is a copy, not a link, so a pull of the repository never changes a running machine.
+# Rebuild the release binary before each restart, with `--features cuda`: the unit runs the file in `target/release`.
+# `PATH=/usr/local/cuda/bin:$PATH cargo build --release -p nagaya --features cuda`. The build needs `nvcc` 13.2.
+# A build without the feature has no engine and exits 3.
+# The nagaya is the only compute client of the GB10 (spec 3.1). Stop the unit before a GPU test.
+[Unit]
+Description=nagaya: the engines of this machine behind council v2 (port 8091)
+# A user unit cannot order itself after a system unit, such as one that sets the address. The wait in ExecStartPre
+# covers it.
+After=network-online.target
+Wants=network-online.target
+# A crash loop must not hit the GPU again and again: three starts in 10 minutes, and the unit stays down.
+StartLimitIntervalSec=600
+StartLimitBurst=3
+
+[Service]
+Type=notify
+NotifyAccess=main
+# The process sends READY=1 when the engine has loaded its weights. The heartbeat extends the start while the engine
+# opens (spec 10.1), so 300 s is a cap.
+TimeoutStartSec=300
+WorkingDirectory=%h/src/nagaya
+# The bootstrap config (spec 2.1). It names the bind addresses and the store directory.
+Environment=NAGAYA_CONFIG=%h/.config/nagaya/nagaya.toml
+# No model variable: the profile names the model folder in `model_dir` and in its family table. The kernels are
+# compiled into the binary at the build, so the run needs no `nvcc` and no `PATH`.
+# OpenTelemetry: an exporter without a collector logs a transport error every 5 s, so the line stays a comment until
+# a collector runs. Then the process exports OTLP over gRPC (spec 9.1). Without it, stderr only.
+# Environment=OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4317
+# The store directory must exist before the process reads its profile. It is `store_dir` of the config.
+ExecStartPre=/usr/bin/mkdir -p /srv/nagaya/store
+# At boot the address can come after the user manager starts the unit. A bind to a missing address exits 3 and
+# keeps the unit down (spec 10.4), so wait for the address of `http_bind`. TimeoutStartSec covers the 120 s.
+ExecStartPre=%h/src/nagaya/deploy/wait-address.sh 192.0.2.12 120
+ExecStart=%h/src/nagaya/target/release/nagaya
+# The engine exports no arena, so the unit sets no fd store. Each restart loads the weights again.
+# SIGTERM: the running quantum ends, then the park runs (10 s by default). A second signal ends it now.
+KillSignal=SIGTERM
+TimeoutStopSec=60
+# Spec 10.4. Exit 1 is a crash: start again, but not in a tight loop. Exit 3 is a refusal that repeats on every
+# start, so the unit stays down. Exit 4 is a planned restart after a profile swap (spec 3.3), and it always restarts.
+Restart=on-failure
+RestartSec=30
+RestartPreventExitStatus=3
+RestartForceExitStatus=4
+
+[Install]
+WantedBy=default.target
