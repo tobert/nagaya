@@ -3315,8 +3315,8 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     | `e4m3` | 5 | 409,600 | 132 | 459 | 1,488 | 6,391 |
     | `e4m3` | 5 | 524,288 | 159 | 569 | 1,813 | 7,651 |
 
-- **The bound of a block at depth.** **Proposed** (Claude Sonnet 5.5, 2026-11-24). The engine declares a bound for
-  a pass that its model of time puts above `max_quantum_ms`, and it splits no block.
+- **The bound of a block at depth.** The engine declares a bound for a pass that its model of time puts above
+  `max_quantum_ms`, and it splits no block.
   - The need: the first measure of the latency gate gave 8,391 ms for a block of 512 rows. The block was at 524,288
     positions, in an `f32` cache, with 5 cycles. At 3 cycles it gave 4,965 to 5,567 ms. `max_quantum_ms` is 5,000 ms,
     so such a block is a long pass (D8, "A long pass with a declared bound").
@@ -3338,7 +3338,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   - Reason: D8 gives chunks of 1 to 10 s, and a long pass where the work needs it. A block of 512 rows at depth is
     such work. A smaller block does not cut the cost of the attention in proportion, because each tile of 16 rows
     reads the keys again. A profile can still set `max_block` lower.
-  - The open question for @tobert: a long pass here, or a smaller `max_block` for a slot at depth.
+  - Each bound of the model is below the timeout of 30 s. Thus the bound changes only the warning of a slow pass.
 
 - **Identity and oracle.** Because expert activations are quantized to NVFP4 and MXFP8, this engine has its own
   quantized host oracle and engine identity. Its `numbers` hold `quant` (`nvfp4_fouroversix_mae+mxfp8_ue8m0`),
