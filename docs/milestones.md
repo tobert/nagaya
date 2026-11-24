@@ -1033,7 +1033,7 @@ Do the steps in this order. Each step ends with the checks green.
     - Done:
       - the host spec with the `cache` key (lane A, `ded4cfd9`);
       - the pass for many slots (lane B, `3829bc2a`);
-      - the engine and its conformance suite (lane C, `<C11 merge>`);
+      - the engine and its conformance suite (lane C, `e2e6cbdb`);
       - the attention at 524,288 positions, with the double-float merge (lane D, with the fix of lane T, `bba9771f`);
       - the measure of the cache formats at depth (lane E, `ae89d9bb`);
       - the probe cubins and the removed flags (lane X, `5def986c`).

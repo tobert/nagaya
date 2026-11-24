@@ -3147,12 +3147,15 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     none. With none, the call has no MIX_OUT and no HEAD.
   - The pass allocates no device memory in a call: one arena is made at open. The ring cache holds at most 64
     lists, and it drops the least recently used.
-  - A clear zeroes the conv states and the position, and it resets the poison. The planes are never read above the
-    position, so stale rows do not matter. A gate shows the bits of a fresh slot.
+  - A clear zeroes the conv states and the position, and it resets the poison (**Proposed**, Opus 5.5). The planes
+    are never read above the position, so stale rows do not matter. A gate shows the bits of a fresh slot. Reason:
+    a full zero of a slot of 35 GB.
   - The parts of a slot are the k and v rows of a range and the conv state. The rows are position-major
     `[n][8][128]` in the stored bytes. The conv state is `[3][6656]` `f32`.
   - A sliding state keeps the last `RING_ROWS` (1,536) positions. A write refuses a non-finite value.
-- **The host spec** (milestone 37 step 11, merged in `ded4cfd9`).
+- **The host spec** (milestone 37 step 11, merged in `ded4cfd9`). The three rules below are **Proposed** (Opus 5.5).
+  Reason: one binary for each scenario, a snapshot that holds the stored bits, and limits that declare only what the
+  engine serves.
   - The config key `cache` is `f32`, `bf16` or `e4m3`, with the default `f32`. It selects the cubin of that format.
     The identity numbers hold `cache` and the `cubin_blake3` of that cubin.
   - `feed.block` and `cache` are `ReferenceDefining` bit settings. The dtype of the k and v parts is `F32`, `BF16`
@@ -3161,22 +3164,24 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     no work reserve of the tower.
   - The held-state rules mirror the B70 `Held`, with a ring of 1,536 rows, no spill, and tokens only (`held.rs`).
     `identity.rs` mirrors the digest of the checkpoint and the text facts.
-- **The engine** (milestone 37 step 11, merged in `<C11 merge>`).
+- **The engine** (milestone 37 step 11, merged in `e2e6cbdb`).
   - The engine opens one GPU with the cubin of its cache format. It owns the device, the weights and the pass. It
     frees them in this order: pass, weights, device. A drop that leaves a device buffer panics.
   - The open refuses before it reads the weights when the planned device bytes pass the free bytes. After the load
     it refuses when fewer than 2 GiB stay free, and when the weights take more device bytes than the plan. Real
     weights take 18,886,376,960 bytes against a plan of 18,889,360,896. Each message names the bytes.
   - Reason: on unified memory, other work and the page cache move the free bytes by tens of GB while an open runs.
-    Thus a comparison of the free bytes before and after the load cannot hold.
+    Thus a comparison of the free bytes before and after the load cannot hold. This rule of memory is **Proposed**
+    (Opus 5.5).
   - The limits are the plan of the factory. A refused call changes nothing.
   - A failed launch poisons the slot. The pass, the part writes and `set_n` above 0 are refused until `slot_clear`
     or `set_n(0)`. Reads and other slots work.
   - A sticky CUDA error (700, 701, 702, 715, 719 or 999) marks the engine dead. The call returns the poison, and
-    each later call panics for a planned restart (spec 8.5).
+    each later call panics for a planned restart (spec 8.5). **Proposed** (Opus 5.5). Reason: the context of the
+    GPU cannot run again after such an error.
   - A pass at position 0 starts from conv zeros.
-  - The conformance suite passes with 2 slots of 2,048 positions. Four gates do not apply, because they are gates
-    of LFM3: `seal_only_at_boundaries`, `quantum_same_boundaries`, `segments_exact_bits` and `stage_path_bits`.
+  - The conformance suite passes with 2 slots of 2,048 positions. Four gates do not apply, the same four as for
+    LFM3: `seal_only_at_boundaries`, `quantum_same_boundaries`, `segments_exact_bits` and `stage_path_bits`.
   - The digest of the checkpoint takes 15.9 s at each open.
 - **The quality of the cache formats at depth** (milestone 37 step 11, merged in `ae89d9bb`). The reference is the
   `f32` cache, on the PG-19 text, in windows of 16 rows at 4K, 32K and 128K positions.
