@@ -22,7 +22,9 @@
 //!   compares each row with the next row (the loose bounds must then fail).
 //!
 //! `flock <lock> env INKLING2_MODEL_DIR=<folder> NAGAYA_HAYSTACK_DIR=<folder> NAGAYA_TEST_CARDS=<pci address> cargo
-//!  test -p nagaya-mk-inkling2-sm121 --features cuda --test cuda_kv_quality -- --test-threads=1 --nocapture`
+//!  test -p nagaya-mk-inkling2-sm121 --features cuda --test cuda_kv_quality -- --ignored --test-threads=1 --nocapture`
+//!
+//! The test is a measurement of about 27 minutes, not a gate of each commit, so it runs only with `--ignored`.
 
 #![cfg(feature = "cuda")]
 
@@ -316,6 +318,7 @@ fn run_format(
 }
 
 #[test]
+#[ignore = "a measurement of about 27 minutes; run it with --ignored and NAGAYA_HAYSTACK_DIR"]
 fn the_cache_formats_keep_the_f32_logits_at_depth() {
     let Some(haystack) = std::env::var_os("NAGAYA_HAYSTACK_DIR").map(PathBuf::from) else {
         assert!(
