@@ -220,7 +220,7 @@ impl Inkling2Sm121Engine {
             .map_err(|e| format!("cannot read `{}`: {e}", config_path.display()))?;
         let facts = identity::text_facts(&dir)?;
         let digest_start = Instant::now();
-        let digest = identity::checkpoint_digest(&config_text, &dir.join(WEIGHTS_FILE))?;
+        let digest = identity::checkpoint_digest_cached(&config_text, &dir.join(WEIGHTS_FILE))?;
         let digest_ms = digest_start.elapsed().as_millis() as u64;
 
         let mut owner = Owner::new(device);

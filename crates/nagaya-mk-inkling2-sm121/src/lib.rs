@@ -6,6 +6,7 @@
 //! a GPU.
 
 pub mod cache;
+pub mod digest_cache;
 #[cfg(feature = "cuda")]
 pub mod engine;
 pub mod health;
