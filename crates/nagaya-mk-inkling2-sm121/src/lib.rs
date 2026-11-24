@@ -6,6 +6,9 @@
 //! a GPU.
 
 pub mod cache;
+#[cfg(feature = "cuda")]
+pub mod engine;
+pub mod health;
 pub mod held;
 pub mod identity;
 pub mod pass;
