@@ -2784,8 +2784,8 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
         rule 9. The parts join in warp order in shared memory. The softmax is online.
       - An `f32` cache gives 6 MMAs for each product tile. A `bf16` or `e4m3` cache gives 3, because its value is
         exact in `bf16`.
-      - **The formats of the cache, one cubin for each** (Proposed, Opus 5.5, 2026-11-23). Reason: a choice that is
-        fixed for an engine is a binary, not a branch, and the nagaya swaps the binaries for a test run.
+      - **The formats of the cache, one cubin for each.** Reason: a choice that is fixed for an engine is a binary,
+        not a branch, and the nagaya swaps the binaries for a test run.
         - `f32` (4 bytes, `FLAG_F32`), `bf16` (2 bytes, `FLAG_BF16`) and `e4m3` (1 byte, a unit scale, no flag).
           PROJ writes a `bf16` value from the `f32` value, nearest even, with no scale.
         - `build.rs` builds 9 cubins. Two are the default cubin, which holds `f32` and `e4m3`, and its profile cubin.
@@ -3147,15 +3147,14 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     none. With none, the call has no MIX_OUT and no HEAD.
   - The pass allocates no device memory in a call: one arena is made at open. The ring cache holds at most 64
     lists, and it drops the least recently used.
-  - A clear zeroes the conv states and the position, and it resets the poison (**Proposed**, Opus 5.5). The planes
-    are never read above the position, so stale rows do not matter. A gate shows the bits of a fresh slot. Reason:
-    a full zero of a slot of 35 GB.
+  - A clear zeroes the conv states and the position, and it resets the poison. The planes are never read
+    above the position, so stale rows do not matter. A gate shows the bits of a fresh slot. Reason: a full zero of
+    a slot of 35 GB.
   - The parts of a slot are the k and v rows of a range and the conv state. The rows are position-major
     `[n][8][128]` in the stored bytes. The conv state is `[3][6656]` `f32`.
   - A sliding state keeps the last `RING_ROWS` (1,536) positions. A write refuses a non-finite value.
-- **The host spec** (milestone 37 step 11, merged in `ded4cfd9`). The three rules below are **Proposed** (Opus 5.5).
-  Reason: one binary for each scenario, a snapshot that holds the stored bits, and limits that declare only what the
-  engine serves.
+- **The host spec** (milestone 37 step 11, merged in `ded4cfd9`). The reasons: one binary for each
+  scenario, a snapshot that holds the stored bits, and limits that declare only what the engine serves.
   - The config key `cache` is `f32`, `bf16` or `e4m3`, with the default `f32`. It selects the cubin of that format.
     The identity numbers hold `cache` and the `cubin_blake3` of that cubin.
   - `feed.block` and `cache` are `ReferenceDefining` bit settings. The dtype of the k and v parts is `F32`, `BF16`
@@ -3171,14 +3170,13 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     it refuses when fewer than 2 GiB stay free, and when the weights take more device bytes than the plan. Real
     weights take 18,886,376,960 bytes against a plan of 18,889,360,896. Each message names the bytes.
   - Reason: on unified memory, other work and the page cache move the free bytes by tens of GB while an open runs.
-    Thus a comparison of the free bytes before and after the load cannot hold. This rule of memory is **Proposed**
-    (Opus 5.5).
+    Thus a comparison of the free bytes before and after the load cannot hold.
   - The limits are the plan of the factory. A refused call changes nothing.
   - A failed launch poisons the slot. The pass, the part writes and `set_n` above 0 are refused until `slot_clear`
     or `set_n(0)`. Reads and other slots work.
   - A sticky CUDA error (700, 701, 702, 715, 719 or 999) marks the engine dead. The call returns the poison, and
-    each later call panics for a planned restart (spec 8.5). **Proposed** (Opus 5.5). Reason: the context of the
-    GPU cannot run again after such an error.
+    each later call panics for a planned restart (spec 8.5). Reason: the context of the GPU cannot
+    run again after such an error.
   - A pass at position 0 starts from conv zeros.
   - The conformance suite passes with 2 slots of 2,048 positions. Four gates do not apply, the same four as for
     LFM3: `seal_only_at_boundaries`, `quantum_same_boundaries`, `segments_exact_bits` and `stage_path_bits`.
