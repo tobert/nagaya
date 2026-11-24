@@ -412,6 +412,22 @@ impl Engine for Inkling2Sm121Engine {
         self.limits.clone()
     }
 
+    /// A block that the model of time puts above `max_quantum_ms` declares a bound (`bound::pass_bound_ms`). A pass that
+    /// the checks refuse runs nothing, so it declares none, and `pass` gives the refusal.
+    fn pass_bound_ms(&self, segments: &[Segment], taps: &[Tap]) -> Result<Option<std::num::NonZeroU32>, String> {
+        if !taps.is_empty() {
+            return Ok(None);
+        }
+        let Ok(block) = self.held.check_pass(segments, self.config.max_block) else {
+            return Ok(None);
+        };
+        Ok(crate::bound::pass_bound_ms(
+            block.pos0,
+            block.tokens.len(),
+            block.cycles,
+        ))
+    }
+
     fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {
         self.guard();
         self.last_error = None;

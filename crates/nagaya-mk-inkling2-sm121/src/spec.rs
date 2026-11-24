@@ -452,8 +452,10 @@ pub fn limits(config: &Config, llm_weights: u64) -> Limits {
         max_logit_rows: MAX_LOGIT_ROWS as u32,
         slots: slot_limits(&config.seqs(), config.extra_runs, config.cache),
         max_quantum_ms: MAX_QUANTUM_MS,
-        // No long pass until the tower of images runs here (milestone 37 step 13).
-        max_long_quantum_ms: None,
+        // A block at depth is a long pass (`bound`). The tower of images adds no stage here until step 13.
+        max_long_quantum_ms: Some(
+            std::num::NonZeroU32::new(crate::bound::MAX_LONG_QUANTUM_MS).expect("the ceiling is not 0"),
+        ),
         memory: MemoryLimits {
             mandatory: vec![
                 term("weights", Tier::Device(0), llm_weights),
@@ -782,7 +784,11 @@ mod tests {
         assert_eq!(lim.inputs, Inputs::Tokens);
         assert!(lim.taps.is_empty());
         assert!(lim.control.is_none());
-        assert!(lim.layer_loops.is_none() && lim.max_long_quantum_ms.is_none());
+        assert!(lim.layer_loops.is_none());
+        assert_eq!(
+            lim.max_long_quantum_ms.map(|b| b.get()),
+            Some(crate::bound::MAX_LONG_QUANTUM_MS)
+        );
         let names: Vec<&str> = lim.memory.mandatory.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, vec!["weights", "kv", "work", "pinned"]);
         // The work holds the block rows, the scratch of the attention and the ring, and no reserve for a tower.

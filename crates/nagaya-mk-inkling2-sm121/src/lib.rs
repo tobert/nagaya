@@ -5,6 +5,7 @@
 //! `held` holds the rules of the held state of a slot: the checks of a pass and of the part calls. None of these needs
 //! a GPU.
 
+pub mod bound;
 pub mod cache;
 #[cfg(feature = "cuda")]
 pub mod engine;
