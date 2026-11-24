@@ -53,3 +53,8 @@ opt-level = 3
 
 [profile.dev.package.nagaya-mk-inkling2-sm121]
 opt-level = 3
+
+# The CUDA interpreter repacks the weights on the host at each load. With no optimization a GPU test binary waits
+# on the CPU while the GPU idles.
+[profile.dev.package.nagaya-mk-cuda]
+opt-level = 3
