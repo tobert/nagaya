@@ -87,7 +87,7 @@ fn open_refuses_a_folder_that_holds_no_model_before_it_touches_the_gpu() {
         toml::Value::String(dir.path().display().to_string()),
     );
     table.insert("slots".to_owned(), toml::Value::Integer(1));
-    let error = match inkling2_sm121::Inkling2Sm121Factory.open(&table, &one_device()) {
+    let error = match inkling2_sm121::Inkling2Sm121Factory::default().open(&table, &one_device()) {
         Ok(_) => panic!("the open must refuse a folder with no model"),
         Err(error) => error.message,
     };
@@ -160,4 +160,28 @@ fn real_model_plans_512k_slot_through_factory() {
     assert!(lim.memory.mandatory.iter().all(|term| term.name != "vision"));
     assert_eq!(lim.slots.len(), 1);
     assert_eq!((lim.slots[0].tokens, lim.slots[0].bytes), (524_288, 34_866_888_704));
+}
+
+#[test]
+fn an_identity_that_differs_from_its_description_is_a_refusal_that_names_the_fix() {
+    let described = FakeAlways::new()
+        .with_family(nagaya_mk_inkling2_sm121::spec::FAMILY)
+        .identity();
+    assert_eq!(inkling2_sm121::identity_mismatch(&described, &described.clone()), None);
+    for change in ["digest", "number", "plan_table"] {
+        let mut opened = described.clone();
+        match change {
+            "digest" => opened.checkpoint_digest.push('x'),
+            "number" => {
+                opened.numbers.insert("cache".to_owned(), "e4m3".to_owned());
+            }
+            _ => opened.plan_table.push('x'),
+        }
+        let message = inkling2_sm121::identity_mismatch(&described, &opened)
+            .unwrap_or_else(|| panic!("a change of the {change} must be a mismatch"));
+        assert!(
+            message.contains(KIND) && message.contains("restart the process"),
+            "{message}"
+        );
+    }
 }

@@ -147,7 +147,7 @@ impl Drop for Inkling2Sm121Engine {
 }
 
 /// The identity of an engine of `config` on a device with the driver `driver` and `sms` multiprocessors (spec 12.1).
-fn identity_of(
+pub(crate) fn identity_of(
     model: Model,
     checkpoint_digest: String,
     facts: TextFacts,
@@ -173,7 +173,7 @@ fn identity_of(
 }
 
 /// The bytes of device memory that `limits` declares: the weights, the slots and the work.
-fn device_bytes(limits: &Limits) -> u64 {
+pub(crate) fn device_bytes(limits: &Limits) -> u64 {
     limits
         .memory
         .mandatory
