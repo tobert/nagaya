@@ -3186,9 +3186,10 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     - A memo in the process keeps each digest by its key. One process reads a checkpoint once.
     - A cache file keeps the digest across starts. It lives in `$XDG_CACHE_HOME/nagaya/digests/`, or in
       `~/.cache/nagaya/digests/` when the variable is not set. Each checkpoint has one small file.
-    - The key holds the canonical path, `st_dev`, `st_ino`, the size, `mtime` and `ctime` in nanoseconds of the weights
-      file, the BLAKE3 of the text of `config.json`, and the version of the digest key. A user tool cannot set
-      `ctime`, and any write changes it. So a changed file misses the cache.
+    - The key holds these facts. The weights file gives the canonical path, `st_dev`, `st_ino`, the size, and `mtime`
+      and `ctime` in nanoseconds. The key also holds the BLAKE3 of the text of `config.json` and the version of the
+      digest key.
+    - A user tool cannot set `ctime`, and any write changes it. So a changed file misses the cache.
     - A missing file, a file that does not parse and a key that differs are each a miss. A miss computes the digest
       and writes the file again, through a temporary file and a rename.
     - The engine takes the key before it reads, and it takes it again after. When the two differ, it does not store
