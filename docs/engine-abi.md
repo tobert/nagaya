@@ -2154,6 +2154,1108 @@ the oracle have one layout.
 - **The family.** The council sends latent rows only when the family gives a latent record (spec 11.11). The family
   of Inkling 2 gives none yet, so the council refuses `latent` and `soft` for Inkling 2.
 
+### The GB10 Inkling 2 binding (`mk-inkling2-sm121`)
+
+The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop research model on one NVIDIA GB10
+(`sm_121`) GPU (milestone 37). It uses the shared persistent interpreter of `nagaya-mk-cuda`. Each rule below is
+**Proposed** (Claude Sonnet 5.5, 2026-11-22), except the rule of the trunk, which the owner decided on 2026-11-22.
+
+- **The trunk is `f32`.** The trunk of this engine is `f32`, and the quantizers take `f32` rows. vLLM runs the trunk
+  in `bf16` and quantizes `bf16` rows. Decided 2026-11-22. A `bf16` trunk is a later choice.
+- **The source of the activation rules.** The checkpoint requires the quantization of the activations
+  (`required_activation_quantization` in `hf_quant_config.json`). The rules below are those of the Inkling 2 path of
+  vLLM at commit `186882d9e8` (Apache-2.0): `vllm/models/inkling2/nvidia/ops/nvfp4.py`, `mxfp8.py`, `moe.py` and
+  `moe_sm120.py`. transformers at `046bdb8cc2` expands the experts to `bf16` and quantizes no activation. It is not
+  a source.
+- **The test of the rules.** The fixture `tests/fixtures/quant_kernels.safetensors` holds the output of the shipped
+  kernels for 154 rows. `tools/inkling2_quant_fixture.py` writes it. `quant.rs` gives the same bytes for each row.
+  Thus the fixture is the test of the rules below.
+- **NVFP4 activations.** Experts in layers 0 to 19 quantize each row per token (`amax_type: per_token`), into blocks
+  of 16 values with `e4m3` scales (`scale_selection_rule: fouroversix_mae`). Each step is an `f32` operation:
+  - The row amax is the largest absolute value of the row. A value that is not finite is an error.
+  - The encoder is `min(1536 / amax, FLT_MAX)`. The decoder is `1 / encoder`.
+  - The outer scale is `amax × (1/1536 rounded to f32)`. The number 1536 is 6 × 256. With 256 in place of 448, a
+    block that holds the row amax can still take the scale of 4.
+  - A block has two candidate scales. The first is `block_amax × (encoder × (1/6 rounded to f32))`. The second is
+    `block_amax × (encoder × 0.25)`. Cap each at 448, then round it to `e4m3` nearest even.
+  - The inverse of a candidate is `min(1 / (scale × decoder), FLT_MAX)`. Each value is `v × inverse`, rounded to
+    `e2m1` nearest even, and saturated at 6.0.
+  - The reconstruction of a value is `((e2m1 × scale) × outer)`. Keep this order.
+  - The error of a candidate is the sum of the 16 values of `|reconstruction − v|`. The sum is a pairwise tree:
+    adjacent pairs first, then pairs of pairs.
+  - The block takes the scale of 4 only when its error is less than the error of the scale of 6. A tie keeps 6.
+  - A zero row gives zero codes, zero scales and an amax of 0. An even element goes in the low nibble.
+- **MXFP8 activations.** Experts in layers 20 to 23 quantize each row into blocks of 32 values with `ue8m0` scales.
+  - The raw scale is `block_amax × (1/448 rounded to f32)`. The scale byte is the exponent bits of the raw scale,
+    rounded up: add the mantissa mask, and keep the exponent field. A nonzero mantissa carries into the exponent.
+  - A raw scale of `2^-127` or less gives the byte 0. The byte stops at 254. The byte 255 is an error.
+  - The inverse is the exact reciprocal of the scale, and `2^127` for the byte 0.
+  - Each value is `v × inverse`, clamped to ±448, then rounded to `e4m3` nearest even.
+- **Flips of discrete choices.** Measured with the quantized reference (`dc574559`, `7015d894`). Two choices of a
+  pass change when a sum changes in its last bit, so two orders of the same sums can give other logits.
+  - A code of the quantizer flips. On Inkling 2 Mini, 13 to 18 rows of a decode of 8 tokens flipped between the
+    cache run and the run with no cache. On a tiny model, one flip moved a logit by up to 8.
+  - The slot order of the router changes. transformers takes the top 8 with `sorted=False`, so two experts with
+    equal scores to the last bits swap slots.
+  - The reference replays the route and the codes of the cache run in the run with no cache. Then the gap is about
+    2e-5 on both models, and the limit of the check is 1e-3.
+  - **The rules of the engine.** **Proposed** (Claude Opus 5.5, 2026-11-22). The slot order of a token is the
+    ascending order of the expert ids. A tie of scores at the eighth place picks the lower id. Thus the slots do not
+    depend on the order of a sum. The codes of a row depend on its sums, so rule 4 of milestone 37 keeps them
+    consistent inside the engine.
+- **The rows that the experts quantize.** The GB10 path of vLLM quantizes two kinds of rows (`ops/moe.py`,
+  `ops/activation.py` and `moe.py` of `vllm/models/inkling2/nvidia/`):
+  - The input of gate and up: one row of 2,304 values for each token. All experts of the token share it. The router
+    reads the row before its quantization.
+  - The input of down: one row of 1,152 values for each token and expert slot, with its own amax. The row is the
+    gated product times the routing weight. Thus the routing weight comes before the quantization and the down
+    projection, not after the down projection as in transformers.
+- **The expert epilogue of NVFP4.** The dot product of an activation row and a weight row follows the GEMM of vLLM:
+  - Sum each block of 16 products of the codes. Multiply the block sum by the product of the two block scales.
+    Add it to the total in `f32`.
+  - Multiply the total by `expert_scale` (1.0 on `sm_120` and `sm_121`).
+  - Multiply the result by `(x_amax × w_amax) × (1 / (1536 × w_denominator))`. The checkpoint gives `w_amax` and
+    `w_denominator` (`weight_scale_format: amax_denominator`).
+- **The expert epilogue of MXFP8.** The GB10 path of vLLM (`moe_sm120.py`) does not use a block-scaled MMA for
+  MXFP8. It expands the codes of both sides to `bf16` with their scales, and it sums the products in `f32`. Then
+  it multiplies by `expert_scale` and rounds the result to `bf16`. The host oracle sums in `f32` in ascending k and
+  does not round the result to `bf16`, because the trunk is `f32`.
+  - The expansion to `bf16` is exact for a scale byte of 3 or more. An `e4m3` code has 4 significant bits, and its
+    lowest bit is `2^-9` or more. Thus each product of a code and its scale is a `bf16` value.
+  - A scale byte of 0 to 2 needs a block amax of `448 × 2^-125` or less, about `2^-116`. Such a block can lose its
+    lowest bits in `bf16`.
+- **The order of the sums.** vLLM does not define the order of the sums inside one MMA. The host oracle defines its
+  own order: block by block, in ascending k. Thus a card gate compares a dot product with a tolerance, not bits.
+  The quantizers give bits, and the fixture tests them.
+- **Packed weights.** Expert weights stay packed in unified memory in their checkpoint formats (NVFP4 in layers 0
+  to 19, MXFP8 in layers 20 to 23).
+- **The facts of the GB10.** The probe test `crates/nagaya-mk-cuda/tests/cuda_probe.rs` measured these facts
+  (milestone 37 step 7, substep 1). The device is an NVIDIA GB10, compute capability 12.1, CUDA driver 13.2. These
+  facts are measured, not **Proposed**. Rates use 1 GB = 10^9 bytes. Times come from `%globaltimer`, and the host
+  wall time agrees.
+
+  | Fact | Value | Unit |
+  |---|---|---|
+  | Streaming multiprocessors (SMs) | 48 | SMs |
+  | Threads for each block, for each SM | 1,024, 1,536 | threads |
+  | Blocks for each SM | 24 | blocks |
+  | Registers for each block, for each SM | 65,536 | registers |
+  | Shared memory for each block: default, opt-in | 49,152, 101,376 | B |
+  | Shared memory for each SM, reserved for each block | 102,400, 1,024 | B |
+  | Largest dynamic shared memory of the interpreter | 101,248 | B |
+  | L2 cache, largest persisting part | 25,165,824 (24 MiB), 18,874,368 | B |
+  | Cooperative launch, cluster launch, integrated | 1, 1, 1 | flag |
+  | Core clock, memory clock, bus | 2,418, 8,533, 256 | MHz, MHz, bit |
+  | Memory bandwidth by spec (8.533 GHz x 256 bit / 8) | 273 | GB/s |
+  | Read bandwidth, direct `ld.global.v4`, 1 GiB | 251 | GB/s |
+  | Read bandwidth, `ld.global.nc.L1::no_allocate.v4`, 256 threads | 254 | GB/s |
+  | Read bandwidth, best: `cp.async.bulk` to shared, 2 stages of 16 KB | 257.3 | GB/s |
+  | Read bandwidth with a deep bulk L2 prefetch (2 or 4 items ahead) | down to 200 | GB/s |
+  | L2 re-read, 1 to 16 MiB | 1.9 to 2.2 | TB/s |
+  | L2 re-read, 32 MiB, 64 MiB | 300, 230 | GB/s |
+  | Task boundary of the old strict chain, 1,000 no-op tasks | 640 to 656 | ns |
+  | Task boundary of the current interpreter, 1,000 no-op tasks | 744 to 774 | ns |
+  | Part of a boundary that a block waits at the scoreboard | about 257 | ns |
+  | `%globaltimer`: smallest step, cost of a read | 32, about 15 | ns |
+  | MMA rate for each SM, for each kind | one MMA each 1.55 | ns |
+  | MMA rate of the GPU: `bf16`, NVFP4, MXFP8 | 127, 509, 254 | TFLOP/s |
+  | Probe kernel registers, spill | 56, 0 | registers, B |
+  | Interpreter registers at step 7, stack, local memory, spill | 114, 0, 0, 0 | registers, B, B, B |
+
+  - **The read peak.** Every variant of the read probe gives 250 to 257 GB/s, which is 92 to 94% of 273 GB/s.
+    Budgets use about 252 GB/s. Direct loads reach the peak with no prefetch and no shared memory.
+  - **The L2 knee.** The re-read rate falls between 16 and 32 MiB, which fits the 24 MiB of L2. L2 gives about 8
+    times the rate of DRAM.
+  - **The timer.** Spans under about 100 ns need the mean over many tasks.
+  - **The MMA forms.** All three assemble for `sm_121a` with `-cubin -arch=sm_121a`. The flag `-arch=sm_121a`
+    without `-cubin` fails in `ptxas`.
+
+    - `bf16`: `mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32` gives `HMMA.16816.F32.BF16`.
+    - NVFP4: `m16n8k64` with `kind::mxf4nvf4.block_scale.scale_vec::4X`, `e2m1` and `ue4m3` gives
+      `OMMA.SF.16864.F32.E2M1.E2M1.UE4M3.4X`.
+    - MXFP8: `m16n8k32` with `kind::mxf8f6f4.block_scale.scale_vec::1X`, `e4m3` and `ue8m0` gives
+      `QMMA.SF.16832.F32.E4M3.E4M3.E8`.
+
+  - **The bulk forms.** `cp.async.bulk`, `cp.async.bulk.prefetch.L2`, `mbarrier`, `prefetch.global.L2` and
+    `ld.global.nc.L1::no_allocate` all assemble for `sm_121a`. Their SASS is `UBLKCP`, `UBLKPF`, `SYNCS`,
+    `CCTL.E.PF2` and `LDG.E.NA.128.CONSTANT`.
+  - **The exactness.** On inputs whose sums are exact in `f32`, all three MMA kinds match an `f64` host sum bit for
+    bit. On wide ranges they do not: an MMA does not round as a sequence of `f32` adds. The largest error, as a
+    share of the sum of the absolute terms, is 1.24e-7 for `bf16`, 7.6e-8 for NVFP4 and 1.42e-7 for MXFP8. Each is
+    under 64 `f32` ulps, the bound of the test.
+  - **The register budget.** A block of 288 threads has 9 warps. An SM has 4 partitions of 16,384 registers, and
+    9 warps put 3 warps on one partition. Thus a thread has at most 168 registers. The figure 224 (65,536 divided
+    by 288) is wrong. The kernel takes `__launch_bounds__(288, 1)` (`kernels/megakernel.cu:517`). With the ops of
+    wave A, the cubins use 168 registers and spill 0 bytes.
+  - **The rounding of the `bf16` MMA.** An `m16n8k16` MMA does not add in `f32`. The matmul lane fitted a host
+    model on 25,600 results of random tiles and then on a whole matmul of real weights. The model gives the bits
+    of the card (`tests/cuda_matmul.rs`, `mma`):
+    1. The reference exponent of a product is the sum of the exponent fields of its two factors. The accumulator
+       has its own. Let `top` be the largest reference exponent.
+    2. Cut each operand toward zero to a multiple of 2^(`top` - 25). The cut operands add exactly.
+    3. Cut the sum toward zero to the 24 bits of an `f32`.
+  - **The block-scaled MMA has no such model.** Nobody fitted the rounding of the NVFP4 and MXFP8 MMAs. A card
+    gate compares such a sum with the host dot product by a tolerance. A pinned BLAKE3 hash of the output ties the
+    order of the sums of the expert ops to the engine identity (see "The ops of wave A").
+  - **The fragment layout.** Let `g` be the lane divided by 4, and `t` the lane modulo 4.
+    - A word of operand A: `a0` is word `t` of row `g`. `a1` is word `t` of row `g + 8`. `a2` is word `t + 4` of
+      row `g`. `a3` is word `t + 4` of row `g + 8`.
+    - A word of operand B: `b0` is word `t` of column `g`. `b1` is word `t + 4` of column `g`.
+    - A word holds consecutive K values: 2 `bf16`, 8 `e2m1` (low nibble first) or 4 `e4m3`.
+    - The result: `d0` and `d1` are row `g`, columns `2t` and `2t + 1`. `d2` and `d3` are row `g + 8`.
+    - The scales of A: lane `4g` gives row `g`, and lane `4g + 1` gives row `g + 8`. The scale of B: lane `4n`
+      gives column `n`.
+    - An NVFP4 scale register holds 4 `ue4m3` bytes, one for each 16 values of K. An MXFP8 scale is byte 0, one
+      `ue8m0`.
+    - An A tile is 512 B for `bf16` and for NVFP4: one 16-byte vector for each lane for each MMA.
+  - **The MMA rate.** 8 warps with 8 chains each saturate the tensor pipes. The tensor cores could consume about
+    15.9 TB/s of weights, about 60 times the memory bandwidth. Thus the three `bf16` terms of design rule 9 cost no
+    time in a decode step.
+  - **The clusters.** The attribute of cluster launch is 1, so clusters exist. The design does not need them, and
+    no probe launched one.
+
+- **The CUDA interpreter.** The persistent interpreter of `nagaya-mk-cuda` is milestone 37 step 7. Substeps 2 to 6
+  are built and merged (`f4fc865d`, `d5e5d493`). Each rule below says if the code holds it. A rule marked
+  **Proposed** (Claude Opus 5.5, 2026-11-22) is not in the code yet. These are the matmul core, the fusions and
+  the members of the engine identity. The facts of the GB10 above replace each hardware guess that this
+  text had before the probes ran.
+
+  **The core idea.** Two facts shape the design:
+  - The bits of a sum depend only on the cut of an op into work items. The cut comes from the shapes. Thus the grid
+    size and the assignment of items to blocks are free, and a gate proves that they change no bit.
+  - A weight never depends on the task before it. Thus a block can fetch its next weights before its inputs are
+    ready.
+
+  **Dependencies.** Built in substeps 2 to 4 (`70e88a5b`, `789a5754`, `31dfb91f`) and changed in `8c0cc25d`.
+  - Each task has a counter, which is its signal. Its index in the ring is the index of the counter.
+  - A block runs all its items of a task and then runs `__syncthreads`. Thread 0 then adds the count of the
+    block's items to the counter with one `red.release.gpu.global.add.u32`. A block with no item of the task adds
+    nothing.
+  - The code has no separate fence. A release is cumulative, and the barrier orders the writes of the other
+    threads before the add. The pattern is the one of the barrier of CUTLASS. A fence and an add after each item
+    cost 978 ns for each boundary.
+  - A task waits on at most two pairs of an event and a target. The target is the item count of the producer. A
+    block with no item of the task skips the waits. Two waits cover a norm output and a residual, the usual inputs.
+  - A task with 0 items is a JOIN task. Block 0 signals it one time, so a wait on a JOIN has the target 1.
+  - The host builder is `src/graph.rs`. Each task declares the buffers that it reads and writes. The builder finds
+    read-after-write, write-after-read and write-after-write hazards. Two writers of one range need an order, so
+    the write-after-write case is a hazard too.
+  - The builder removes each wait that other waits imply. It scans back from the nearest producer. This is sound
+    because a block waits before its first item. A task can also name an explicit `after` link.
+  - A task that needs a third wait gets a JOIN task before it. The JOIN waits on two events. Under 1% of tasks
+    need one.
+  - The builder panics on a wait that points forward in the ring. A grid that walks the ring in order cannot
+    deadlock then. This needs every block resident (the cooperative launch).
+  - An op that reads `blockIdx` (a probe or a self-test) is marked `per_block`, and its item count is the grid size.
+  - The kernel has one path. The strict chain exists only as the helper `ring::chained`, for timing probes.
+  - The per-run scratch (`q`, `attn`, `act`) has two copies that alternate. This removes the write-after-read waits.
+    This rule is **Proposed** (Claude Opus 5.5, 2026-11-22). The engine does not use it yet.
+  - A wait changes the timing only. The bits come from the cut and from the merge order.
+  - The gate of substep 3 ran three chains of copies, two of them behind slow fills. 15 of the 16 blocks of the
+    third chain left their wait about 1.2 ms before the slow fill ended. Each result was exact, and each counter
+    equaled its item count.
+  - The stress test `tests/cuda_stress.rs` runs a chain of 300 copy stages. Each item reads words that other
+    blocks wrote. It ran 10,000 times at each grid size of 48, 24 and 7, and each run was exact.
+  - The limit of the stress test: a relaxed release passed 30,000 runs. This card does not show that order.
+    The test is not a proof of it.
+  - A boundary costs 744 to 774 ns by the profile period, and about 908 to 916 ns by the host wall
+    time. The test ran 1,000 no-op tasks in a strict chain. About 400 ns of it is the release (SASS
+    `MEMBAR.ALL.GPU`, then the add). The next gain is there. The old strict chain measured 640 to 656 ns. The
+    projections `q`, `k`, `v` and gate read one norm output, so they run back to back with no
+    barrier.
+
+  **Work items and assignment.**
+  - A work item is a column tile and a K slice, and for a prefill a row tile too. A column tile is 16 output
+    columns. The K slice `Kt` comes from the shape: 768 for K of 2,304 or 3,072, and 1,152 for the expert down op.
+    A `bf16` item is 16 x 768 x 2 bytes, 24.6 KB. The op `q` (N 3,072, K 2,304) has 576 items: 12 on each of 48
+    blocks.
+  - Block `b` of `G` runs the item `b` first. A task with at most `G` items gives each block that one item.
+  - **Proposed** (Claude Opus 5.5, 2026-11-23), built in `122c2fa7`: a task with more than `G` items gives the later
+    items by claim. The static order `b`, `b + G`, `b + 2G` made long tails, because each block runs at a random
+    speed. The tails took 9.9 ms of a decode step of 31.1 ms (measured in `73ee3a82`).
+    - The scoreboard holds one claim word for each task, after the events. A launch zeroes the events and the claim
+      words together, so a ring that runs again starts at claim 0.
+    - A claim is an integer add of 1 to the claim word. Claim `k` gives the item `G + k`. A claim at or beyond the
+      count of items gives an item that does nothing. A claim is not a sum, so design rule 8 allows it.
+    - A block holds its next item in shared memory, and it claims the item after that while it runs the current one.
+      The ops prefetch the weights of the held item, so the prefetch has the exact target.
+    - A block adds the count of its items to the event of the task, once, after its last item.
+    - The bits come from the item, not from the block that runs it. The gates at `G` of 48, 24, 7 and 1 hold.
+    - A decode step at 1 row went from 31.1 ms to 26.2 ms in the kernel (`a3ca9153`). End to end it takes 26.9 to
+      27.9 ms, 35.9 to 37.2 tokens each second. The tails fell from 9.9 to 5.1 ms. A boundary still costs 832 ns.
+    - A test ran each item in any block, the first item too: each item ran once, and every gate kept its bits.
+    - UP and DOWN have one item for each block, so a claim cannot help them. Their tails are 2.85 ms of the step.
+  - Built in `31dfb91f`. `OP_COPY` copies `items` items of `n` floats each. `Ring::run_grid(G)` takes `G` from 1
+    to the SM count. Five buffers were bit-identical at `G` of 48, 24, 7 and 1, and equal to the host copy.
+  - The expert ops of a prefill are the exception. Their item count comes from the plan on the device. A ticket may
+    balance them better. A ticket is not a sum, so design rule 8 allows it. The spread column of the profile decides.
+  - `Kt`, the tile sizes and the merge order never depend on the count of rows (design rule 4). Each token column
+    of an MMA is independent.
+
+  **Merge groups.** Built in `b823f850`. Some epilogues join several items. These are four cases:
+  - the merge of K slices;
+  - the L2 clip of a head over 8 tiles;
+  - the amax of a row of an expert;
+  - the sum of 8 expert slots.
+
+  The code holds the rule for the first case, through `OP_REDUCE_PROBE`. The rule is the same for each case:
+  - Each item sums its slice into a partial. It uses 256 lanes and a halving tree. It writes the partial to a
+    fixed scratch slot.
+  - Then it adds 1 to the counter of the group, with `atom.acq_rel.gpu`. The add is for each item, not for each
+    block. The items of a group are not consecutive in the stride of a block.
+  - The item whose add returns the slice count minus 1 sums the partials in index order. It then runs the
+    epilogue.
+  - The merging block can change from run to run. The result cannot, because the order of the sum is fixed.
+  - The host zeroes the merge counters before each run, with `Ring::zero_device`. This is an open point. A real
+    engine needs the ring to zero them at the launch. **Proposed** (Claude Sonnet 5.5, 2026-11-22): a task of the
+    ring zeroes the counters that the next merge groups use.
+  - The gate is `tests/cuda_merge.rs`. Groups of 11, 16 and 66 items ran 20 times at `G` of 48, 24, 7, 1 and 20.
+    Each result equaled the host sum bit for bit. The test fails on each of these mutations: the reverse order,
+    a target off by one in either direction, and a relaxed add.
+
+  **Prefetch** (design rule 6). Built in `8816080b`.
+  - The load repacks the weights so that the bytes of each item are one span at `b + item * item_bytes`. This
+    is **Proposed** (Claude Opus 5.5, 2026-11-22). The engine does not repack yet.
+  - A block of the producer shape has 288 threads. Warp 0 is the producer. It copies the next descriptor into one
+    of two slots in shared memory. It prefetches the first item of its block with a bulk L2 prefetch, one item
+    ahead. Then it waits at the scoreboard.
+  - Each slot has a full barrier and an empty barrier, which are named barriers. The consumers wait on the full
+    barrier of the slot, run the items and arrive on the empty barrier. The producer runs up to two tasks ahead.
+  - The kernel reserves the 16 named barriers of the SM. Barrier 0 is `__syncthreads`, and barrier 1 is for the
+    consumers. The slots use barriers 2 to 5.
+  - All lanes of the producer warp poll the same word. A poll by lane 0 alone cost 170 ns at the reconvergence.
+  - A read of `%globaltimer` after `bar.sync` can run before the barrier ends. The profile timer needs a value
+    that the code loads after the barrier.
+  - The ops use `worker_id()`, `worker_count()` and `worker_sync()`. They run in the producer shape and in the old
+    flat shape (any width other than 288). A sum has 256 lanes in both.
+  - `Ring::run` launches the producer shape with the most dynamic shared memory. `cuFuncSetAttribute` sets it at
+    the launch.
+  - The read rate in the producer shape is 244 to 246 GB/s, about 97% of the measured peak.
+  - A consumer reads with `ld.global.nc.L1::no_allocate.v4`. The prefill ring of `cp.async.bulk` and the
+    `mbarrier` objects are **Proposed** (Claude Opus 5.5, 2026-11-22), and the code does not hold them yet.
+  - An expert op prefetches only after the wait on the plan, because the plan names its experts.
+  - A bandwidth of 252 GB/s and a latency of about 600 ns give about 150 KB in flight. That is about 3.1 KB for each
+    SM. An item is 24 KB, so one item ahead is enough.
+  - The read probe shows that direct loads reach the peak with no prefetch and no shared memory (251 to 254 GB/s).
+    Bulk copies into shared memory reach 257.3 GB/s at best. Thus the prefetch hides the wait at a task boundary,
+    not the stream of one op.
+  - A deep bulk L2 prefetch, 2 or 4 items ahead, loses bandwidth: it fell to 200 GB/s at 256 and 512 threads. Do not
+    default to one. Prefetch one item ahead.
+  - The probe shows these PTX forms in `cuobjdump -sass` for `sm_121a` (see "The facts of the GB10"). The device
+    attribute of cluster launch is 1, but the design uses no cluster and no multicast.
+
+  **The descriptor** has 128 bytes, aligned to 128, inline in the ring. Built in `70e88a5b`. `build.rs` writes each
+  offset into `mk_protocol.h`. The `.cu` file checks each with `static_assert`, and a Rust `offset_of!` test checks
+  each. An argument block would add one dependent load for each
+  task. About 600 tasks take about 77 KB.
+
+  | Offset | Field |
+  |---|---|
+  | 0 | `u16` opcode, `u16` flags (the kinds of prologue and epilogue) |
+  | 4 | `u32` items (`u32::MAX` means read the count from `d`, the plan) |
+  | 8 | `u32` wait0_event, `u32` wait0_target |
+  | 16 | `u32` wait1_event, `u32` wait1_target |
+  | 24 | `u32` signal, `u32` rows |
+  | 32 | `u64` a (input rows), `u64` b (repacked weight), `u64` c (output) |
+  | 56 | `u64` d (norm weight, scales or plan), `u64` e (residual, gate or convolution taps) |
+  | 72 | `u64` f (partial scratch and merge counters) |
+  | 80 | `u32` n, `u32` k, `u32` kt, `u32` group_items |
+  | 96 | `u32` item_bytes, `u32` scale_bytes, `u32` pos0, `u32` layer |
+  | 112 | `f32` p0 to p3 (epsilon, clip bound, log scale, factor) |
+
+  **Fusions** (design rule 7). A fusion removes a task boundary, and a boundary costs about 0.75 microsecond (measured).
+  - The norm runs in the prologue. Each item computes the rms of its 16-row tile in a fixed tree. The tree is the
+    same in every block. The norm weight is in `d`.
+  - The clip, the gate and the residual run in the epilogue, through `e` and the merge group.
+  - The router, the plan and the gather are one op. A merge group of 8 router tiles ends in one merger. It writes
+    the plan and gathers the rows.
+  - The expert up op has the gate and up columns interleaved in the repack. Its epilogue computes SiLU of the gate
+    times the up value. The merge group of the expert row quantizes it to NVFP4 or MXFP8.
+  - The expert down op has the slot merge group. It sums the 8 slots in top-k order, and it adds the convolution.
+  - The projections that read one input join into one repacked matrix at load. This changes no value.
+  - The result is about 10 to 12 tasks for each run, and about 550 tasks for a decode step. The B70 engine has
+    1,635.
+
+  **Blocks, threads and shared memory.** The producer shape of `8816080b` holds the first four rules.
+  - One block runs on each SM, with 288 threads. Warp 0 is the producer. Warps 1 to 8 are consumers. Thus each
+    thread has 168 registers at most (see "The register budget").
+  - The interpreter used 114 registers at step 7, and 168 with the ops of wave A. It uses no stack and no local
+    memory. It spills 0 bytes. `build.rs` fails on a
+    spill, and on a `ptxas` report with no spill line. The parser is `src/ptxas.rs`. Only the empty cubin of
+    `tools/nvcc-stub` skips the check.
+  - The host sets `MAX_DYNAMIC_SHARED_SIZE_BYTES` and gives the size at the launch. The limit is 101,248 B: the
+    opt-in size of 101,376 B (`MAX_SHARED_MEMORY_PER_BLOCK_OPTIN`) less 128 B of static shared memory. The driver
+    refuses 101,249 B.
+  - The producer warp owns the descriptor fetch, the waits, the prefetches and the two descriptor slots. The
+    consumers wait on the full barrier, and they publish the signal.
+  - **Proposed** (Claude Opus 5.5, 2026-11-22): a block has 96 KB (98,304 B) of dynamic shared memory. It holds 4
+    weight stages of 16 KB and a 24 KB activation tile in three `bf16` terms, in fragment order. It also holds 8
+    KB for partials, the `mbarrier` objects and the next descriptor. The plan fits, with about 5 KB to spare.
+  - Spill gate: each op must fit 168 registers. The build fails unless `-Xptxas -v` shows 0 bytes of spill.
+
+  **The matmul core.**
+  - The weights are MMA operand A, and the tokens are operand B (n8). An A fragment of `m16n8k16` `bf16`, or of
+    `m16n8k64` `e2m1`, is one 16-byte vector for each lane. Thus design rule 2 holds with one `v4` load for each
+    lane for each MMA.
+  - A tile of 16 rows is two n8 MMAs that share one A fragment. With 8 rows or fewer, skip the second MMA. The
+    columns are independent, so the bits stay the same.
+  - Design rule 9 gives three terms: `hi = bf16(x)`, `mid = bf16(x - hi)` and `lo = bf16(x - hi - mid)`. Each
+    k step accumulates them into one `f32` accumulator in the order `lo`, `mid`, `hi`. The small terms go first so
+    that they do not vanish.
+  - The sum order of an item is fixed. Each warp runs 6 sequential k16 steps (768 divided by 8 warps). A fixed
+    pairwise tree joins the 8 warps in shared memory. The merge group joins the K slices in index order. A row with
+    K of 2,304 and N of 3,072 has 3 slices.
+  - The NVFP4 experts use `mma.sync.m16n8k64.kind::mxf4nvf4.block_scale.scale_vec::4X` with `ue4m3` scales. The
+    MXFP8 experts use `m16n8k32.kind::mxf8f6f4.block_scale.scale_vec::1X` with `ue8m0` scales. The repack puts the
+    scales next to each item, in the order of the scale fragment. The epilogue applies the row scale and the expert
+    factor.
+  - A decode has 36 items of 64 columns for each of 8 experts: 288 items for the up op, and 288 for the down op.
+  - In a prefill, one weight item stays in shared memory while the consumers loop over the row tiles. The bits are
+    those of a decode.
+  - The probe settled three risks. The layouts of the operands and scales are in "The facts of the GB10". The
+    accumulation of an MMA does not round as `f32` adds, so a card gate of a dot product uses a tolerance. The
+    tensor cores run at 127 TFLOP/s in `bf16`, so the three terms cost no time in a decode step. A prefill may
+    still become compute bound, and a prefill gate measures it.
+
+  **The profile and the engine identity.**
+  - The profile records for each task and block: `t_desc`, `t_wait_done`, `t_first_item` and `t_end` from
+    `%globaltimer`. It records for each item: the block, `t0`, `t1` and whether it merged.
+  - The host derives the bytes from `item_bytes` and `scale_bytes`. Each op row then shows its GB/s and its share
+    of the measured peak. `%globaltimer` steps by 32 ns and a read costs about 15 ns. Thus it suits
+    spans of 100 ns or more. For a shorter span, take the mean over many tasks, or add `clock64` inside one SM.
+  - The engine identity holds these members:
+    - the descriptor version, the column tile and the table of `Kt`. `KT_TABLE` in `repack.rs` gives 768 for K of
+      2,304 and 3,072, and 1,152 for K of 1,152;
+    - the warp count of the K split, and the reduction tree;
+    - the cut of K in the expert ops: the groups 0 to `(K / 128 + 1) / 2 - 1` are the first half;
+    - the order of the terms, and the split rule;
+    - the MMA shapes, and the size of an attention chunk;
+    - the order of each merge group.
+  - The engine identity does not hold the grid size or the assignment. A gate proves that they change no bit.
+  - Three risks remain. The acquire of the producer must order before the reads of the consumers. The stress test
+    of 10^4 runs for each grid size checks it, but it is not a proof (see "Dependencies").
+  - One large switch over many ops can press the instruction cache.
+  - LPDDR5x gives about 252 GB/s, not 273 GB/s, so budgets use the measured peak.
+  - **The ops of wave A** (milestone 37 step 9). Wave A is built and merged: the dense matmul (`d7390c03`), then the
+    quantizers and the expert ops (`9a1019d9`). Each op has a card gate with the model required.
+    - **The dense matmul** `OP_MATMUL_BF16` (opcode 40, `kernels/matmul_bf16.cuh`). It computes
+      `y[r, n] = sum_k x[r, k] * W[n, k]` for 1 to 16 rows. The rows are `f32`, and `W` is `bf16`.
+      - The repack (`repack.rs`) writes each work item as one span of `16 * Kt * 2` bytes. An item is a tile of
+        16 output columns and a K slice. Item `i` is the tile `i / slices` and the slice `i % slices`. A step of 16
+        K values takes 512 bytes, one 16-byte vector for each lane: the A fragment of the lane. The repack moves
+        values and changes none.
+      - `KT_TABLE` gives the slice for each K: 768 for K of 2,304 and 3,072, and 1,152 for K of 1,152. A K that is
+        not in the table is an error, because the slice is part of the order of a sum.
+      - Each of the 8 consumer warps runs its `Kt / 128` steps in order. Each step adds three terms of `x` into one
+        `f32` accumulator, in the order `lo`, `mid`, `hi`. A fixed tree joins the 8 warps: `((w0 + w1) + (w2 + w3))
+        + ((w4 + w5) + (w6 + w7))`. The merge group joins the slices in index order.
+      - A pass of 8 rows or fewer runs one `n8` MMA. A pass of 9 to 16 rows runs two that share the A fragment.
+        The columns are independent, so the bits of a row do not depend on the count of rows or on its place.
+      - The scratch holds one merge counter for each column tile, then one partial of `rows * 16` floats for each
+        item. The counters come first, so that a launch with other rows finds them at 0. The merging item sets
+        the counter of its group back to 0. Thus a ring runs again with no reset.
+      - Weights load with `ld.global.nc.L1::no_allocate.v4`. The next item of the block goes to L2 while an item
+        runs.
+    - **The quantizers** `OP_QUANT_NVFP4` and `OP_QUANT_MXFP8` (opcodes 51 and 52, `kernels/quant.cuh`). They do
+      the `f32` steps of `quant.rs` in the same order. A half warp takes an NVFP4 block, one lane for each value.
+      The error tree is four `xor` shuffles, which add the pairs in the order of `tree_sum16`. A warp takes an
+      MXFP8 block. Both use `cvt.rn.satfinite` to `e2m1` and `e4m3`, which gives the bytes of `encode_e2m1` and
+      `encode_e4m3`.
+      - `build.rs` sets `--fmad=false -prec-div=true -prec-sqrt=true -ftz=false`. The values are the defaults of
+        `nvcc`. They are explicit because the bits of the quantizers depend on them. A mutant of each flag moves
+        the bits of the gate.
+      - The gate is `crates/nagaya-mk-inkling2-sm121/tests/cuda_quant.rs`. It compares the bytes of all 154 rows
+        of the fixture with the shipped vLLM kernel. It compares 2,100 random rows with `quant.rs`. Each result is
+        the same at the grids 48, 24, 7 and 1.
+    - **The expert ops** `OP_EXPERT_NVFP4` and `OP_EXPERT_MXFP8` (opcodes 53 and 54, `kernels/experts.cuh`). They
+      compute `y = W_e * x` for a list of pairs. The weight is operand A. The quantized rows are operand B.
+      - A record holds one group of 128 K values of a tile of 16 weight rows. It has 1,152 bytes for NVFP4: 2
+        fragments of 512 bytes and 128 bytes of scales. It has 2,112 bytes for MXFP8: 4 fragments and 64 bytes of
+        scales.
+        `experts.rs` repacks a checkpoint expert into this order. An item holds 4 tiles, and each tile holds its
+        records of all groups in order.
+      - `ExpertPair` (`protocol.rs`) has `expert`, `count`, `x_row[16]` and `y_row[16]`. The list is at `f`. Item
+        `i` takes the pair `i / (n / 64)`. An op reads a pair through `__ldcg`.
+      - An item is a column tile of 64 weight rows with all of K. The 8 consumer warps take a tile of 16 rows each,
+        and each warp takes a half of the groups of K. The first half is the groups 0 to `(K / 128 + 1) / 2 - 1`.
+        The two halves join in shared memory: the first half, plus the second half. No merge group is needed.
+        8 experts give 288 items, 6 for each of 48 blocks.
+      - The NVFP4 epilogue is `(total * expert_scale) * ((x_amax * w_amax) * (1 / (1536 * w_denominator)))`. The
+        MXFP8 epilogue is `total * expert_scale`.
+      - The op writes the weight rows in their order: output column `n` of row `y_row` is weight row `n`. The
+        checkpoint interleaves the rows of `w13`: row 2i is gate row i, and row 2i+1 is up row i
+        (`nagaya-mk-inkling2-bmg/src/formats.rs`, `gate_up_source_row`). Thus the output of the op is interleaved
+        too. The repack of wave B puts gate i and up i in rows g and g+8 of one MMA (see "The task graph").
+      - The producer prefetch is off (`item_bytes` is 0), because the items of a list are not in the order of the
+        item index. A warp prefetches the next item of its block into L2.
+    - **The load rule.** Data that an earlier task writes and a later task reads loads with `.cg`, never with
+      `.nc`. A read-only load of data that the kernel writes is not defined, and L1 could hold the bytes of the
+      layer before. This covers the quantized rows, the pairs, the amaxes and the partials. Use `.nc` only for
+      weights, which never change while the kernel runs.
+    - **Accuracy.** The bound is a share of the sum of the absolute terms.
+
+      | Op | Bound | Worst measured |
+      |---|---|---|
+      | matmul, random rows | 4 epsilons | 0.59 epsilon |
+      | matmul, coherent row | 24 epsilons | 6.5 epsilons |
+      | NVFP4 expert op | 4e-7 | 0 (bits equal to the host) |
+      | MXFP8 expert op | 4e-7 | 7.4e-8 |
+
+      Here an epsilon is 1.19e-7 (`f32`). The matmul compares with an `f64` sum on the real weights of Mini. The
+      expert gate uses layers 0 and 20, 131,328 outputs for each matrix. The matmul host model gives the bits of
+      the card. Thus the gate sees a change of the order of the terms, the tree or the merge. The NVFP4 bits
+      equal the host bits for the checkpoint denominator and for four others.
+    - **Hashes.** A BLAKE3 hash pins the output of each expert matrix (`PINNED_HASHES` in `tests/cuda_experts.rs`).
+      A change of the cut, of the order of the sums or of the epilogue changes a hash. Change a hash only with a
+      change of the engine identity.
+    - **Speed.** Times come from one run of the gates. A rate counts the bytes of the weights, and of the scales for
+      the experts. The share is of 252 GB/s. The weights come from DRAM: each task reads another copy.
+
+      | Op and shape | Rows | Time (us) | Rate (GB/s) | Share |
+      |---|---:|---:|---:|---:|
+      | matmul 3,072 x 2,304 | 1 | 64.2 | 220.6 | 87.6% |
+      | matmul 3,072 x 2,304 | 16 | 65.4 | 216.3 | 85.8% |
+      | matmul 2,304 x 3,072 | 1 | 64.0 | 221.2 | 87.8% |
+      | matmul 2,304 x 3,072 | 16 | 66.3 | 213.4 | 84.7% |
+      | matmul 1,024 x 2,304 | 1 | 24.4 | 193.5 | 76.8% |
+      | matmul 1,024 x 2,304 | 16 | 25.2 | 187.4 | 74.4% |
+      | head 201,024 x 2,304 | 1 | 3,933.6 | 235.5 | 93.4% |
+      | head 201,024 x 2,304 | 16 | 4,417.6 | 209.7 | 83.2% |
+      | 8 experts, layer 0 w13 NVFP4 | 1 | 106.8 | 223.6 | 88.7% |
+      | 8 experts, layer 0 w2 NVFP4 | 1 | 60.1 | 198.9 | 78.9% |
+      | 8 experts, layer 20 w13 MXFP8 | 1 | 184.1 | 237.8 | 94.4% |
+      | 8 experts, layer 20 w2 MXFP8 | 1 | 93.9 | 233.3 | 92.6% |
+
+      The head at one row reads 235 to 238 GB/s over runs. The gates need 80% of 252 GB/s for the head at one row,
+      and 70% for layer 0 w13. The expert ops read at 79 to 105% of 252 GB/s over runs.
+    - The engine identity gains `KT_TABLE` and the K split of the expert ops.
+
+  - **The ops of wave B** (milestone 37 step 9). The dense, row and MoE lanes and the attention lane built these ops.
+    They are inline in one kernel (see "The register structure"). Each op has a card gate on real weights of Inkling
+    2 Mini, against the host forms of the B70 crate.
+
+    An epsilon is 1.19e-7 (`f32`). Each bound is a bound of the gate, and each worst error is one measured value.
+    The kernel files are in `crates/nagaya-mk-cuda/kernels/`. The gates are in
+    `crates/nagaya-mk-inkling2-sm121/tests/`.
+    - **What each gate checks.** Each op passes the same bits checks, except where its item says another rule.
+      - The bits of a row do not depend on the count of rows. The counts are 1, 7 and 16, and 17, 100 and 512 for
+        an op that tiles rows.
+      - The bits do not depend on the grid (G of 48, 24, 7 and 1).
+      - A merge counter is 0 after a run, so a second run needs no zeroing.
+      - The test of a trap runs the bad task in a child process. A shape that the op does not support traps.
+    - **`OP_EMBED`** (opcode 70, `ops_rows.cuh`, `8f0c6876`). Item `r` is the row `r`.
+      - It reads the `bf16` row of a token and writes the normed row `w * (v * f)` to `x` and to `B[0]`. Here `f`
+        is the factor of the raw row. It also writes the factor of the written row to `x` and to `B[0]`. A token
+        outside the vocabulary traps.
+      - Fields: `a` the ids, `b` the embedding, `c` the rows of `x`, `e` the factors of `x`, `n` the rows of the
+        embedding. Table: slot 0 the norm weight, slot 1 the plane `B[0]`, slot 2 its factors.
+      - Oracle: `Model::embed`. Bound 8 epsilons. Worst: 2.74 epsilons of a value, 1.97 of a factor. `B[0]` equals
+        `x` bit for bit. The sources give no time for this op. The design budget is about 1 us.
+    - **`OP_MIX`** (71, `ops_rows.cuh`, `8662dc58`). The attention residual and the message mix.
+      - An item is one pair of a query and a row. The first `n * rows` items are the attention mix: `n` queries (1
+        or 3) over a stack of `k` rows (2 to 5). The other `kt * rows` items are the message mix: `kt` queries
+        (4) over a stack of `group_items` rows (2). The op has no merge group.
+      - An item reads the stack rows with their row factors, takes the scores, the softmax and the mixed row. It
+        writes the row and its row factor. No item computes the factor of an input row.
+      - The block reads the stack twice, from L1 or L2. A stack of 5 rows of 9 values held in registers made the
+        kernel spill.
+      - Fields: `a` and `b` are the rows and factors of the attention mix. `c` and `e` are those of the message
+        mix. `p0` is the scale `2304^-0.5`.
+      - Table: slots 0 to 4 hold the stack, and slots 5 to 9 its factors. Slots 10 and 11 hold the message stack,
+        and slots 12 and 13 its factors. Slot 14 holds the queries, and slot 15 the message queries.
+      - Oracle: `ops::attention_residual`. Bound 8 epsilons of the largest normed value. Worst: 4.24 epsilons, and
+        2.33 for a factor.
+      - Speed: 3.7 to 4.0 us at 1 row on 1 to 7 SMs. The design budget is about 2 us.
+    - **`OP_GATE_DOWN`** (72, `ops_rows.cuh`, `src/rows.rs`, `21884cca`). The down matmul of `n` gates (1 to 3).
+      - A gate has 24 items: 4 tiles of 16 columns and 6 K slices of 768. The matrix is `[64, 4608]`. The slices 0
+        to 2 read `a_i`, and the slices 3 to 5 read `m_i`, each times its row factor. Thus the unweighted norm of
+        `[a_i, m_i]` is the prologue of the load.
+      - The sum has the order of `OP_MATMUL_BF16`. The merge group of a tile has the 6 slices, and the last item
+        merges them in slice order.
+      - Fields: `c` receives `g` (`f32`, `n` gates of `rows` rows of 64), `f` has 16 counters, then one partial
+        of `rows * 16` floats for each item. Table: slots 0 to 2 `a_i`, 3 to 5 `m_i`, 6 to 8 the factors of `a_i`,
+        9 to 11 the factors of `m_i`.
+      - Oracle: an `f64` sum. Bound 4 epsilons of the sum of the absolute terms. Worst: 0.39 epsilons.
+      - Speed on weights from DRAM, 1.77 MB: 11.1 to 12.0 us at 1 row (146 GB/s), 19.3 us at 16 rows. The design
+        budget is 7.4 us.
+    - **`OP_GATE_UP`** (73, `ops_rows.cuh`, `src/rows.rs`, `21884cca`). It computes `u_i = (1 - tanh(F g_i)) * a_i +
+      tanh(G g_i) * m_i` for `n` gates, with the output of `OP_GATE_DOWN` as input.
+      - A gate has 36 items and no K split, because K is 64. Each warp holds 8 channels. The repack puts the forget
+        row of a channel at the row `g` of the MMA tile and its gain row at the row `g + 8`. Thus a lane holds both
+        in one result, and the blend needs no shuffle.
+      - The last item of a gate is the row finisher. It adds the 36 partials in order and writes the factor of
+        `u_i`. With `FLAG_NORM` and one gate it also writes `h_e = w * (u * rf)`, the input of the router.
+        A quantizer task quantizes `h_e`: the op does not.
+      - Fields: `a` is the output of `OP_GATE_DOWN`, `b` the repacked weights, and `c` the rows of `h_e`. `f` holds 4
+        counters, then a partial of `rows` floats for each item.
+      - Table: slots 0 to 2 hold `a_i`, 3 to 5 `m_i`, 6 to 8 `u_i`, and 9 to 11 the factors of `u_i`. Slot 12 holds
+        the norm weight.
+      - Oracle: `ops::message_gate`. The error of `u` is 0.019 of the first-order error budget of the host form
+        (bound 0.25). Against an `f64` evaluation it is 0.012 of the budget (bound 0.1).
+      - The factor of `u` is within 4.58 epsilons (bound 16). `h_e` is within 15.3 epsilons of
+        `w * rf * (|h| + |m|)` (bound 48). The output `u` is a difference, so its error is 21 epsilons of
+        `|h| + |m|` at the worst.
+      - Speed: 12.8 to 13.8 us at 1 row (139 GB/s), 27.4 us at 16 rows. The design budget is 7.4 us.
+    - **`OP_MIX_OUT`** (74, `ops_rows.cuh`, `98db31a0`). The output residual before the head. It is `OP_MIX` with
+      one query and no message mix: the op traps unless `n` is 1 and `kt` is 0. It writes the mixed row and its
+      factor. The head is a matmul with `FLAG_NORM`, and it reads them as its prologue.
+      - Oracle: `ops::attention_residual` with the output query. Bound 8 epsilons. Worst: 1.51 epsilons for a value
+        and 1.24 for the factor. Speed: 3.8 us at 1 row (1 item), 4.4 us at 16 rows.
+    - **`OP_PROJ`** (44, `ops_dense.cuh`, `src/proj.rs`, `13c6814a`, `32589716`). One task for the q, relative, sink,
+      gate, k and v matmuls of an attention layer, and the dynamic taps of a full layer.
+      - The joined matrix `J` has K of 2,304. A sliding layer has 8,608 rows (538 tiles), and a full layer has
+        8,672 rows (542 tiles). The join moves rows and changes no value. Each segment reads its own normed input
+        `w * (x * rf)`: a full layer has three inputs, and a sliding layer has one.
+      - An item is one tile and one K slice, so the task has `tiles * 3` items (1,614 on a sliding layer). The
+        tiles run in the order taps k, k, taps v, v, q, rel, sink, gate. Thus no head finisher is left at the end.
+        The first order that was measured gave 79 to 81% of the peak at 1 row.
+      - The merge group of a tile has the 3 slices in slice order. The epilogue by segment:
+        - q: the item that merges the last tile of a head (8 tiles) runs the finisher. It does the scale, the L2
+          clip, and on a full layer the log scale. A second-level counter joins the 8 tiles.
+        - rel: one tile is one head, so the merge does the scale, the clip and the log scale.
+        - sink: the merge writes the first 24 values of each row. gate: the merge writes the raw sums, and
+          `OP_ATTN` applies the sigmoid.
+        - k and v: the merge writes raw rows and raw taps to the scratch. A head has a finisher, with a counter of 9
+          on a full layer (the taps tile joins).
+          The finisher runs the short convolution over the raw rows of the block and the conv state. Then it clips
+          the key or takes the rms of the value. Last, it pushes the last 3 raw rows into the conv state.
+      - The finisher writes each row of 128 values into the cache planes that `OP_ATTN` reads. A plane has a block
+        of `plane_rows` rows for each KV head. A full layer writes the row `j`. A sliding layer writes the row
+        `j % plane_rows`, with no spill copy.
+      - `FLAG_F32` picks `f32`. With no flag the format is `e4m3` with a unit scale, by the native
+        `cvt.rn.satfinite`. The layout is in `kernels/cache_layout.cuh` and in `src/attn.rs` (`row_of`, `row_offset`).
+      - Fields: `a` is the input `x_q`, `b` the repacked `J`, `c` the output (q, rel, sink, gate), `e` the factors,
+        and `f` the scratch. `pos0` is the position of the first row.
+      - `layer` is the rows of a plane (a multiple of 64, never 0). `scale_bytes` is the floats of scratch that the
+        host gives, and the op traps when it needs more. Flags: `FLAG_NORM`, `FLAG_FULL_LAYER`, `FLAG_F32`.
+      - Table: the 15 slots `PROJ_TABLE_*` of `src/protocol.rs`. They hold the norm weights, the inputs and factors
+        of k and v, and the scales of q and rel. They also hold the convolution weights and states, and the planes.
+      - Oracle: `ops::{rms_norm, scaled_l2_clip, log_scale, short_conv, dynamic_conv, l2_clip, sigmoid}`.
+        Bound 64 epsilons of the largest value of the vector. Worst: 31.9 epsilons (the relative states of a full
+        layer at 16 rows). A block of 512 rows equals the host form in 14 rows, with the conv state.
+      - The bits are equal at 1, 7, 16, 17, 100 and 512 rows and at the four grids. The cache planes equal the host
+        image of `cache.rs` in both formats, and the chain `OP_PROJ` then `OP_ATTN` matches the host forms.
+      - Speed: 188 us at 1 row for 39.7 MB (83.8% of 252 GB/s; the floor is 80%), 187.0 us after `6b3066ee`. At 16
+        rows 289 to 305 us. At 512 rows 8.6 to 8.9 ms, because an item reads its `x` slice again for each of 538
+        tiles. The design budget is 165 us at 1 row.
+    - **`OP_ROUTE`** (55, `ops_moe.cuh`, `c1213f79`). The router matmul of `gate.weight` (128 by 2,304) with the
+      bias. Then the sigmoid, the top 8, and the list of pairs of the expert ops. It takes 1 to 1,024 rows.
+      - An item is a row tile of 16 rows, a column tile of 16 experts and a K slice of 768. A row tile has 24 items.
+        There are three levels of merge:
+        1. The 3 K slices of a (row tile, column tile) merge in slice order and write the logits.
+        2. The last of the 8 column tiles takes the picks of its rows. It computes the sigmoid, the key
+           `score + bias`, the 8 largest keys, the ids in ascending order and the weights. A tie of keys takes the
+           lower id.
+        3. The last row tile builds the list of pairs. The experts go in ascending order, and the rows of an expert
+           go in ascending order, 16 rows for each pair.
+      - Each level resets its own counter. The op reads `h_e`, which is already normed. It allows `FLAG_PAIRS` only,
+        and it traps on `FLAG_NORM` (`2a48f4f1`). Its table holds the bias only.
+      - The op keeps its own copy of the `bf16` MMA step, so a change of the dense lane does not move its bits.
+      - Fields: `a` is the rows, `b` the router, and `c` the picks (`rows * 8` ids, then `rows * 8` weights).
+        `e` is the list of pairs with its header, and `f` the scratch (`route_scratch_words`). `p0` is the route
+        scale 8.
+      - `item_bytes` is 24,576 for up to 16 rows, and then the producer warp prefetches the router. It is 0 above.
+      - Table: slot 0 holds the bias, slot 1 the norm weight, and slot 2 the row factors.
+      - Oracle: `ops::route`. The logits are within 4e-7 of the sum of the absolute terms (worst 1.8e-7 at 512
+        rows). The picks equal the host picks for all 1 + 16 + 512 rows of layers 0 and 20. The weight error is 6.4e-7
+        of the weight at the worst.
+      - The sigmoid uses the `expf` of the device, which can differ by an ulp from the
+        host. Thus the picks and the weights are not a bit gate. A hash pins the logits and the picks, and not the
+        weights, because a new CUDA version can change their last bit.
+      - Speed at 1 row: 7.8 to 8.2 us with warm code, 9.9 us with cold code. The design budget is 3.5 us.
+      - The matmul and its partials take about 5 us. Level 1 takes 0.7 us, the picks 2.9 us, and the plan
+        1.4 us.
+    - **The expert ops with `FLAG_UP`** (`OP_EXPERT_NVFP4` 53 and `OP_EXPERT_MXFP8` 54, `experts.cuh`, `980c9068`).
+      The up matmul of a layer.
+      - The repack of `w13` (`repack_expert_up`) puts the gate `i` in the row `g` and the up `i` in the row `g + 8`
+        of the MMA tile. The epilogue gives `swiglu(gate, up) * route_weight` in `f32`. The route weight comes
+        before the quantizer.
+      - The last item of a pair quantizes each row of the pair with the rules of `quant.rs`. It uses NVFP4 for
+        layers 0 to 19 and MXFP8 for layers 20 to 23. The row `y_row` goes to the row `y_row` of the buffer.
+      - The cut: `pos0` is the count of tiles of a pair that one item covers (0 means 1). With 6, a decode step
+        of 8 pairs has 48 items, and a block counts one arrival. The merge group is the items of a pair,
+        `group_items` of them. The sums of a tile do not depend on `pos0` (the gate checks 1, 2, 4, 9 and 36).
+      - A pair of 9 to 16 rows runs two passes of one `n8` tile. One pass of two tiles held 4 more registers and
+        spilled. The second pass reads the weights again from L2.
+      - Fields: `kt` is the count of tokens, and the buffers hold `8 * kt` slots. `c` is the activation (`f32`, the
+        slot `y_row` is a row of `n / 2` floats). `f` holds one counter for each pair of the bound.
+      - Table: slot 0 holds the amax of the weights. Slot 1 (`EXPERT_TABLE_QACT`) holds the buffer of quantized rows.
+        The shared memory is 4,112 B.
+      - Oracle: `quant.rs` and `ops::swiglu`. The bound is the MMA error through the derivatives of the SwiGLU, with
+        a margin of 4. The worst error is 1.2% of the bound. The worst relative error is 8.4e-7 (NVFP4) and
+        4.2e-2 (MXFP8, a value near zero).
+      - The quantized rows equal `quant.rs` applied to the activation rows of the device, byte for byte, for all 56
+        slots of both layers. Against `quant.rs` of the host activation, 26 of 36,512 bytes differ for NVFP4: a code
+        flips at a threshold. For MXFP8, 0 of 66,528 differ.
+      - A hash pins the activation rows and the quantized rows. The wave A hashes of the plain mode did not move.
+      - Speed, 8 experts at 1 row: NVFP4 109.7 us (217.7 GB/s, 86.4% of 252 GB/s), budget 100 us. The floor is 80%,
+        and the test asserts it. MXFP8 187.7 us (92.6%), budget 182 us.
+      - The plain op of wave A took 106.9 and 182.3 us in the same session.
+    - **The expert ops with `FLAG_DOWN`** (53 and 54, `experts.cuh`, `bff00b72`). The down matmul of a layer.
+      - It reads the quantized row of the slot `y_row`, so the one list of pairs that `OP_ROUTE` writes serves the
+        up and the down matmul. Slot `8 t + j` is the output of the expert `j` of the token `t`, with the experts in
+        ascending order.
+      - The last item of a column tile is the finisher of the tile. It waits for every live pair, so a pair with no
+        rows still counts. For each token in order it sums the 8 slots in slot order from 0, runs `ops::short_conv`
+        with the state of `mlp_conv`, and writes `x = r + conv`. Then it pushes the last 3 sums into the state.
+        A chunk of 64 tokens runs in parallel, and a chunk reads the 3 sums before it again.
+      - The finisher divides by the square root of 5 with a constant. The quotient `x * r` and one explicit fused
+        step give the rounded `f32` quotient, with no call to the slow path of the division. The gate shows that the
+        bits equal the host `/`.
+      - Fields: `kt` is the count of tokens, `rows` is `8 * kt`, and `c` holds the slot rows. `f` holds one counter
+        for each column tile.
+      - Table: slot 0 holds the amax and slot 2 the residual. Slot 3 holds the 4 taps of each channel (`n` rows of 4
+        floats, and tap 3 weights the current row). Slot 4 holds the state (3 rows of `n` floats, oldest first).
+        Slot 5 holds the output, which may be the residual. The shared memory is 21,264 B.
+      - Oracle: the host dot products of `quant.rs`. The slot rows are within 4e-7 of the sum of the absolute terms.
+        The worst error is 0 for NVFP4 (the bits equal the host) and 8.3e-8 for MXFP8. From the slot rows of the
+        device, the slot sum, `ops::short_conv`, the residual and `ops::conv_push` give the output and the state bit
+        for bit. A call of 40 tokens equals two calls of 20 tokens that carry the state.
+      - The bits do not depend on the order of the pairs or on a bound above the live pairs. They do not depend on
+        the tiles of an item (1, 3, 6, 36) or on an output that is the residual.
+      - A hash pins the slot rows, the output and the state.
+      - Speed, 8 experts at 1 row, 11.9 MB of weights: NVFP4 65.7 us (181.8 GB/s, 72.1% of 252 GB/s), budget 50 us.
+        MXFP8 100.3 us (86.6%), budget 91 us. The tail of the finisher and the boundary are a larger share than in
+        the up op. The plain op of wave A took 55.4 and 98.4 us in the same session.
+    - **`OP_ATTN`** (80, `ops_attn.cuh`, `src/attn.rs`, `946ddebc`). The attention of a run, with the sink, the
+      relative bias and the output gate. It reads the `f32`, `bf16` or `e4m3` cache, for a decode or for a block.
+      - A row of the MMA is a pair of a position and a query head. Thus the 3 query heads of a KV head share one
+        read of the cache. Eight warps run an item.
+      - Each warp takes 16 channels. It adds its part of the scores through the MMA with the three `bf16` terms of
+        rule 9. The parts join in warp order in shared memory. The softmax is online.
+      - An `f32` cache gives 6 MMAs for each product tile. A `bf16` or `e4m3` cache gives 3, because its value is
+        exact in `bf16`.
+      - **The formats of the cache, one cubin for each** (Proposed, Opus 5.5, 2026-11-23). Reason: a choice that is
+        fixed for an engine is a binary, not a branch, and the nagaya swaps the binaries for a test run.
+        - `f32` (4 bytes, `FLAG_F32`), `bf16` (2 bytes, `FLAG_BF16`) and `e4m3` (1 byte, a unit scale, no flag).
+          PROJ writes a `bf16` value from the `f32` value, nearest even, with no scale.
+        - `build.rs` builds 9 cubins. Two are the default cubin, which holds `f32` and `e4m3`, and its profile cubin.
+          Four are the cubin of each format (`MK_CACHE_F32`, `MK_CACHE_BF16`, `MK_CACHE_E4M3`) and a profile cubin
+          of `bf16`. One is the spin cubin for tests. Two are the probe cubin and its profile cubin (`MK_PROBES`).
+        - A cubin traps on a task whose flags name a format that it does not hold (`cache_flags_ok`).
+        - The probe ops are in the two probe cubins only (`5def986c`). An engine cubin holds no probe op, and it
+          traps on a probe opcode (the default case of `run_op`). The speed tests of the expert, router and dense
+          ops flush with `OP_PROBE_READ`, so they run on the probe profile cubin.
+        - The pass takes its format from `Pass::with_cache_format`, and `CacheFormat::cubin` names its cubin. The
+          config key `cache` of the engine selects the format ("The host spec"). The identity holds the
+          `cubin_blake3` of that cubin.
+        - The registers are on a knife edge. A cubin with one instance of the attention spilled 12 to 28 bytes. Thus
+          each cubin keeps a pair of instances, and the second one never runs. The peak sits in `quant.cuh` and
+          `ops_moe.cuh`. A change to OP_ATTN can need this tuning again.
+      - The chunk is 256 keys on absolute positions (`ATTN_CHUNK_KEYS`). A chunk starts a new softmax state and
+        gives a partial. The partials of a (KV head, tile) merge in chunk order, from the state (sink, 1, 0).
+        A chunk with no key of a row is skipped. The chunk size is a member of the engine identity.
+      - The sum `l` and the output `o` of the merge are double-float values (two `f32` words). Both modes use the
+        same order and the same explicit intrinsics (`cb8927bd`, merged in `bba9771f`). The serial `f32` merge
+        drifted to 2.1e-5 of the row maximum at 524,288 positions. The double-float merge keeps the error of a full
+        run at 1.1e-6 to 1.8e-6 at each depth to 524,288 positions, in each format. This change moved bits: it is
+        a new engine identity. `tests/long_support/merge_model.rs` is the host model of the merge order.
+      - Split mode (up to 16 rows): one item for each chunk, KV head and tile. The merge group is a KV head and a
+        tile, and the item that arrives last merges the partials. Whole mode (more rows): one item for each (KV
+        head, tile), which merges its chunks in shared memory. Both modes give the same bits.
+      - Fields: `a` is the queries (`f32`, `[rows][24][128]`). `b` and `e` are the key plane and the value plane.
+        `c` is the output: the attention times the sigmoid of the gate. `f` is the scratch.
+      - `n` is the window (1,024) or 0 for a full run. `k` is the rows of a plane for each head, and `kt` the keys
+        of a chunk. `p0` is the score scale `1 / sqrt(128)`, `group_items` the chunks, and `scale_bytes` the bytes
+        of one cache row.
+      - Table: slot 0 holds the relative states, slot 1 the sinks, slot 2 the gate before its sigmoid, and slot 3
+        the relative projection. The shared memory is 72 KiB (`ATTN_SMEM_BYTES`). Each launch takes the opt-in maximum.
+      - The ring of a sliding run holds 1,536 rows with no spill copy, and `plane_rows` is at least
+        `window + max_block - 1`.
+      - Oracle: `ops::{attend, relative_logits, relative_bias}`. Bound 4e-6 of the row maximum. Worst: 1.8e-6, at 1
+        to 70,000 positions, on full and sliding layers, for a decode and for blocks of 512 rows.
+      - The bits of a row equal its decode step for 7, 16, 17 and 512 rows and at the four grids. The `e4m3` form
+        equals the `f32` form of the same packed values bit for bit, and so does the `bf16` form. Worst error of the
+        `bf16` form: 1.8e-6. Its gap to the unrounded `f32` cache is at most 7.2e-3 of the row maximum, and that of
+        `e4m3` is 1.2e-1.
+      - Speed: an `f32` decode step at 65,536 positions reads 204 GB/s (81% of 252 GB/s). An `e4m3` decode step reads
+        at 49%: one step of 16 keys for each sync limits it, not the memory. A step of 16 keys is the most that fits
+        with no spill. One row at 1,023 positions takes 26.7 us. A prefill of 512 rows at 8,192 positions takes 9.78
+        ms on a full layer, bound by the loop over keys.
+      - At depth the op runs to 524,288 positions in each format with no fault. That includes 2,048 chunks in the
+        split mode (`46970cbd`). The test `cuda_long_attn` asserts 4e-6 of the row maximum at 409,600 and at 524,288
+        positions. Kernel times of one full run, on the profile cubin:
+        - A decode step at 1 row takes the times below, in ms, for `f32`, `bf16` and `e4m3`.
+          - At 8,192 positions: 0.34, 0.19 and 0.12.
+          - At 409,600 positions: 16.9, 10.7 and 7.1.
+          - At 524,288 positions: 21.5, 13.4 and 9.0.
+        - The merge takes 3.6 to 4.3 ms of the decode step at 524,288 positions: about 2 us for each chunk, in
+          series.
+        - A block of 512 rows takes the times below, in ms, in the same order.
+          - At 131,072 positions: 151.5, 126.1 and 123.9.
+          - At 409,600 positions: 471, 393 and 387.
+          - At 524,288 positions: 604, 505 and 495.
+      - The speed of each format, for a decode step at 65,536 positions:
+        - `f32`: 537 MB in 2.66 ms, 201 to 202 GB/s.
+        - `bf16`: 268 MB in 1.56 ms, 172 GB/s.
+        - `e4m3`: 134 MB in 1.08 ms, 125 GB/s.
+        - A block of 512 rows at 8,192 positions takes 9.53 ms (`f32`), 7.96 ms (`bf16`) and 7.71 ms (`e4m3`).
+      - The slot plan follows the layout (`32589716`). The bytes of a slot, for `f32`, `bf16` and `e4m3`:
+        - At 524,288 positions: 34,866,888,704, 17,435,361,280 and 8,719,597,568.
+        - At 409,600 positions: 27,350,695,936, 13,677,264,896 and 6,840,549,376.
+      - The attention scratch (the partials of the split mode) takes 415,236,192 bytes. The state layout number is
+        3, and the engine identity holds the cache format.
+    - **`OP_OUT_MIX`** (45, `kernels/ops_out_mix.cuh`, `src/outmix.rs`, `7a0d74f8`). It is the output matmul `wo`
+      (K of 3,072, 2,304 columns), its short convolution, the residual and the mix of the MLP input.
+      - Items: 576, which are 144 tiles of 16 columns times 4 K slices of 768. The item that merges a tile runs the
+        epilogue of its 16 channels over all rows: the convolution `attn_conv` with its state, then the residual.
+      - The residual: `r = x + conv` with `FLAG_ACCUMULATE`. On the first layer of a block, `r = conv`, and `x` is a
+        plane of the stack.
+      - The convolution: taps `[c][4]` with tap 3 on the current row, and the divisor `sqrt(5)`. The state after the
+        block holds the last 3 raw rows.
+      - The finisher: the last of the 144 tiles runs it for each row, in one block. It writes `rf(r)`, the mix `e`
+        with `mlp_query`, and `rf(e)`. With `FLAG_NORM` it also writes `h_e = w * (e * rf)`, the order of
+        `ops::rms_norm`. The op does not quantize `h_e`. A quantizer task follows it in the pass.
+      - The descriptor: `a` the attention output, `b` the repacked `wo`, `c` the row `r`, `d` the task table. `e` is
+        the row `x` (0 with no `FLAG_ACCUMULATE`), and `f` the scratch. The field `layer` holds the depth of the
+        stack, 2 to 5. `p0` is the scale of a score, 2304^-0.5.
+      - The table: slots 0 to 4 hold the stack, with `r` at the slot `depth - 1`. Slots 5 to 9 hold their row
+        factors. Slot 10 is the convolution weight, and slot 11 its state. Slot 12 is the norm weight, slot 13 the
+        outputs `e`, `h_e` and `rf(e)`, slot 14 the query. Slot 15 must be 0.
+      - The scratch, in floats: 160 counters, then the partials (`576 * rows * 16`), then the raw sums
+        (`2304 * rows`).
+      - Accuracy, on real weights of layers 0, 5, 6, 11 and 18: the matmul is within 3.7e-8 of the sum of the
+        absolute terms. The bound is 1e-7. At 1 row, `r` and `h_e` equal the host forms of the device sums bit for bit.
+      - Bits: equal at 1, 7, 16, 17, 100 and 512 rows and at G of 48, 24, 7 and 1. Two blocks that carry the state
+        give the bits of one block.
+      - Speed: 57.9 us at 1 row, 97% of 252 GB/s, against the budget of 61 us. 16 rows take 151 us, and 512 rows take
+        4.3 ms, because the finisher runs the rows one after another in one block.
+    - **The engine identity** gains these members:
+      - the cut of the router and the rules of its plan, and the cut of `OP_PROJ`;
+      - the repack of `w13`, with the epilogue and the finisher of the up op;
+      - the order of the slot sum, the taps and the finisher of the down op;
+      - the chunk of 256 keys, the cache format, and the state layout number 3.
+
+      `32589716` moved the bits of the gate output of `OP_PROJ`, because `OP_ATTN` now applies the sigmoid.
+
+  - **The block form of the matmul** (a prefill). **Proposed** (Claude Opus 5.5, 2026-11-22), built in `a59e4adf`.
+    `FLAG_BLOCK_FORM` puts `OP_MATMUL_BF16` or `OP_PROJ` into the form for many rows. The host picks the form. The
+    form is not part of the engine identity, because it gives the bits of the decode form.
+    - **The probes** (`d8c52595`, `tests/cuda_probe_prefill.rs`):
+      - 4 chains for each warp give 0.642 MMA/ns on each SM, the rate of 8 chains (126 TFLOP/s in `bf16`).
+      - Shared memory on one SM: `ld.shared.v4` reads about 970 B/ns, `v2` about 810 B/ns. A store writes about
+        320 B/ns. MMAs that read their operands from shared memory run at 99 to 100% of the register rate.
+      - A ring of bulk copies with an `mbarrier` reused by its parity gives right sums. `mbarrier.inval` comes before
+        another op uses the area again.
+      - L2 under bulk reads from 48 SMs gives 1.93 to 2.02 TB/s for a footprint of 1 to 16 MiB.
+      - A bulk copy of 192 B to 1.5 KB costs about 30 ns. Thus the ring uses `cp.async` pieces of 16 B.
+    - **An item** is a group of up to 8 tiles (128 columns) times a block of 32 rows, with all of K. The row block
+      is the fastest index of the item. The 8 consumer warps split the outputs: 2 across the columns and 4 across
+      the rows. Each warp keeps 4 chains, one for each tile.
+    - **The order of the sums** is the order of the decode form. A chain starts at zero at each chunk, never at a
+      stage. It runs the k16 steps in order, and it adds the terms lo, mid and hi in that order. The tree of the
+      slice and the sum of the slices are the adds of the decode form. Thus the item needs no partials and no
+      counters, and `dot_bits` stays the oracle.
+    - **The ring** has 3 stages of 3 k16 steps, because 3 divides the chunks of 6 and of 9 steps. Each warp splits
+      the `f32` row into its three terms when it reads it, after the norm. Two of the five sets of the tree are in
+      shared memory, because they do not fit in the registers. The form needs 93,184 bytes of shared memory.
+    - **`OP_PROJ`** in the block form makes groups by segment, so a group of q, k or v is one head. A group of q runs
+      the finisher of its head on its 32 rows. The k and v finishers need all rows. A counter of the head counts
+      the row blocks, and the last arrival runs the finisher over all rows. The scratch has no partials.
+    - **The interpreter** reads the count of items and the opcode from the task again after an op. Thus no scalar
+      of the interpreter lives in a register across an op, and the block form fits 168 registers with 0 spill.
+    - **Bits.** The block form equals the decode form at 17, 32, 33, 100, 511 and 512 rows on three shapes. It
+      equals it at G of 48, 24, 7 and 1. `OP_PROJ` gives the bits of its decode form at 1 to 512 rows, on both
+      kinds of layer and both cache formats.
+    - **Speed** at 512 rows (`a59e4adf`), with the decode form in brackets: `wq` 464 us (1,382), `OP_PROJ` 3.03 ms
+      (8.68), the head 31.7 ms (106). The design expected about 0.7 ms for `OP_PROJ`. The copies and the MMAs do
+      not overlap well: the tuning list holds the causes. The form wins when it has at least 48 items, the width of
+      the grid.
+
+  - **The register structure.** All ops are inline in one kernel with `__launch_bounds__(288, 1)`
+    (`kernels/megakernel.cu:655`). The kernel has 168 registers, no stack frame and no spill (`6b3066ee`). The
+    build fails on a spill in any function, and on a frame in an entry function (`src/ptxas.rs`).
+    - **The problem.** The merge of the five lanes spilled 32 bytes with a 24-byte frame at 168 registers
+      (`42198d21`). The interpreter kept about ten words across each op. A call inside an op, such as a quantizer or
+      the slow path of a division, makes `ptxas` save those words. Removing any one of `OP_PROJ`, `OP_ATTN` or the
+      MXFP8 expert op ended the spill. Thus each op is at the cap, and the interpreter state decided.
+    - **The rule.** The interpreter keeps no state in registers across an op.
+      - The totals of thread 0 (tasks run, wait time, execution time, the two timestamps) are five words in shared
+        memory (`35e6fe5b`).
+      - The kernel parameters come from the parameter bank with `ld.param` at each use (`42198d21`). They are the
+        count of tasks, the scoreboard, the base event, the stats and the profile. The loop of `run_items` keeps only
+        its item.
+      - An op that adds register pressure can make `ptxas` spill. Lower the live set of the op. Do not add interpreter
+        state in registers.
+    - **The measured rejection of `__noinline__` ops.** Each large op as a `__noinline__` function gave 0 spill in
+      each function, but the ops were slower (`35e6fe5b`, `42198d21`):
+      - the attention at 1 row and 1,023 positions: 27.2 to 47.5 us;
+      - `OP_PROJ` at 1 row: 192.7 to 220.5 us;
+      - the head: 3,987 to 4,055 us. The expert ops: about +5%;
+      - the gate of the attention at 65,536 positions failed (200.7 GB/s against a floor of 201.6);
+      - one `__noinline__` `run_op` gave 29.8 us for the attention at 1 row (+10%).
+
+      `ptxas` gives the registers of the whole kernel together, so a call gives an op no more registers. Reading the
+      descriptor in place in the flat shape gave a boundary of 1,119 ns, 12% worse than the copy. The row functions
+      of the quantizers are `__noinline__`, one copy each (`quant.cuh`, `980c9068`).
+    - **The speed after the change.** The numbers stay within 2 to 4% of those before it (`42198d21`):
+      - the head at 1 row 3,911 us, and `OP_PROJ` 187.0 us;
+      - the attention at 65,536 positions 203.5 GB/s, and at 1 row 26.7 us;
+      - the boundary 809 ns (producer shape) and 1,013 ns (flat shape).
+
+      185 GPU tests passed with the model required.
+    - **The note on `__fdividef`.** The sigmoids of `experts.cuh` and `ops_moe.cuh` and the route weight use
+      `__fdividef`. A plain `/` also gives 0 spill now, so the spill is not the reason (`42198d21`). They keep it
+      to keep the bits that the pinned hashes of the gates use.
+
+  - **The task graph of a layer run.** **Proposed** (Claude Opus 5.5, 2026-11-22). Wave B fuses the ops of one run
+    into few tasks. The B70 order of the ops is `crates/nagaya-mk-inkling2-bmg/src/model.rs:536-936`, and its
+    semantics are `host/forward.rs:362-569`.
+    - **Status.** The graph stays **Proposed**, and the pass (lane P) is not built. The ops are built, and the
+      sources are in "The ops of wave B".
+      - Built: `EMBED`, `MIX`, `GATE_DOWN`, `GATE_UP`, `PROJ`, `ATTN`, `ROUTE`, `UP`, `DOWN` and `MIX_OUT`.
+        Not built: `OUT_MIX` (45).
+      - Built, in the list of changes to the descriptor below: items 1 and 2 (`bf1ef144`, `c71cf95a`) and item 3
+        (`cd14b32d`). Also items 4, 5 and 7 (`590ae990`, `dfb986b0`) and item 8 (`b1b5a81d`, `21884cca`).
+      - The sources do not show item 6, the prefetch of the pair list. The expert ops set `item_bytes` to 0.
+      - Where the build differs from the table below: `OP_ATTN` applies the sigmoid of the gate, so `PROJ` writes
+        the raw gate. A quantizer task quantizes `h_e`, and the `GATE_UP` finisher does not.
+      - Open points 1, 2, 4 and 6 are built. The route weight comes before the quantizer (`UP`). The slots go in
+        ascending order of the expert id (`ROUTE`, `DOWN`). The log scale follows the clips (`PROJ`). The
+        convolution of a row reads the earlier rows of the block (`PROJ`, `DOWN`).
+    - **Three rules.**
+      1. The producer gives the row factor. The task that writes a row also writes its rms factor. The prologue of
+         a matmul applies the weight times the value times the factor, in the order of `ops.rs:133-135`, while it
+         loads `x`. No item reads a whole row again.
+      2. A row finisher is a merge group of a second level over all column tiles of a row tile. Its last item does
+         the work on the whole row: the factor, the normed row and the quantization.
+      3. No copies. The builder names the buffers so that the copies disappear.
+         - `DOWN` of layer 5 writes `start`, which is `B[1]`. Layer 11 writes `B2[c % 2]`.
+         - Layer 17 writes `x[c % 2]`, so that `y` is the other parity. The last cycle writes `B3`.
+         - A ring row written modulo the ring removes the spill copy. That choice is for wave C.
+    - **The fused tasks.** Items are for 1 row and for 16 rows. Time is for 1 row.
+
+      | Task (opcode) | Fuses | Items | Weight MB | us |
+      |---|---|---|---:|---:|
+      | `EMBED` (70) | embed, norm, `B0 = x`, factor | n | 0.005 | 1 |
+      | `MIX` (71) | attention residual, messages | 1-7, 16-112 | 0 | 2 |
+      | `GATE_DOWN` (72) | 3 gates, norm prologue | 72 | 1.77 | 7.4 |
+      | `GATE_UP` (73) | forget, gain, tanh, blend | 108 | 1.77 | 7.4 |
+      | `PROJ` (44) | norm, q, rel, sink, gate, k, v | 1,614 | 39.7 | 165 |
+      | `ATTN` (80, wave C) | attention, sink, bias, merge | heads x chunks | cache | cache |
+      | `OUT_MIX` (45) | wo, conv, `r`, MLP mix | 576 | 14.16 | 61 |
+      | 4th gate (72, 73) | gate, `h_e` and its quantization | 24, 36 | 1.18 | 5 |
+      | `ROUTE` (55) | router, sigmoid, top 8, plan, pairs | 24 | 0.59 | 3.5 |
+      | `UP` (53, 54) | `w13`, SiLU, softcaps, route weight | 288 | 23.9, 43.8 | 100, 182 |
+      | `DOWN` (53, 54) | `w2`, slot sum, `mlp_conv`, `x = r + conv` | 288 | 11.9, 21.9 | 50, 91 |
+      | `MIX_OUT` (74), `HEAD` (40) | output residual; head, softcap | n; 37,512 | 922 | 3,840 |
+
+      - `UP` and `DOWN` list NVFP4 first, then MXFP8. At 16 rows `UP` and `DOWN` take at most 4,608 items.
+      - A `PROJ` item loops over its 32 row tiles in order, with its A fragments in registers. Thus the
+        convolution of a row sees the three rows before it.
+      - `PROJ` has these segments:
+        - q: 192 tiles, the scaled L2 clip for each head of 128, then the log scale;
+        - rel: 24 tiles. sink: 2 tiles. gate: 192 tiles, with the sigmoid. k and v: 64 tiles each.
+      - The head finisher of k and v takes the 4 dynamic taps. Then it runs the convolution with the slot state.
+        Last it runs the clip (k) or the rms (v).
+    - **The counts.** A run with no message has 7 tasks. Layer 0 has 6. A run of cycle 2 or 3 has 11. A decode step
+      at 3 cycles has `23 * 7 + 6 + 24 * 11 + 3 = 434` tasks, against 1,635 on the B70. The 3 are `EMBED`,
+      `MIX_OUT` and `HEAD`.
+    - **The budget** at 240 GB/s, for a decode step at short context:
+      - dense weights: 48 runs of 54.4 MB, and 24 gate sets of 4.7 MB: 2.73 GB;
+      - experts: 44 NVFP4 runs of 35.8 MB, and 4 MXFP8 runs of 65.7 MB: 1.84 GB;
+      - head: 0.92 GB. The sum is 5.49 GB, which is 22.9 ms.
+      - Small ops add about 0.25 ms, and 434 boundaries add at most about 0.33 ms. The total is about 23.5 ms, or
+        about 42 tokens each second. The floor at 252 GB/s is 22 ms.
+      - The attention reads the cache on top: about 1.7 ms at position 1,024 with an `f32` cache.
+      - At 512 rows `PROJ` needs about 61 GFLOP with the three terms, about 0.5 ms at 127 TFLOP/s. A prefill is
+        compute bound there.
+    - **What the descriptor and the interpreter gain.** Each change is the smallest that works.
+      1. A task table behind `d`. A fused op has up to 9 pointers. They are the planes, the norm weights, the
+         convolution weight and state, the expert amax, the bias, `weight_proj` and an output for each segment.
+         `d` points to a table of
+         128 bytes in device memory, constant for each slot and run, written at load. The producer copies it with
+         the descriptor. The descriptor keeps what changes in a pass: `a`, `b`, `c`, `e`, `f`, the rows, `pos0`
+         and the shape words.
+      2. Flags: `FLAG_NORM` (1 << 3), `FLAG_PAIRS` (1 << 5), and `FLAG_UP` and
+         `FLAG_DOWN` on the opcodes 53 and 54. `FLAG_SOFTCAP_30` and `FLAG_MXFP8` exist.
+         Bit 4 is free, and a task with it traps (`e564c82e`).
+      3. Row tiles in the matmul. The op traps today for more than 16 rows (`matmul_bf16.cuh:89`). Add a loop over
+         row tiles in an item, and partials of rows by 16.
+      4. The route weight in the pair: add `weight: [f32; 16]` to `ExpertPair`, and move the pair list from `f`
+         to `e`. Repack `w13` so that the MMA rows `g` and `g + 8` hold gate `i` and up `i`. Then the epilogue
+         needs no shuffle. Repack `forget` and `gain` of `GATE_UP` the same way.
+      5. A static bound of items. The plan gives no count: `graph.rs:80-85` panics on `u32::MAX`, and
+         `megakernel.cu:333` traps on it. Use `min(8n, floor(8n / 16) + 128)` pairs times the tiles. It is exact at
+         decode with 8 pairs. Allow an empty pair: `count() == 0` traps today (`experts.cuh:332`).
+      6. A prefetch of the pair list. With `FLAG_PAIRS` the producer reads the pair `b / tiles` after its wait and
+         prefetches that span to L2. The arithmetic of `experts_prefetch_next` (`experts.cuh:303`) moves into the
+         producer.
+      7. The reset rule. The merger resets its counter (`matmul_bf16.cuh:186`). Make this the rule for every group
+         and finisher. Then counters need a zero only at open and after a failed launch (`Ring::zero_device`),
+         and no ring task zeroes them.
+      8. Two K values. Add K of 4,608 (`Kt` of 768) to `KT_TABLE`. Add a cut for K of 64 with no K split for
+         `GATE_UP` (8 warps of 16 rows).
+    - **Open points.** Each point is a semantic that the design reads from the B70 crate and that is not settled.
+      1. The route weight. The B70 host multiplies the down output (`host/forward.rs:604-607`). The GB10 design
+         multiplies before the down quantizer. Lane M builds its oracle from `quant.rs` and must not call
+         `Model::experts`.
+      2. The slot sum order. "Top-k order" means ascending expert id, because `route` sorts the picks
+         (`ops.rs:395-396`) and the host sums in that order (`host/forward.rs:613`).
+      3. The tap order. The dynamic convolution takes `static_w[lag][c]` with lag 0 the current row
+         (`ops.rs:276-298`). The fixed convolution takes `[c][4]` with tap 3 the current row (`ops.rs:257-269`).
+         The repack keeps both.
+      4. The log scale multiplies q and rel after their clips (`host/forward.rs:486-492`).
+      5. The gates of a sliding layer: gate `i` pairs with `m[i]` on the shared `a[0]` (`host/forward.rs:392-396`).
+      6. The convolution across a block reads the earlier rows of the block (`inkling2_layer_ops.cl:336-339`).
+         The row tile loop and the column finisher of `DOWN` keep that order.
+      7. Rule 5 at one row. `MIX` and the `ROUTE` merger use 1 to 7 SMs at one row, and wait about 2 us on L2.
+         A split costs a boundary.
+      8. vLLM rounds the MXFP8 up output to `bf16`. The oracle does not.
+    - **Lanes.** The lead commits first: the opcode table, the task table behind `d`, empty items,
+      `ExpertPair.weight` and the reset rule. Then four lanes run in parallel:
+      - lane D has the opcodes 40 to 49, and lane R has 70 to 79;
+      - lane M has 55 to 69, and lane A has 80 to 89 (wave C).
+
+      Lane P builds the run ring. Milestone 37 step 9 lists the oracle of each lane. Each oracle is a host form of
+      the B70 crate, through a dev-dependency with no `xe` feature.
+  - **The pass as built** (milestone 37 step 10, `fe396b6e`, `src/pass/` of `nagaya-mk-inkling2-sm121`). The pass
+    builds the task ring of a decode step and of a prefill block at 1 to 5 cycles.
+    - **The tasks.** A run with no messages has 8 tasks: MIX, PROJ, ATTN, OUT_MIX, QUANT, ROUTE, UP and DOWN. Layer 0
+      has 7, with no MIX. A run with messages has 12: the mix with the messages, the three gates down and up, and the
+      gates of the MLP input.
+    - **The count.** A step has `194 + 144 (c - 1)` tasks of the runs at `c` cycles: 194, 338, 482, 626 and 770.
+      EMBED, MIX_OUT and HEAD add 3.
+    - **The quantizer task.** `OP_QUANT_NVFP4` or `OP_QUANT_MXFP8` quantizes `h_e` after OUT_MIX, or after the gate
+      of the MLP input. It runs in parallel with ROUTE, because both read only `h_e`. UP waits on both.
+    - **The buffers.** The names of the buffers remove each COPY task.
+      - EMBED writes `B0`, and the DOWN of layer 5 writes `B1`.
+      - The DOWN of layer 11 in cycle `c` writes `B2[c % 2]`. The DOWN of layer 17 writes `Y`, and `B3` in the last
+        cycle.
+      - Each other run writes `Xw` in place. The messages of cycle `c` read `P = B2[(c - 1) % 2]` and `Y`.
+    - **The row factors.** Each producer of a row writes its row factor. DOWN writes the factor of `x` into slot 6 of
+      its table (`EXPERT_TABLE_OUT_RF`).
+    - **The counters of OP_ATTN and OP_ROUTE.** Their offset depended on the rows, so a call after a smaller call
+      merged too early (found in `8f9f4339`). Now the counters sit first, at a fixed size: 24 words for OP_ATTN and
+      580 for OP_ROUTE (`c1c923d9`). Rule: the head of the counters of an op never depends on the count of rows.
+    - **The cache of the rings.** The pass keeps the ring of each shape: rows, cycles, logit rows and the form of
+      PROJ (`8aee95f9`). A call of a loaded shape patches only the positions of PROJ and ATTN and the chunks of
+      ATTN. Each span covers a whole plane or a whole region, so no span changes.
+    - **The gates of a run** read the tape (milestone 37 step 10). The worst errors, relative to the rms of the tape,
+      are 4.2e-5 for the attention output, 2.6e-5 for `r` and 2.3e-5 for `h_e`. The route picks equal the tape on all
+      240 rows. The MoE output equals the tape within 3.8e-6 on NVFP4 runs and 1.5e-6 on MXFP8 runs. At most 12 of
+      11,520 UP codes and 10 of 46,080 DOWN codes flip in a run.
+    - **The quantized reference expands each NVFP4 expert in `f32`**, as this binding does:
+      `(e2m1 × block_scale) × (w_amax / w_denominator)`, with no `bf16` rounding of any term (`09b50eb4`). Before,
+      it took the `bf16` expansion of transformers, and the MoE output differed by up to 2.6e-2. The quantized call
+      gives the rows of an expert in token order, as the replay of the tape does.
+    - **The gate of coherence**, against the quantized golden at 3 cycles, on 15 prompts. Two runs of the CPU
+      reference differ by 1.9 in the last logits, so the bounds are wide:
+      - The top token equals the golden on every prompt. Measured: 15 of 15.
+      - The largest gap over the 64 top ids of the golden is under 6.0. Measured: 0.52 to 3.67.
+      - The gap of the logsumexp is under 4.6. Measured: 0.002 to 0.51.
+      - A prefill of 17 ids has 7 decode steps after it. At most one greedy token differs, where the golden's margin
+        is under 0.5. Measured: 8 of 8 equal. Step 5 is a near tie, with a margin of 0.279.
+      - Each cache format passes the same gate (`173a126e`, the golden of `09b50eb4`):
+
+        | cache | gap over the 64 top ids | gap of the logsumexp | wrong top tokens | greedy tokens |
+        |---|---|---|---|---|
+        | `f32` | 0.52 to 3.67 | 0.002 to 0.51 | 0 of 15 | 8 of 8 |
+        | `bf16` | 0.42 to 4.79 | 0.003 to 0.87 | 0 of 15 | 7 of 8 (step 5, margin 0.279) |
+        | `e4m3` | 0.32 to 4.36 | 0.003 to 1.32 | 0 of 15 | 8 of 8 |
+
+        At short context the three formats run at 37.8 to 37.9 tokens each second at 1 row. There the attention is a
+        small part of the pass. The formats differ at long context ("OP_ATTN").
+    - **Decode equals block.** The splits 16 + 1, 9 + 8 and 17 single steps give the bits of one block of 17. That
+      holds for the last logits and for each plane and state of the 48 runs, at G of 48, 24, 7 and 1.
+    - **Speed** at 3 cycles, an `f32` cache, position about 100. A decode step takes 31.0 ms on the GPU at 1 row,
+      32 tokens each second. 16 rows take 76.7 ms, 209 tokens each second. With the cache of the rings, the host
+      adds 0.67 ms to a call. With the claim of items ("Work items and assignment"), a step takes 26.9 to 27.9 ms end
+      to end at 1 row in a test build.
+    - **Speed in a release build** (`862460b0`, 3 runs). A decode step at 1 row takes 26.53 to 26.69 ms end to end:
+      37.5 to 37.7 tokens each second. The kernel takes 26.02 to 26.19 ms: 38.2 to 38.4. 16 rows give 216 to 217
+      tokens each second. The host time of 0.5 ms is mostly the read of the logits.
+    - **The cut of the expert items** is a host rule: UP takes 9 tiles of a pair in an item, and DOWN takes 3. The
+      bits are the same at each cut that divides 36. The expert ops prefetch the claimed next item.
+
+      | op at 1 row | us in the pass | budget | GB/s |
+      |---|---:|---:|---:|
+      | PROJ | 225 | 165 | 176 |
+      | OUT_MIX | 87 | 61 | 163 |
+      | UP, NVFP4 | 119 | 100 | 202 |
+      | UP, MXFP8 | 194 | 182 | 225 |
+      | DOWN, NVFP4 | 75 | 50 | 160 |
+      | DOWN, MXFP8 | 109 | 91 | 202 |
+      | GATE_DOWN | 7.6 | 7.4 | 233 |
+      | GATE_UP | 14 | 7.4 | 127 |
+      | ROUTE | 15 | 3.5 | 39 |
+      | MIX | 4.9 | 2 | |
+      | HEAD | 3,981 | 3,840 | 232 |
+
+- **The pass for many slots** (milestone 37 step 11, merged in `3829bc2a`). One pass holds many slots, each of its
+  own length, with the reserve of the most cycles.
+  - A call names its slot and its cycles. Its logit rows are a strictly rising set inside a span of 16 rows, or
+    none. With none, the call has no MIX_OUT and no HEAD.
+  - The pass allocates no device memory in a call: one arena is made at open. The ring cache holds at most 64
+    lists, and it drops the least recently used.
+  - A clear zeroes the conv states and the position, and it resets the poison (**Proposed**, Opus 5.5). The planes
+    are never read above the position, so stale rows do not matter. A gate shows the bits of a fresh slot. Reason:
+    a full zero of a slot of 35 GB.
+  - The parts of a slot are the k and v rows of a range and the conv state. The rows are position-major
+    `[n][8][128]` in the stored bytes. The conv state is `[3][6656]` `f32`.
+  - A sliding state keeps the last `RING_ROWS` (1,536) positions. A write refuses a non-finite value.
+- **The host spec** (milestone 37 step 11, merged in `ded4cfd9`). The three rules below are **Proposed** (Opus 5.5).
+  Reason: one binary for each scenario, a snapshot that holds the stored bits, and limits that declare only what the
+  engine serves.
+  - The config key `cache` is `f32`, `bf16` or `e4m3`, with the default `f32`. It selects the cubin of that format.
+    The identity numbers hold `cache` and the `cubin_blake3` of that cubin.
+  - `feed.block` and `cache` are `ReferenceDefining` bit settings. The dtype of the k and v parts is `F32`, `BF16`
+    or `F8E4M3`.
+  - Until step 13 the limits hold no `Control`, no taps, no `TokensAndRows`, no `vision` or `control` term, and
+    no work reserve of the tower.
+  - The held-state rules mirror the B70 `Held`, with a ring of 1,536 rows, no spill, and tokens only (`held.rs`).
+    `identity.rs` mirrors the digest of the checkpoint and the text facts.
+- **The engine** (milestone 37 step 11, merged in `e2e6cbdb`).
+  - The engine opens one GPU with the cubin of its cache format. It owns the device, the weights and the pass. It
+    frees them in this order: pass, weights, device. A drop that leaves a device buffer panics.
+  - The open refuses before it reads the weights when the planned device bytes pass the free bytes. After the load
+    it refuses when fewer than 2 GiB stay free, and when the weights take more device bytes than the plan. Real
+    weights take 18,886,376,960 bytes against a plan of 18,889,360,896. Each message names the bytes.
+  - Reason: on unified memory, other work and the page cache move the free bytes by tens of GB while an open runs.
+    Thus a comparison of the free bytes before and after the load cannot hold. This rule of memory is **Proposed**
+    (Opus 5.5).
+  - The limits are the plan of the factory. A refused call changes nothing.
+  - A failed launch poisons the slot. The pass, the part writes and `set_n` above 0 are refused until `slot_clear`
+    or `set_n(0)`. Reads and other slots work.
+  - A sticky CUDA error (700, 701, 702, 715, 719 or 999) marks the engine dead. The call returns the poison, and
+    each later call panics for a planned restart (spec 8.5). **Proposed** (Opus 5.5). Reason: the context of the
+    GPU cannot run again after such an error.
+  - A pass at position 0 starts from conv zeros.
+  - The conformance suite passes with 2 slots of 2,048 positions. Four gates do not apply, the same four as for
+    LFM3: `seal_only_at_boundaries`, `quantum_same_boundaries`, `segments_exact_bits` and `stage_path_bits`.
+  - The digest of the checkpoint takes 15.9 s at each open.
+- **The quality of the cache formats at depth** (milestone 37 step 11, merged in `ae89d9bb`). The reference is the
+  `f32` cache, on the PG-19 text, in windows of 16 rows at 4K, 32K and 128K positions.
+  - `bf16` kept the top token on 48 of 48 rows. The mean KL was 3.5e-2 to 8.1e-3.
+  - `e4m3` kept it on 46 of 48 rows, and the two others were near ties. The mean KL was 2.4e-2 to 9.6e-3.
+  - The KL falls with depth. Over 256 greedy steps from six prompts, each format flips 1 to 21 steps. Each flip is
+    a near tie, with a margin of 0.33 or less.
+  - The prefill to 131,072 positions takes 368 s for `f32` and 335 s for `bf16` and `e4m3`.
+  - The test `cuda_kv_quality` runs only with `--ignored` and `NAGAYA_HAYSTACK_DIR`, the folder of the PG-19 test
+    split. The binding names no path. The test does not cover 400K positions or retrieval.
+
+- **Identity and oracle.** Because expert activations are quantized to NVFP4 and MXFP8, this engine has its own
+  quantized host oracle and engine identity. Its `numbers` hold `quant` (`nvfp4_fouroversix_mae+mxfp8_ue8m0`),
+  `max_block`, `extra_runs`, `cache`, and `state` (`3`, `STATE_LAYOUT` in `spec.rs:28`). They also hold the `nvcc`
+  version and the BLAKE3 of the `.cubin` of the cache format.
+- **Long-context sizing.** The weights take about 19.5 GB of the 121 GB of unified memory. Here 400K means 409,600
+  positions. A slot at 3 cycles has 48 runs of state: 8 full runs and 40 sliding runs. `slot_bytes` in `spec.rs`
+  gives the bytes, in `f32`:
+  - A full run holds 2 planes of one row of 1,024 values for each position. The 8 full runs of 409,600 positions
+    take 26,844,184,576 bytes with their convolution state.
+  - Each of the 40 sliding runs holds a ring of 1,536 rows, with no spill copy (`32589716`). The ring is the least
+    multiple of the chunk of 256 keys that holds the window and a block of 512 rows (`sliding_ring_rows`, `attn.rs`).
+  - The bytes of a slot, from the tests of `spec.rs` (`e4m3` has a unit scale):
+
+    | positions | `f32` | `e4m3` |
+    |---:|---:|---:|
+    | 409,600 | 27,350,695,936 | 6,840,549,376 |
+    | 524,288 | 34,866,888,704 | 8,719,597,568 |
+
+  - The attention scratch on top holds the partials of the split mode: 24 groups, each chunk of 256 keys, 16 rows of
+    132 floats. At 512 rows it takes 324,403,296 bytes for 409,600 positions and 415,236,192 bytes for 524,288
+    (`attn_scratch_bytes`, `spec.rs`).
+
 ## Not covered yet
 
 - Streams. They need a period, a deadline and a late policy, in `limits()` or per job. A pass blocks, so the

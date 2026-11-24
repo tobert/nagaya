@@ -14,6 +14,8 @@ members = [
     "crates/nagaya-mk-embeddinggemma2-bmg",
     "crates/nagaya-mk-lfm3-bmg",
     "crates/nagaya-mk-inkling2-bmg",
+    "crates/nagaya-mk-cuda",
+    "crates/nagaya-mk-inkling2-sm121",
     "crates/nagaya-jinja",
     "crates/nagaya-text-qwen38",
     "crates/nagaya-text-gemma4",
@@ -47,4 +49,7 @@ debug = false
 
 # The host form of Inkling 2 runs the whole model on the CPU in its tests. With no optimization a prompt takes hours.
 [profile.dev.package.nagaya-mk-inkling2-bmg]
+opt-level = 3
+
+[profile.dev.package.nagaya-mk-inkling2-sm121]
 opt-level = 3

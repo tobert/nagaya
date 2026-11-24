@@ -7,7 +7,7 @@ A tree holds only the files that the probe reads.
 |---|---|---|
 | `strix-halo` | An AMD Strix Halo machine: one gfx1151 GPU with unified memory. | Captured (sysfs and procfs), then trimmed. |
 | `b70-pair` | Two Intel Arc Pro B70 cards and an AMD iGPU. | Captured (sysfs and procfs), then trimmed. |
-| `dgx-spark` | An NVIDIA GB10 with unified memory. | Made by hand, not captured. |
+| `dgx-spark` | An NVIDIA GB10 with unified memory. | Captured (sysfs and procfs), then trimmed. |
 
 The `b70-pair` tree is real. The capture copied only the files that the probe reads. `proc/meminfo` keeps its first
 three lines. Each symlink was resolved, and the files sit at the path of the link. A network speed that the kernel
@@ -17,13 +17,7 @@ The `b70-pair` tree also holds the files of the device CPU sets (spec 3.2b): `lo
 `cache/index3/shared_cpu_list` of each CPU. The capture copied them from the machine. The `strix-halo` and
 `dgx-spark` trees have none of them, because a machine with one card reads no CPU list.
 
-The `dgx-spark` tree is made by hand. Its values come from the kernel docs for the NVIDIA layout, and from the spec
-table (2.1). Treat each number in it as a guess. These are guesses:
-
-- The PCI id of the GB10 (`10de:2e12`), the PCI domain `000f`, the CPU count (20), the NVMe model, the NIC ids and
-  the host memory.
-- The format of `/proc/driver/nvidia/gpus/*/information`. It is from the driver docs.
-
-When a captured tree replaces the hand-made one, the test for that machine shows each value that was a guess.
+The `dgx-spark` tree is real. `proc/driver/nvidia/gpus/000f:01:00.0/information` keeps the real `Model: Unknown` line
+with the GPU UUID zeroed. A Wi-Fi interface whose `speed` file returns `EINVAL` is stored as `-1`.
 
 Keep all trees well under 200 KB in total. A test checks this.

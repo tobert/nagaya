@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# A stub of nvcc for a type-check on a machine with no CUDA toolkit. It writes an empty cubin file where nvcc would
+# and answers --version. Nothing it makes can run on a GPU.
+set -euo pipefail
+for arg in "$@"; do
+  if [ "$arg" = "--version" ]; then
+    echo "stub nvcc for a type-check"
+    exit 0
+  fi
+done
+out=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2;;
+    *) shift;;
+  esac
+done
+if [ -n "$out" ]; then
+  mkdir -p "$(dirname "$out")"
+  : > "$out"
+fi

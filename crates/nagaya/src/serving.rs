@@ -67,7 +67,7 @@ impl FamilyRegistry {
     }
 
     /// Make a registry with every family library that this build has: `toy` with the feature `fake`, `qwen38`
-    /// with the feature `hip`, and `gemma4`, `lfm3` and `inkling2` with the feature `xe`.
+    /// with the feature `hip`, `gemma4` and `lfm3` with the feature `xe`, and `inkling2` with `xe` or `cuda`.
     pub fn compiled_in() -> Self {
         #[allow(unused_mut)]
         let mut registry = Self::new();
@@ -86,7 +86,7 @@ impl FamilyRegistry {
         registry.register(nagaya_mk_gemma4_bmg::spec::FAMILY, crate::gemma4::open_family);
         #[cfg(feature = "xe")]
         registry.register_with_objects(nagaya_mk_lfm3_bmg::spec::FAMILY, crate::lfm3::open_family_with);
-        #[cfg(feature = "xe")]
+        #[cfg(any(feature = "xe", feature = "cuda"))]
         registry.register_with_objects(nagaya_mk_inkling2_bmg::spec::FAMILY, crate::inkling2::open_family_with);
         registry
     }
@@ -270,7 +270,9 @@ pub fn lab_files(
     for placement in &profile.engines {
         let name = &placement.name;
         // The lab reads the head of Inkling 2 too. The profile names no J-Lens of it (docs/lab.md, "Inkling 2").
-        if placement.kind == crate::inkling2::KIND && placement.lab.is_empty() {
+        if (placement.kind == crate::inkling2::KIND || placement.kind == crate::inkling2_sm121::KIND)
+            && placement.lab.is_empty()
+        {
             let what = format!("the config of engine `{name}`");
             folders.insert(name.clone(), crate::inkling2::model_dir(&placement.config, &what)?);
             continue;

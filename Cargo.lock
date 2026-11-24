@@ -1196,6 +1196,7 @@ dependencies = [
  "nagaya-mk-embeddinggemma2-bmg",
  "nagaya-mk-gemma4-bmg",
  "nagaya-mk-inkling2-bmg",
+ "nagaya-mk-inkling2-sm121",
  "nagaya-mk-lfm3-bmg",
  "nagaya-mk-qwen38-gfx1151",
  "nagaya-mk-qwen3tts-bmg",
@@ -1284,6 +1285,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nagaya-mk-cuda"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nagaya-mk-embeddinggemma2-bmg"
 version = "0.1.0"
 dependencies = [
@@ -1329,6 +1338,20 @@ dependencies = [
  "nagaya-mk-bmg",
  "nagaya-text-inkling2",
  "rayon",
+ "serde_json",
+]
+
+[[package]]
+name = "nagaya-mk-inkling2-sm121"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "nagaya-abi",
+ "nagaya-conformance",
+ "nagaya-mk-bmg",
+ "nagaya-mk-cuda",
+ "nagaya-mk-inkling2-bmg",
+ "nagaya-text-inkling2",
  "serde_json",
 ]
 

@@ -1,10 +1,11 @@
-Model: 		 NVIDIA GB10
-IRQ:   		 190
+Model: 		 Unknown
+IRQ:   		 427
 GPU UUID: 	 GPU-00000000-0000-0000-0000-000000000000
-Video BIOS: 	 ??.??.??.??.??
+Video BIOS: 	 9a.0b.2d.00.00
 Bus Type: 	 PCIe
-DMA Size: 	 47 bits
-DMA Mask: 	 0x7fffffffffff
+DMA Size: 	 41 bits
+DMA Mask: 	 0x1ffffffffff
 Bus Location: 	 000f:01:00.0
 Device Minor: 	 0
+GPU Firmware: 	 580.178.04
 GPU Excluded:	 No

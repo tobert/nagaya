@@ -147,6 +147,8 @@ The crates live in directories under `crates/`. Use these crates:
 | `nagaya-mk-lfm3-bmg` | the LFM3 engine of both models on one B70 card: the backbone, vision, audio, speech, control vectors, batched passes | ABI "LFM3" |
 | `nagaya-text-lfm3` | the LFM3 family library of both models: tokenizer, templates, escapes, XML tool calls, media positions | 11.3, 11.11 |
 | `nagaya-mk-inkling2-bmg` | the Inkling 2 engine of both models on one B70 card: the weight formats, the host form, the ring of a pass, cycles | ABI "Inkling 2" |
+| `nagaya-mk-cuda` | the megakernel interpreter of CUDA GPUs: Driver API, the task protocol, the CUDA C++ kernel source, one cubin per engine | ABI "The GB10 Inkling 2 binding" |
+| `nagaya-mk-inkling2-sm121` | the Inkling 2 engine on one GB10 GPU: native NVFP4 and MXFP8 activation quantization, host oracle, long-context spec | ABI "The GB10 Inkling 2 binding" |
 | `nagaya-text-inkling2` | the Inkling 2 family library of both models: tokenizer, template, effort, escapes, council rendering, reply parser | 11.3, 11.18 |
 | `nagaya-text-toy` | the toy family library on gogi's `gogi-toy`, for tests with the fake engine | 11.3b |
 | `nagaya-conformance` | the conformance suite (8.3), generic over the `Engine` trait | 8.3 |
@@ -229,6 +231,15 @@ http://<address>:8091`, port 8096). `signoff.md` gives the address. Write each r
 - A video part needs the feature `video` and ffmpeg's libraries. The deploy of b70host builds with
   `--features xe,video`.
 
+#### The engines on the GB10
+
+- The shared interpreter is `nagaya-mk-cuda`. Its kernels are CUDA C++ with inline PTX, compiled ahead of time by
+  `nvcc` to `sm_121a` `.cubin` files into `OUT_DIR` under the feature `cuda`.
+- The crate links the CUDA Driver API (`libcuda`) only when `cuda` is enabled. With no feature, `cargo test` needs no
+  GPU and no `nvcc`.
+- Run GPU tests with one thread (`--test-threads=1`) and with `NAGAYA_TEST_CARDS` set to the free GPU PCI address.
+- Check `nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv` before every GPU test window.
+
 ### Checks
 
 Run these before each commit. Each one must pass.
@@ -238,6 +249,7 @@ cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy --workspace --all-targets --features hip -- -D warnings
 cargo clippy --workspace --all-targets --features xe -- -D warnings
+cargo clippy --workspace --all-targets --features cuda -- -D warnings
 cargo test --workspace --tests
 cargo test --workspace --tests --no-default-features
 python3 tools/ste_check.py README.md AGENTS.md docs/*.md
@@ -250,6 +262,12 @@ nothing that it builds runs on a card:
 
 ```
 PATH="$PWD/tools/ocloc-stub:$PATH" cargo clippy --workspace --all-targets --features xe -- -D warnings
+```
+
+The check with `--features cuda` needs `nvcc`. On a machine with no `nvcc`, run it with `tools/nvcc-stub`:
+
+```
+PATH="$PWD/tools/nvcc-stub:$PATH" cargo clippy --workspace --all-targets --features cuda -- -D warnings
 ```
 
 Run `cargo fmt --all` often, not only before a commit. On gfx1151host, after a change to `nagaya-mk-qwen38-gfx1151`, also

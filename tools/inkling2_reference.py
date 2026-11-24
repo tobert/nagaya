@@ -12,6 +12,28 @@ NVFP4 and MXFP8 experts to bf16 at load. This tool then moves every other parame
 expands to f32 in its call. Thus every sum is f32, and the weights hold their exact values. A run in bf16 differs
 from it by 0.2 on average in each logit (measured on 2026-11-21), so the oracle is f32.
 
+The option --quant runs the quantized mode: each expert quantizes its input rows as the checkpoint requires, and the
+files get the infix ".quant" (`inkling2-mini.quant.oracle.json`, `inkling2-mini.quant.layers.safetensors`, and so on),
+so they never replace the f32 files. transformers quantizes no activation, so `tools/inkling2_quant.py` holds the rules
+of vLLM commit 186882d9e8 (the same rules as `crates/nagaya-mk-inkling2-sm121/src/quant.rs`). The layer split comes from
+`hf_quant_config.json` of the model folder: NVFP4 (block 16, `fouroversix_mae`) for the layers of Mini 0 to 19, and
+MXFP8 (block 32, ue8m0) for the layers 20 to 23. Two rows are quantized in each expert call, as vLLM does them:
+
+  - the input of the gate and up projection: the row of each token, once for all its experts (the router sees the
+    unquantized row), with K = the hidden size 2304 (`ops/moe.py` `_quantize_x`, `route`);
+  - the input of the down projection: the row of each token and expert slot, after the softcapped SwiGLU AND after the
+    routing weight (`ops/activation.py` `_situ_quantize_kernel`), with K = 1152. Thus the quantized mode multiplies
+    the routing weight before the down projection. The f32 mode multiplies after it, as transformers does.
+
+The weights of the NVFP4 experts are f32 too: `Nvfp4Source` decodes each expert from the checkpoint as
+`(e2m1 * block_scale) * (w_amax / w_denominator)`, with no bf16 rounding of any term, and the bf16 expansion of
+transformers is dropped after the load. The MXFP8 experts keep the bf16 expansion, which is exact for them.
+
+The reference keeps f32: a quantized row is expanded to f32 (NVFP4: `e2m1 * block_scale * (amax * (1/1536))`; MXFP8:
+`e4m3 * 2^(byte - 127)`), and the f32 linear runs with the expanded weights. The weights hold their exact values, so the
+product equals the quantized dot product up to the order of the f32 sums. vLLM also rounds the gate and up output and
+the SwiGLU result to bf16 before it quantizes. This tool does not, because the trunk of the engine is f32.
+
 The tool reads the model folders and never writes into them. It writes only into --out. It loads one model at a
 time; each one holds about 74 GiB of RAM.
 
@@ -24,13 +46,55 @@ The stages:
   vision   two synthetic images through the processor, the vision tower and the projector, and a chat prompt that
            holds both, through Mini
 
+With --quant the stage "layers" also writes the tape of the ops, `inkling2-mini.quant.tape.safetensors`, so that a
+device gate can read the rows that the oracle quantized. A last-bit change of an f32 sum flips a code of the quantizer,
+so an engine cannot match the logits of the quantized oracle tightly, but it can match each op on the rows of the tape.
+The file holds P = 5 positions of the prompt "The capital of France is" and the 48 runs of 3 cycles. For each run NN
+(00 to 47, the order of `run_layers` in the layers file), all in f32 unless the dtype is named:
+
+  runNN.attn      [P, H*D] the input of the output projection `wo`: the attention output after the output gate
+                  (`sigmoid(gate_proj(x))`). H*D is 4096 in a sliding layer and 3072 in a full layer, as the layer has it.
+  runNN.r         [P, 2304] the residual after the attention convolution: the value that the MLP output joins. In a layer
+                  that is not a block boundary it already holds the block residual (the input of `mlp_input`).
+  runNN.h_e       [P, 2304] the router input and the input of the experts before any quantization: the normed MLP input.
+  runNN.route_ids [P, 8] i32 the 8 experts of each row in the slot order of the engine: ascending expert id.
+  runNN.route_weights [P, 8] the routing weight of each pick (normalized, times `routed_scaling_factor`), same order.
+  runNN.route_tie [P] i32 1 where the 8th and the 9th score of the router are equal, so that the pick depends on the
+                  tie rule of `torch.topk`; else 0. The reference calls `topk(sorted=False)`, which promises no rule
+                  for a tie. The tape sorts the picks by expert id, so only a tie at the 8th place can change them.
+  runNN.x_q       [P, 2304] the fake quantized expert input (`e2m1 * block_scale * outer`, or `e4m3 * 2^(byte-127)`).
+  runNN.x_codes   [P, 1152] u8 (NVFP4, two e2m1 codes in each byte, the even element in the low nibble) or [P, 2304] u8
+                  (MXFP8, e4m3 bytes) the codes of `x_q`.
+  runNN.x_scales  [P, 144] u8 (NVFP4, e4m3 block scales) or [P, 72] u8 (MXFP8, ue8m0 bytes).
+  runNN.x_amax    [P] the row amax of the input; its outer scale is `amax * (1/1536)`. Only a NVFP4 layer has it.
+  runNN.down_q    [P, 8, 1152] the fake quantized input of each down projection, in the slot order of `route_ids`. It is
+                  taken after the softcapped SwiGLU AND after the routing weight, as the quantized mode does it.
+  runNN.down_codes, runNN.down_scales, runNN.down_amax: the raw parts of `down_q`, with the shapes of the `x_` keys
+                  and the leading axes [P, 8] in place of [P] ([P, 8, 576] u8 NVFP4 codes, [P, 8, 72] scales).
+  runNN.x_buf, runNN.down_buf: u8 whole buffers of the rows (x: P rows; down: P * 8 rows, row = position * 8 + slot)
+                  in the layout of `QuantRowsLayout` (`nagaya-mk-cuda`): the codes of all rows, then the scales of all
+                  rows, then the f32 amax of each row (NVFP4 only), little endian.
+  runNN.out       [P, 2304] the row after the run, from the pass that made this tape. The file also holds `ids` [P] i64,
+                  `final_norm` [P, 2304] and `logits_last` [200058] of that pass. The sums of f32 depend on the CPU, so a
+                  layers file from another machine can hold other codes of the quantizer: read the tape alone.
+  runNN.moe       [P, 2304] the output of the MoE block before the convolution after the MLP.
+
+The metadata `meta` of the file holds the same list in `keys`, the layer and the activation format of each run, and
+the count of ties. The tool checks that the replay of each run (the gate and up projection of the rows `x_q`, the
+SwiGLU, the routing weight, the quantizer, and the down projection of the rows `down_q`) gives `down_q` and `moe` bit
+for bit. The check runs after the file is written, so that a failure keeps the data.
+
 The tool stops with an AssertionError when a self check fails. The checks:
 
   - the patched expert call runs in every layer, so no expert sum is in bf16;
+  - with --quant, the quantizer runs in every expert call of every layer, on the input row and on the down input
+    (`ExpertCalls.verify`);
   - each prompt fits in MAX_TOKENS tokens;
   - the hooks see 24 + 2 * 12 = 48 runs of the decoder layers at 3 cycles;
   - the final norm of the hooks, the head and the softcap give the logits of the model;
-  - a decode with the cache gives the logits of a forward over the whole sequence with no cache;
+  - a decode with the cache gives the logits of a forward over the whole sequence with no cache. With --quant the
+    forward replays the quantized rows of the decode (`QuantTape`): a quantizer is a step function, so two orders of
+    the f32 sums can flip a code, and a free comparison would measure the flips and not the cache;
   - the count of placeholders of an image equals its count of projector rows;
   - the rows that the model scatters into the placeholders are the projector rows, and the other rows are the
     normed embeddings of their tokens;
@@ -38,6 +102,7 @@ The tool stops with an AssertionError when a self check fails. The checks:
 """
 
 import argparse
+import collections
 import hashlib
 import json
 import sys
@@ -59,7 +124,10 @@ STAGES = ("text", "layers", "cycles", "decode", "vision")
 # pads each image on the right and at the bottom.
 VISION_IMAGES = ((213, 118, 35_0), (637, 479, 35_1))
 VISION_PROMPT = "Describe the two images."
+REFERENCE = "transformers inkling2_loop 046bdb8cc2, f32 sums with bf16 weights, CPU"
 STARTED = time.time()
+# The infix of every file name that this run writes: ".quant" in the quantized mode, so that the f32 files stay.
+TAG = ""
 
 
 def log(message):
@@ -118,6 +186,7 @@ def versions():
         "torch": torch.__version__,
         "transformers": transformers.__version__,
         "tokenizers": tokenizers.__version__,
+        "activation_formats": "".join(f[0] for f in ExpertCalls.formats) if ExpertCalls.formats else "none",
     }
 
 
@@ -135,14 +204,139 @@ def source_record(folder):
     }
 
 
+def quant_module():
+    """Loads tools/inkling2_quant.py by its path, because the tool runs with `-I` and has no script folder on its path."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("inkling2_quant", ROOT / "tools/inkling2_quant.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class QuantTape:
+    """The quantized rows of the cache run, which the run with no cache replays.
+
+    A quantizer is a step function: two f32 sums that differ in the last bit can fall on two sides of an edge and
+    flip a code. The cache run and the run with no cache sum in another order, so a free comparison of their logits
+    measures the flips, not the cache. The tape fixes the codes: the second run takes each quantized row from the
+    first run, and the remaining gap is the order of the f32 sums only.
+
+    A row has the key (kind, visit, position, slot). A visit is the place of a call in one forward pass, from 0 to
+    `visits - 1`, and the same visit has the same layer in each pass. The position of a row is the count of rows that
+    the earlier calls of that visit had, plus its place in the call. The input row and the route of a token have the slot -1.
+    A route holds the expert ids and the routing weights of the token.
+    """
+
+    def __init__(self, visits):
+        self.visits = visits
+        self.rows = {}
+        self.replay = False
+        self.flips = 0
+        self.start_run()
+
+    def start_run(self):
+        self.calls = 0
+        self.seen = collections.Counter()
+
+    def begin_call(self, count):
+        """Returns the visit and the position of the first row of this call, for a call of `count` rows."""
+        visit = self.calls % self.visits
+        self.calls += 1
+        first = self.seen[visit]
+        self.seen[visit] += count
+        return visit, first
+
+    def rows_of(self, kind, visit, first, token, slot, fresh):
+        """Records the quantized rows `fresh` (one for each entry of `token` and `slot`), or replays the recorded rows.
+
+        A replay counts in `flips` the rows that the free quantizer would have changed. The outer scale of NVFP4 moves
+        by a few ulp with the order of the sums, so a row counts only when a value moves by more than 1e-5 of its amax.
+        """
+        keys = [(kind, visit, first + int(t), int(s)) for t, s in zip(token, slot)]
+        if not self.replay:
+            for key, row in zip(keys, fresh):
+                check(key not in self.rows, f"the tape has the row {key} twice")
+                self.rows[key] = row.clone()
+            return fresh
+        missing = [key for key in keys if key not in self.rows]
+        check(not missing, f"the run with no cache has the rows {missing[:3]}, which the cache run did not have")
+        taped = torch.stack([self.rows[key] for key in keys])
+        moved = (taped - fresh).abs().amax(dim=1) > 1e-5 * taped.abs().amax(dim=1)
+        self.flips += int(moved.sum())
+        return taped
+
+
+class Nvfp4Source:
+    """The f32 weights of the NVFP4 experts of one layer, decoded from the checkpoint one expert at a time.
+
+    The binding sums the codes of a block, multiplies by the two block scales, and scales the total by
+    `(x_amax * w_amax) * (1 / (1536 * w_denominator))` (engine-abi "The expert epilogue of NVFP4"). The f32 weight
+    `(e2m1 * block_scale) * (w_amax / w_denominator)` gives the same dot up to the order of the sums. transformers
+    would round `w_amax`, `w_denominator` and each weight to bf16 at load. This reader keeps f32, and it holds no
+    expanded weight: a call decodes the rows of one expert from the memory map of the checkpoint.
+    """
+
+    NAMES = {"gate_up_proj": "w13", "down_proj": "w2"}
+
+    def __init__(self, folder, layer):
+        from safetensors import safe_open
+
+        folder = Path(folder)
+        index = json.loads((folder / "model.safetensors.index.json").read_text())["weight_map"]
+        self.keys = {}
+        for name, short in self.NAMES.items():
+            for part in ("weight", "weight_scale", "weight_amax", "weight_outer_scale_denominator"):
+                key = f"model.llm.layers.{layer}.mlp.experts.{short}_{part}"
+                check(key in index, f"the checkpoint has the tensor {key}")
+                self.keys[(name, part)] = (key, folder / index[key])
+        self.handles = {}
+        self.open = safe_open
+        self.quant = ExpertCalls.quant or quant_module()
+        part = "weight_outer_scale_denominator"
+        self.denominators = {name: self.read(name, part, slice(None)) for name in self.NAMES}
+        for name in self.NAMES:
+            check(self.denominators[name].numel() == 1, f"layer {layer} {name} has one denominator")
+
+    def read(self, name, part, span):
+        key, path = self.keys[(name, part)]
+        if path not in self.handles:
+            self.handles[path] = self.open(str(path), "pt")
+        return self.handles[path].get_slice(key)[span]
+
+    def weight(self, name, expert):
+        """The f32 weight of one expert: `[2 * 1152, 2304]` for "gate_up_proj" (the gate rows, then the up rows, as
+        the loader of transformers interleaves them) and `[2304, 1152]` for "down_proj"."""
+        span = slice(expert, expert + 1)
+        codes = self.read(name, "weight", span)[0]
+        scales = self.read(name, "weight_scale", span)[0]
+        amax = self.read(name, "weight_amax", span)[0]
+        values = self.quant.expand_nvfp4_weight(codes, scales, amax, self.denominators[name].reshape(()))
+        if name == "gate_up_proj":
+            # Checkpoint row 2i is the gate row i, and row 2i + 1 is the up row i.
+            values = torch.cat((values[0::2], values[1::2]), dim=0)
+        return values.contiguous()
+
+
 class ExpertCalls:
-    """The expert call of the reference, with every sum in f32. It counts its calls for a self check."""
+    """The expert call of the reference, with every sum in f32. It counts its calls for a self check.
+
+    An expert module with `activation_format` "nvfp4" or "mxfp8" quantizes its input rows (see the docstring of the
+    tool). A module with no format runs the f32 call of transformers. `formats` holds the format of each layer in the
+    quantized mode, and None in the f32 mode.
+    """
 
     count = 0
+    formats = None
+    quant = None
+    tape = None
+    record = None
+    calls = collections.Counter()
+    inputs = collections.Counter()
+    downs = collections.Counter()
 
     @staticmethod
-    def forward(self, hidden_states, top_k_index, top_k_weights):
-        ExpertCalls.count += 1
+    def forward_f32(self, hidden_states, top_k_index, top_k_weights):
         final = torch.zeros_like(hidden_states, dtype=torch.float32)
         with torch.no_grad():
             mask = F.one_hot(top_k_index, num_classes=self.num_experts + 1).permute(2, 1, 0)
@@ -158,9 +352,287 @@ class ExpertCalls:
             final.index_add_(0, token, state.float())
         return final.to(hidden_states.dtype)
 
+    @staticmethod
+    def weight(experts, name, expert):
+        """The f32 weight of one expert. An NVFP4 layer has a source that decodes it from the checkpoint in f32; another
+        layer expands its bf16 parameter."""
+        source = getattr(experts, "nvfp4_source", None)
+        if source is not None:
+            return source.weight(name, int(expert))
+        return getattr(experts, name)[expert].float()
 
-def load(folder):
-    """Loads one model in bf16, then moves every parameter but the experts to f32."""
+    @staticmethod
+    def forward_quantized(self, hidden_states, top_k_index, top_k_weights):
+        """The quantized call. The input row is quantized once for each token. The down input is quantized for each
+        token and slot, after the routing weight, as vLLM does it."""
+        fmt, layer = self.activation_format, self.layer_index
+        final = torch.zeros_like(hidden_states, dtype=torch.float32)
+        if ExpertCalls.quant is None:
+            ExpertCalls.quant = quant_module()
+        tape = ExpertCalls.tape
+        if tape:
+            visit, first = tape.begin_call(hidden_states.shape[0])
+            every = torch.arange(hidden_states.shape[0])
+            # The router is a step function too: a near tie between two experts flips with the order of the sums.
+            route = torch.cat([top_k_index.float(), top_k_weights.float()], dim=1)
+            route = tape.rows_of("route", visit, first, every, [-1] * len(every), route)
+            top_k_index = route[:, : top_k_index.shape[1]].long()
+            top_k_weights = route[:, top_k_index.shape[1] :].to(top_k_weights.dtype)
+        with torch.no_grad():
+            mask = F.one_hot(top_k_index, num_classes=self.num_experts + 1).permute(2, 1, 0)
+            hit = torch.greater(mask.sum(dim=(-1, -2)), 0).nonzero()
+        rows = ExpertCalls.quant.fake_quantize(hidden_states.float(), fmt)
+        if tape:
+            rows = tape.rows_of("input", visit, first, every, [-1] * len(every), rows)
+        ExpertCalls.inputs[layer] += 1
+        if ExpertCalls.record is not None:
+            ExpertCalls.record.begin_call(layer, fmt, hidden_states.float(), top_k_index, top_k_weights, rows)
+        for expert in hit:
+            expert = expert[0]
+            if expert == self.num_experts:
+                continue
+            position, token = torch.where(mask[expert])
+            # The rows of an expert go in the order of their tokens, as in the replay of the tape. A matrix product
+            # gives other bits to a row that changes its place, and the slot order of the call is the score order.
+            token, order = torch.sort(token)
+            position = position[order]
+            state = self._apply_gate(F.linear(rows[token], ExpertCalls.weight(self, "gate_up_proj", expert)))
+            state = state.float() * top_k_weights[token, position, None]
+            weighted = state
+            state = ExpertCalls.quant.fake_quantize(state, fmt)
+            if ExpertCalls.record is not None:
+                ExpertCalls.record.keep_down(token, position, weighted, state)
+            if tape:
+                state = tape.rows_of("down", visit, first, token.tolist(), position.tolist(), state)
+            ExpertCalls.downs[layer] += 1
+            state = F.linear(state, ExpertCalls.weight(self, "down_proj", expert))
+            final.index_add_(0, token, state.float())
+        if ExpertCalls.record is not None:
+            ExpertCalls.record.end_call()
+        return final.to(hidden_states.dtype)
+
+    @staticmethod
+    def forward(self, hidden_states, top_k_index, top_k_weights):
+        ExpertCalls.count += 1
+        ExpertCalls.calls[getattr(self, "layer_index", -1)] += 1
+        if getattr(self, "activation_format", None) is None:
+            return ExpertCalls.forward_f32(self, hidden_states, top_k_index, top_k_weights)
+        return ExpertCalls.forward_quantized(self, hidden_states, top_k_index, top_k_weights)
+
+    @staticmethod
+    def snapshot():
+        return {
+            "count": ExpertCalls.count,
+            "calls": dict(ExpertCalls.calls),
+            "inputs": dict(ExpertCalls.inputs),
+            "downs": dict(ExpertCalls.downs),
+        }
+
+    @staticmethod
+    def verify(before):
+        """The self check after a forward: the expert call ran, and in the quantized mode each layer ran it and the
+        quantizer ran in each call, on the input row and on the down input."""
+        check(ExpertCalls.count > before["count"], "the f32 expert call ran")
+        if ExpertCalls.formats is None:
+            return
+        for layer in range(len(ExpertCalls.formats)):
+            calls = ExpertCalls.calls[layer] - before["calls"].get(layer, 0)
+            inputs = ExpertCalls.inputs[layer] - before["inputs"].get(layer, 0)
+            downs = ExpertCalls.downs[layer] - before["downs"].get(layer, 0)
+            check(calls > 0, f"the expert call ran in layer {layer}")
+            check(inputs == calls, f"layer {layer} quantized its input row in each of {calls} calls, not {inputs}")
+            check(downs >= calls, f"layer {layer} quantized its down input in each of {calls} calls, not {downs}")
+
+
+class OpTape:
+    """Keeps the rows of each op of each run, for one forward of the quantized mode (the file `.tape.safetensors`).
+
+    The hooks keep the attention output, the residual and the MoE output. `ExpertCalls` calls `begin_call`, `keep_down`
+    and `end_call` for the rest. The docstring of the tool describes each key. The picks go in the slot order of the
+    engine, which is ascending expert id.
+    """
+
+    def __init__(self, text):
+        self.attn, self.r, self.moe, self.ties, self.calls = [], [], [], [], []
+        self.current = None
+        self.handles = []
+        for layer in text.layers:
+            self.handles.append(layer.self_attn.o_proj.linear.register_forward_pre_hook(self.keep_attn))
+            self.handles.append(layer.mlp_input.register_forward_pre_hook(self.keep_r))
+            self.handles.append(layer.mlp.register_forward_hook(self.keep_moe))
+            self.handles.append(layer.mlp.gate.register_forward_hook(self.keep_ties))
+        ExpertCalls.record = self
+
+    def keep_attn(self, _module, args):
+        self.attn.append(args[0][0].detach().float().clone())
+
+    def keep_r(self, _module, args):
+        self.r.append(args[1][0].detach().float().clone())
+
+    def keep_moe(self, _module, _args, output):
+        self.moe.append(output[0].detach().float().clone())
+
+    def keep_ties(self, module, _args, output):
+        """Marks the rows where the 8th and the 9th biased score are equal: `topk` has no rule for such a tie."""
+        logits = output[0]
+        scores = module.score_fn(logits) + module.e_score_correction_bias
+        top = torch.topk(scores, module.top_k + 1, dim=-1).values
+        self.ties.append((top[:, module.top_k - 1] == top[:, module.top_k]).to(torch.int32))
+
+    def begin_call(self, layer, fmt, hidden, index, weights, rows):
+        count, top = index.shape
+        order = torch.argsort(index, dim=1)
+        # `rank[t, p]` is the slot of the pick p of the token t in the ascending order of the expert ids.
+        rank = torch.argsort(order, dim=1)
+        self.current = {
+            "layer": layer,
+            "format": fmt,
+            "h_e": hidden.detach().clone(),
+            "route_ids": torch.gather(index, 1, order).to(torch.int32),
+            "route_weights": torch.gather(weights.float(), 1, order),
+            "x_q": rows.detach().clone(),
+            "rank": rank,
+            "filled": torch.zeros(count, top, dtype=torch.bool),
+        }
+
+    def keep_down(self, token, position, weighted, quantized):
+        call = self.current
+        if "down_q" not in call:
+            shape = (*call["filled"].shape, quantized.shape[1])
+            call["weighted"], call["down_q"] = torch.zeros(shape), torch.zeros(shape)
+        slot = call["rank"][token, position]
+        check(not bool(call["filled"][token, slot].any()), "a down row of the tape is written twice")
+        call["weighted"][token, slot] = weighted.detach()
+        call["down_q"][token, slot] = quantized.detach()
+        call["filled"][token, slot] = True
+
+    def end_call(self):
+        call = self.current
+        check(bool(call["filled"].all()), "each token and slot has a down row in the tape")
+        self.calls.append(call)
+        self.current = None
+
+    def remove(self):
+        for handle in self.handles:
+            handle.remove()
+        ExpertCalls.record = None
+
+    def raw(self, rows, fmt):
+        """The raw parts of fake quantized rows `[R, K]`: the codes, the scale bytes and the amax (None for MXFP8).
+
+        The tool quantizes the unquantized rows again and checks that the expansion gives the fake quantized rows.
+        """
+        quant = ExpertCalls.quant
+        if fmt == "nvfp4":
+            codes, scales, amax = quant.quantize_nvfp4(rows)
+            check(torch.equal(quant.dequantize_nvfp4(codes, scales, amax), quant.fake_quantize(rows, fmt)), "the raw NVFP4 parts")
+            return quant.pack_nibbles(codes), scales, amax
+        codes, scales = quant.quantize_mxfp8(rows)
+        check(torch.equal(quant.dequantize_mxfp8(codes, scales), quant.fake_quantize(rows, fmt)), "the raw MXFP8 parts")
+        return codes, scales, None
+
+    def tensors(self, order):
+        """The tensors of the tape for the runs in `order` (the layer of each run), and the keys of the metadata."""
+        check(len(self.calls) == len(order), f"{len(self.calls)} expert calls for {len(order)} runs")
+        for name in ("attn", "r", "moe", "ties"):
+            check(len(getattr(self, name)) == len(order), f"{len(getattr(self, name))} {name} rows for {len(order)} runs")
+        out, formats = {}, []
+        for run, layer in enumerate(order):
+            call = self.calls[run]
+            check(call["layer"] == layer, f"run {run} is layer {layer}, and its expert call is layer {call['layer']}")
+            name = f"run{run:02}"
+            out[f"{name}.attn"] = self.attn[run]
+            out[f"{name}.r"] = self.r[run]
+            out[f"{name}.h_e"] = call["h_e"]
+            out[f"{name}.route_ids"] = call["route_ids"]
+            out[f"{name}.route_weights"] = call["route_weights"]
+            out[f"{name}.route_tie"] = self.ties[run]
+            out[f"{name}.x_q"] = call["x_q"]
+            out[f"{name}.down_q"] = call["down_q"]
+            out[f"{name}.moe"] = self.moe[run]
+            formats.append(call["format"])
+            codes, scales, amax = self.raw(call["h_e"], call["format"])
+            out[f"{name}.x_codes"], out[f"{name}.x_scales"] = codes, scales
+            out[f"{name}.x_buf"] = quant_buffer(codes, scales, amax)
+            if amax is not None:
+                out[f"{name}.x_amax"] = amax
+            count, top, width = call["down_q"].shape
+            weighted = call["weighted"].reshape(count * top, width)
+            check(torch.equal(ExpertCalls.quant.fake_quantize(weighted, call["format"]).reshape(count, top, width), call["down_q"]), "the down rows are the quantized weighted rows")
+            codes, scales, amax = self.raw(weighted, call["format"])
+            out[f"{name}.down_buf"] = quant_buffer(codes, scales, amax)
+            out[f"{name}.down_codes"] = codes.reshape(count, top, -1)
+            out[f"{name}.down_scales"] = scales.reshape(count, top, -1)
+            if amax is not None:
+                out[f"{name}.down_amax"] = amax.reshape(count, top)
+        return out, formats
+
+
+def quant_buffer(codes, scales, amax):
+    """The bytes of a buffer of quantized rows as `QuantRowsLayout` of `nagaya-mk-cuda` lays it out: the codes of all
+    the rows, then the scales of all the rows, then, for NVFP4 only, the f32 amax of each row (little endian)."""
+    parts = [codes.reshape(-1), scales.reshape(-1)]
+    if amax is not None:
+        parts.append(amax.contiguous().reshape(-1).view(torch.uint8))
+    return torch.cat(parts)
+
+
+def replay_moe(experts, fmt, tape, name):
+    """The MoE of one run, from the rows of the tape: returns the replayed output and the replayed down rows.
+
+    It does the steps of `ExpertCalls.forward_quantized` on the rows `x_q`, in the slot order of the tape, so the
+    result must equal `down_q` and `moe` bit for bit.
+    """
+    quant = ExpertCalls.quant or quant_module()
+    ids, weights, x_q = tape[f"{name}.route_ids"].long(), tape[f"{name}.route_weights"], tape[f"{name}.x_q"]
+    final = torch.zeros(x_q.shape, dtype=torch.float32)
+    down = torch.zeros_like(tape[f"{name}.down_q"])
+    for expert in sorted(set(ids.flatten().tolist())):
+        token, slot = torch.where(ids == expert)
+        state = experts._apply_gate(F.linear(x_q[token], ExpertCalls.weight(experts, "gate_up_proj", expert)))
+        state = quant.fake_quantize(state.float() * weights[token, slot, None], fmt)
+        down[token, slot] = state
+        final.index_add_(0, token, F.linear(state, ExpertCalls.weight(experts, "down_proj", expert)).float())
+    return final, down
+
+
+def check_replay(text, tape, order, formats):
+    """Every run of the tape replays to its `down_q` and its `moe`, bit for bit."""
+    for run, layer in enumerate(order):
+        name = f"run{run:02}"
+        with torch.no_grad():
+            final, down = replay_moe(text.layers[layer].mlp.experts, formats[run], tape, name)
+        check(torch.equal(down, tape[f"{name}.down_q"]), f"{name} (layer {layer}) replays its down rows")
+        check(torch.equal(final, tape[f"{name}.moe"]), f"{name} (layer {layer}) replays its MoE output")
+
+
+TAPE_KEYS = {
+    "attn": "[P, H*D] f32 the attention output after the output gate: the input of wo",
+    "r": "[P, 2304] f32 the residual after the attention convolution",
+    "h_e": "[P, 2304] f32 the router input: the normed MLP input, before any quantization",
+    "route_ids": "[P, 8] i32 the 8 experts of each row, ascending expert id",
+    "route_weights": "[P, 8] f32 the routing weight of each pick, same order",
+    "route_tie": "[P] i32 1 where the 8th and the 9th router score are equal",
+    "x_q": "[P, 2304] f32 the fake quantized expert input",
+    "x_codes": "u8 [P, 1152] NVFP4 packed e2m1 codes (even element in the low nibble), or [P, 2304] MXFP8 e4m3 bytes",
+    "x_scales": "u8 [P, 144] NVFP4 e4m3 block scales, or [P, 72] MXFP8 ue8m0 bytes",
+    "x_amax": "[P] f32 row amax of the input, NVFP4 layers only; the outer scale is amax * (1/1536)",
+    "x_buf": "u8 [P * (codes + scales [+ 4])] the buffer of P rows in the layout of QuantRowsLayout: codes, scales, amax",
+    "down_buf": "u8 the same for the P * 8 rows of down_q, row = position * 8 + slot",
+    "down_q": "[P, 8, 1152] f32 the fake quantized down input, after the SwiGLU and the routing weight, slot order",
+    "down_codes": "u8 [P, 8, 576] NVFP4 or [P, 8, 1152] MXFP8, the codes of down_q",
+    "down_scales": "u8 [P, 8, 72] NVFP4 or [P, 8, 36] MXFP8, the scale bytes of down_q",
+    "down_amax": "[P, 8] f32 NVFP4 layers only",
+    "out": "[P, 2304] f32 the row after the run, as runNN of the layers file but from the pass that made this tape",
+    "moe": "[P, 2304] f32 the MoE output before the convolution after the MLP",
+}
+
+
+def load(folder, quantize):
+    """Loads one model in bf16, then moves every parameter but the experts to f32.
+
+    With `quantize`, each expert module gets its layer and its activation format from `hf_quant_config.json`.
+    """
     from transformers import AutoModelForImageTextToText, AutoTokenizer
     from transformers.models.inkling2_loop import modeling_inkling2_loop as modeling
 
@@ -175,6 +647,21 @@ def load(folder):
     modeling.Inkling2LoopExperts.forward = ExpertCalls.forward
     text = model.model.language_model
     check(len(text.layers) == 24, f"the model has 24 layers, not {len(text.layers)}")
+    ExpertCalls.formats = None
+    if quantize:
+        ExpertCalls.quant = ExpertCalls.quant or quant_module()
+        formats = ExpertCalls.quant.layer_formats(folder, len(text.layers))
+        for layer, fmt in enumerate(formats):
+            experts = text.layers[layer].mlp.experts
+            check(isinstance(experts, modeling.Inkling2LoopExperts), f"layer {layer} has the expert module")
+            experts.layer_index, experts.activation_format = layer, fmt
+            if fmt == "nvfp4":
+                # The bf16 expansion of transformers goes away: the source decodes each expert in f32 on demand.
+                experts.nvfp4_source = Nvfp4Source(folder, layer)
+                experts.gate_up_proj.data = torch.empty(0)
+                experts.down_proj.data = torch.empty(0)
+        ExpertCalls.formats = formats
+        log(f"quantized mode: activation formats {''.join(f[0] for f in formats)} (n = nvfp4, m = mxfp8)")
     log(f"loaded {folder}, {model.config.text_config.loop_num_passes} cycles")
     return model, text, tokenizer
 
@@ -186,10 +673,10 @@ def set_cycles(text, count):
 
 def forward(model, ids):
     """The logits of every position of one sequence, with no cache, in f32."""
-    before = ExpertCalls.count
+    before = ExpertCalls.snapshot()
     with torch.no_grad():
         logits = model(input_ids=torch.tensor([ids]), use_cache=False).logits[0].float()
-    check(ExpertCalls.count > before, "the f32 expert call ran")
+    ExpertCalls.verify(before)
     return logits
 
 
@@ -228,12 +715,12 @@ def run_text(model, tokenizer, label, folder, out, facts):
     fixture = {
         "family": "inkling2",
         "model": label,
-        "reference": "transformers inkling2_loop 046bdb8cc2, f32 sums with bf16 weights, CPU",
+        "reference": REFERENCE + (" + quantized expert activations" if TAG else ""),
         "source": source_record(folder),
         "versions": versions(),
         "prompts": entries,
     }
-    path = out / f"{label}.oracle.json"
+    path = out / f"{label}{TAG}.oracle.json"
     path.write_text(json.dumps(fixture, indent=1) + "\n")
     facts[f"{label}.prompt_tokens"] = {e["name"]: len(e["ids"]) for e in entries}
     log(f"wrote {path}")
@@ -283,8 +770,11 @@ def run_layers(model, text, tokenizer, out, facts):
     """The prompt "plain" through Mini at 3 cycles: each run in order, each message and each gate."""
     ids = tokenizer.encode("The capital of France is", add_special_tokens=False)
     tap = RunTap(text)
+    ops = OpTape(text) if ExpertCalls.formats else None
     logits = forward(model, ids)
     tap.remove()
+    if ops:
+        ops.remove()
     check(len(tap.runs) == 48, f"48 runs at 3 cycles, not {len(tap.runs)}")
     order = [layer for layer, _row in tap.runs]
     expected = list(range(6)) + list(range(6, 18)) * 3 + list(range(18, 24))
@@ -302,9 +792,45 @@ def run_layers(model, text, tokenizer, out, facts):
     for index, (layer, gate, row) in enumerate(tap.gates):
         tensors[f"gate{index:02}.{gate}"] = row
     meta = {"prompt": "The capital of France is", "run_layers": order, "versions": versions()}
-    save(tensors, out / "inkling2-mini.layers.safetensors", meta)
+    save(tensors, out / f"inkling2-mini{TAG}.layers.safetensors", meta)
     facts["layers.positions"] = len(ids)
+    if ops:
+        write_tape(text, ops, order, ids, out, facts, tap, logits[-1])
     log(f"wrote layers: {len(tap.runs)} runs, {len(tap.messages)} messages, {len(tap.gates)} gates")
+
+
+def write_tape(text, ops, order, ids, out, facts, tap, logits_last):
+    """Writes the tape of the ops, and then checks that each run replays from it.
+
+    The tape also holds the run outputs of its own forward pass. The sums of f32 depend on the CPU, so the codes of the
+    quantizer can differ from the codes of a layers file that another machine wrote. Use the `out` rows of the tape
+    with the other rows of the tape, not with the rows of the layers file.
+    """
+    tensors, formats = ops.tensors(order)
+    tensors["ids"] = torch.tensor(ids)
+    tensors["final_norm"], tensors["logits_last"] = tap.final_norm, logits_last
+    for run, (_layer, row) in enumerate(tap.runs):
+        tensors[f"run{run:02}.out"] = row
+    ties = int(sum(int(t.sum()) for t in ops.ties))
+    meta = {
+        "prompt": "The capital of France is",
+        "positions": len(ids),
+        "run_layers": order,
+        "run_formats": formats,
+        "boundary_ties": ties,
+        "routing_weight": "acts before the down quantizer: down_q = quantize(swiglu(gate, up) * route_weight); the "
+        "down projection then runs with no further weight (the B70 host form multiplies after it)",
+        "slot_order": "ascending expert id; torch.topk(sorted=False) has no tie rule, route_tie marks the rows where "
+        "the 8th and 9th scores are equal",
+        "keys": TAPE_KEYS,
+        "versions": versions(),
+    }
+    path = out / f"inkling2-mini{TAG}.tape.safetensors"
+    save(tensors, path, meta)
+    facts["layers.tape_boundary_ties"] = ties
+    log(f"wrote {path}: {len(tensors)} tensors, {ties} rows tie at the 8th place")
+    check_replay(text, tensors, order, formats)
+    log("the replay of each run gives its down rows and its MoE output bit for bit")
 
 
 def run_cycles(model, text, tokenizer, label, out, facts):
@@ -321,34 +847,59 @@ def run_cycles(model, text, tokenizer, label, out, facts):
             entries.append(entry)
             log(f"{label} {name} at {count} cycles: top {tokenizer.decode([entry['top_ids'][0]])!r}")
     set_cycles(text, 3)
-    path = out / f"{label}.cycles.json"
+    path = out / f"{label}{TAG}.cycles.json"
     path.write_text(json.dumps({"model": label, "versions": versions(), "prompts": entries}, indent=1) + "\n")
     facts[f"{label}.cycles"] = [1, 2, 3, 4, 5]
     log(f"wrote {path}")
 
 
-def run_decode(model, tokenizer, label, out, facts):
-    """8 greedy tokens of "chat" with the cache of the reference. The logits match a forward with no cache."""
-    ids = tokenizer.encode(chat_text(tokenizer), add_special_tokens=False)
+def decode_compare(model, ids, steps, visits):
+    """Greedy decode with the cache, and the same positions in a forward with no cache.
+
+    Returns the tokens, the cached logits `[steps, vocab]`, the logits with no cache, and the count of quantized rows
+    that the second run changed.
+    """
+    before = ExpertCalls.snapshot()
+    tape = ExpertCalls.tape = QuantTape(visits) if ExpertCalls.formats else None
     with torch.no_grad():
         generated = model.generate(
             input_ids=torch.tensor([ids]),
-            max_new_tokens=DECODE_STEPS,
+            max_new_tokens=steps,
             do_sample=False,
             output_logits=True,
             return_dict_in_generate=True,
         )
+    ExpertCalls.verify(before)
     tokens = generated.sequences[0, len(ids) :].tolist()
-    check(len(tokens) == DECODE_STEPS, f"{DECODE_STEPS} greedy tokens, not {len(tokens)}")
     cached = torch.stack([row[0].float() for row in generated.logits])
-    whole = forward(model, ids + tokens)[len(ids) - 1 : len(ids) - 1 + DECODE_STEPS]
+    if tape is None:
+        whole = forward(model, ids + tokens)[len(ids) - 1 : len(ids) - 1 + steps]
+        return tokens, cached, whole, 0
+    # The cache run fed the ids and the first steps - 1 tokens. The last token has no taped row.
+    check(tape.calls == visits * steps, f"the cache run made {tape.calls} expert calls, not {visits} for each of {steps} forwards")
+    tape.replay = True
+    tape.start_run()
+    try:
+        whole = forward(model, ids + tokens[:-1])[len(ids) - 1 :]
+    finally:
+        ExpertCalls.tape = None
+    check(tape.calls == visits, f"the run with no cache made {tape.calls} expert calls, not {visits}")
+    return tokens, cached, whole, tape.flips
+
+
+def run_decode(model, tokenizer, label, out, facts):
+    """8 greedy tokens of "chat" with the cache of the reference. The logits match a forward with no cache."""
+    ids = tokenizer.encode(chat_text(tokenizer), add_special_tokens=False)
+    text_config = model.config.text_config
+    tokens, cached, whole, flips = decode_compare(model, ids, DECODE_STEPS, text_config.total_num_hidden_layers)
+    check(len(tokens) == DECODE_STEPS, f"{DECODE_STEPS} greedy tokens, not {len(tokens)}")
     gap = max_abs(cached, whole)
-    log(f"{label} decode: the cache against no cache, max abs {gap:.3g}")
-    check(gap <= 1e-3, f"the cache gives the logits of no cache: max abs {gap:.3g}")
+    log(f"{label} decode: the cache against no cache, max abs {gap:.3g}, {flips} quantized rows replayed that differ")
+    check(gap <= 1e-3, f"the cache gives the logits of no cache: max abs {gap:.3g}, limit 0.001")
     check(whole.argmax(-1).tolist() == tokens, "the greedy tokens are the argmax of the logits with no cache")
     tensors = {"ids": torch.tensor(ids), "tokens": torch.tensor(tokens), "logits": whole}
-    meta = {"prompt": chat_text(tokenizer), "cache_gap": gap, "versions": versions()}
-    save(tensors, out / f"{label}.decode.safetensors", meta)
+    meta = {"prompt": chat_text(tokenizer), "cache_gap": gap, "replayed_flips": flips, "versions": versions()}
+    save(tensors, out / f"{label}{TAG}.decode.safetensors", meta)
     facts[f"{label}.decode.cache_gap"] = gap
     facts[f"{label}.decode.text"] = tokenizer.decode(tokens)
 
@@ -427,7 +978,7 @@ def run_vision(model, text, folder, out, facts):
     tensors, images, records = {}, [], []
     for index, (width, height, seed) in enumerate(VISION_IMAGES):
         rgb = synthetic_image(width, height, seed)
-        png = out / f"inkling2-vision-image{index}.png"
+        png = out / f"inkling2-vision-image{index}{TAG}.png"
         Image.fromarray(rgb.numpy()).save(png)
         image = Image.open(png)
         image.load()
@@ -479,7 +1030,7 @@ def run_vision(model, text, folder, out, facts):
     check(torch.equal(inputs["pixel_values"].float(), pixels), "the processor gives the same pixels for the chat")
     embeds = EmbedsTap(text)
     tap = VisionTap(tower)
-    before = ExpertCalls.count
+    before = ExpertCalls.snapshot()
     with torch.no_grad():
         logits = model(
             input_ids=inputs["input_ids"],
@@ -487,7 +1038,7 @@ def run_vision(model, text, folder, out, facts):
             image_grid_thw=inputs["image_grid_thw"],
             use_cache=False,
         ).logits[0].float()
-    check(ExpertCalls.count > before, "the f32 expert call ran")
+    ExpertCalls.verify(before)
     embeds.remove()
     tap.remove()
     joint = tap.named()["projector"]
@@ -511,19 +1062,19 @@ def run_vision(model, text, folder, out, facts):
         "joint_gap": joint_gap,
         "versions": versions(),
     }
-    save(tensors, out / "inkling2-mini.vision.safetensors", meta)
+    save(tensors, out / f"inkling2-mini{TAG}.vision.safetensors", meta)
     source = "two synthetic images of this tool and a fixed question"
     entry = top_entry("vision", source, rendered, ids.tolist(), logits[-1])
     entry["images"] = records
     fixture = {
         "family": "inkling2",
         "model": "inkling2-mini",
-        "reference": "transformers inkling2_loop 046bdb8cc2, f32 sums with bf16 weights, CPU",
+        "reference": REFERENCE + (" + quantized expert activations" if TAG else ""),
         "source": source_record(folder),
         "versions": versions(),
         "prompts": [entry],
     }
-    (out / "inkling2-mini.vision.json").write_text(json.dumps(fixture, indent=1) + "\n")
+    (out / f"inkling2-mini{TAG}.vision.json").write_text(json.dumps(fixture, indent=1) + "\n")
     facts["vision.placeholders"] = counts
     facts["vision.prompt_tokens"] = len(ids)
     facts["vision.joint_gap"] = joint_gap
@@ -538,7 +1089,10 @@ def main():
     parser.add_argument("--out", required=True, help="the folder of the reference files")
     parser.add_argument("--stages", default=",".join(STAGES), help="the stages, with commas between them")
     parser.add_argument("--threads", type=int, default=24, help="the CPU threads of torch")
+    parser.add_argument("--quant", action="store_true", help="quantize the expert activations; write files with .quant")
     args = parser.parse_args()
+    global TAG
+    TAG = ".quant" if args.quant else ""
     stages = args.stages.split(",")
     for stage in stages:
         check(stage in STAGES, f"the stage {stage} is one of {STAGES}")
@@ -546,14 +1100,14 @@ def main():
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     # The stage "vision" keeps its facts in a file of its own, so that it writes no file of the other stages.
-    facts_name = "vision.facts.json" if stages == ["vision"] else "facts.json"
+    facts_name = f"{TAG.lstrip('.')}{'.' if TAG else ''}{'vision.' if stages == ['vision'] else ''}facts.json"
     facts_path = out / facts_name
     facts = json.loads(facts_path.read_text()) if facts_path.exists() else {}
     for label, folder in (("inkling2-mini", args.mini), ("inkling2-varloop", args.varloop)):
         wanted = [s for s in stages if s not in ("layers", "vision") or label == "inkling2-mini"]
         if not wanted:
             continue
-        model, text, tokenizer = load(folder)
+        model, text, tokenizer = load(folder, args.quant)
         if "text" in wanted:
             run_text(model, tokenizer, label, folder, out, facts)
         if "layers" in wanted:

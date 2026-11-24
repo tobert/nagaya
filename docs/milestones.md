@@ -17,6 +17,7 @@ Fable 5.2, 2026-11-11):
 4. Milestone 31 step 8, the publication, when Amy says so.
 5. Milestone 35, Inkling 2, on b70host: planned on 2026-11-21. Amy decides how much of it to do.
 6. Milestone 36, the speed of Inkling 2: a list of findings, not started. An agent of kaijutsu may take an item.
+7. Milestone 37, Inkling 2 on GB10 (`sm_121`): started on 2026-11-22 on a DGX Spark.
 
 Milestone 32, context records, starts in gogi and runs beside these. It changes the contract, so it must be done
 before the publication.
@@ -763,3 +764,383 @@ The experts take 33.2 ms, 11 times their floor of about 3 ms. Two small ops run 
 14. **The register spills.** The megakernel spills about 6.8 KB of scratch for each work item at 128 GRF (5.8 KB
     before item 2). A work-group of 1,024 threads cannot use the large GRF. Thus the time of each op depends on the
     compiler. Find the ops that spill most, and measure a binary with fewer threads in each work-group.
+
+## Milestone 37: Inkling 2 on GB10 (`sm_121`)
+
+The first NVIDIA engine of the nagaya runs Inkling 2 Mini on one GB10 (`sm_121`) of a DGX Spark. The machine has
+121 GB of memory, unified with the GPU. The target context is 400K to 512K positions. This milestone started on
+2026-11-22.
+
+This engine is the exemplar of a CUDA engine in the nagaya. A stranger reads it to learn how we build one. Thus it
+must be clean, and its speed must come from its structure. A later optimization is a tweak, not a new design.
+The B70 engine shows the cost of the other way: milestone 36 lists changes that are new designs of its ops.
+
+### The decisions
+
+The decisions of 2026-11-22:
+
+- **Crates and build.** `nagaya-mk-cuda` holds the shared CUDA persistent interpreter and the Driver API wrapper.
+  `nagaya-mk-inkling2-sm121` holds the Inkling 2 engine. `build.rs` calls `nvcc` under the feature `cuda`.
+- **Expert numerics.** The experts quantize their activations to NVFP4 and MXFP8, as the checkpoint requires
+  (`hf_quant_config.json`). This engine has a quantized host oracle and an engine identity of its own.
+- **The source of the activation rules.** transformers at `046bdb8cc2` expands the experts to `bf16` and quantizes
+  no activation. The Inkling 2 path of vLLM (Apache-2.0, `vllm/models/inkling2/nvidia/ops/`) holds the rules that
+  ship: `nvfp4.py`, `mxfp8.py`, `moe.py` and `moe_sm120.py`. Our oracle follows them.
+- **The trunk is `f32`.** vLLM runs the trunk in `bf16`. Our oracle keeps every row and every sum outside the
+  experts in `f32`, and it quantizes the `f32` rows. A `bf16` trunk is a later choice, if a measure asks for it.
+- **The rule of the port.** Follow the model card, unless a change gives a clear gain of bandwidth.
+- **Kernels.** Clean-room CUDA C++ with inline PTX. No external C++ dependency. The source of vLLM informs a
+  numeric rule; we do not copy its code.
+- **Long context.** Target 400K to 512K positions (`model_max_length` 1,048,576). Here 400K means 409,600
+  positions. At 3 cycles in `f32`, a slot of 409,600 positions takes 27.854 GB, and 524,288 take 35.370 GB. Each
+  figure includes the 40 fixed sliding rings. The attention scratch is extra, a provisional B70 bound until the GB10
+  attention exists (step 9, wave C). The weights take 19.5 GB.
+- **The machine.** sm121host serves only the nagaya. The vLLM of k8s goes for good. The control plane of the cluster
+  scales it to 0 replicas.
+
+### The byte budget of a decode step
+
+A decode step at batch 1 is bound by memory bandwidth. These counts come from the checkpoint header, at 3 cycles,
+with each weight in its checkpoint format:
+
+| part | read for each token |
+|---|---:|
+| dense weights of the 48 runs (`bf16`): attention, gates, controllers | 2.79 GB |
+| experts, 8 of 128 in each run (NVFP4 in layers 0 to 19, MXFP8 in 20 to 23) | 1.84 GB |
+| the head (`bf16`, 200,064 rows of 2,304 values, 922 MB) | 0.92 GB |
+| sum | 5.55 GB |
+
+- NVIDIA gives the GB10 273 GB/s of memory bandwidth. The probe measured a read peak of about 252 GB/s, 92 to 94% of
+  that figure (`crates/nagaya-mk-cuda/tests/cuda_probe.rs`, step 7 substep 1). At the measured peak, the floor of a
+  decode step is about 22 ms (5.55 GB at 252 GB/s). That is about 45 tokens each second at batch 1. The figure of
+  273 GB/s would give about 20 ms and about 49 tokens each second.
+- The checkpoint pads the head to 201,024 rows. The engine needs 200,064: the 200,058 rows of the vocabulary,
+  rounded up to a multiple of 16. The 960 rows of the padding are not read in a decode step.
+- The dense weights take half of the bytes. Thus a matmul of one row is as important as an expert op.
+- A weight in memory stays in its checkpoint format. An expansion to `f32` in memory doubles the dense bytes.
+- The keys and values of a full run take 8 KB of each position in `f32`. Full runs are layers 5 and 23 once, and
+  layers 11 and 17 at each cycle: 8 runs. At 400K positions, a decode step reads about 26 GB of them, about 96 ms.
+  Thus at a long context the cache sets the speed, not the weights. Its format is a decision for Amy (step 11).
+
+**More rows on each read.** The rows of one pass share each read of the dense weights and the head. A row adds only
+its own experts until all 128 run. These estimates are the reason for design rule 3:
+
+- A pass of 16 rows picks about 81 experts in each run. It reads about 22 GB: about 195 tokens each second in all.
+- A pass of 64 rows reads about 33 GB: about 530 tokens each second in all.
+- A block of a prefill and the drafts of the MTP head (milestone 35 step 10) gain the same way.
+
+### The design rules
+
+Each op follows these rules from its first commit. A review checks each rule.
+
+1. **Measure bandwidth.** Each op knows the bytes that it reads. Its card gate prints its GB/s and its share of the
+   measured peak. A step of the pass prints a table of each op, in the form of milestone 36 item 0.
+2. **Keep the checkpoint formats.** A weight stays `bf16`, NVFP4 or MXFP8 in memory. The load can repack it into the
+   fragment order of the MMA, so that each warp reads whole 16-byte vectors. A repack changes no value. Each value
+   expands in registers.
+3. **One path for 1 to 16 rows.** A matmul or expert op runs tiles of 16 rows on the tensor cores at each count of
+   rows. A tile pads its unused rows. At one row the MMA work is free, because the op waits on memory.
+4. **The bits of a row do not depend on the count of rows.** The order of each sum is a function of the shapes only.
+   Thus a decode step gives the bits of its position in a block, and a batch gives the bits of each row alone. The
+   B70 engine has no such rule (milestone 36 item 10).
+5. **Each op uses each SM.** No op runs in one block of threads. A row of 2,304 values splits over the SMs by output
+   columns or by key chunks. The split comes from constants of the shapes, not from the count of SMs, so the bits
+   stay the same on another GB10.
+6. **Fetch the next weights early.** A weight does not depend on the task before it. While a block waits at the
+   scoreboard, it starts the reads of its next weights into L2 or shared memory. This hides the task boundary.
+7. **Fuse at the design, not later.** A norm runs in the prologue of the matmul that reads it. Clips, gates and the
+   residual add run in the epilogue. The quantizer of an expert input runs in the epilogue of the op that writes the
+   row. The router, the plan and the gather are one op. Count the tasks of a step, and keep the count low.
+8. **No race in a sum.** No sum uses an atomic add. Each reduction has a fixed tree. Each split constant is part of
+   the engine identity.
+9. **The `f32` trunk on tensor cores.** Each `f32` activation splits into three `bf16` terms, and the MMA multiplies
+   each term by the `bf16` weight. The three terms hold the 24 bits of an `f32` mantissa. Thus each product is
+   exact, and the MMA sums in `f32`. **Proposed** (Claude Opus 5.5, 2026-11-22): the work triples, but a decode step
+   waits on memory. Step 9 measures the cost in a prefill. The other form is CUDA-core sums.
+10. **One owner of the GPU.** One session at a time runs on the GPU. It runs every card gate and every mutation.
+
+### The steps
+
+Do the steps in this order. Each step ends with the checks green.
+
+1. **GB10 probe fix.** Capture the real `dgx-spark` sysfs and procfs tree, and map `Model: Unknown` with PCI id
+   `10de:2e12` to `NVIDIA GB10`. Done (`809d8514`).
+2. **Spec and ABI.** The GB10 binding in `docs/engine-abi.md`, and `AGENTS.md`. Done (`21b7dd9e`). Step 6 wrote
+   its rules of the activations again.
+3. **The shared CUDA interpreter (`nagaya-mk-cuda`).** The 64-byte task protocol, the safetensors reader, the Driver
+   API wrapper, `megakernel.cu` compiled to an `sm_121a` cubin with `--fmad=false`, `%globaltimer` profiles and
+   `tools/nvcc-stub`. Done (`594b1bc4`).
+4. **The host spec (`nagaya-mk-inkling2-sm121`).** The slot plan of 400K to 512K positions and the registration in
+   `nagaya` under `cuda`. Done (`bca25a29`, `c81e171e`). Step 6 wrote its `quant.rs` again.
+5. **GPU smoke gate.** `cuModuleLoadData` loads both cubins on the GB10. `OP_COPY` copies 16,384 values bit for bit
+   over 48 blocks, and `MK_PROFILE` writes monotonic times. Done (`1fb96d0e`).
+6. **Corrections.** Make the work of steps 2 to 5 fit the rules of this milestone:
+   - **A fixture from the kernel that ships.** Done (`19816e11`, merged in `2e455c86`). The fixture tool runs the
+     Triton kernels of vLLM at `186882d9e8`, unmodified, on the GB10, from a venv with torch and Triton. The image
+     of vLLM that the node holds is an older build with no Inkling 2 path, so it is not the source. The rows hold
+     ties, zero rows, zero blocks, saturation and a tiny `amax`. Each row goes in as `bf16` values, so that the
+     `f32` rows of the fixture are exact.
+   - **`quant.rs`** follows the rules of vLLM. Done (`4a2af81e`, merged in `2e455c86`). The global scale is
+     `amax / 1536`. The order of each operation is vLLM's. The error is a pairwise sum. The UE8M0 scale rounds up
+     by the bits.
+     - One mutant survives. No row of the fixture decides the order of the reconstruction `(v × s) × outer`
+       against `v × (s × outer)`. Add a row that decides it.
+   - **The binding.** Write the rules of the activations again in `docs/engine-abi.md`, from the source of vLLM.
+     They stay **Proposed**. Done (`53e26fa3`, merged in `ed82db6d`).
+   - **A review** of steps 3 to 5 by a model of another family than the writer's (`docs/reviews.md`), against the
+     design rules. Then run the full list of checks of `AGENTS.md` on sm121host.
+     The review is done. Its findings are defects to fix in this step. A lane fixes them on a branch:
+     - The smoke gate does not test the scoreboard.
+     - The layout test does not compare the Rust layout with the CUDA layout.
+     - A grid that is not all resident hangs.
+     - The SM count falls back to 1 with no error.
+     - Error messages have no name and no action for the reader.
+     - Driver lifetimes: the context is not always current, and `Ring` has no `Drop`.
+     - `op_copy` uses a 32-bit index.
+     - `Model::parse` checks too few fields of `config.json`.
+     - The slot tests are loose.
+     - `identity_numbers` lacks `ring_rows` and `cycles`.
+7. **The facts of the GPU and the shape of the interpreter.** Measure the facts with ops of the interpreter. They
+   are the peak read bandwidth and the size of L2. They are also the cost of a task boundary and the time of each
+   kind of MMA tile. Write them in the binding. Then write the budget of each op of a decode step from the table
+   above. The budget is the target of each card gate.
+
+   The interpreter of step 3 fought the design rules. Each task was a barrier of the grid. It had no prefetch
+   hook, a 64-byte descriptor, no shared memory and 256 threads. Substeps 2 to 6 fixed each of them.
+
+   The design is in `docs/engine-abi.md`, "The CUDA interpreter". It is **Proposed** (Claude Opus 5.5,
+   2026-11-22). It answers three questions:
+   - A task waits on two events through counters.
+   - A split of one op over all SMs is a cut into work items from the shapes (rule 5).
+   - Its split constants enter the engine identity (rule 8).
+
+   Migrate in six substeps. Each ends with the checks green and its GPU gate:
+   1. **Probes** on the current interpreter. Done: `2aef3a64`, merged in `213cf10d`. The facts are in the binding.
+
+      Read 1 GB in items of 32 KB, with direct loads and with bulk copies into shared memory, each with and
+      without L2 prefetch. Re-read 1 to 64 MB to find the knee of L2. Time the tiles of `bf16` `m16n8k16`,
+      `mxf4nvf4` and `mxf8f6f4`. Gate: the numbers go in the binding, and each probe tile equals its host value.
+   2. **The 128-byte descriptor.** A Rust layout test and a `static_assert` compare the layouts. Gate: `OP_COPY`
+      gives the same bits. Done: `70e88a5b`, merged in `f4fc865d`. `OP_COPY`, the scoreboard self-test and each
+      probe gave the same bits.
+   3. **Counters and the host builder** of the graph of dependencies. Host tests: a reduction is right, the
+      removal of a hazard fails, and a forward wait panics. Gate: a ring of copy chains and branches gives exact
+      results, and the profile shows overlap. Done: `789a5754`, merged in `f4fc865d`. The builder also finds
+      write-after-write hazards and takes explicit `after` links. 15 of 16 blocks of a chain left their wait about
+      1.2 ms before the slow fill ended.
+   4. **Work items and static assignment**, with the grid size as a launch parameter. Gate: the bits are equal at
+      G of 48, 24, 7 and 1. Done: `31dfb91f`, merged in `f4fc865d`. Five buffers were bit-identical at each G.
+   5. **Merge groups**, tested with `OP_REDUCE_PROBE`. Gate: the bits are equal across G, and equal to the fixed
+      tree of the host. Done: `b823f850`, merged in `d5e5d493`. Groups of 11, 16 and 66 items matched the host
+      sum at each G. The host still zeroes the merge counters.
+   6. **The producer warp, dynamic shared memory and prefetch.** Gates: the read probe holds at least 85% of the
+      peak of substep 1. A run of 1,000 dependent no-op tasks gives the cost of a boundary, old chain against new.
+      The build shows 0 bytes of spill. Done: `8c0cc25d` and `8816080b`, merged in `d5e5d493`. The read rate is
+      244 to 246 GB/s, about 97% of the peak. A boundary costs about 750 ns, from 978 ns, at 114 registers.
+
+   Wave A builds on substep 6.
+8. **The host oracle.** The B70 crate has a host form of each op in `f32` (`nagaya-mk-inkling2-bmg/src/host/`).
+   Wave B settles the shared host crate for now: no move is needed. The GB10 crate takes `nagaya-mk-inkling2-bmg`
+   as a dev-dependency with no feature, and its tests call the public `host::ops` functions. With no `xe`, the build
+   of `nagaya-mk-bmg` needs no `ocloc` and no Level Zero. A later move into a crate with no GPU code stays possible.
+   Then:
+   - Add the quantized expert op, with `quant.rs`, as a host form.
+   - Make a reference venv with transformers at `046bdb8cc2`. Add a mode to `tools/inkling2_reference.py` that
+     quantizes the inputs of each expert by the rules of `quant.rs`. Its Python must match the fixture of step 6.
+   - Write the golden files of both modes. Measure the logit gap between the quantized oracle and the `f32` oracle.
+9. **The device ops.** Each op has a card gate against its host form, and the gate prints its GB/s. Do them in
+   waves:
+   - **Wave A, the matmul core.** Done. Two merges on `main`:
+     - `d7390c03`, the dense `bf16` matmul of 1 to 16 rows with the `f32` split of rule 9. The head of 201,024 rows
+       at one row reads 235 to 238 GB/s, 93 to 95% of the measured peak. A host model of the MMA rounding gives
+       the bits of the card, so a change of the sum order fails a gate.
+     - `9a1019d9`, the quantizers and the expert ops. The quantizers give the bytes of the shipped vLLM kernels for
+       all 154 rows of the fixture. The NVFP4 expert op equals the host dot on real weights. The MXFP8 op is
+       within 7.4e-8 of the sum of the absolute terms. For 8 experts at one row, the ops read at 79 to 105% of the
+       measured peak.
+
+     The binding describes both: "The ops of wave A" in `docs/engine-abi.md`.
+   - **Wave B, the layer.** The plan is in "The task graph of a layer run" of the binding. It is **Proposed**
+     (Claude Opus 5.5, 2026-11-22). The oracle of each lane is the host form of the B70 crate, through the
+     dev-dependency of step 8. Do the work in this order:
+     1. **The foundation commit**, by the lead. It reserves every opcode in `protocol.rs`, adds empty cases to
+        `megakernel.cu`, and puts the task table behind `d`. It adds `weight` to `ExpertPair` and makes the
+        merger reset its counter the rule of every group.
+     2. **Lane D, the dense ops.** Opcodes 40 to 49. The row tiles and the norm prologue, then `PROJ`, `OUT_MIX`
+        and the head. Oracle: `ops::{rms_norm, scaled_l2_clip, log_scale, short_conv, dynamic_conv, l2_clip,
+        rms_norm_unweighted, sigmoid, softcap, matvec_bf16}`. Gate: the error is under 4e-7 of the sum of the
+        absolute terms. The bits are equal at 1, 7, 16 and 512 rows and at G of 48, 24, 7 and 1. The speed is 90%
+        of 252 GB/s or more.
+     3. **Lane R, the row ops.** Opcodes 70 to 79: `EMBED`, `MIX`, `GATE_DOWN`, `GATE_UP`, `MIX_OUT` and the row
+        finishers. Oracle: `ops::{attention_residual, message_gate, rms_norm}`. Gate: a tolerance, the same bits
+        as lane D, and the time against the budget.
+     4. **Lane M, the MoE ops.** Opcodes 55 to 69: `ROUTE` and the epilogues of `UP` and `DOWN`. Oracle:
+        `ops::{route, swiglu, short_conv}` with `quant.rs`. The lane must not call `Model::experts`, because it
+        applies the route weight at another place. Gate: the same picks, unless a gap is under 2e-7, and the bytes
+        of the quantized rows equal.
+     5. **Lane P, the pass.** No opcode. The buffers, the task tables, the spans and the run ring. It needs a public
+        entry to a run of the B70 host form, because `Model::layer`, `kv` and `experts` are private. Gate: each run
+        against the host form, and a row of a decode step equals its position in a block.
+     6. **Lane A, the attention**, with opcodes 80 to 89, is wave C. Oracle: `ops::{attend, relative_logits,
+        relative_bias}`. Gate: a tolerance, and the same bits at 1, 7, 16 and 512 rows.
+
+     Lanes D, R, M and A run in parallel after the foundation. Lane P starts with the run of layer 0, then a
+     sliding run, a full run and a run with messages.
+
+     Status of wave B: the ops of lanes D, R and M are done, and lane P is open.
+     - The foundation merged as `ef9fb430`. The ops merged with the dense, row and MoE lanes in `6b3066ee`. That
+       merge also holds the register structure: one kernel, 168 registers, 0 spill ("The register structure" in the
+       binding).
+     - `PROJ` writes the head-major cache of the attention (`32589716`, merged in `eb0bf566`).
+     - `OP_OUT_MIX` (45) is open. It is not merged. The kernel traps on it.
+     - "The ops of wave B" in `docs/engine-abi.md` gives each op with its gates and its speed.
+   - **Wave C, the attention.** Lane A. The sliding layers, and the full layers over key chunks of a fixed size on
+     all SMs, with a merge in a fixed order. The cache follows "The layout of the cache" of step 11. Build `f32` and the
+     first packed format together, so that the gate of step 11 can compare them.
+
+     Status of wave C: done for the attention op (`946ddebc`, merged in `4f01b40f`). It builds `f32` and `e4m3` with
+     a unit scale.
+     - An `f32` decode step at 65,536 positions reads 204 GB/s, 81% of 252 GB/s.
+     - An `e4m3` decode step reads at 49%. One step of 16 keys for each sync limits it.
+     - The `e4m3` form gives the bits of the `f32` form on the same packed values.
+10. **The pass.** The task ring of a decode step and of a prefill block, at 1 to 5 cycles. Gates: the oracle of
+    step 8, and a row of a decode step gives the bits of its position in a block. Print the table of the ops, and
+    compare each op with its budget.
+    - **Flips of the quantizer.** A sum that changes in its last bit can flip a code of the quantizer. On a tiny
+      model, such a flip moved a logit by 0.3 to 8 (`dc574559`). The engine sums in another order than the CPU
+      reference. Thus a pass of the engine cannot give the logits of the quantized oracle within a tight bound.
+    - Thus each op has a card gate that reads the quantized rows of the oracle, not rows that it quantized itself.
+      The reference records them (its tape of quantized rows).
+      - The `layers` stage of the quantized mode writes the tape, `inkling2-mini.quant.tape.safetensors`
+        (`ebc6f51e`). For each run it holds the attention output, `r`, `h_e`, the route, the MoE output and the run
+        output. It holds the expert input and the down input as bytes in the form of `QuantRowsLayout`.
+      - The route picks are in ascending expert id. The key `route_tie` marks a tie at the eighth place. The route
+        weight acts before the down quantizer.
+      - The tape is a realization of its own. Another Python and CPU build moved run 0 by 2e-5 (measured on
+        2026-11-22). The flips grew that to 1.9 in the last logits. Thus a gate reads only the tape, and never
+        mixes it with the rows of the layers file.
+    - The gate of a whole pass is a gate of coherence, as in step 11. It compares the top token, the greedy text
+      and the logit gap over the oracle prompts. Write the thresholds into the binding with the first measure.
+    - Rule 4 keeps the engine consistent with itself: a decode step gives the bits of its position in a block. Thus
+      a flip cannot come from the cache path of the engine.
+
+    Status: the pass is built (`fe396b6e`). It is coherent with the golden on 15 prompts, and a decode row gives the
+    bits of its block. The cache of the rings and the claim of items followed (`a3ca9153`). In a release build
+    a decode step at 1 row takes 26.5 to 26.7 ms end to end (`862460b0`). That is 37.5 to 37.7 tokens each second,
+    and 38.2 to 38.4 in the kernel, against the target of about 38.
+    "The pass as built" in the binding gives the gates, the thresholds and the table of the ops.
+11. **The engine and the long context.** The `Engine` trait, cycles 1 to 5, snapshots and the conformance suite.
+    Slots of 400K to 512K positions, with gates of latency and accuracy.
+    - **The format of the cache.** Decided 2026-11-22: a format of fewer bytes is allowed, and it may move bits, if
+      the model stays coherent. Each format has an engine identity of its own.
+    - The candidates come from the GB10 path of vLLM (`vllm/models/inkling2/nvidia/attention.py`). It keeps `bf16`
+      by default, and it allows `float16` and `fp8_e4m3` with a unit scale on `sm_120` and `sm_121`. A unit scale
+      can work because the model clips the norm of each query and key, and it normalizes each value.
+    - **The layout of the cache.** **Proposed** (Claude Opus 5.5, 2026-11-22). Store the cache packed, and compute
+      the attention in `bf16`. Each value expands to `bf16` in registers before the MMA.
+      - Each position holds one row of 128 values for each run and KV head. The rows of a head are contiguous, so
+        the attention reads them as a stream.
+      - A scale covers channels of one row only, never more than one position. Thus the row of a new token is
+        complete when its projection writes it. The epilogue of the k and v projection quantizes and writes it.
+      - The format is a parameter of the attention op. Only the expansion changes between formats.
+      - Reason: a block-scaled MMA needs both of its operands in the format. Then the queries and the softmax
+        weights must be quantized, and 8 or 4 bits in the softmax weights hurt the attention most.
+      - Reason: a scale over 32 positions has no value until all 32 keys exist. Then the newest block needs a buffer
+        and a second write.
+      - Reason: a decode step of the attention waits on memory. The MMA can do about 60 times the work that the
+        bandwidth feeds. One `cvt` expands two `e4m3` or `e2m1` values to `f16`, and each expanded value is exact
+        in `bf16`.
+    - **The formats.** The table gives the approximate reads of a decode step at 409,600 positions and 252 GB/s:
+
+      | format | bytes per value | read per step | time | risk |
+      |---|---:|---:|---:|---|
+      | `f32` (the oracle) | 4 | 26 GB | 104 ms | none |
+      | `float16` | 2 | 13 GB | 52 ms | low |
+      | `e4m3`, unit scale (vLLM, `sm_120`) | 1 | 6.5 GB | 26 ms | low: the model clips q and k |
+      | `e4m3`, `ue8m0` per 32 channels | 1.03 | 6.7 GB | 27 ms | lower: an outlier stays in its block |
+      | `e2m1`, `e4m3` per 16 channels | 0.56 | 3.7 GB | 15 ms | high: 4-bit keys move the softmax |
+    - **The gate of coherence.** Compare each format with the `f32` cache on the oracle prompts. Compare the logit
+      gap, the top token and the greedy text. Then compare them at long positions with a
+      retrieval of a fact from early in a context of 400K. A format passes when its greedy text and its retrievals
+      match those of `f32`. The thresholds of the gap go into the binding with the first measure.
+    - Start with `e4m3` with a unit scale, because it is the format that ships. If it fails the gate, try the scale
+      per 32 channels, then `float16`. The `e2m1` format is an experiment for the gate. It comes after the others.
+
+    Status, 2026-11-23: the engine, the pass for many slots and the measure of the formats are merged.
+    - Done:
+      - the host spec with the `cache` key (lane A, `ded4cfd9`);
+      - the pass for many slots (lane B, `3829bc2a`);
+      - the engine and its conformance suite (lane C, `e2e6cbdb`);
+      - the attention at 524,288 positions, with the double-float merge (lane D, with the fix of lane T, `bba9771f`);
+      - the measure of the cache formats at depth (lane E, `ae89d9bb`);
+      - the probe cubins and the removed flags (lane X, `5def986c`).
+    - Open:
+      - the gate of latency by position and by format;
+      - the retrieval test at 400K positions, with snapshots of the PG-19 prefill, so that the prefill cost is paid
+        once;
+      - `pass_bound_ms` for a block at depth;
+      - the `describe` and `open_problem` of the factory;
+      - a cache of the digest of the checkpoint.
+12. **Rows.** A ring of several slots, as LFM3's `model::batch`. The ops take 16 rows from wave A, so this step is
+    work of the ring and the scheduler. Measure tokens each second at 1, 2, 4, 8 and 16 rows. The MTP head waits
+    for Amy's word (milestone 35 step 10).
+13. **Vision and the lab.** The vision tower, the taps and the control vectors.
+14. **Deploy and review.** Add `deploy/dgx-spark/` and a `nagaya.service` on sm121host. Run `gogi-conformance`. Run
+    kaibo review rounds with a cast of another model family.
+
+### The tuning list
+
+The owner put the tuning after the plan, in later passes. The plan comes first: the pass of step 10, and the engine
+of step 11. Each item below is a gap that the card gates of wave B and wave C measured. Each stays open until a
+tuning pass takes it.
+
+- **`PROJ` at 188 us, against the budget of 165 us.**
+- **`MIX` at 4 us, and the gates at 12 to 13 us.** Latency chains limit them.
+- **`ROUTE` at 8 us.** Three serial merges limit it.
+- **The tail of the finisher of `DOWN`.**
+- **The `e4m3` attention at 49% of the peak, and `bf16` at 68%.** One step of 16 keys for each sync limits them.
+- **The register knife edge.** Each cache cubin keeps a pair of attention instances, because one instance spills
+  (`173a126e`). The peak sits in `quant.cuh` and `ops_moe.cuh`.
+- **The register audit** (2026-11-23). The probe ops moved to cubins of their own (`5def986c`), and the flags
+  `FLAG_NORM` on `ROUTE` and `FLAG_NORM_UNWEIGHTED` are gone (`2a48f4f1`, `e564c82e`). The five row ops together
+  set the peak: a natural demand of 226 registers, and 183 without them. No single op sets it, and removing
+  `OUT_MIX` or `GATE_UP` alone spills.
+  - The shared row finisher is the place to save.
+  - An open candidate: decode against block as two cubins. Measure the peak of ptxas before a cut.
+- **The attention prefill at depth.** 512 rows at 8,192 positions take 9.78 ms.
+  - At depth, 60 to 70% of a step is the latency of one step of 16 keys. The two syncs take 14%, the score MMA 15
+    to 18%, and `expf` 5 to 8%.
+  - A step of 32 keys spills. The next idea is a pipelined step with one sync, which saves 14% at most.
+- **The merge of the partials.** It takes 3.6 to 4.3 ms of a decode step at 524,288 positions. A tree across the
+  items of the split mode can cut it.
+- **The digest at each open.** The digest of the checkpoint takes 15.9 s.
+- **The tail of 8% in the head.**
+- **The floor of 80% for the NVFP4 `UP` op.** The op runs at 82 to 88%, so the gate can flake.
+- **The finisher of `OP_OUT_MIX` at many rows.** One block runs the rows one after another: 151 us at 16 rows and
+  4.3 ms at 512 rows (`7a0d74f8`).
+- **The block form of the matmul.** `OP_PROJ` takes 3.03 ms at 512 rows, against the design's 0.7 ms (`a59e4adf`).
+  - The copies and the MMAs do not overlap well. The causes: one sync for each stage, and the split and the A loads
+    in the chain of each warp.
+  - A repack by group puts the 8 tiles of a stage together, so that one bulk copy loads a stage.
+  - The order of the head's items is not tuned. The head takes 31.7 ms at 512 rows.
+- **The speed floor of the attention at 65,536 positions.** It reads 200.4 to 201.3 GB/s against a floor of
+  201.6 GB/s, on `main` too. The gate can flake.
+- **The tails of UP and DOWN.** About 3 ms of a decode step at 1 row. A finer cut of their items moved nothing at
+  1 row (`862460b0`, a sweep of each cut that divides 36).
+- **The host time of a call.** 0.5 ms in a release build, mostly the read of the logits. The descriptors take
+  0.09 ms.
+- **Fixture gaps.** No row decides the order `(v * s) * outer`. No MXFP8 raw scale lies just above a power of two.
+- **Mutants that survived.**
+  - The order of the lag 1 and lag 2 terms in the dynamic convolution of `PROJ`.
+  - The order of the slices in the merge of `GATE_DOWN`. No host model gives that rounding.
+
+### The lanes
+
+- The lead session plans, reviews each diff, and owns the GPU (rule 10). Subagents write the code: Sonnet where a
+  name or a design needs judgment, Haiku for a mechanical class with an exact list.
+- Each lane has its own worktree and target directory: `~/src/wt/nagaya-gb10-<lane>`.
+- Each brief names the files that the lane must not touch, the checks, and "do not pipe a check". It tells the lane
+  to stop at a choice with two meanings.
+- The waves of step 9 can run in parallel lanes. One lane writes the ring of the pass and merges the ops.
+- The B70 engine lives on b70host. Read its ops and milestone 36 before you write an op here. Its code for the
+  Xe cards is not a model for this engine.

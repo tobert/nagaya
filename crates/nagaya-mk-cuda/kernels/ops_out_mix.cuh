@@ -1,0 +1,228 @@
+// OP_OUT_MIX: the output projection of the attention, its short convolution, the residual, and the mix of the MLP input.
+//
+// This file belongs to wave B lane D (dense). It needs `matmul_bf16.cuh` (the partials and the merge), and
+// `ops_rows.cuh` (`rw_mix_item`, `rw_finisher_arrive`, `rw_block_sum`).
+//
+// The host form is the part of `Model::layer` (`host/forward.rs`) between the attention and the experts:
+//
+//   o      = wo . attn                                      the matmul, K = 3,072, 2,304 columns
+//   c      = (conv(state, o) + o) / sqrt(5)                 `ops::short_conv`, `attn_conv`: [2304][4], tap 3 on the current row
+//   r      = x + c                                          FLAG_ACCUMULATE; the first layer of a block has r = c
+//   e      = mix(B[0 .. b), r)                              `ops::attention_residual` with the query `mlp_query`
+//   h_e    = mlp_norm * (e * rf(e))                         FLAG_NORM: the input of the router, when no message gate follows
+//
+// The matmul is 144 tiles of 16 columns with 4 K slices of 768 (576 items), the rule of `OP_MATMUL_BF16`: the item that
+// arrives last in the group of a tile merges the 4 partials in slice order. Then, in the same item and for the 16
+// channels of the tile, over all the rows of the task:
+//   1. The merge writes the raw sums `o` to the scratch, as `[tile][row][16]`.
+//   2. The convolution: row `t` takes the 3 rows before it from the raw sums, or from the state before the block. The
+//      sum is `w0 p3 + w1 p2 + w2 p1 + w3 o`, as in `ops::short_conv`. The result goes to `c` (`r` with FLAG_ACCUMULATE:
+//      `x + conv`). The state after the block is the last 3 raw rows. The state rows of the tile are not read again.
+//   3. The item arrives at the counter of the 144 tiles. The item that arrives last runs the finisher.
+// The finisher runs for each row of the task, in order, in the 256 workers of one block:
+//   a. The row factor of `r` (`1 / sqrt(mean(r^2) + eps)`), written to the table slot of the factors of `r`.
+//   b. `rw_mix_item` of lane R (read only): the softmax mix of the stack, `e`, and the row factor of `e`.
+//   c. With FLAG_NORM, `h_e = w * (e * rf)`, the order of `ops::rms_norm`.
+// The quantization of `h_e` for the experts is not here. It belongs to the prologue of ROUTE, or to a quantizer task
+// after this op (`OP_QUANT_NVFP4`): a row of `h_e` is complete only after the finisher, so no tile can quantize it.
+//
+// The descriptor: a = the attention output (f32, `[rows][3072]`), b = the repacked `wo`, c = `r` (f32, `[rows][2304]`),
+// d = the task table, e = `x` (f32, `[rows][2304]`, with FLAG_ACCUMULATE, else 0), f = the scratch, n = 2304, k = 3072,
+// kt = 768, group_items = 4, items = 576, item_bytes = 16 * kt * 2, rows = 1 to 512, layer = the depth of the stack
+// (the rows of the blocks, then `r`: 2 to 5), p0 = the scale of a score, 2304^-0.5, scale_bytes = the floats of the
+// scratch that the host gives (checked), flags = FLAG_ACCUMULATE and FLAG_NORM, in any mix.
+// The scratch, in floats: 144 counters of the tiles, one counter of the finisher, padding to 160, the partials
+// (`576 * rows * 16`), the raw sums (`2304 * rows`). The counters start at 0, and the merger sets each back to 0.
+//
+// The table (`OUT_MIX_TABLE_*` in `src/protocol.rs`): slots 0 to 4 are the stack as `OP_MIX` has it: the planes B[0..],
+// then `r` at the slot `layer - 1`, and slots 5 to 9 are their row factors. The slot of the factors of `r` points to
+// `rows` floats that this op writes. Slot 10 is the convolution weight (bf16, `[2304][4]`), 11 the conv state (f32,
+// `[3][2304]`, oldest row first), 12 the norm weight of `h_e` (f32, 2304, with FLAG_NORM), 13 the outputs (f32): `e`
+// `[rows][2304]`, then `h_e` `[rows][2304]`, then the row factors of `e` `[rows]`, 14 the query (f32, 2304), and slot 15
+// must be 0.
+
+#pragma once
+
+constexpr uint32_t OM_TILES = 144;
+constexpr uint32_t OM_WIDTH = 2304;
+constexpr uint32_t OM_K = 3072;
+constexpr uint32_t OM_COUNTERS = 160;
+// The slots of the task table after the stack.
+constexpr uint32_t OM_RF_SLOT = 5;
+// The slot that must be 0: the matmul has no norm.
+constexpr uint32_t OM_NO_NORM = 15;
+
+// The scratch floats that a task of `rows` rows needs (the number that `OutMixLayout::scratch_floats` gives).
+__device__ __forceinline__ uint64_t om_scratch_floats(uint32_t rows, uint32_t items) {
+    return OM_COUNTERS + static_cast<uint64_t>(items) * rows * MM_TILE + static_cast<uint64_t>(OM_WIDTH) * rows;
+}
+
+__device__ __forceinline__ float om_bf16(const uint16_t* p, uint32_t i) {
+    return __uint_as_float(static_cast<uint32_t>(__ldg(p + i)) << 16);
+}
+
+// The finisher of one row: the factor of `r`, the mix, the factor of `e`, and `h_e` with the flag.
+__device__ __forceinline__ void om_finish_row(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t row) {
+    const uint32_t depth = task.layer;
+    const float* r = reinterpret_cast<const float*>(task.c) + static_cast<uint64_t>(row) * OM_WIDTH;
+    float* scratch = reinterpret_cast<float*>(mk_smem);
+    float sums[1] = {0.0f};
+#pragma unroll
+    for (uint32_t j = 0; j < RW_PER_THREAD; ++j) {
+        const float v = __ldcg(r + worker_id() + j * MK_WORKERS);
+        sums[0] += v * v;
+    }
+    rw_block_sum(sums, scratch);
+    if (worker_id() == 0) {
+        __stcg(reinterpret_cast<float*>(table->ptr[OM_RF_SLOT + depth - 1]) + row, rw_factor(sums[0], OM_WIDTH));
+    }
+    worker_sync();
+    const uint64_t rows = task.rows;
+    float* out = reinterpret_cast<float*>(table->ptr[MK_OUT_MIX_TABLE_OUT]);
+    float* e = out + static_cast<uint64_t>(row) * OM_WIDTH;
+    float* e_rf = out + 2 * rows * OM_WIDTH + row;
+    rw_mix_item(table, 0, OM_RF_SLOT, depth, reinterpret_cast<const float*>(table->ptr[MK_OUT_MIX_TABLE_QUERY]), row,
+                task.p0, e, e_rf);
+    if ((task.flags & FLAG_NORM) != 0) {
+        worker_sync();
+        const float factor = __ldcg(e_rf);
+        const float* w = reinterpret_cast<const float*>(table->ptr[MK_OUT_MIX_TABLE_NORM]);
+        float* h = out + (rows + row) * OM_WIDTH;
+#pragma unroll
+        for (uint32_t j = 0; j < RW_PER_THREAD; ++j) {
+            const uint32_t i = worker_id() + j * MK_WORKERS;
+            h[i] = w[i] * (e[i] * factor);
+        }
+    }
+    worker_sync();
+}
+
+__device__ __forceinline__ void om_check(const MkTaskDescriptor& task, const MkTaskTable* table) {
+    const bool accumulate = (task.flags & FLAG_ACCUMULATE) != 0;
+    const bool norm = (task.flags & FLAG_NORM) != 0;
+    const uint32_t rows = task.rows;
+    if (worker_count() != MK_WORKERS || table == nullptr || rows == 0 || rows > MM_MAX_ROWS || task.n != OM_WIDTH ||
+        task.k != OM_K || task.kt != 768 || task.group_items != 4 || task.items != OM_TILES * 4 ||
+        task.item_bytes != MM_TILE * 768 * 2 || dynamic_smem_bytes() < MM_SMEM_BYTES || task.layer < 2 ||
+        task.layer > RW_MAX_STACK || (task.flags & ~(FLAG_ACCUMULATE | FLAG_NORM)) != 0 || (task.a & 7) != 0 ||
+        (task.b & 15) != 0 || (task.c & 15) != 0 || (task.f & 15) != 0 || task.a == 0 || task.c == 0 || task.f == 0 ||
+        accumulate != (task.e != 0) || (task.e & 15) != 0 || !(task.p0 > 0.0f) ||
+        om_scratch_floats(rows, task.items) > task.scale_bytes) {
+        __trap();
+    }
+    // The stack: every plane and its factors, and `r` in the last slot, which this task writes.
+    if (table->ptr[task.layer - 1] != task.c || table->ptr[OM_RF_SLOT + task.layer - 1] == 0 ||
+        (table->ptr[OM_RF_SLOT + task.layer - 1] & 3) != 0) {
+        __trap();
+    }
+    for (uint32_t s = 0; s + 1 < task.layer; ++s) {
+        if (table->ptr[s] == 0 || (table->ptr[s] & 15) != 0 || table->ptr[OM_RF_SLOT + s] == 0 ||
+            (table->ptr[OM_RF_SLOT + s] & 3) != 0) {
+            __trap();
+        }
+    }
+    const uint64_t conv_w = table->ptr[MK_OUT_MIX_TABLE_CONV];
+    const uint64_t state = table->ptr[MK_OUT_MIX_TABLE_STATE];
+    const uint64_t out = table->ptr[MK_OUT_MIX_TABLE_OUT];
+    const uint64_t query = table->ptr[MK_OUT_MIX_TABLE_QUERY];
+    const uint64_t weight = table->ptr[MK_OUT_MIX_TABLE_NORM];
+    if (conv_w == 0 || (conv_w & 1) != 0 || state == 0 || (state & 15) != 0 || out == 0 || (out & 15) != 0 ||
+        query == 0 || (query & 15) != 0 || norm != (weight != 0) || (weight & 15) != 0) {
+        __trap();
+    }
+}
+
+__device__ __forceinline__ void op_out_mix(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
+    om_check(task, table);
+
+    // The matmul has no norm: the slot 15 is 0. The code of `mm_item_partials` for a null norm that the compiler can see holds
+    // more registers than the kernel has (28 bytes of spill). A null that it reads from the table gives the code that the
+    // other matmul ops use, which fits. The check reads the value through `asm`, so that it does not teach the compiler that
+    // the value is 0.
+    const uint64_t no_norm = table->ptr[OM_NO_NORM];
+    uint64_t seen = no_norm;
+    asm volatile("" : "+l"(seen));
+    if (seen != 0) {
+        __trap();
+    }
+    mm_item_partials(task, item, reinterpret_cast<const float*>(task.a), reinterpret_cast<const float*>(no_norm),
+                     reinterpret_cast<const uint16_t*>(no_norm), reinterpret_cast<float*>(task.f) + OM_COUNTERS);
+    const uint32_t rows = task.rows;
+    const uint32_t tile = item / 4;
+    const uint64_t partial_floats = static_cast<uint64_t>(rows) * MM_TILE;
+    uint32_t* counters = reinterpret_cast<uint32_t*>(task.f);
+    float* partials = reinterpret_cast<float*>(task.f) + OM_COUNTERS;
+    float* raw = partials + static_cast<uint64_t>(task.items) * partial_floats;
+    uint32_t* flag = reinterpret_cast<uint32_t*>(mk_smem + MM_TREE_FLOATS * 4);
+    if (worker_id() == 0) {
+        *flag = merge_arrive(counters + tile, 4) ? 1u : 0u;
+    }
+    worker_sync();
+    if (*flag == 0) {
+        return;
+    }
+
+    // 1. The merge of the 4 slices: the raw sums of the tile, `[row][16]`.
+    float* tile_raw = raw + static_cast<uint64_t>(tile) * partial_floats;
+    for (uint64_t i = worker_id(); i < partial_floats; i += MK_WORKERS) {
+        __stcg(tile_raw + i, mm_merged_sum(partials, tile, 4, partial_floats, i));
+    }
+    worker_sync();
+
+    // 2. The convolution, the residual and the conv state.
+    const uint16_t* conv_w = reinterpret_cast<const uint16_t*>(table->ptr[MK_OUT_MIX_TABLE_CONV]);
+    float* state = reinterpret_cast<float*>(table->ptr[MK_OUT_MIX_TABLE_STATE]);
+    const float* x_in = reinterpret_cast<const float*>(task.e);
+    float* r_out = reinterpret_cast<float*>(task.c);
+    const bool accumulate = (task.flags & FLAG_ACCUMULATE) != 0;
+    for (uint64_t i = worker_id(); i < partial_floats; i += MK_WORKERS) {
+        const uint32_t t = static_cast<uint32_t>(i / MM_TILE);
+        const uint32_t channel = tile * MM_TILE + static_cast<uint32_t>(i % MM_TILE);
+        const float x = __ldcg(tile_raw + i);
+        // The rows at the lags 1, 2 and 3: a row of the block, or a row of the state.
+        float p[3];
+#pragma unroll
+        for (uint32_t lag = 1; lag <= 3; ++lag) {
+            p[lag - 1] = t >= lag ? __ldcg(tile_raw + i - static_cast<uint64_t>(lag) * MM_TILE)
+                                  : __ldcg(state + static_cast<uint64_t>(3 + t - lag) * OM_WIDTH + channel);
+        }
+        float w[4];
+#pragma unroll
+        for (uint32_t j = 0; j < 4; ++j) {
+            w[j] = om_bf16(conv_w, channel * 4 + j);
+        }
+        const float sum = w[0] * p[2] + w[1] * p[1] + w[2] * p[0] + w[3] * x;
+        float value = (sum + x) / __uint_as_float(0x400f1bbdu);
+        if (accumulate) {
+            value = value + __ldcg(x_in + static_cast<uint64_t>(t) * OM_WIDTH + channel);
+        }
+        __stcg(r_out + static_cast<uint64_t>(t) * OM_WIDTH + channel, value);
+    }
+    worker_sync();
+    // The state after the block: the last 3 of the three old rows and the raw rows. Only this item reads these channels.
+    // A worker holds its new value in a register until every worker has read, because the new rows replace the old rows.
+    {
+        const uint32_t i = worker_id();
+        const bool mine = i < 3 * MM_TILE;
+        const uint32_t j = i / MM_TILE;
+        const uint32_t c = i % MM_TILE;
+        const uint32_t index = rows + j;
+        float keep = 0.0f;
+        if (mine) {
+            keep = index < 3 ? __ldcg(state + index * OM_WIDTH + tile * MM_TILE + c)
+                             : __ldcg(tile_raw + static_cast<uint64_t>(index - 3) * MM_TILE + c);
+        }
+        worker_sync();
+        if (mine) {
+            __stcg(state + j * OM_WIDTH + tile * MM_TILE + c, keep);
+        }
+    }
+
+    // 3. The finisher: the item that arrives last over the 144 tiles mixes every row.
+    if (!rw_finisher_arrive(counters + OM_TILES, OM_TILES, flag)) {
+        return;
+    }
+    for (uint32_t row = 0; row < rows; ++row) {
+        om_finish_row(task, table, row);
+    }
+}

@@ -1,0 +1,23 @@
+[package]
+name = "nagaya-mk-inkling2-sm121"
+version = "0.1.0"
+edition = "2024"
+
+# The feature `cuda` enables the compiled `sm_121a` cubin and CUDA Driver API runtime.
+# With no feature, the quantized host oracle and spec build and test with no GPU.
+[features]
+cuda = ["nagaya-mk-cuda/cuda"]
+
+[dependencies]
+blake3 = "1.8.7"
+nagaya-abi = { version = "0.1.0", path = "../nagaya-abi" }
+nagaya-mk-cuda = { version = "0.1.0", path = "../nagaya-mk-cuda" }
+nagaya-text-inkling2 = { version = "0.1.0", path = "../nagaya-text-inkling2" }
+serde_json = { version = "1.0.154", features = ["float_roundtrip", "preserve_order"] }
+
+[dev-dependencies]
+# The host forms of the B70 crate (`host::ops`) are the oracle of the GB10 ops. With no feature it builds with no Level
+# Zero and needs no card.
+nagaya-mk-bmg = { version = "0.1.0", path = "../nagaya-mk-bmg" }
+nagaya-mk-inkling2-bmg = { version = "0.1.0", path = "../nagaya-mk-inkling2-bmg" }
+nagaya-conformance = { version = "0.1.0", path = "../nagaya-conformance" }
