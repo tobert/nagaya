@@ -4,21 +4,25 @@
 //! The rule of the memory check needs no GPU. The two calls that use it open the GPU and its cubin, and they read no
 //! weights.
 
+use nagaya_mk_cuda::memory::Count;
+
 use crate::health::MIN_FREE_AFTER_BYTES;
 
 /// The problem of an open that the free memory cannot hold, or `None`.
 ///
-/// `planned` is the device bytes of the plan. `free` is the free bytes of the GPU now, and `total` is its total.
-/// `freed` is the most that the unload of a swap returns. The open fits when the free bytes with `freed` hold the plan
-/// and the floor of the engine's memory rule. The message names each number.
-pub fn open_memory_problem(planned: u64, free: u64, total: u64, freed: u64) -> Option<String> {
+/// `planned` is the device bytes of the plan. `free` is the available bytes now, and `count` says which count that is
+/// (`nagaya_mk_cuda::memory`). `total` is the total of the GPU. `freed` is the most that the unload of a swap returns.
+/// The open fits when the available bytes with `freed` hold the plan and the floor of the engine's memory rule. The
+/// message names each number and the count.
+pub fn open_memory_problem(planned: u64, free: u64, total: u64, freed: u64, count: Count) -> Option<String> {
     let available = free.saturating_add(freed);
+    let label = count.label();
     if available >= planned.saturating_add(MIN_FREE_AFTER_BYTES) {
         return None;
     }
     Some(format!(
         "the engine needs {planned} bytes of GPU memory for its weights, its slots and its work, and the machine needs \
-         {MIN_FREE_AFTER_BYTES} bytes free after the open. The GPU has {free} bytes free of {total}, and the unload of \
+         {MIN_FREE_AFTER_BYTES} bytes available after the open. The {label} is {free} bytes, and the GPU has {total} bytes in all. The unload of \
          the swap frees at most {freed} bytes. Name fewer slots or slots of fewer positions in `slots`, set `cache` \
          to `bf16` or `e4m3`, name the loaded engines of the group in `unload`, or stop the programs that hold GPU \
          memory"
@@ -65,18 +69,19 @@ mod gpu {
 
     /// The problem that an open of `config` on the GPU at `pci` would meet now, or `None` (spec 3.3b).
     ///
-    /// It compares the planned device bytes with the free bytes of the GPU and `freed_bytes`, with the floor of the
+    /// It compares the planned device bytes with the available bytes of the GPU and `freed_bytes`, with the floor of the
     /// engine's memory rule. It reads no weights. A failure of the plan or of the GPU is a problem too.
     pub fn open_problem(config: &Config, pci: &str, freed_bytes: u64) -> Option<String> {
         let check = || -> Result<Option<String>, String> {
             let limits = spec::plan(config)?;
             let device = CudaDevice::open_by_pci(pci, config.cache.cubin())?;
-            let (free, total) = device.memory_info()?;
+            let (available, total) = device.available_bytes()?;
             Ok(open_memory_problem(
                 device_bytes(&limits),
-                free as u64,
+                available.bytes,
                 total as u64,
                 freed_bytes,
+                available.count,
             ))
         };
         check().unwrap_or_else(Some)
