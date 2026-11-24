@@ -2707,7 +2707,8 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
            lower id.
         3. The last row tile builds the list of pairs. The experts go in ascending order, and the rows of an expert
            go in ascending order, 16 rows for each pair.
-      - Each level resets its own counter. `FLAG_NORM` reads the rows before their norm, as `w * (v * rf)`.
+      - Each level resets its own counter. The op reads `h_e`, which is already normed. It allows `FLAG_PAIRS` only,
+        and it traps on `FLAG_NORM` (`2a48f4f1`). Its table holds the bias only.
       - The op keeps its own copy of the `bf16` MMA step, so a change of the dense lane does not move its bits.
       - Fields: `a` is the rows, `b` the router, and `c` the picks (`rows * 8` ids, then `rows * 8` weights).
         `e` is the list of pairs with its header, and `f` the scratch (`route_scratch_words`). `p0` is the route
@@ -2787,18 +2788,27 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
         fixed for an engine is a binary, not a branch, and the nagaya swaps the binaries for a test run.
         - `f32` (4 bytes, `FLAG_F32`), `bf16` (2 bytes, `FLAG_BF16`) and `e4m3` (1 byte, a unit scale, no flag).
           PROJ writes a `bf16` value from the `f32` value, nearest even, with no scale.
-        - `build.rs` builds a cubin for each format (`MK_CACHE_F32`, `MK_CACHE_BF16`, `MK_CACHE_E4M3`) and a
-          profile cubin of `bf16`. The default cubin holds `f32` and `e4m3`. A cubin traps on a task whose flags
-          name a format that it does not hold (`cache_flags_ok`).
+        - `build.rs` builds 9 cubins. Two are the default cubin, which holds `f32` and `e4m3`, and its profile cubin.
+          Four are the cubin of each format (`MK_CACHE_F32`, `MK_CACHE_BF16`, `MK_CACHE_E4M3`) and a profile cubin
+          of `bf16`. One is the spin cubin for tests. Two are the probe cubin and its profile cubin (`MK_PROBES`).
+        - A cubin traps on a task whose flags name a format that it does not hold (`cache_flags_ok`).
+        - The probe ops are in the two probe cubins only (`5def986c`). An engine cubin holds no probe op, and it
+          traps on a probe opcode (the default case of `run_op`). The speed tests of the expert, router and dense
+          ops flush with `OP_PROBE_READ`, so they run on the probe profile cubin.
         - The pass takes its format from `Pass::with_cache_format`, and `CacheFormat::cubin` names its cubin. The
-          engine keeps `f32` (`spec.rs` `CACHE_FORMAT`). When the format becomes a config, `cubin_blake3` of the
-          identity must hash the cubin of that format.
+          config key `cache` of the engine selects the format ("The host spec"). The identity holds the
+          `cubin_blake3` of that cubin.
         - The registers are on a knife edge. A cubin with one instance of the attention spilled 12 to 28 bytes. Thus
           each cubin keeps a pair of instances, and the second one never runs. The peak sits in `quant.cuh` and
           `ops_moe.cuh`. A change to OP_ATTN can need this tuning again.
       - The chunk is 256 keys on absolute positions (`ATTN_CHUNK_KEYS`). A chunk starts a new softmax state and
         gives a partial. The partials of a (KV head, tile) merge in chunk order, from the state (sink, 1, 0).
         A chunk with no key of a row is skipped. The chunk size is a member of the engine identity.
+      - The sum `l` and the output `o` of the merge are double-float values (two `f32` words). Both modes use the
+        same order and the same explicit intrinsics (`cb8927bd`, merged in `bba9771f`). The serial `f32` merge
+        drifted to 2.1e-5 of the row maximum at 524,288 positions. The double-float merge keeps the error of a full
+        run at 1.1e-6 to 1.8e-6 at each depth to 524,288 positions, in each format. This change moved bits: it is
+        a new engine identity. `tests/long_support/merge_model.rs` is the host model of the merge order.
       - Split mode (up to 16 rows): one item for each chunk, KV head and tile. The merge group is a KV head and a
         tile, and the item that arrives last merges the partials. Whole mode (more rows): one item for each (KV
         head, tile), which merges its chunks in shared memory. Both modes give the same bits.
@@ -2808,7 +2818,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
         of a chunk. `p0` is the score scale `1 / sqrt(128)`, `group_items` the chunks, and `scale_bytes` the bytes
         of one cache row.
       - Table: slot 0 holds the relative states, slot 1 the sinks, slot 2 the gate before its sigmoid, and slot 3
-        the relative projection. The shared memory is 56 KiB (`ATTN_SMEM_BYTES`).
+        the relative projection. The shared memory is 72 KiB (`ATTN_SMEM_BYTES`). Each launch takes the opt-in maximum.
       - The ring of a sliding run holds 1,536 rows with no spill copy, and `plane_rows` is at least
         `window + max_block - 1`.
       - Oracle: `ops::{attend, relative_logits, relative_bias}`. Bound 4e-6 of the row maximum. Worst: 1.8e-6, at 1
@@ -2821,6 +2831,19 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
         at 49%: one step of 16 keys for each sync limits it, not the memory. A step of 16 keys is the most that fits
         with no spill. One row at 1,023 positions takes 26.7 us. A prefill of 512 rows at 8,192 positions takes 9.78
         ms on a full layer, bound by the loop over keys.
+      - At depth the op runs to 524,288 positions in each format with no fault. That includes 2,048 chunks in the
+        split mode (`46970cbd`). The test `cuda_long_attn` asserts 4e-6 of the row maximum at 409,600 and at 524,288
+        positions. Kernel times of one full run, on the profile cubin:
+        - A decode step at 1 row takes the times below, in ms, for `f32`, `bf16` and `e4m3`.
+          - At 8,192 positions: 0.34, 0.19 and 0.12.
+          - At 409,600 positions: 16.9, 10.7 and 7.1.
+          - At 524,288 positions: 21.5, 13.4 and 9.0.
+        - The merge takes 3.6 to 4.3 ms of the decode step at 524,288 positions: about 2 us for each chunk, in
+          series.
+        - A block of 512 rows takes the times below, in ms, in the same order.
+          - At 131,072 positions: 151.5, 126.1 and 123.9.
+          - At 409,600 positions: 471, 393 and 387.
+          - At 524,288 positions: 604, 505 and 495.
       - The speed of each format, for a decode step at 65,536 positions:
         - `f32`: 537 MB in 2.66 ms, 201 to 202 GB/s.
         - `bf16`: 268 MB in 1.56 ms, 172 GB/s.
@@ -3003,8 +3026,9 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
          128 bytes in device memory, constant for each slot and run, written at load. The producer copies it with
          the descriptor. The descriptor keeps what changes in a pass: `a`, `b`, `c`, `e`, `f`, the rows, `pos0`
          and the shape words.
-      2. Flags: `FLAG_NORM` (1 << 3), `FLAG_NORM_UNWEIGHTED` (1 << 4), `FLAG_PAIRS` (1 << 5), and `FLAG_UP` and
+      2. Flags: `FLAG_NORM` (1 << 3), `FLAG_PAIRS` (1 << 5), and `FLAG_UP` and
          `FLAG_DOWN` on the opcodes 53 and 54. `FLAG_SOFTCAP_30` and `FLAG_MXFP8` exist.
+         Bit 4 is free, and a task with it traps (`e564c82e`).
       3. Row tiles in the matmul. The op traps today for more than 16 rows (`matmul_bf16.cuh:89`). Add a loop over
          row tiles in an item, and partials of rows by 16.
       4. The route weight in the pair: add `weight: [f32; 16]` to `ExpertPair`, and move the pair list from `f`
@@ -3117,9 +3141,57 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
       | MIX | 4.9 | 2 | |
       | HEAD | 3,981 | 3,840 | 232 |
 
+- **The pass for many slots** (milestone 37 step 11, merged in `3829bc2a`). One pass holds many slots, each of its
+  own length, with the reserve of the most cycles.
+  - A call names its slot and its cycles. Its logit rows are a strictly rising set inside a span of 16 rows, or
+    none. With none, the call has no MIX_OUT and no HEAD.
+  - The pass allocates no device memory in a call: one arena is made at open. The ring cache holds at most 64
+    lists, and it drops the least recently used.
+  - A clear zeroes the conv states and the position, and it resets the poison. The planes are never read above the
+    position, so stale rows do not matter. A gate shows the bits of a fresh slot.
+  - The parts of a slot are the k and v rows of a range and the conv state. The rows are position-major
+    `[n][8][128]` in the stored bytes. The conv state is `[3][6656]` `f32`.
+  - A sliding state keeps the last `RING_ROWS` (1,536) positions. A write refuses a non-finite value.
+- **The host spec** (milestone 37 step 11, merged in `ded4cfd9`).
+  - The config key `cache` is `f32`, `bf16` or `e4m3`, with the default `f32`. It selects the cubin of that format.
+    The identity numbers hold `cache` and the `cubin_blake3` of that cubin.
+  - `feed.block` and `cache` are `ReferenceDefining` bit settings. The dtype of the k and v parts is `F32`, `BF16`
+    or `F8E4M3`.
+  - Until step 13 the limits hold no `Control`, no taps, no `TokensAndRows`, no `vision` or `control` term, and
+    no work reserve of the tower.
+  - The held-state rules mirror the B70 `Held`, with a ring of 1,536 rows, no spill, and tokens only (`held.rs`).
+    `identity.rs` mirrors the digest of the checkpoint and the text facts.
+- **The engine** (milestone 37 step 11, merged in `<C11 merge>`).
+  - The engine opens one GPU with the cubin of its cache format. It owns the device, the weights and the pass. It
+    frees them in this order: pass, weights, device. A drop that leaves a device buffer panics.
+  - The open refuses before it reads the weights when the planned device bytes pass the free bytes. After the load
+    it refuses when fewer than 2 GiB stay free, and when the weights take more device bytes than the plan. Real
+    weights take 18,886,376,960 bytes against a plan of 18,889,360,896. Each message names the bytes.
+  - Reason: on unified memory, other work and the page cache move the free bytes by tens of GB while an open runs.
+    Thus a comparison of the free bytes before and after the load cannot hold.
+  - The limits are the plan of the factory. A refused call changes nothing.
+  - A failed launch poisons the slot. The pass, the part writes and `set_n` above 0 are refused until `slot_clear`
+    or `set_n(0)`. Reads and other slots work.
+  - A sticky CUDA error (700, 701, 702, 715, 719 or 999) marks the engine dead. The call returns the poison, and
+    each later call panics for a planned restart (spec 8.5).
+  - A pass at position 0 starts from conv zeros.
+  - The conformance suite passes with 2 slots of 2,048 positions. Four gates do not apply, because they are gates
+    of LFM3: `seal_only_at_boundaries`, `quantum_same_boundaries`, `segments_exact_bits` and `stage_path_bits`.
+  - The digest of the checkpoint takes 15.9 s at each open.
+- **The quality of the cache formats at depth** (milestone 37 step 11, merged in `ae89d9bb`). The reference is the
+  `f32` cache, on the PG-19 text, in windows of 16 rows at 4K, 32K and 128K positions.
+  - `bf16` kept the top token on 48 of 48 rows. The mean KL was 3.5e-2 to 8.1e-3.
+  - `e4m3` kept it on 46 of 48 rows, and the two others were near ties. The mean KL was 2.4e-2 to 9.6e-3.
+  - The KL falls with depth. Over 256 greedy steps from six prompts, each format flips 1 to 21 steps. Each flip is
+    a near tie, with a margin of 0.33 or less.
+  - The prefill to 131,072 positions takes 368 s for `f32` and 335 s for `bf16` and `e4m3`.
+  - The test `cuda_kv_quality` runs only with `--ignored` and `NAGAYA_HAYSTACK_DIR`, the folder of the PG-19 test
+    split. The binding names no path. The test does not cover 400K positions or retrieval.
+
 - **Identity and oracle.** Because expert activations are quantized to NVFP4 and MXFP8, this engine has its own
   quantized host oracle and engine identity. Its `numbers` hold `quant` (`nvfp4_fouroversix_mae+mxfp8_ue8m0`),
-  `max_block`, `extra_runs`, `state` (`2`), the `nvcc` version, and the BLAKE3 of the `.cubin`.
+  `max_block`, `extra_runs`, `cache`, and `state` (`3`, `STATE_LAYOUT` in `spec.rs:28`). They also hold the `nvcc`
+  version and the BLAKE3 of the `.cubin` of the cache format.
 - **Long-context sizing.** The weights take about 19.5 GB of the 121 GB of unified memory. Here 400K means 409,600
   positions. A slot at 3 cycles has 48 runs of state: 8 full runs and 40 sliding runs. `slot_bytes` in `spec.rs`
   gives the bytes, in `f32`:
