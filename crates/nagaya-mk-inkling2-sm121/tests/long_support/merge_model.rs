@@ -1,4 +1,4 @@
-//! The host model of the merge order of `OP_ATTN`: the oracle of the order of its sums (milestone 37 step 11, lane T).
+//! The host model of the merge order of `OP_ATTN`: the oracle of the order of its sums.
 //!
 //! The kernel cuts the keys of a row into chunks of 256. Each chunk gives a partial state (maximum, sum, output). The
 //! partials merge in chunk order from the state (sink, 1, 0). This model does the same in f32, to tell which part of the

@@ -1,5 +1,5 @@
 //! GPU gate: the pass that finds its ring in the cache gives the bits of a pass that builds the ring again
-//! (milestone 37 step 10). A call of a shape that the pass has run loads the ring of that shape and patches only the
+//!. A call of a shape that the pass has run loads the ring of that shape and patches only the
 //! fields that move: the position of the first row, and the chunks of the attention. The gate runs decode steps at the
 //! positions 17 to 40, a prefill that crosses the chunk boundary of 256 keys, and calls of other row counts between
 //! decode steps. It compares the logits of each call and the whole slot after the last call, at the grids 48 and 7.
@@ -108,7 +108,7 @@ fn a_cached_ring_gives_the_bits_of_a_fresh_ring() {
     cached_ring_bits(None, CacheFormat::F32);
 }
 
-/// The same gate on the cubin of each cache format (milestone 37 step 11).
+/// The same gate on the cubin of each cache format.
 #[test]
 fn a_cached_ring_gives_the_bits_of_a_fresh_ring_in_each_cache_format() {
     for format in [CacheFormat::F32, CacheFormat::E4m3, CacheFormat::Bf16] {
@@ -191,7 +191,7 @@ fn the_host_time_of_a_cached_call_is_reported_and_under_a_millisecond() {
     host_time(None, CacheFormat::F32);
 }
 
-/// The same report on the cubin of each cache format (milestone 37 step 11): the rate of the pass for each format.
+/// The same report on the cubin of each cache format: the rate of the pass for each format.
 #[test]
 fn the_rate_of_the_pass_is_reported_for_each_cache_format() {
     for format in [CacheFormat::F32, CacheFormat::E4m3, CacheFormat::Bf16] {

@@ -1,4 +1,4 @@
-//! The ops of the LFM3 binary on a B70 card (milestone 24 step 5): the gated short convolution, the partial rotation,
+//! The ops of the LFM3 binary on a B70 card: the gated short convolution, the partial rotation,
 //! the sliding attention with a ring, and the gate of the heads. Each test compares the kernel with the fixture of
 //! plain torch (`tools/lfm3_op_fixture.py`) and with the CPU forms of `common/lfm3.rs`, which `lfm3_cpu_forms.rs`
 //! checks on the host. The ops of the LFM3 backbone give the same bits for any split of a feed, and the tests check it.

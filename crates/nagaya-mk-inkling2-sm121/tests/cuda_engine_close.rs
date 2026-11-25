@@ -1,4 +1,4 @@
-//! GPU gate of the close of the engine (milestone 37 step 11): an open, a pass and a drop, three times. After each drop
+//! GPU gate of the close of the engine: an open, a pass and a drop, three times. After each drop
 //! the engine has freed every device buffer, and the free memory of the GPU is what it was before the open.
 //!
 //! `INKLING2_MODEL_DIR=<folder> NAGAYA_TEST_CARDS=<pci address> cargo test -p nagaya-mk-inkling2-sm121 --features cuda

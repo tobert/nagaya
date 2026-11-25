@@ -1,4 +1,4 @@
-//! The CPU forms of the ops of the LFM3 vision tower (milestone 24 step 7): the norm and the axial rotation of the
+//! The CPU forms of the ops of the LFM3 vision tower: the norm and the axial rotation of the
 //! head rows, the gated depthwise convolution over the patch grid, and attention in both directions. The card test
 //! `xe_lfm3_vision_ops.rs` checks the kernels against these forms. The engine test `vision_cpu.rs` of
 //! `nagaya-mk-lfm3-bmg` runs the whole tower with them against transformers, so a wrong form fails there.

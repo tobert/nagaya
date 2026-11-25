@@ -1,4 +1,4 @@
-//! The reader of the oracle of the residual, with no GPU (milestone 34).
+//! The reader of the oracle of the residual, with no GPU.
 //!
 //! The tests build a small fixture in a temporary directory, as the tool `tools/oracle_fixture.py --residual` writes
 //! it. They check that the reader accepts a good one and refuses each fault. A test that reads the real fixture skips

@@ -1,4 +1,4 @@
-//! The inputs and the CPU forms of the ops of the audio encoder of LFM3-Omni-2B (milestone 24 step 7). The host test
+//! The inputs and the CPU forms of the ops of the audio encoder of LFM3-Omni-2B. The host test
 //! `lfm3_audio_cpu_forms.rs` checks the CPU forms against the plain formula in the layout of the reference, and the
 //! card test `xe_lfm3_audio_ops.rs` checks the kernels against the CPU forms.
 #![allow(dead_code)]

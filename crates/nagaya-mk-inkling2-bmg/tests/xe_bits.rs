@@ -1,5 +1,5 @@
-//! The bits of the logits of the Inkling 2 engine on a B70 card, against a fixture of their SHA-256 (milestone 36,
-//! "The rules of each item"). A change that keeps the order of each sum keeps each hash. A change that moves bits
+//! The bits of the logits of the Inkling 2 engine on a B70 card, against a fixture of their SHA-256 (engine-abi
+//! "Inkling 2"). A change that keeps the order of each sum keeps each hash. A change that moves bits
 //! changes the engine identity (spec 12.1): measure the gap again, then write the new hashes into the fixture.
 //!
 //! A driver or a compiler update can also move the bits of the card's functions, such as `exp` and `tanh`. Then the

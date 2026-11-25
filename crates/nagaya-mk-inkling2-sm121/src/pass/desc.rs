@@ -1,5 +1,4 @@
-//! The descriptors and the task tables of the ops of a run that have no public builder in `nagaya-mk-cuda` (milestone
-//! 37 step 10). Each function is a pure function of device addresses and shapes, so a host test checks it against the
+//! The descriptors and the task tables of the ops of a run that have no public builder in `nagaya-mk-cuda`. Each function is a pure function of device addresses and shapes, so a host test checks it against the
 //! conditions of the kernel. A function returns an error that names the wrong value, where the kernel would trap.
 //!
 //! The ops with a builder in `nagaya-mk-cuda` are `OP_PROJ` (`ProjLayout::descriptor`), `OP_ATTN`
@@ -45,7 +44,7 @@ pub const MIX_MAX_STACK: usize = 5;
 
 /// The tiles of an item of the up op of the experts for `tokens` tokens. A pair has 36 tiles, so 9 tiles make 4 items of
 /// a pair: a decode step of 8 pairs has 32 items, and the claim of the later items balances their tails. The pick comes
-/// from the sweep of lane E (milestone 37 step 10). It is a host rule and not part of the identity: the bits of the op
+/// from the sweep of lane E. It is a host rule and not part of the identity: the bits of the op
 /// do not depend on it.
 pub fn up_tiles_per_item(_tokens: usize) -> usize {
     9

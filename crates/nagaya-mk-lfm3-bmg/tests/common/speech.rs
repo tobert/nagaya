@@ -1,4 +1,4 @@
-//! The CPU forms of the speech path of Omni (milestone 24 step 8): the depth decoder, the codebook table of the
+//! The CPU forms of the speech path of Omni: the depth decoder, the codebook table of the
 //! backbone, and the decoder of LiquidCodec. They follow Liquid's remote code of `LFM3-Omni-2B` at `21d75123`:
 //! `Lfm3OmniDepthDecoder` (modeling_lfm3_omni.py:230-281), `get_audio_out_embeds` (:576-597), `Lfm3Model`
 //! (modeling_lfm3.py:445-765), and `LiquidCodecModel.decode` (modeling_liquid_codec.py:141-357).

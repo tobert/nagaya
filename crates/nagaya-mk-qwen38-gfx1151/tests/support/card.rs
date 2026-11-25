@@ -1,4 +1,4 @@
-//! Helpers of the card tests of the taps and of the control vectors (milestone 34). Each test file includes this file.
+//! Helpers of the card tests of the taps and of the control vectors. Each test file includes this file.
 //!
 //! Every test calls `open()`. A hold keeps the weights for the whole binary, as in `tests/hip.rs`. All engine calls go
 //! to one worker thread. Run with `--test-threads=1`, and never free the engine in a test (spec 3.3).

@@ -1,11 +1,11 @@
-//! The C ABI of the Qwen3.8 engine, linked statically from `hip/` (spec 12.1, AGENTS.md milestone 15).
+//! The C ABI of the Qwen3.8 engine, linked statically from `hip/` (spec 12.1).
 //!
 //! `build.rs` compiles the engine into `libqwen38engine.a` under the feature `hip`. A build without `hip` links no
 //! engine code, and `linked` returns an error. The engine is never closed: the HIP teardown of the engine segfaults in
 //! the process (spec 3.3).
 //!
 //! The C++ side is the runtime layer: the launches of `hip/src/engine/extern.hip` and the runtime calls `hip_rt_*` of
-//! `hip/src/rt/rt.cpp`. Each call checks nothing. The Rust host makes every decision (milestone 15 step 6): the
+//! `hip/src/rt/rt.cpp`. Each call checks nothing. The Rust host makes every decision: the
 //! arena (`arena.rs`), the contexts (`context.rs`), the PLE rows (`ple.rs`), the stages (`pass.rs`) and the pass
 //! (`host.rs`). `Binding` is a table of the calls, so the worker's stub tests can replace them.
 

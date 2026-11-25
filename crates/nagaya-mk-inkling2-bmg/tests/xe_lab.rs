@@ -1,4 +1,4 @@
-//! The gates of the lab of Inkling 2 on a B70 card (milestone 35 step 8, engine-abi "The lab of Inkling 2"): the taps
+//! The gates of the lab of Inkling 2 on a B70 card (engine-abi "The lab of Inkling 2"): the taps
 //! against the probe of the engine, the host form and the `f32` oracle of transformers, and control vectors against
 //! the host form.
 //!

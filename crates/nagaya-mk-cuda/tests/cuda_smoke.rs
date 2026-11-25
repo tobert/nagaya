@@ -1,4 +1,4 @@
-//! GPU smoke gate (Milestone 37 step 5): verify `sm_121a` cubin load, persistent interpreter execution,
+//! GPU smoke gate: verify `sm_121a` cubin load, persistent interpreter execution,
 //! `OP_NOP`/`OP_COPY`/`OP_HALT`, scoreboard synchronization, and `%globaltimer` profiling.
 //!
 //! Run with one thread and a free GPU PCI address:

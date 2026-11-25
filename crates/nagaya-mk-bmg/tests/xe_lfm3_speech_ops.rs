@@ -1,4 +1,4 @@
-//! The speech ops of the LFM3 binary on a B70 card (milestone 24 step 8): the attention of the depth decoder in
+//! The speech ops of the LFM3 binary on a B70 card: the attention of the depth decoder in
 //! groups, the polar form, and the inverse real FFT with the window. Each test compares the kernel with the CPU form
 //! of `common/lfm3_speech.rs`, which `lfm3_speech_cpu_forms.rs` checks on the host.
 //!

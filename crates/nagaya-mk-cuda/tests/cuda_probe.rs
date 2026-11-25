@@ -1,4 +1,4 @@
-//! GPU probes (Milestone 37 step 7, substep 1): measure the facts of the GB10 that the design of the interpreter
+//! GPU probes: measure the facts of the GB10 that the design of the interpreter
 //! assumes, and print them as tables. Each probe op returns a checksum or a result tile, and the test compares it
 //! with the host, so a wrong result fails the test. Read the tables with `--nocapture`.
 //!
@@ -244,7 +244,7 @@ fn probe_read_bandwidth() {
     dev.free_device(buffer).unwrap();
 }
 
-/// The producer shape reads at the peak (Milestone 37 step 7, substep 6). The gate is 85% of the best read rate of the
+/// The producer shape reads at the peak. The gate is 85% of the best read rate of the
 /// flat shape, which is the measured peak. The producer warp does not read. In the last case it prefetches the
 /// first item of each block into L2 before the consumers start.
 #[test]

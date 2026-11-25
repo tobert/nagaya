@@ -1,5 +1,4 @@
-//! GPU report: the time of each op of the pass, and the tokens a second at 1 row and at 16 rows (milestone 37 step 10, commit
-//! 11). It asserts nothing about speed. It prints, for a decode step of 1 row and for a block of 16 rows, one line for each
+//! GPU report: the time of each op of the pass, and the tokens a second at 1 row and at 16 rows. It asserts nothing about speed. It prints, for a decode step of 1 row and for a block of 16 rows, one line for each
 //! op: the count of tasks, the mean time of a task from its first wait that ended to the last end of its items, the bytes of
 //! weights that a task reads at 1 row, the rate against the 252 GB/s that the probe measured, and the time that the design
 //! gives. The wall of the call is the launch of the ring, and the rest of the call is the host (the tasks, the plan).
@@ -22,7 +21,7 @@ use nagaya_mk_inkling2_sm121::spec;
 const PEAK_GBPS: f64 = 252.0;
 const SEQ: usize = 1024;
 
-/// The time of an op in the design (`docs/milestones.md`, the table of the fused tasks), in microseconds, for an NVFP4 layer
+/// The time of an op in the design (the table of the fused tasks), in microseconds, for an NVFP4 layer
 /// and an MXFP8 layer. The attention is bound by the cache, and QUANT has no figure.
 fn budget_us(name: &str) -> Option<(f64, f64)> {
     Some(match name {

@@ -1,4 +1,4 @@
-//! The feed of the Inkling 2 engine on a B70 card (milestone 35 step 5, engine-abi "The first Inkling 2 binding",
+//! The feed of the Inkling 2 engine on a B70 card (engine-abi "The first Inkling 2 binding",
 //! "Bits and splits"): the same split gives the same bits, another split and a decode step stay near the block, the
 //! cuts between launches change no bit, and a slot of 32,768 positions follows the host form where its rings wrap.
 //! It also measures the time of a prefill of 512 tokens and of a decode step.

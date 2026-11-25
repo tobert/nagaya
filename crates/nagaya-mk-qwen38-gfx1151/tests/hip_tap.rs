@@ -1,4 +1,4 @@
-//! The taps `residual` and `fold` of the Qwen3.8 engine on gfx1151 (milestone 34 step 5).
+//! The taps `residual` and `fold` of the Qwen3.8 engine on gfx1151.
 //!
 //! A pass with a tap runs as 49 launches, cut at the layer ends, and the host reads rows of `h` between two launches.
 //! The gates: a tap changes no bit of the logits or of the stored parts; the rows match the oracle on the exact path;

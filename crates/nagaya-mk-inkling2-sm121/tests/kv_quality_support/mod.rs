@@ -1,4 +1,4 @@
-//! The measures of the quality of a cache format against the f32 cache (milestone 37 step 11, lane E). The f32 logits
+//! The measures of the quality of a cache format against the f32 cache. The f32 logits
 //! of a row are the reference. These functions use no GPU, so `cuda_kv_quality_metrics.rs` tests them on the host.
 
 #![allow(dead_code)]

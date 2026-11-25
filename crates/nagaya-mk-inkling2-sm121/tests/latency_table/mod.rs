@@ -1,4 +1,4 @@
-//! The latency that the gate measured on the GB10 (milestone 37 step 11), in milliseconds: the wall time of a call of the
+//! The latency that the gate measured on the GB10, in milliseconds: the wall time of a call of the
 //! engine in a slot filled to `positions` with seeded rows. The ceiling of each cell is `ceiling_ms`. The model of
 //! `bound` is above each cell (`tests/bound_model.rs`).
 //!

@@ -1,4 +1,4 @@
-//! The layout of the cache and the shape of `OP_ATTN` (milestone 37 step 9 wave C, step 11 "The layout of the cache").
+//! The layout of the cache and the shape of `OP_ATTN`.
 //!
 //! The cache of one run holds two planes, one for the keys and one for the values. Each plane holds, for each KV head, a
 //! block of `plane_rows` rows. A row is the 128 channels of one position and one KV head, in one format. The rows of a
@@ -43,7 +43,7 @@ pub enum CacheFormat {
     F32,
     /// 1 byte for each value, with a unit scale.
     E4m3,
-    /// 2 bytes for each value, with a unit scale: the f32 value rounded to nearest even. Proposed (milestone 37 step 11).
+    /// 2 bytes for each value, with a unit scale: the f32 value rounded to nearest even. Proposed.
     Bf16,
 }
 

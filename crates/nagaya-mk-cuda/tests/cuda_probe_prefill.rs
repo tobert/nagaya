@@ -1,4 +1,4 @@
-//! GPU probes of the prefill form of the dense matmul (milestone 37 step 9, lane F). They measure what the design
+//! GPU probes of the prefill form of the dense matmul. They measure what the design
 //! assumed and had not measured on the GB10: the rate of the MMA with few chains in a warp, the rate of shared memory,
 //! the ring of bulk copies when its barriers are reused, and the rate of L2 under bulk copies from all the SMs. Each
 //! op returns a checksum, and the test compares it with the host. Read the tables with `--nocapture`.

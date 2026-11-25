@@ -149,7 +149,7 @@ fn a_side_past_4096_px_is_refused_from_the_header_and_a_small_one_pads() {
         assert!(why.ends_with("4096 px or less."), "{why}");
         assert!(media::prepare(&png_of(w, h), "image/png").is_err());
     }
-    // A small image pads to 40 px, as the reference pads it: one token (Amy, 2026-11-21).
+    // A small image pads to 40 px, as the reference pads it: one token.
     for (w, h, tokens) in [
         (1, 1, 1),
         (8, 8, 1),

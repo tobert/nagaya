@@ -1,4 +1,4 @@
-//! Batched decode passes of both LFM3 models on a B70 card (milestone 27 step 3, engine-abi "LFM3", "Batched
+//! Batched decode passes of both LFM3 models on a B70 card (engine-abi "LFM3", "Batched
 //! passes"). Each row of a batch gives the bits of a pass of that row alone, for several decode steps, so its K, V and
 //! convolution state are right too. A pass that breaks a rule of a batch is refused before it changes a slot.
 //!

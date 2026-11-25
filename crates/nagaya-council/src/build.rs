@@ -22,7 +22,7 @@ pub fn root_recipe(identity_digest: &[u8; 32], geometry_key: &[u8]) -> RecipeId 
 }
 
 /// The root recipe of a context with a control list: the list is the lab state (spec 11.12). An empty list gives the
-/// root of a plain context. The job path of a context calls it when the context names a list (milestone 25 step 7).
+/// root of a plain context. The job path of a context calls it when the context names a list.
 pub fn root_recipe_with_control(identity_digest: &[u8; 32], geometry_key: &[u8], list: &[ControlEntry]) -> RecipeId {
     root_recipe_with_lab(identity_digest, geometry_key, list, None, None)
 }

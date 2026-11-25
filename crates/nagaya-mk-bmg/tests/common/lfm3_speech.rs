@@ -1,4 +1,4 @@
-//! The CPU forms of the speech ops of the LFM3 binary (milestone 24 step 8): the attention of the depth decoder in
+//! The CPU forms of the speech ops of the LFM3 binary: the attention of the depth decoder in
 //! groups, the polar form, and the inverse real FFT with the window. `lfm3_speech_cpu_forms.rs` checks them on the
 //! host against closed forms, and `xe_lfm3_speech_ops.rs` checks the kernels against them. Each form sums in f64.
 #![allow(dead_code)]

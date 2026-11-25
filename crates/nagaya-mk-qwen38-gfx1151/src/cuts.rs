@@ -1,4 +1,4 @@
-//! The host steps of a pass that is cut at layer ends (milestone 34, engine-abi "The residual of the Qwen3.8 engine").
+//! The host steps of a pass that is cut at layer ends (engine-abi "The residual of the Qwen3.8 engine").
 //!
 //! `host::run_pass` launches the ranges of a cut pass. After each launch that ends a layer, it calls `Cuts::at_cut`.
 //! The step applies the control items of the layer to the rows of `h` with the device op, and it reads the rows of

@@ -1,4 +1,4 @@
-//! GPU gates of `OP_OUT_MIX` (milestone 37 step 9, wave B lane D): the output matmul `wo`, the short convolution of the
+//! GPU gates of `OP_OUT_MIX`: the output matmul `wo`, the short convolution of the
 //! attention, the residual and the mix of the MLP input, on real weights of Inkling 2 Mini, against the host forms of the
 //! B70 crate (`ops::*`, the order of `Model::layer` in `host/forward.rs`).
 //!

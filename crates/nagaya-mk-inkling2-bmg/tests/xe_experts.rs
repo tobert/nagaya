@@ -326,7 +326,7 @@ fn the_experts_of_a_layer_on_the_card_give_the_host_form_and_the_same_bits_on_ea
     }
 }
 
-/// The longest time of one pair of expert ops of one token, in us. The goal of milestone 36 item 1 is about 8 ms for
+/// The longest time of one pair of expert ops of one token, in us. The goal is about 8 ms for
 /// the 48 pairs of a decode step at 3 cycles, 167 us each. The row path took 172 us in NVFP4 and 165 us in MXFP8 on
 /// 2026-11-22, and the XMX path 680 us. The bound leaves room for the noise of a shared card.
 const PAIR_US: f64 = 200.0;
@@ -425,8 +425,7 @@ fn the_expert_ops_of_one_token_read_the_planes_near_the_bandwidth() {
 }
 
 /// The time of a pair of expert ops for blocks of 1 to 16 tokens, in an NVFP4 layer. Blocks of 1 to 8 tokens take
-/// the row path, and 9 or more the XMX path. It prints the times and checks nothing: it is the measure of milestone
-/// 36 item 1 for the choice of the counts of the row path. Each pair reads one plan, so a part of its planes can
+/// the row path, and 9 or more the XMX path. It prints the times and checks nothing: it is the measure for the choice of the counts of the row path. Each pair reads one plan, so a part of its planes can
 /// come from the cache.
 #[test]
 fn the_time_of_the_expert_ops_for_each_count_of_tokens() {

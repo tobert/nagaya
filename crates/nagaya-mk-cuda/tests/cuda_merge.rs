@@ -1,4 +1,4 @@
-//! GPU gate of the merge groups (Milestone 37 step 7, substep 5): `OP_REDUCE_PROBE` splits the sum of a vector over
+//! GPU gate of the merge groups: `OP_REDUCE_PROBE` splits the sum of a vector over
 //! several items. The item that arrives last in its group sums the partials in index order. The bits do not depend
 //! on the grid width or on which block merges, and they equal a host sum in the same order.
 //!

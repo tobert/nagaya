@@ -1,4 +1,4 @@
-//! GPU gate: a decode step equals the same row in a block (milestone 37 step 10, commit 10). The prompt of the chat
+//! GPU gate: a decode step equals the same row in a block. The prompt of the chat
 //! (17 ids) runs as one block, as 16 rows then 1 row (a decode step), as 9 rows then 8 rows, and row by row. The logits
 //! of the last row, every plane of the cache and every conv state must have the same bits in each run, and at each
 //! width of the grid (48, 24, 7 and 1). The comparison is of the whole slot, so it covers the plane rows of position 16

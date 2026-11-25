@@ -1,4 +1,4 @@
-//! The ops of the audio encoder of LFM3-Omni-2B on a B70 card (milestone 24 step 7). Each test compares the kernel
+//! The ops of the audio encoder of LFM3-Omni-2B on a B70 card. Each test compares the kernel
 //! with the CPU forms of `common/lfm3_audio.rs`, which `lfm3_audio_cpu_forms.rs` checks on the host.
 //!
 //! Stop `nagaya.service` first: the nagaya must be the only client of the cards (spec 3.1). Run alone:

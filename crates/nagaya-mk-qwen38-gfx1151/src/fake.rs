@@ -1,4 +1,4 @@
-//! A fake device and fake weights for the host tests of the pass (milestone 34). Nothing here runs on a GPU.
+//! A fake device and fake weights for the host tests of the pass. Nothing here runs on a GPU.
 //!
 //! `weights` has every tensor that the pass build names, with the quant types and the shapes of the real model, so the
 //! build makes the stage list of a real pass. `binding` has fake runtime calls: a "device" buffer is host memory, a

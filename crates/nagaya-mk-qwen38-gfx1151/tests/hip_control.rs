@@ -1,4 +1,4 @@
-//! The control vectors of the Qwen3.8 engine on gfx1151 (milestone 34 step 6).
+//! The control vectors of the Qwen3.8 engine on gfx1151.
 //!
 //! A pass with a control list runs as launches cut at the layer that the list acts on. After each launch, the host
 //! reads the rows of the segment from `h`, applies the items in list order, and writes the rows back. The gates: a

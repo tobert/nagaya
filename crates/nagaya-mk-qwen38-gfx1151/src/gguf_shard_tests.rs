@@ -1,8 +1,8 @@
-//! The Rust reader and dequantizer against the reference's C++ copy, on the real Qwen3.8 shards (milestone 15, step 3).
+//! The Rust reader and dequantizer against the reference's C++ copy, on the real Qwen3.8 shards.
 //!
 //! `tests/fixtures/dequant/shards.txt` holds what the reference's C++ reader found in the three shards: each tensor's
 //! record and the SHA-256 of its dequant. `tools/mk_dequant_digests.cpp` wrote it, with the reference's `gguf.cpp` and
-//! `dequant.cpp` as milestone 15 step 1 copied them from reference commit `555a2a3`. The tool and the C++ copy are in
+//! `dequant.cpp` as they were copied from the reference. The tool and the C++ copy are in
 //! commit `7d474c2`. A machine with no copy of the shards skips these tests
 //! (`nagaya-text-qwen38/tests/common/model.rs`).
 

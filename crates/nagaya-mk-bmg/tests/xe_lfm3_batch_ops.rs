@@ -1,4 +1,4 @@
-//! The matrix multiply and SwiGLU of a batched decode on a B70 card (milestone 27 step 1). With `FLAG_TILED`, one row
+//! The matrix multiply and SwiGLU of a batched decode on a B70 card. With `FLAG_TILED`, one row
 //! takes the path of 2 to 8 rows. Thus a row gives the same bits for any count of rows from 1 to 8, and a context's
 //! bits do not depend on the other segments of its pass (engine-abi "LFM3", "Batched passes").
 //!

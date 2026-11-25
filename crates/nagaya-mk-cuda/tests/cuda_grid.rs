@@ -1,4 +1,4 @@
-//! GPU gate of the work items and the static assignment (Milestone 37 step 7, substep 4): the bits of a ring do not
+//! GPU gate of the work items and the static assignment: the bits of a ring do not
 //! depend on the grid width, and each event counts the items of its task.
 //!
 //! `NAGAYA_TEST_CARDS=<pci address> cargo test -p nagaya-mk-cuda --features cuda --test cuda_grid -- --test-threads=1`

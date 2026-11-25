@@ -608,7 +608,7 @@ pub(crate) fn describe(paths: &Qwen38Paths, check: canary::CanaryCheck) -> Resul
     ))
 }
 
-/// Read the shards, plan the arena and fill it (milestone 15 step 6): the shard maps, the PLE table, the arena and the
+/// Read the shards, plan the arena and fill it: the shard maps, the PLE table, the arena and the
 /// weight table.
 fn load_weights(
     binding: &Binding,
@@ -878,7 +878,7 @@ impl ThreadState {
         // open error and the ledger's term is what the engine holds.
         let pass_scratch = state.measure_pass_scratch().map_err(Qwen38Error::new)?;
         spec::scratch_problem(pass_scratch).map_err(Qwen38Error::new)?;
-        // The table of control vectors (milestone 34). It comes after the probe, so the probe measures the same pool.
+        // The table of control vectors. It comes after the probe, so the probe measures the same pool.
         state.make_control_table();
         // The canary runs after the scratch probe, so that it does not change what the probe measures. The open
         // decides from its result (`acquire_checked`), so a mismatch does not poison the one worker of the process.

@@ -1,4 +1,4 @@
-//! The shared HIP ops of gfx1151 (`AGENTS.md` milestone 22): the hipBLASLt matrix multiplies with their plan table,
+//! The shared HIP ops of gfx1151: the hipBLASLt matrix multiplies with their plan table,
 //! and the HIP kernels of the Qwen-Image engine. `nagaya-mk-bmg` holds the ops of the B70 cards in the same way.
 //!
 //! The plan table and the bf16 rounding are plain Rust and run with no GPU. The binding of the HIP runtime, the

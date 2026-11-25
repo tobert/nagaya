@@ -7,7 +7,7 @@ use nagaya_mk_bmg::safetensors::{MappedSafeTensors, SafeTensorsView};
 use nagaya_mk_lfm3_bmg::spec::{self, Backbone, Config, Model};
 use nagaya_mk_lfm3_bmg::weights::{self, Count};
 
-/// The device bytes of the backbone: 1,728,801,536 BF16 parameters (`AGENTS.md` milestone 24), each tensor in
+/// The device bytes of the backbone: 1,728,801,536 BF16 parameters, each tensor in
 /// steps of 64 bytes, which every tensor of the backbone fills.
 const WEIGHTS_BYTES: u64 = 1_728_801_536 * 2;
 
@@ -287,7 +287,7 @@ fn a_tower_with_a_lost_or_other_tensor_is_refused_before_any_upload() {
 }
 
 /// Both models have the control table of 8 vectors (spec 11.12). Omni's vector acts on its text passes: a speech frame
-/// is a `frame` call, which takes no control list (AGENTS.md milestone 25 step 9).
+/// is a `frame` call, which takes no control list.
 #[test]
 fn both_models_have_a_control_table_of_their_layers_and_width() {
     for text in [

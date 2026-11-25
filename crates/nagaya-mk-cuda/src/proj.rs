@@ -1,4 +1,4 @@
-//! The joined projection of the attention input (`OP_PROJ`, milestone 37 wave B lane D).
+//! The joined projection of the attention input (`OP_PROJ`).
 //!
 //! One matrix `J` holds the six or eight matrices that read the normed input of an attention layer, so that one task
 //! reads them. The rows of `J`, in order, with `K = 2304`:

@@ -1,4 +1,4 @@
-//! Show that every thread of the engine takes the CPU set of the thread that opens it (spec 3.2a, milestone 15 step 6).
+//! Show that every thread of the engine takes the CPU set of the thread that opens it (spec 3.2a).
 //!
 //! The nagaya pins an engine's group thread to its CPU set before it opens the engine. A thread that the HIP runtime
 //! started before `main` would keep the whole mask. The example pins the main thread to two CPUs, opens the engine

@@ -1,4 +1,4 @@
-//! The host image of the cache of one run (milestone 37 step 11, "The layout of the cache"), and the pack of its rows.
+//! The host image of the cache of one run, and the pack of its rows.
 //!
 //! The layout is in `nagaya_mk_cuda::attn`: a plane for the keys and a plane for the values, a block of rows for each KV
 //! head, and one row of 128 values for each position. A row is `f32` (the oracle), `bf16` or `e4m3`, the last two with a unit scale. A scale

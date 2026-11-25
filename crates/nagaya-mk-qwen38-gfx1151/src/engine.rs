@@ -136,7 +136,7 @@ impl Qwen38Engine {
             .ok_or_else(|| Qwen38Error::new("the engine worker stopped; restart the process"))
     }
 
-    /// The pass scratch that the probe measured at open, in bytes (milestone 9c).
+    /// The pass scratch that the probe measured at open, in bytes.
     pub fn pass_scratch(&self) -> u64 {
         self.worker.spec().pass_scratch
     }

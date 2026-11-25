@@ -1,4 +1,4 @@
-//! GPU gate of the down op `OP_EXPERT_NVFP4` and `OP_EXPERT_MXFP8` with `FLAG_DOWN` (milestone 37 step 9, wave B lane M):
+//! GPU gate of the down op `OP_EXPERT_NVFP4` and `OP_EXPERT_MXFP8` with `FLAG_DOWN`:
 //! the matmul of `w2` on the quantized activation rows, the sum of the 8 slots of a token in slot order, the short
 //! convolution `mlp_conv` with its state, and the residual `x = r + conv(f)`. The weights are the real `w2` of Inkling 2
 //! Mini, layer 0 (NVFP4) and layer 20 (MXFP8), for 8 experts.

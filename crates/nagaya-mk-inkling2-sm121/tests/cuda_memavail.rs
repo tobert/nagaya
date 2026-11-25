@@ -1,4 +1,4 @@
-//! GPU gate of the memory rule of the open (milestone 37 step 11). On a GPU with unified memory the page cache holds
+//! GPU gate of the memory rule of the open. On a GPU with unified memory the page cache holds
 //! the checkpoint after a read, and `cuMemGetInfo` leaves it out of the free bytes. The kernel reclaims it for a GPU
 //! allocation (a probe of 2026-11-24). The gate reads the checkpoint, and then it checks two facts:
 //! - the available bytes of the rule are at least the free bytes of the driver, and

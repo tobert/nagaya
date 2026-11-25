@@ -1,4 +1,4 @@
-//! The ops of the speech binary on a B70 card (milestone 17 step 5), each against a plain CPU form on random inputs.
+//! The ops of the speech binary on a B70 card, each against a plain CPU form on random inputs.
 //! The Gemma 4 binary keeps its bytes, so the speech ops do not change the Gemma 4 engine.
 //!
 //! Stop `nagaya.service` first: the nagaya must be the only client of the cards (spec 3.1). Run alone:

@@ -1,4 +1,4 @@
-//! The Qwen3-TTS 12 Hz 1.7B VoiceDesign engine on one B70 card (milestone 17). It runs the talker, the code predictor
+//! The Qwen3-TTS 12 Hz 1.7B VoiceDesign engine on one B70 card. It runs the talker, the code predictor
 //! and the codec decoder as rings of tasks on the shared interpreter of `nagaya-mk-bmg` (engine-abi "Speech").
 //!
 //! With no feature, the crate plans with no card. The feature `xe` loads the engine on a card.

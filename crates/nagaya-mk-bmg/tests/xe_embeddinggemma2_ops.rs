@@ -1,4 +1,4 @@
-//! The ops of the embedding binary on a B70 card (milestone 19 step 5), each against a plain CPU form on random inputs.
+//! The ops of the embedding binary on a B70 card, each against a plain CPU form on random inputs.
 //! The Gemma 4, speech and image binaries keep their bytes, so the embedding ops do not change those engines.
 //!
 //! Stop `nagaya.service` first: the nagaya must be the only client of the cards (spec 3.1). Run alone:

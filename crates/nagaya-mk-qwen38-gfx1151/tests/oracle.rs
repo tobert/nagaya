@@ -1,4 +1,4 @@
-//! The oracle's fixture and its metric code, with no GPU (milestone 11.5).
+//! The oracle's fixture and its metric code, with no GPU.
 
 #[path = "support/oracle.rs"]
 mod oracle;

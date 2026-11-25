@@ -61,7 +61,7 @@ fn row_len(part: usize) -> usize {
     }
 }
 
-/// The weight arena is locked in memory (milestone 30 step 5). It is a memfd that the GPU reads through a host
+/// The weight arena is locked in memory. It is a memfd that the GPU reads through a host
 /// registration. Swap could move its pages, and a move remaps them under a running kernel that the driver cannot
 /// preempt. On 2026-11-10 that gave spin-timeouts and a "Page not present" fault on the Strix Halo machine.
 #[test]

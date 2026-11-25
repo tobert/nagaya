@@ -1,4 +1,4 @@
-//! The gates of the calls around a pass on a B70 card (milestone 35 step 12, engine-abi "Inkling 2"): a snapshot of
+//! The gates of the calls around a pass on a B70 card (engine-abi "Inkling 2"): a snapshot of
 //! the parts, its restore, the probe of the oracle and `last_error`.
 //!
 //! - The parts of a run that the count does not reach read as zeros. Thus a slot that held another count before gives

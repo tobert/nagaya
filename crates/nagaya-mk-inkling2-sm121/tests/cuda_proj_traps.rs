@@ -1,4 +1,4 @@
-//! GPU gate of the checks of `OP_PROJ` (milestone 37 step 9, wave B lane D): a task that the op cannot run traps, and a
+//! GPU gate of the checks of `OP_PROJ`: a task that the op cannot run traps, and a
 //! good task runs. The task has real buffers of zeros, so a check that is missing lets the launch succeed, and the test
 //! shows it. The model is not needed.
 //!

@@ -1,4 +1,4 @@
-//! GPU report: where the time of a decode step of 1 row goes (milestone 37 step 10, lane G). For each kind of op it prints
+//! GPU report: where the time of a decode step of 1 row goes. For each kind of op it prints
 //! the mean span of a task, the gap between the end of the task before and the first wait that ended, the tail (first block
 //! end to last block end), the mean time that a block waited for FULL (the scoreboard and the producer), the mean busy time
 //! of a block, and the time of the weights at 252 GB/s. It asserts only that the numbers exist.

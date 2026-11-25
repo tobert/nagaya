@@ -1,7 +1,7 @@
 //! The Qwen3.8 engine: its HIP kernels in `hip/`, the Rust host code around them, and the `Engine` trait on top.
 //!
 //! `build.rs` compiles the kernels and the C++ runtime layer, and the crate links them statically, under the feature
-//! `hip`. The Rust host makes every decision (milestone 15 step 6): `gguf.rs` reads the shards, `arena.rs` fills the
+//! `hip`. The Rust host makes every decision: `gguf.rs` reads the shards, `arena.rs` fills the
 //! weight arena, `context.rs` holds the contexts, `ple.rs` gathers the PLE rows, `pass.rs` builds the stages,
 //! `schedule.rs` orders them, and `host.rs` runs the pass. The three shard paths come from `QWEN38_SHARDS`. One worker
 //! thread makes every engine call, because the HIP device is the calling thread's current device. The engine is never

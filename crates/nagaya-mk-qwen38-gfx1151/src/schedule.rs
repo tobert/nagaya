@@ -1,5 +1,4 @@
-//! The schedule of a fused pass: fewer grid barriers, the same bits. It was the reference's `stage_sched.h` (reference
-//! commit `555a2a3`).
+//! The schedule of a fused pass: fewer grid barriers, the same bits. It was the reference's `stage_sched.h`.
 //!
 //! The megakernel puts a grid barrier after each stage. Most stages of a decode step are a few microseconds of work,
 //! and a barrier costs about 1.2 to 4.4 us. Two stages need a barrier between them only if one touches what the other

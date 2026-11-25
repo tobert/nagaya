@@ -1,8 +1,8 @@
 //! The pass in Rust: the checks of the segments, the scratch pool, the upload, the launch rules and the advance of
-//! each context (milestone 15 step 6).
+//! each context.
 //!
 //! The reference's `engine.hip` `segments_problem`, `run_pass`, `failed_pass`, `run_stages_now` and the `ScratchPool`
-//! held these in C++ (reference commit 555a2a3). The C++ engine keeps only the launches under the control block and the
+//! held these in C++. The C++ engine keeps only the launches under the control block and the
 //! watchdog (`Engine::launch_fused`, `Engine::launch_each`). Every call here runs on the worker thread.
 
 use std::collections::HashMap;

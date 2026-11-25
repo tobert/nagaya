@@ -1,4 +1,4 @@
-//! The Inkling 2 family library for the council (spec 11.3, 11.3a, milestone 35 step 3).
+//! The Inkling 2 family library for the council (spec 11.3, 11.3a).
 
 mod messages;
 mod read;
@@ -387,7 +387,7 @@ impl Inkling2Family {
     }
 
     /// Render the messages with the effort that `thinking` chooses: with thinking off the template writes the effort
-    /// "none", and with thinking on its default, 0.9 (milestone 35 question 4).
+    /// "none", and with thinking on its default, 0.9.
     pub(crate) fn run(&self, messages: &[Json], tools: &[Json], thinking: bool) -> Result<Rendered, FamilyError> {
         let effort = if thinking { None } else { Some(Effort::None) };
         self.chat

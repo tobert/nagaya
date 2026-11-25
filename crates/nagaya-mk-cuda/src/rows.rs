@@ -1,5 +1,4 @@
-//! The weights of the message gates in the order that `OP_GATE_DOWN` and `OP_GATE_UP` read them (milestone 37, wave B
-//! lane R).
+//! The weights of the message gates in the order that `OP_GATE_DOWN` and `OP_GATE_UP` read them.
 //!
 //! The down matrix of a gate is `[64, 4608]`. It is a dense matmul, and `repack::repack_bf16` lays it out with
 //! `MatmulShape::new(64, 4608)`: 4 tiles of 16 columns and 6 K slices of 768. [`gate_down_weights`] joins the

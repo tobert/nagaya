@@ -1,4 +1,4 @@
-//! The decoder of LiquidCodec on the card (milestone 24 step 8): its weights, its buffers, the state of a slot, the
+//! The decoder of LiquidCodec on the card: its weights, its buffers, the state of a slot, the
 //! ring of one frame, and the overlap-add on the host.
 //!
 //! The ring follows `LiquidCodecModel.decode` (modeling_liquid_codec.py:293-357) for one frame of 12 codes. The host

@@ -1,6 +1,6 @@
 //! Host quantization oracle for the NVFP4 (`fouroversix_mae`) and MXFP8 (`ue8m0`) activations of Inkling 2.
 //!
-//! The rules are those of the Triton kernels that vLLM ships for Inkling 2 (commit 186882d9e8, `nvfp4.py` and
+//! The rules are those of the Triton kernels that vLLM ships for Inkling 2 (`nvfp4.py` and
 //! `mxfp8.py`). Transformers quantizes no activation. Each quantizer gives the bytes of those kernels bit for bit:
 //! every `f32` operation here is the same operation in the same order. The test `tests/quant_fixture.rs` compares
 //! the bytes. A non-finite input or a NaN code is an error (spec 8.5).

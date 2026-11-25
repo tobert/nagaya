@@ -1,7 +1,7 @@
 //! The dequantizer: GGML blocks to f32, bit for bit as the reference's C++ copy and ggml give them.
 //!
 //! Each body is a port of ggml's `dequantize_row_*` (`ggml/src/ggml-quants.c`, llama.cpp `5cf3a3528`), through the
-//! reference's `src/gguf/dequant.cpp` at reference commit `555a2a3`. The ports keep ggml's float operations and their
+//! reference's `src/gguf/dequant.cpp`. The ports keep ggml's float operations and their
 //! order, so the bits are equal. The tests compare the bits with digests that the reference's C++ copy wrote. The tool
 //! that wrote them, `tools/mk_dequant_digests.cpp`, and the C++ copy are in commit `7d474c2`; a later commit removed
 //! both.

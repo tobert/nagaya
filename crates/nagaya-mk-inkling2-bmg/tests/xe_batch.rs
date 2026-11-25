@@ -1,4 +1,4 @@
-//! A batch of decode rows of the Inkling 2 engine on a B70 card (milestone 36 items 10 and 11, engine-abi "A batch of
+//! A batch of decode rows of the Inkling 2 engine on a B70 card (engine-abi "A batch of
 //! decode rows"). A row of a batch gets the bits of its pass alone, in a batch of 1 to 8 rows from contexts at other
 //! positions. A block of 2 to 8 tokens gets the bits of the same tokens decoded one at a time.
 //!
@@ -154,7 +154,7 @@ fn a_row_of_a_batch_gets_the_bits_of_its_pass_alone() {
 }
 
 /// A block of 2 to 8 tokens gets the bits of the same tokens decoded one at a time, at each position of the block
-/// (milestone 36 item 10). A block of 9 tokens or more takes other paths of the matmuls and the experts.
+///. A block of 9 tokens or more takes other paths of the matmuls and the experts.
 #[test]
 fn a_block_of_up_to_8_tokens_gets_the_bits_of_its_decode_steps() {
     if absent() {

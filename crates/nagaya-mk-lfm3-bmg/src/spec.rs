@@ -656,7 +656,7 @@ pub fn layer_loop_limit(b: &Backbone, extra: usize) -> Option<LayerLoopLimit> {
 }
 
 /// The control table of a backbone. Both models have one. Omni's vector acts on its text passes only: a frame of its
-/// speech is a `frame` call, which takes no control list (spec 11.12, AGENTS.md milestone 25 step 9).
+/// speech is a `frame` call, which takes no control list (spec 11.12).
 pub fn control_limit(b: &Backbone) -> Option<ControlLimit> {
     Some(ControlLimit {
         tables: CONTROL_TABLES,

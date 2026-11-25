@@ -1,4 +1,4 @@
-//! The cases of the reference's `tests/engine/test_sched.hip` and `test_sched.py` (reference commit `555a2a3`), in the
+//! The cases of the reference's `tests/engine/test_sched.hip` and `test_sched.py`, in the
 //! same order.
 //!
 //! The stages lie in two fake arenas. The schedule compares addresses only, so nothing reads through them. The

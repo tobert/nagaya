@@ -305,7 +305,7 @@ impl Config {
 }
 
 /// The dtype of a key part and a value part: the dtype of the cache format. A snapshot holds the stored bits, so a read
-/// of an e4m3 cache gives e4m3 bytes. Proposed (milestone 37 step 11, Sonnet 5.5).
+/// of an e4m3 cache gives e4m3 bytes. Proposed.
 pub fn part_dtype(format: CacheFormat) -> Dtype {
     match format {
         CacheFormat::F32 => Dtype::F32,
@@ -387,7 +387,7 @@ fn term(name: &str, tier: Tier, bytes: u64) -> MandatoryTerm {
 }
 
 /// Sum the weight bytes of `model.llm.*` from the safetensors header, and verify the NVFP4 and MXFP8 expert tensors.
-/// The tensors of the tower of images, `model.visual.*`, are not loaded until milestone 37 step 13, so they have no
+/// The tensors of the tower of images, `model.visual.*`, are not loaded yet, so they have no
 /// term.
 fn sum_checkpoint_weights(tensors: &BTreeMap<String, TensorMeta>) -> Result<u64, String> {
     let mut llm_bytes: u64 = 0;
@@ -668,7 +668,7 @@ mod tests {
         assert_eq!(slot_bytes(32_768, 24, e4m3), 666_533_888);
         assert_eq!(slot_bytes(409_600, 24, e4m3), 6_840_549_376);
         assert_eq!(slot_bytes(524_288, 24, e4m3), 8_719_597_568);
-        // A bf16 cache has 2 bytes for each value: between the f32 and the e4m3 cache. Proposed (milestone 37 step 11).
+        // A bf16 cache has 2 bytes for each value: between the f32 and the e4m3 cache. Proposed.
         let bf16 = CacheFormat::Bf16;
         assert_eq!(slot_bytes(32_768, 24, bf16), 1_329_233_920);
         assert_eq!(slot_bytes(409_600, 24, bf16), 13_677_264_896);
@@ -766,7 +766,7 @@ mod tests {
     }
 
     /// The limits name only what the engine serves. Control vectors, the taps `residual` and `fold`, rows of images and
-    /// the tower of images wait for milestone 37 step 13, so a client that needs them sees the lack in the limits.
+    /// the tower of images are not served yet, so a client that needs them sees the lack in the limits.
     #[test]
     fn the_limits_declare_only_what_the_engine_serves() {
         let lim = limits(&config_of(CacheFormat::F32), 1_000);

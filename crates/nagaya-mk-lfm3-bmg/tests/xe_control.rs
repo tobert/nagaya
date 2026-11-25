@@ -1,7 +1,6 @@
 //! The residual tap and the control list of both LFM3 models on a B70 card against transformers in f32 on the CPU
 //! (spec 11.12, 13.1, engine-abi "Control vectors"). The oracles are `lfm3.control.safetensors` and
-//! `lfm3-omni.control.safetensors` of `tools/lfm3_golden.sh`. Omni's vector acts on its text passes (AGENTS.md
-//! milestone 25 step 9).
+//! `lfm3-omni.control.safetensors` of `tools/lfm3_golden.sh`. Omni's vector acts on its text passes (engine-abi "Control vectors").
 //!
 //! - The gate of the means: the tap gives the residual of each prompt of the two sets, and their means give the vector.
 //! - With no item, and with an add or an ablate of strength 0, the logits and the tapped rows are the bits of plain.

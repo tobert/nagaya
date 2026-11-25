@@ -1,4 +1,4 @@
-//! GPU gate of the expert ops `OP_EXPERT_NVFP4` and `OP_EXPERT_MXFP8` (milestone 37 step 9, wave A), with the real
+//! GPU gate of the expert ops `OP_EXPERT_NVFP4` and `OP_EXPERT_MXFP8`, with the real
 //! weights of Inkling 2 Mini: layer 0 (NVFP4) and layer 20 (MXFP8), the gate and up matrix `w13` and the down matrix
 //! `w2`, for 8 experts.
 //!

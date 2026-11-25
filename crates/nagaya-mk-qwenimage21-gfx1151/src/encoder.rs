@@ -1,4 +1,4 @@
-//! The text tower of Qwen3-VL-8B on gfx1151: the encoder of Qwen-Image 2.1 (spec 11.9c, milestone 22 step 5).
+//! The text tower of Qwen3-VL-8B on gfx1151: the encoder of Qwen-Image 2.1 (spec 11.9c).
 //!
 //! The encoder runs the 36 layers over the template ids. Its output is the input of the final norm, which it does
 //! not load (spec 11.9c, "The load"). The conditioning is that output after the cut.

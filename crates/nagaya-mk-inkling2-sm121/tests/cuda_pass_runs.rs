@@ -1,4 +1,4 @@
-//! GPU gate of the runs of the pass (milestone 37 step 10, commits 5 to 8). Each run is built by `pass::run::run_tasks`
+//! GPU gate of the runs of the pass. Each run is built by `pass::run::run_tasks`
 //! and runs in three stages with the inputs of the tape of the quantized reference:
 //!
 //! A. MIX (not layer 0), PROJ, ATTN, OUT_MIX, QUANT and ROUTE, from the rows `runNN.out` of the run before. The gate

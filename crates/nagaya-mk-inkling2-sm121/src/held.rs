@@ -4,7 +4,7 @@
 //! This module mirrors the `Held` and the `Block` of the B70 engine (`nagaya_mk_inkling2_bmg::spec`), with these
 //! differences. A sliding state keeps a ring of `RING_ROWS` rows with no spill. The engine has no media, no control
 //! vectors and no taps, so a segment names tokens only. The cache has a format, so a row has the bytes of that format.
-//! Proposed (milestone 37 step 11, Sonnet 5.5): the two engines may share one crate later.
+//! Proposed: the two engines may share one crate later.
 
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -251,20 +251,15 @@ impl Held {
             SegmentInputs::Tokens(tokens) => tokens,
             SegmentInputs::TokensAndRows { .. } | SegmentInputs::Rows(_) => {
                 return Err(
-                    "the segment has rows; the engine takes tokens only, until it runs the tower of images (milestone \
-                     37 step 13)"
-                        .to_owned(),
+                    "the segment has rows; the engine takes tokens only, until it runs the tower of images".to_owned(),
                 );
             }
         };
         if !segment.meta.is_empty() {
-            return Err("the segment has meta; the engine takes no image spans yet (milestone 37 step 13)".to_owned());
+            return Err("the segment has meta; the engine takes no image spans yet".to_owned());
         }
         if !segment.control.is_empty() {
-            return Err(
-                "the segment has control items; the engine does not declare `control` yet (milestone 37 step 13)"
-                    .to_owned(),
-            );
+            return Err("the segment has control items; the engine does not declare `control` yet".to_owned());
         }
         if segment.layer_loop.is_some() {
             return Err(
@@ -631,7 +626,7 @@ impl Held {
     }
 
     /// Empty a slot. It forgets the count, the restored start of the rings and the writes of a restore. The engine
-    /// zeroes the conv state and the count on the card; the cache rows stay (milestone 37 step 11, decision 6).
+    /// zeroes the conv state and the count on the card; the cache rows stay.
     pub fn clear(&mut self, slot: usize) {
         self.n[slot] = 0;
         self.ring_from[slot] = 0;

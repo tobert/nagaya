@@ -1,4 +1,4 @@
-//! The oracle's fixture, metrics and tolerances (spec 8.3, milestone 11.5).
+//! The oracle's fixture, metrics and tolerances (spec 8.3).
 //!
 //! The bench `benches/oracle.rs` and the test `tests/oracle.rs` both include this file. It needs no GPU.
 //!
@@ -313,7 +313,7 @@ pub fn breaches(gap: &Gap, path: QmmPath) -> Vec<String> {
     list
 }
 
-// ---- The oracle of the residual, the fold and an add (milestone 34) --------------------------------------------------
+// ---- The oracle of the residual, the fold and an add --------------------------------------------------
 //
 // `tools/oracle_fixture.py --residual` writes the JSON `tests/fixtures/oracle/qwen38_residual.json` and the full rows
 // as little-endian f32 files. A test reads the JSON with `parse_residual`, and the rows with `read_rows`. An absent

@@ -1,4 +1,4 @@
-//! GPU gate of the bits of the engine (milestone 37 step 11): the engine adds no numeric step. A pass through the engine
+//! GPU gate of the bits of the engine: the engine adds no numeric step. A pass through the engine
 //! gives the logits that `Pass::run_slot` gives for the same ids, for each cache format.
 //!
 //! `INKLING2_MODEL_DIR=<folder> INKLING2_GOLDEN_DIR=<folder> NAGAYA_TEST_CARDS=<pci address> cargo test -p

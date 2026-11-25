@@ -1,4 +1,4 @@
-//! The audio encoder of `LFM3-Omni-2B` and its projector on the card (milestone 24 step 7, engine-abi "The audio
+//! The audio encoder of `LFM3-Omni-2B` and its projector on the card (engine-abi "The audio
 //! encoder of LFM3").
 //!
 //! The tasks follow `Lfm3OmniModel.get_audio_features` of `modeling_lfm3_omni.py` (`21d75123`) for one clip:

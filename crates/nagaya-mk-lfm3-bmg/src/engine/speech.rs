@@ -1,4 +1,4 @@
-//! The speech path of Omni on the card (milestone 24 step 8; engine-abi "The speech calls of LFM3"): the depth
+//! The speech path of Omni on the card (engine-abi "The speech calls of LFM3"): the depth
 //! decoder and the sampler of `frame`, the feed of a frame, and the codec of each slot.
 
 use nagaya_abi::{FrameDraw, FrameOut, PassError, Segment, SegmentInputs, SlotId, SpeechFrames, State};

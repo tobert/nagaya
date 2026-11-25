@@ -1,5 +1,5 @@
 //! Attention on gfx1151: the scores and the output are hipBLASLt GEMMs, and `hip/attention.hip` computes the softmax
-//! between them (milestone 22 step 4).
+//! between them.
 //!
 //! The scores stay in f32 until the softmax. The probabilities go to bf16 for the GEMM with the values, which sums
 //! in f32. A pass takes the heads of one key group in chunks, so the scratch of the scores has a fixed size.

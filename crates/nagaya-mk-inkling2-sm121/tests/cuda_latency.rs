@@ -1,4 +1,4 @@
-//! GPU gate of the latency of the engine by position and by cache format (milestone 37 step 11). A slot is filled to
+//! GPU gate of the latency of the engine by position and by cache format. A slot is filled to
 //! a position with seeded finite rows, with no prefill, through the part calls of the engine. Then the gate times, by
 //! the wall clock of the call, a step of 1 row, a call of 16 rows and a block of 512 rows, at 3 cycles and at 5.
 //!

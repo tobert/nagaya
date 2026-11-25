@@ -1019,7 +1019,7 @@ def chat_cases() -> list[dict]:
         + [U("final")])
     add("ids_unicode_mix", [S("あいう ☃"), U("é \U0001f680 مرحبا")])
     add("extra_message_keys", [{"role": "user", "content": "x", "name": "bob", "extra": [1, 2]}])
-    # Input that the API does not promise, as the reference's jinja2 reads it (review finding F7 of milestone 11). A
+    # Input that the API does not promise, as the reference's jinja2 reads it. A
     # role that is missing, a bare string for a message, a tool without parameters, numbers and bools in content, and
     # nested values.
     add("no_role_only", [{"content": "x"}])

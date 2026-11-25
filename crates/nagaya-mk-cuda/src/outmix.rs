@@ -1,4 +1,4 @@
-//! The output of the attention and the mix of the MLP input (`OP_OUT_MIX`, milestone 37 wave B lane D).
+//! The output of the attention and the mix of the MLP input (`OP_OUT_MIX`).
 //!
 //! One task does the matmul `wo` (2,304 columns, K = 3,072), the short convolution of the attention with its conv state,
 //! the residual, and, for each row, the mix of the MLP input and its norm. The fields and the order of the steps are in

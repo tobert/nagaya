@@ -1,4 +1,4 @@
-//! The conformance suite of spec 8.3 on the GB10 (milestone 37 step 11). The engine has parts, slots, coverage and a feed
+//! The conformance suite of spec 8.3 on the GB10. The engine has parts, slots, coverage and a feed
 //! rule, and no seal, no stages and no `segments_exact`, as the LFM3 engine has none. So the gates that apply are the
 //! park, the identity, the isolation, the fit, the admission and the feed rule, and the four gates of the list below do
 //! not apply.

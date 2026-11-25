@@ -120,7 +120,7 @@ def main() -> None:
     context_cases = []
     tails = {}
     for name, c in CONTEXTS.items():
-        thinking = c["thinking"]  # each context names it (gogi 4f83c44); absent was true before
+        thinking = c["thinking"]  # each context names it; absent was true before
         escaped, ids = render(c, c["messages"], thinking, False)
         gen_escaped, gen_ids = render(c, c["messages"], thinking, True)
         assert gen_escaped.startswith(escaped) and gen_ids[: len(ids)] == ids

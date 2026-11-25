@@ -1,4 +1,4 @@
-//! The patch of a task of a ring (milestone 37 step 10): a pass patches the count of items and the addresses of a task
+//! The patch of a task of a ring: a pass patches the count of items and the addresses of a task
 //! and keeps the plan. The plan is the waits and their targets, so the targets of a later task follow the new count.
 //! The test reads the plan and runs no kernel, but the ring needs a device.
 //!
