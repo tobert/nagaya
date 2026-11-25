@@ -225,7 +225,7 @@ pub fn attend(q: &[f32], keys: &[&[f32]], values: &[&[f32]], bias: &[f32], sink:
     let max = scores.iter().copied().fold(sink, f32::max);
     let weights: Vec<f32> = scores.iter().map(|s| (s - max).exp()).collect();
     // The sums are `f64`. Sums of `f32` in key order drift with the count of keys: at 65,024 positions the logits
-    // moved by 3.5e-4, and at 130,560 by 4.8e-2 (milestone 35 step 11).
+    // moved by 3.5e-4, and at 130,560 by 4.8e-2.
     let total = weights.iter().map(|w| *w as f64).sum::<f64>() + (sink - max).exp() as f64;
     let mut sums = vec![0f64; out.len()];
     for (w, v) in weights.iter().zip(values) {
@@ -474,7 +474,7 @@ mod tests {
     }
 
     /// The attention over 131,072 keys gives the sums of `f64` to 1e-6. Sums of `f32` in key order drift by more at
-    /// such a length (milestone 35 step 11).
+    /// such a length.
     #[test]
     fn the_attention_over_131072_keys_keeps_its_sums_exact() {
         let n = 131_072;

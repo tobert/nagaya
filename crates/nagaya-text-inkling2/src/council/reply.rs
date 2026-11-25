@@ -1,4 +1,4 @@
-//! The reply parser of the Inkling 2 family (spec 11.3, milestone 35 step 3).
+//! The reply parser of the Inkling 2 family (spec 11.3).
 //!
 //! Follows the `response_template` in `tokenizer_config.json`:
 //! - `<|message_model|>` starts a block (with optional header text before `<|content_*|>`).

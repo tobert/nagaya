@@ -1,4 +1,4 @@
-//! GPU gate of the part calls of the engine (milestone 37 step 11): a slot that a restore wrote into another slot
+//! GPU gate of the part calls of the engine: a slot that a restore wrote into another slot
 //! through the engine gives the bits of the slot that was read, in each cache format. A slot of 2,048 positions fed
 //! with 1,600 tokens holds a wrapped ring, so the restore covers the start of the rings.
 //!

@@ -1,5 +1,5 @@
 //! The profile of a pass: the time of each task from the clocks of the profile binary, and the sums for each op kind
-//! (milestone 36 item 0). None of this needs a card. A profiled open of the engine (`Inkling2Engine::open_profiled`)
+//!. None of this needs a card. A profiled open of the engine (`Inkling2Engine::open_profiled`)
 //! gives a [`Launch`] for each launch of its rings.
 //!
 //! Each work-group writes three clocks for each task: at its start, after its wait, and at its end, before its

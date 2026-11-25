@@ -1,4 +1,4 @@
-//! GPU gates of `OP_MATMUL_BF16` (Milestone 37 step 9, wave A), with real weights of Inkling 2 Mini: `wq_du`,
+//! GPU gates of `OP_MATMUL_BF16`, with real weights of Inkling 2 Mini: `wq_du`,
 //! `wo_ud` and `wk_dv` of layer 0, and the head. Each test reads the model folder from `INKLING2_MODEL_DIR`. It skips
 //! when the variable or the folder is absent, and with `NAGAYA_REQUIRE_MODELS` set an absence fails the test.
 //!
@@ -513,7 +513,7 @@ fn the_speed_of_each_shape_and_the_head_at_the_peak() {
     eprintln!(
         "cuda_matmul speed: the weights are read from DRAM: each task of a chain reads another copy of W, 400 MB or more in all"
     );
-    eprintln!("cuda_matmul speed: GB/s counts the bytes of W only; the peak is {PEAK_GBPS} GB/s (milestone 37 step 7)");
+    eprintln!("cuda_matmul speed: GB/s counts the bytes of W only; the peak is {PEAK_GBPS} GB/s");
     let mut head_one_row = 0.0f64;
     for m in matrices {
         let bytes = m.shape.packed_bytes();

@@ -261,7 +261,7 @@ fn the_limits_hold_the_terms_the_taps_and_the_control_table_and_declare_no_loop(
     assert!(l.taps[1..].iter().all(|t| t.conditions.is_empty()));
     // Both models hold the tower, so both take the rows of images (engine-abi "The choices of the pass").
     assert_eq!(l.inputs, Inputs::TokensAndRows);
-    // A pass holds a batch of 8 decode rows, and a batch fits the buffers of a block (milestone 36 item 11).
+    // A pass holds a batch of 8 decode rows, and a batch fits the buffers of a block.
     assert_eq!((l.max_segments, l.max_pass_inputs, l.max_logit_rows), (8, 512, 16));
     let small = Config {
         max_block: 4,
@@ -1140,7 +1140,7 @@ fn a_probe_is_checked_before_it_empties_its_slot() {
 }
 
 /// A batch is 2 to 8 segments of one decode token each, on slots of their own, with one control list and one count
-/// of cycles (milestone 36 item 11, engine-abi "A batch of decode rows"). Each segment passes the checks of a pass
+/// of cycles (engine-abi "A batch of decode rows"). Each segment passes the checks of a pass
 /// alone. Any break is refused before a slot changes.
 #[test]
 fn a_batch_is_decode_rows_of_their_own_slots_with_one_count_and_one_list() {

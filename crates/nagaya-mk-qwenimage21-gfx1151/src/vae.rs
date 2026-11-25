@@ -1,4 +1,4 @@
-//! The VAE decoder of Qwen-Image 2.1 on gfx1151 (spec 11.9c, "The decode"; milestone 22 step 7).
+//! The VAE decoder of Qwen-Image 2.1 on gfx1151 (spec 11.9c, "The decode").
 //!
 //! The decoder runs one image of one frame: the image specialization of the Wan decoder, with its time axis folded
 //! away. Each activation is channels-last, one row of channels for each pixel. The file holds F32, and the load

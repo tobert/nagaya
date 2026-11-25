@@ -1,4 +1,4 @@
-//! GPU gates of `OP_ATTN` (milestone 37 step 9 wave C, lane A), with the real projection weights of Inkling 2 Mini.
+//! GPU gates of `OP_ATTN`, with the real projection weights of Inkling 2 Mini.
 //!
 //! The inputs come from the host: a pool of random hidden rows goes through the real `wq`, `wr`, `sink`, `gate_attn`, `wk`
 //! and `wv` of one layer, then the clips, the log scale and the norm of the layer (`host/forward.rs`, `attention`). The
@@ -568,7 +568,7 @@ fn a_decode_row_matches_the_host_form_at_each_context_length() {
     decode_accuracy(None, CacheFormat::F32);
 }
 
-/// The same gate on the cubin of each cache format (milestone 37 step 11).
+/// The same gate on the cubin of each cache format.
 #[test]
 fn a_decode_row_matches_the_host_form_in_each_cache_format() {
     for format in [CacheFormat::F32, CacheFormat::E4m3, CacheFormat::Bf16] {
@@ -660,7 +660,7 @@ fn the_bits_of_a_row_do_not_depend_on_the_rows_or_on_the_grid() {
     bits_do_not_depend_on_rows_or_grid(None, CacheFormat::F32);
 }
 
-/// The same gate on the cubin of each cache format (milestone 37 step 11).
+/// The same gate on the cubin of each cache format.
 #[test]
 fn the_bits_of_a_row_do_not_depend_on_the_rows_or_on_the_grid_in_each_cache_format() {
     for format in [CacheFormat::F32, CacheFormat::E4m3, CacheFormat::Bf16] {
@@ -731,7 +731,7 @@ fn a_block_of_rows_matches_the_host_form() {
     block_accuracy(None, CacheFormat::F32);
 }
 
-/// The same gate on the cubin of each cache format (milestone 37 step 11).
+/// The same gate on the cubin of each cache format.
 #[test]
 fn a_block_of_rows_matches_the_host_form_in_each_cache_format() {
     for format in [CacheFormat::F32, CacheFormat::E4m3, CacheFormat::Bf16] {

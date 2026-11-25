@@ -1,4 +1,4 @@
-//! The joined decode of the engine on gfx1151 (milestone 30 step 2): a decode row gives the bits that it gives alone,
+//! The joined decode of the engine on gfx1151: a decode row gives the bits that it gives alone,
 //! also at deep positions, in a pass of 16 segments, and beside a long prefill.
 //!
 //! The engine declares `segments_exact` (engine-abi D11). The conformance gate `segments_exact_bits` checks it at

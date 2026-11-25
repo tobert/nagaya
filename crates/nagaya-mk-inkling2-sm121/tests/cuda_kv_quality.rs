@@ -1,4 +1,4 @@
-//! The quality of the cache formats at depth (milestone 37 step 11, lane E). The f32 cache is the reference: a CPU
+//! The quality of the cache formats at depth. The f32 cache is the reference: a CPU
 //! golden is not feasible at 100K positions. The test measures; it asserts only loose bounds of sanity.
 //!
 //! Part 1, teacher forcing. The test tokenizes books of PG-19 and prefills one slot in blocks of 512 rows. At each depth

@@ -1,4 +1,4 @@
-//! GPU gate of the whole pass by coherence (milestone 37 step 10, commit 9). The card does not reproduce the CPU
+//! GPU gate of the whole pass by coherence. The card does not reproduce the CPU
 //! reference bit for bit: the CPU reference rounds the weights of the NVFP4 experts to bf16, the card does not, and a
 //! quantizer can flip a code. So the gate is the coherence of the logits with the golden, and it prints the gaps that
 //! the binding writes as thresholds. It asserts only what is clear: the top token and the greedy tokens.

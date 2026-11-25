@@ -1,4 +1,4 @@
-//! The repack of a dense `bf16` weight into the order that `OP_MATMUL_BF16` reads (milestone 37, design rule 2).
+//! The repack of a dense `bf16` weight into the order that `OP_MATMUL_BF16` reads.
 //!
 //! The checkpoint stores `W[N, K]` row-major. The matmul cuts the matrix into work items: an item is a tile of
 //! `COLUMN_TILE` output columns and a K slice of `kt` values. The repack makes each item one contiguous span of

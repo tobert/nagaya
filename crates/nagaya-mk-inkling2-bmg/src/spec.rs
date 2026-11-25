@@ -260,7 +260,7 @@ pub fn read_generation(dir: &Path) -> Result<(), String> {
     check_generation(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// The two models of the kind. They share every file but `config.json` (milestone 35 step 1).
+/// The two models of the kind. They share every file but `config.json`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Model {
     /// `Inkling-2-Mini`: `loop_config.is_varloop` is false.

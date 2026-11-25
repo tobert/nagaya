@@ -1,4 +1,4 @@
-//! The Qwen-Image engine through the `Engine` trait (milestone 22 step 7): the conformance suite of spec 8.3, the whole
+//! The Qwen-Image engine through the `Engine` trait: the conformance suite of spec 8.3, the whole
 //! oracle through the image calls, and the cache gate of spec 8.3. Stop `nagaya.service` first (spec 3.1).
 //!
 //! The tests read the base folder from `QWENIMAGE21_MODEL_DIR`, FUSAL's folder from `QWENIMAGE21_FUSAL_DIR`, and the

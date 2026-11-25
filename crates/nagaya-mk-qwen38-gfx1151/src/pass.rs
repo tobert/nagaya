@@ -1,7 +1,7 @@
-//! The stage list of a pass, built in Rust (milestone 15 step 6).
+//! The stage list of a pass, built in Rust.
 //!
 //! The reference's `engine.hip` `build`, `build_stages`, `split_k`, `fuse_prologues`, `fuse_hc` and `fuse_hc_mix`, and
-//! `blocks.hip` `add_gdn`, `add_attn`, `add_moe` and `pool_stages` built the stages in C++ (reference commit 555a2a3).
+//! `blocks.hip` `add_gdn`, `add_attn`, `add_moe` and `pool_stages` built the stages in C++.
 //! This module builds the same stages, field for field. The schedule (`schedule.rs`) then orders them. The stages name
 //! device buffers: the weights in the arena, the context buffers, and the named scratch buffers of the pass.
 

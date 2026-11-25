@@ -1,4 +1,4 @@
-//! The helpers of the latency gate (milestone 37 step 11): fill a slot to a position with seeded rows, and time the
+//! The helpers of the latency gate: fill a slot to a position with seeded rows, and time the
 //! calls of the engine. The rows are finite values in the format of the cache. The planes are never read above the
 //! position, so the gate needs no prefill.
 

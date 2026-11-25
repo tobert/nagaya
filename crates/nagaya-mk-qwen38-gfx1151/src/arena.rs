@@ -1,4 +1,4 @@
-//! The weight arena: the plan of every uploaded tensor, and the sealed memfd that holds them (milestone 15 step 6).
+//! The weight arena: the plan of every uploaded tensor, and the sealed memfd that holds them.
 //!
 //! The reference's `engine.hip` planned and filled the arena in C++. This module does it in Rust, byte for byte: the
 //! header, the manifest and the tensor data are the reference's `arena.h` layout. `examples/arena_digest` gives the
@@ -112,7 +112,7 @@ fn round_up(x: u64, a: u64) -> u64 {
     x.div_ceil(a) * a
 }
 
-/// The tile of one tensor, from its name and type (`engine.hip` `plan`, reference commit 555a2a3). The IQ3_S expert
+/// The tile of one tensor, from its name and type (`engine.hip` `plan`). The IQ3_S expert
 /// gate and up matrices, the IQ4_NL expert down matrices, every Q8_0 matrix but the token embedding table and the
 /// expert matrices, and the Q6_K output head take tiles.
 fn tile_of(name: &str, kind: GgmlType) -> Result<Tile, String> {
@@ -331,7 +331,7 @@ fn os_error(what: &str) -> String {
     format!("{what}: {}", std::io::Error::last_os_error())
 }
 
-/// Fill a new arena (`engine.hip` `create_arena`, reference commit 555a2a3). The CPU copies each tensor out of the GGUF
+/// Fill a new arena (`engine.hip` `create_arena`). The CPU copies each tensor out of the GGUF
 /// map straight into place, or through a pinned scratch buffer and the relayout kernel for a tiled one. The file pages
 /// of each copied chunk leave the page cache. Then the header and the manifest go in, and the seals.
 ///

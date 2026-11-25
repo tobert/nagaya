@@ -1,4 +1,4 @@
-//! GPU gates of `OP_ATTN` at long context (milestone 37 step 11, lane D, stage 1), with the real projection weights of
+//! GPU gates of `OP_ATTN` at long context, with the real projection weights of
 //! Inkling 2 Mini and seeded planes.
 //!
 //! One test runs a depth: 409,600 and 524,288 positions. Each depth runs a full run (layer 5) and a sliding run (layer 0),

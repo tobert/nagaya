@@ -1,4 +1,4 @@
-//! GPU gate of the up op `OP_EXPERT_NVFP4` and `OP_EXPERT_MXFP8` with `FLAG_UP` (milestone 37 step 9, wave B lane M): the
+//! GPU gate of the up op `OP_EXPERT_NVFP4` and `OP_EXPERT_MXFP8` with `FLAG_UP`: the
 //! matmul of `w13` with the gate and the up in the rows `g` and `g + 8` of the MMA, the softcapped SwiGLU times the route
 //! weight, and the finisher that quantizes each activation row. The weights are the real `w13` of Inkling 2 Mini, layer 0
 //! (NVFP4) and layer 20 (MXFP8), for 8 experts.

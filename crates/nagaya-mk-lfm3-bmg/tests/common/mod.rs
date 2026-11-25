@@ -15,7 +15,7 @@ pub mod speech;
 
 /// The tolerance of a stage of the card against transformers, or against a CPU form: a relative error. Measured on
 /// 2026-11-06 (spec 11.11, "The tolerances of the LFM3 gates"): the worst stage was 6.8e-6, the projector of the vision
-/// tower. A wrong rotation, window or gate gave 0.09 or more (`ed55acc`), and a wrong audio op 1.3e-2 or more.
+/// tower. A wrong rotation, window or gate gave 0.09 or more, and a wrong audio op 1.3e-2 or more.
 pub const STAGE_TOL: f64 = 1e-4;
 /// The tolerance of a logit of the card against transformers, or between two splits of a feed: an absolute gap.
 /// Measured on 2026-11-06: the worst was 6.4e-5, between two splits of one feed, and 3.6e-5 against transformers.

@@ -1,7 +1,7 @@
 //! Build the op libraries of the engine for the op tests: one shared library `libqwen38_<op>.so` for each
 //! `hip/src/ops/<op>.hip`.
 //!
-//! The commands are the commands of the reference CMake build at commit `555a2a3` (`src/ops/CMakeLists.txt`). The
+//! The commands are the commands of the reference CMake build (`src/ops/CMakeLists.txt`). The
 //! compiles use the flags of `build.rs` for the engine, and add `-O3` for the op target. The op tests load these
 //! libraries at run time. Each library holds its own copy of the runtime `rt.cpp`, as the static runtime library of the
 //! reference does. Thus each library has its own trap record.

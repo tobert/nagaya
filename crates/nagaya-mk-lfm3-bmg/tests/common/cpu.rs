@@ -1,4 +1,4 @@
-//! A CPU form of the interpreter for the ops that the audio encoder uses (milestone 24 step 7). It runs the tasks of
+//! A CPU form of the interpreter for the ops that the audio encoder uses. It runs the tasks of
 //! `audio::encode` on host memory, so the host test checks the graph, the addresses and the layout against the oracle
 //! with no card. Each op follows the comment of its kernel. The sums of the dot products and the norms are in f64,
 //! so the form is close to the f32 reference of transformers. It does not model the bits of the card: the card test

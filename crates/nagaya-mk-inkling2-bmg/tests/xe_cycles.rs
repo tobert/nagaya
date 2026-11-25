@@ -1,4 +1,4 @@
-//! The gates of cycles in a call on a B70 card (milestone 35 step 7, engine-abi "Inkling 2"): each model at 1 to 5
+//! The gates of cycles in a call on a B70 card (engine-abi "Inkling 2"): each model at 1 to 5
 //! cycles against the `f32` oracle of transformers, for the prompts "plain" and "chat". The reference reads the count
 //! from its config; Mini is post-trained at 3 cycles, so the gate of Mini at another count is the reference, not
 //! quality.

@@ -1,8 +1,8 @@
 //! The PLE rows of a pass: the n-gram embedding that layer 1 reads (`Qwen4ExpTextNGramEmbedding.forward`).
 //!
-//! The reference's `engine.hip` `ple_rows` gathered them in C++ (reference commit 555a2a3). The host gathers them here,
+//! The reference's `engine.hip` `ple_rows` gathered them in C++. The host gathers them here,
 //! bit for bit, from the PLE table in the GGUF map. The table stays in the map: its rows are scattered over about 29
-//! GB, and a pass reads 16 rows for each token (milestone 15 step 6).
+//! GB, and a pass reads 16 rows for each token.
 
 use crate::arena::PLE_TABLE;
 use crate::dequant::{GgmlType, dequant_f32};

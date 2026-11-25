@@ -1,4 +1,4 @@
-//! The host parts of the retrieval test (milestone 37 step 11): the snapshot files, the needles, the haystack and the
+//! The host parts of the retrieval test: the snapshot files, the needles, the haystack and the
 //! check of the prefix. They need no GPU and no model.
 
 mod retrieval_support;

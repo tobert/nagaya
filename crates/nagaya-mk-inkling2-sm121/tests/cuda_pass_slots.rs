@@ -1,4 +1,4 @@
-//! GPU gates of a pass with many slots (milestone 37 step 11): a call names its slot, its cycles and its logit rows.
+//! GPU gates of a pass with many slots: a call names its slot, its cycles and its logit rows.
 //!
 //! - A pass on one slot leaves the planes and the conv states of the others as they were, and each slot gives the bits of
 //!   a lone slot.

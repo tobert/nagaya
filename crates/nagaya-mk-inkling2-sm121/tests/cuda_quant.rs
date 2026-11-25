@@ -1,4 +1,4 @@
-//! GPU gate of the device quantizers `OP_QUANT_NVFP4` and `OP_QUANT_MXFP8` (milestone 37 step 9, wave A). The bytes
+//! GPU gate of the device quantizers `OP_QUANT_NVFP4` and `OP_QUANT_MXFP8`. The bytes
 //! equal the bytes of the vLLM kernels on the 154 rows of the fixture, and the bytes of `quant.rs` on random rows of
 //! several magnitudes, at the grids 48, 24, 7 and 1.
 //!

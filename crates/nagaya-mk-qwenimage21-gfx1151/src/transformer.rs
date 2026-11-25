@@ -1,5 +1,5 @@
 //! The transformer of Qwen-Image 2.1 on gfx1151, with the LoRA of the profile folded into its weights (spec 11.9c,
-//! "The LoRA fold" and "The steps"; milestone 22 step 6).
+//! "The LoRA fold" and "The steps").
 //!
 //! `begin` runs the conditioning rows through the 32 blocks with the modulation of timestep 0, and keeps the keys and
 //! values of each block. A condition row never reads the latent, so these are the same at each step. `step` runs

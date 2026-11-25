@@ -1,4 +1,4 @@
-//! The retrieval gate of the cache formats (milestone 37 step 11): can the engine find a fact from early in a context
+//! The retrieval gate of the cache formats: can the engine find a fact from early in a context
 //! of about 409,600 positions, in each cache format? A format passes when its retrievals and its greedy text match
 //! those of the f32 cache.
 //!

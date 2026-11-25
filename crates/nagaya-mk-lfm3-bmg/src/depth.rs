@@ -1,4 +1,4 @@
-//! The depth decoder of Omni on the card: its weights, its buffers, and the ring of one pass (milestone 24 step 8).
+//! The depth decoder of Omni on the card: its weights, its buffers, and the ring of one pass.
 //!
 //! The ring follows `Lfm3OmniDepthDecoder.forward` (modeling_lfm3_omni.py:254-281) for one frame. `depth_linear`
 //! projects the hidden row of the backbone to one row of 1,024 values for each codebook. Each row adds the code

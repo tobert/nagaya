@@ -276,7 +276,7 @@ fn council_render_decisions_and_raw_read_work() {
 }
 
 /// A context with thinking off renders the effort "none" (0), and one with thinking on renders the default of the
-/// template (0.9). Milestone 35 question 4, agreed by Amy on 2026-11-21.
+/// template (0.9)..
 #[test]
 fn thinking_chooses_the_effort_of_the_template() {
     if absent() {

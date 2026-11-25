@@ -1,4 +1,4 @@
-//! GPU gate of the cut of an item in the up and down ops of the experts (milestone 37 step 10, lane E): a task whose
+//! GPU gate of the cut of an item in the up and down ops of the experts: a task whose
 //! tiles for an item do not divide the 36 tiles of a pair traps, and a task with a divisor runs. The task has real
 //! buffers of zeros and an empty pair list, so a check that is missing lets the launch succeed, and the test shows it.
 //! The model is not needed.

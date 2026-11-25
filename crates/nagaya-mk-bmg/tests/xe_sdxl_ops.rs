@@ -1,4 +1,4 @@
-//! The ops of the image binary on a B70 card (milestone 18 step 7), each against a plain CPU form on random inputs.
+//! The ops of the image binary on a B70 card, each against a plain CPU form on random inputs.
 //! One test also runs the real `conv_in` of the SDXL UNet on the input of the oracle (`tools/sdxl_golden.sh`).
 //!
 //! Stop `nagaya.service` first: the nagaya must be the only client of the cards (spec 3.1). Run alone:
@@ -333,7 +333,7 @@ fn pad_end_cpu(s: Conv, x: &[f32], w: &[f32], bias: &[f32]) -> Vec<f32> {
     conv_cpu(plain, &padded, w, Some(bias))
 }
 
-/// The down samplers of the VAE encoder of milestone 20 step 3. An image of `h` by `w` gives `h / 2` by `w / 2`.
+/// The down samplers of the VAE encoder. An image of `h` by `w` gives `h / 2` by `w / 2`.
 fn pad_end_shapes() -> [Conv; 2] {
     let s = Conv {
         b: 2,
@@ -1000,7 +1000,7 @@ fn to_pixels(x: &[f32], b: usize, c: usize, h: usize, w: usize) -> Vec<f32> {
 }
 
 /// The paths of the checkpoint and of the oracle, or `None` when either is absent. `NAGAYA_REQUIRE_MODELS=1` makes
-/// absence a failure (AGENTS.md).
+/// absence a failure (see AGENTS.md).
 fn golden() -> Option<(PathBuf, PathBuf)> {
     let require = std::env::var("NAGAYA_REQUIRE_MODELS").is_ok_and(|v| v == "1");
     let model = std::env::var_os("SDXL_MODEL_DIR").map(PathBuf::from);

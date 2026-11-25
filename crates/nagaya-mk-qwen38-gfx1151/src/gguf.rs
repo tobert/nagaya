@@ -1,7 +1,7 @@
 //! The GGUF reader of the Qwen3.8 engine: the shards' metadata, their tensor records, and the read-only maps of the
 //! files.
 //!
-//! The reader is a port of the reference's `src/gguf/gguf.cpp` (reference commit `555a2a3`). It keeps the reference's
+//! The reader is a port of the reference's `src/gguf/gguf.cpp`. It keeps the reference's
 //! checks: a file that does not hold what it promises is an error that names the file and the byte. The family library
 //! parses the metadata values (`nagaya_text_qwen38::gguf::Metadata`), so the workspace has one parser of GGUF values.
 //!

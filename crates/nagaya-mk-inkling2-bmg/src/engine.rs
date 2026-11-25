@@ -270,7 +270,7 @@ impl Inkling2Engine {
         Self::open_with(config, pci, ENGINE_KERNEL)
     }
 
-    /// Open as [`Inkling2Engine::open`] does, with the profile binary (milestone 36 item 0). Each launch then records
+    /// Open as [`Inkling2Engine::open`] does, with the profile binary. Each launch then records
     /// the clocks of each task, and [`Inkling2Engine::take_profile`] gives them. The ops are those of the engine
     /// binary, so each pass gives the same bits. The identity names the profile binary. Only a profile test opens it.
     pub fn open_profiled(config: Config, pci: &str) -> Result<Self, String> {

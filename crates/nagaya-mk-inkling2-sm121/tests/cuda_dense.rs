@@ -1,4 +1,4 @@
-//! GPU gates of the dense ops of wave B lane D (milestone 37 step 9), against the host forms of the B70 crate, on real
+//! GPU gates of the dense ops of wave B lane D, against the host forms of the B70 crate, on real
 //! weights of Inkling 2 Mini. A test skips when `INKLING2_MODEL_DIR` is absent, and fails with `NAGAYA_REQUIRE_MODELS`.
 //!
 //! - The norm prologue of `OP_MATMUL_BF16` (`FLAG_NORM`): the matmul applies `w * (x * rf)` while

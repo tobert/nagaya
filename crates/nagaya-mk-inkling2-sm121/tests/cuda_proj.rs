@@ -1,4 +1,4 @@
-//! GPU gates of `OP_PROJ` (milestone 37 step 9, wave B lane D): the joined projection of the attention input, on real
+//! GPU gates of `OP_PROJ`: the joined projection of the attention input, on real
 //! weights of Inkling 2 Mini, against the host forms of the B70 crate (`ops::*`, the order of `host/forward.rs`).
 //!
 //! The layers: 0 (sliding, the first layer, no message), 6 (sliding, a layer of the loop) and 5 (full: the dynamic

@@ -1,7 +1,7 @@
 //! The Gemma 4 26B-A4B engine on two Arc Pro B70 cards: a copy of the first Gemma 4 engine.
 //!
 //! The nagaya owns the copy, and the copy keeps the bits of the first engine. `engine` holds the `Engine` trait with
-//! two stages (step 5), and `spec` holds its limits and rules. The nagaya's stage threads take the place of the card
+//! two stages, and `spec` holds its limits and rules. The nagaya's stage threads take the place of the card
 //! locks and `pipeline_stage` of the first engine. The kernels are OpenCL C in `kernels/`, and `build.rs` compiles them
 //! with `ocloc` for `bmg-g31` in the crate `nagaya-mk-bmg`, which this engine shares with the speech engine. The parts
 //! that touch a card need the feature `xe`. With no feature, the crate builds and tests with no card.

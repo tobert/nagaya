@@ -1,4 +1,4 @@
-//! GPU gate of the parts of a slot (milestone 37 step 11): the key and value rows of a state as position-major
+//! GPU gate of the parts of a slot: the key and value rows of a state as position-major
 //! `[n][8][128]` in the stored format, and the conv state as `[3][6656]` `f32`. The planes are head-major and the conv
 //! buffer is stream-major, so each test reads the raw planes and checks the transpose without the code under test.
 //! No model is needed.

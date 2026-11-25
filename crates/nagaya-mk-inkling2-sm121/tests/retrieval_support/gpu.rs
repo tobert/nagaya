@@ -258,8 +258,7 @@ pub fn greedy(
 }
 
 /// The digest of an engine identity, as `nagaya::park::identity_digest` computes it (spec 6.2, 12.1). The test crate
-/// cannot depend on the process crate, so this is a copy of the same inputs. Proposed (milestone 37 step 11, Sonnet
-/// 5.5): the digest may move into `nagaya-abi` later.
+/// cannot depend on the process crate, so this is a copy of the same inputs. Proposed: the digest may move into `nagaya-abi` later.
 pub fn identity_digest(identity: &nagaya_abi::Identity) -> [u8; 32] {
     use nagaya_abi::BitClass;
     fn add_to(writer: &mut impl std::io::Write, bytes: &[u8]) {

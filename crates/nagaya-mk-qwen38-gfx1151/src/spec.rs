@@ -286,7 +286,7 @@ pub fn whole_read_problem(part: usize, from: u64, n: u64, len: usize) -> Result<
 /// The floats of one scratch buffer for each token of a pass. The names are the `scratch()` names of the reference.
 ///
 /// The engine sizes each buffer at `kMaxPassTokens`, whatever the pass's token count, so this table is the pool at its
-/// largest. The sizes come from the reference's `src/engine/blocks.hip` and `src/engine/engine.hip` at 555a2a3.
+/// largest. The sizes come from the reference's `src/engine/blocks.hip` and `src/engine/engine.hip`.
 #[cfg(test)]
 const SCRATCH_PER_TOKEN: [(&str, u64); 48] = [
     // The gated DeltaNet block (blocks.hip:34-39).
@@ -395,7 +395,7 @@ pub fn scratch_problem(measured: u64) -> Result<(), String> {
     if measured > PASS_SCRATCH_BYTES {
         return Err(format!(
             "the pass scratch of the Qwen3.8 engine measures {measured} bytes of device memory; this binding declares \
-             {PASS_SCRATCH_BYTES}. Use the build of the engine that milestone 9c measured, or measure again and raise the constant"
+             {PASS_SCRATCH_BYTES}. Use the build that measured it, or measure again and raise the constant"
         ));
     }
     Ok(())
@@ -1052,7 +1052,7 @@ mod tests {
 
     #[test]
     fn the_declared_scratch_holds_the_sum_of_the_scratch_buffers() {
-        // The names and the sizes come from the reference's src/engine/blocks.hip and src/engine/engine.hip at 555a2a3.
+        // The names and the sizes come from the reference's src/engine/blocks.hip and src/engine/engine.hip.
         let buffers = scratch_buffers();
         assert_eq!(buffers.len(), 56, "one entry for each named scratch buffer");
         let asked = pass_scratch_bytes();

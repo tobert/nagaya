@@ -47,7 +47,7 @@ fn the_hash_is_of_the_whole_file() {
             .unwrap();
         assert_eq!(family(model).tokenizer_hash(), format!("sha256:{want}"), "{model}");
     }
-    // The two files hold the same tokens, and the hashes differ (AGENTS.md milestone 24).
+    // The two files hold the same tokens, and the hashes differ.
     assert_ne!(family("omni").tokenizer_hash(), family("text").tokenizer_hash());
 }
 

@@ -1,4 +1,4 @@
-//! The gate of the memory check of an open on a B70 card (milestone 35 step 12, engine-abi "Inkling 2", "The cost of a
+//! The gate of the memory check of an open on a B70 card (engine-abi "Inkling 2", "The cost of a
 //! slot"). The driver puts a buffer that does not fit in system memory, and then each pass runs 5 to 6 times slower.
 //! Thus the open of a slot past the card is refused, and it frees what it took.
 //!

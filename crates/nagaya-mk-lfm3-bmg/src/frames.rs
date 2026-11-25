@@ -1,4 +1,4 @@
-//! The plan of the speech path of Omni (milestone 24 step 8; engine-abi "The speech calls of LFM3"): the numbers of
+//! The plan of the speech path of Omni (engine-abi "The speech calls of LFM3"): the numbers of
 //! the configs that the depth decoder and the codec take, and the device bytes of the term `speech`. It needs no
 //! card, and it reads no weight bytes (spec 2.4).
 

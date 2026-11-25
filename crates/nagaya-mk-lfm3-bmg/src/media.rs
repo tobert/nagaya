@@ -327,7 +327,7 @@ impl MediaRules {
             SpanKind::Audio { .. } | SpanKind::ClipPart { .. } => match self.audio_token {
                 Some(token) if self.audio_encoder => Ok(token),
                 Some(_) => Err(format!(
-                    "media record {i} is a clip, and this engine has no audio encoder yet (milestone 24 step 7); \
+                    "media record {i} is a clip, and this engine has no audio encoder yet; \
                      send no audio"
                 )),
                 None => Err(format!(

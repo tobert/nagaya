@@ -1,4 +1,4 @@
-//! GPU gate of the row checks of `OP_GATE_DOWN` and `OP_GATE_UP` (milestone 37 step 9, lane M2): a task with more than 512
+//! GPU gate of the row checks of `OP_GATE_DOWN` and `OP_GATE_UP`: a task with more than 512
 //! rows traps, and a task with 512 rows or fewer runs. The task has real buffers of zeros, so
 //! a check that is missing lets the launch succeed, and the test shows it. The model is not needed.
 //!

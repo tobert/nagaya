@@ -1,4 +1,4 @@
-//! GPU gate of `OP_ROUTE` (milestone 37 step 9, wave B lane M): the router matmul, the sigmoid, the top 8 with the tie
+//! GPU gate of `OP_ROUTE`: the router matmul, the sigmoid, the top 8 with the tie
 //! rule, and the list of pairs. The weights are the real router of Inkling 2 Mini, layers 0 and 20, and the oracle is
 //! `ops::route` of the B70 crate.
 //!

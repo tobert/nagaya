@@ -1,4 +1,4 @@
-//! GPU gate of the cubins of the cache formats (milestone 37 step 11): a cubin of one format runs a task of that format,
+//! GPU gate of the cubins of the cache formats: a cubin of one format runs a task of that format,
 //! and it traps on a task of another format, in `OP_ATTN`. The default cubin holds the f32 and the e4m3 formats, and it
 //! traps on a bf16 task. The buffers hold zeros, so a missing check lets the launch succeed, and the test shows it. The
 //! model is not needed.

@@ -1,4 +1,4 @@
-//! GPU gate of the dependency graph (Milestone 37 step 7, substep 3): a ring with chains and branches of copy tasks
+//! GPU gate of the dependency graph: a ring with chains and branches of copy tasks
 //! gives exact results, and the profile shows that tasks with no dependency overlap.
 //!
 //! `NAGAYA_TEST_CARDS=<pci address> cargo test -p nagaya-mk-cuda --features cuda --test cuda_graph -- --test-threads=1`

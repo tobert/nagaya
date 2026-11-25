@@ -1,4 +1,4 @@
-//! A long context of the Inkling 2 engine on a B70 card (milestone 35 step 11): a slot of 131,072 positions, fed
+//! A long context of the Inkling 2 engine on a B70 card: a slot of 131,072 positions, fed
 //! with seeded ids in blocks of 512, against the host form (`src/host/forward.rs`).
 //!
 //! - The host form runs the first 1,536 positions from position 0. At position 1,527 a route of layer 17 in cycle 2

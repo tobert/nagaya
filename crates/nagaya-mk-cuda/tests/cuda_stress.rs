@@ -1,4 +1,4 @@
-//! GPU stress gate of the signal (Milestone 37 step 7, substep 6): a block signals once for each task, with one
+//! GPU stress gate of the signal: a block signals once for each task, with one
 //! release add. A chain of copy stages, each one reading data that blocks of the stage before wrote, runs many
 //! times at three grid widths. Every result must be exact, and each event must hold the items of its task.
 //!

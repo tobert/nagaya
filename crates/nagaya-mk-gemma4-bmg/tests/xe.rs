@@ -221,7 +221,7 @@ fn logits_of(out: StageOut) -> Vec<Vec<u8>> {
 }
 
 /// `Engine::pass` and the stage threads give the logits of the copy, bit for bit, for one plan of prefill blocks,
-/// decode steps and a branch block (milestone 15s step 5: same block sizes give the same bits).
+/// decode steps and a branch block.
 ///
 /// Falsified by a stage 0 that copies one row less of the residual, and by a branch block without its meta.
 #[test]

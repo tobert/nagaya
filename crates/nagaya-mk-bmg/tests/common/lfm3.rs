@@ -1,4 +1,4 @@
-//! The inputs, the fixture and the CPU forms of the LFM3 ops (milestone 24 step 5). The host test
+//! The inputs, the fixture and the CPU forms of the LFM3 ops. The host test
 //! `lfm3_cpu_forms.rs` checks the CPU forms against the fixture, and the card test `xe_lfm3_ops.rs` checks the
 //! kernels against both. `tools/lfm3_op_fixture.py` writes the fixture from plain torch, with the same generator.
 #![allow(dead_code)]

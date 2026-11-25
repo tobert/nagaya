@@ -685,8 +685,7 @@ fn a_control_item_acts_after_each_run_of_its_layers() {
     assert_eq!(acts, [(8, 3.0), (8, 3.0), (8, 3.0), (20, -1.0)]);
 }
 
-/// Each matmul of a pass takes the tiled path, so a row of one token sums in the order of 2 to 8 rows (milestone 36
-/// item 10). Then a decode row gets the same bits in a batch of 1 to 8 rows.
+/// Each matmul of a pass takes the tiled path, so a row of one token sums in the order of 2 to 8 rows. Then a decode row gets the same bits in a batch of 1 to 8 rows.
 #[test]
 fn each_matmul_of_a_pass_takes_the_tiled_path() {
     let f = fixture(32_768);
@@ -767,7 +766,7 @@ fn tasks_of(p: &Pass) -> Vec<MkTaskDescriptor> {
         .collect()
 }
 
-/// A batch of one row is the pass of one token alone, task for task (milestone 36 item 11).
+/// A batch of one row is the pass of one token alone, task for task.
 #[test]
 fn a_batch_of_one_row_is_the_pass_of_its_token_alone() {
     let f = fixture(32_768);

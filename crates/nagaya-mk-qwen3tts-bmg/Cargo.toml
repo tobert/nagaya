@@ -9,7 +9,7 @@ xe = ["nagaya-mk-bmg/xe"]
 
 [dependencies]
 nagaya-abi = { version = "0.1.0", path = "../nagaya-abi" }
-# The interpreter of the B70 megakernels, which this engine shares with the Gemma 4 engine (milestone 17 step 4).
+# The interpreter of the B70 megakernels, which this engine shares with the Gemma 4 engine.
 nagaya-mk-bmg = { version = "0.1.0", path = "../nagaya-mk-bmg" }
 blake3 = "1.8.2"
 serde_json = "1.0.154"

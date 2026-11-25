@@ -1,4 +1,4 @@
-//! Measure the engine's pass scratch once on gfx1151 (milestone 9c).
+//! Measure the engine's pass scratch once on gfx1151.
 //!
 //! `open` measures the pool at its first asks and refuses a measurement that is past the declared constant. Run this
 //! example in two processes, so that each one opens a fresh engine. A refusal is a measurement too: the message holds

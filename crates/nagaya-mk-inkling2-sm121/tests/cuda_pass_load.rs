@@ -1,4 +1,4 @@
-//! GPU gate of the weights, the slot and the arena of the pass (milestone 37 step 10, commit 4). Each repacked weight
+//! GPU gate of the weights, the slot and the arena of the pass. Each repacked weight
 //! goes back through the inverse of its repack and must equal the bytes of the checkpoint, so the test shares no code
 //! with the loader but the layout functions that have their own host tests.
 //!

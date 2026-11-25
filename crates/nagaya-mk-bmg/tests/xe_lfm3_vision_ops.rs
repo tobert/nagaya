@@ -1,4 +1,4 @@
-//! The ops of the LFM3 vision tower on a B70 card (milestone 24 step 7): the norm and the axial rotation of the head
+//! The ops of the LFM3 vision tower on a B70 card: the norm and the axial rotation of the head
 //! rows, the gated depthwise convolution over the patch grid, and the attention in both directions of the embedding
 //! binary, which the LFM3 binary now holds. Each test compares the kernel with the CPU forms of
 //! `common/lfm3_vision.rs`. The engine test `vision_cpu.rs` of `nagaya-mk-lfm3-bmg` checks those forms against

@@ -1,6 +1,6 @@
 //! Build the engine from `hip/` into the static library `libqwen38engine.a`, under the feature `hip`.
 //!
-//! The commands are the commands of the reference CMake build at commit `555a2a3`, as its `build/compile_commands.json`
+//! The commands are the commands of the reference CMake build, as its `build/compile_commands.json`
 //! lists them. The flags are part of the model's definition: the conformance gates compare bits. Thus this script calls
 //! the compiler with an exact list of flags, and adds no flag of its own. A build without `hip` compiles nothing and
 //! needs no ROCm.
@@ -40,8 +40,7 @@ const HIP_DEFINES: &[&str] = &["-DUSE_PROF_API=1", "-D__HIP_PLATFORM_AMD__=1", "
 
 /// The translation units of the engine library, as the reference CMake build lists them.
 ///
-/// `extern.hip` is the thin extern layer that took the place of the C ABI `capi.hip` of the reference in milestone 15
-/// step 4. The file `blocks.hip` of the reference built the stages of the model's blocks; the Rust pass build
+/// `extern.hip` is the thin extern layer that took the place of the C ABI `capi.hip` of the reference. The file `blocks.hip` of the reference built the stages of the model's blocks; the Rust pass build
 /// (`src/pass.rs`) took its place in step 6.
 const ENGINE_UNITS: &[&str] = &[
     "engine.hip",
@@ -74,8 +73,7 @@ pub(crate) fn compiler() -> PathBuf {
 
 /// Every compile of the engine, in the order of the reference targets: the engine units, then `rt.cpp`.
 ///
-/// The GGUF units of the reference (`gguf.cpp`, `dequant.cpp`) are not here. The Rust reader took their place in
-/// milestone 15 step 3 (`src/gguf.rs`, `src/dequant.rs`). `src` is the directory `hip/src`, and `out` is the directory
+/// The GGUF units of the reference (`gguf.cpp`, `dequant.cpp`) are not here. The Rust reader took their place (`src/gguf.rs`, `src/dequant.rs`). `src` is the directory `hip/src`, and `out` is the directory
 /// of the objects.
 pub(crate) fn units(src: &Path, out: &Path) -> Vec<Unit> {
     let mut units: Vec<Unit> = ENGINE_UNITS.iter().map(|name| engine_unit(src, out, name)).collect();

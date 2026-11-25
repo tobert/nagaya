@@ -1,4 +1,4 @@
-//! GPU gate of the claim of the later items (milestone 37 step 10, lane D). A task with more items than blocks gives item
+//! GPU gate of the claim of the later items. A task with more items than blocks gives item
 //! b to block b, and the later items to the blocks by claim. `OP_SELFTEST_CLAIM` counts each item that runs and writes
 //! the block that ran it. Every item must run exactly once, and the event of the task must reach its item count.
 //! Some items spin, so that their blocks are slow and the other blocks take more items.

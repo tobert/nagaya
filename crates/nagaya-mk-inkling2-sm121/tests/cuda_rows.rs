@@ -1,4 +1,4 @@
-//! GPU gates of the row ops (milestone 37 step 9, wave B lane R): the row finisher, EMBED, MIX, the message gates and
+//! GPU gates of the row ops: the row finisher, EMBED, MIX, the message gates and
 //! MIX_OUT. The oracle of each op is the host form of the B70 crate (`nagaya_mk_inkling2_bmg::host::ops`).
 //!
 //! `NAGAYA_TEST_CARDS=<pci address> INKLING2_MODEL_DIR=<folder> cargo test -p nagaya-mk-inkling2-sm121 --features cuda

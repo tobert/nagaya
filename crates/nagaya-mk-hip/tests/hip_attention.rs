@@ -1,4 +1,4 @@
-//! Attention on gfx1151 against a CPU form in f64 (milestone 22 step 4). The probabilities round to bf16 before the
+//! Attention on gfx1151 against a CPU form in f64. The probabilities round to bf16 before the
 //! values, so a result may differ from the CPU form by about one bf16 step of the output scale.
 //! Stop `nagaya.service` first (spec 3.1). Run: `cargo test -p nagaya-mk-hip --features hip --test hip_attention`.
 #![cfg(feature = "hip")]

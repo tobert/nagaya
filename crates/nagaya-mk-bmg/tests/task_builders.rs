@@ -459,7 +459,7 @@ fn vision_conv_refuses_what_its_kernel_cannot_take() {
 }
 
 /// The opcodes of the vision ops in `protocol.rs` are the ones that `kernels/megakernel.cl` defines, in the range 100
-/// to 109 of the vision tower (milestone 24 step 7).
+/// to 109 of the vision tower.
 #[test]
 fn the_vision_opcodes_of_the_host_are_the_opcodes_of_the_kernel() {
     use nagaya_mk_bmg::protocol::{OP_VISION_CONV, OP_VISION_ROPE};

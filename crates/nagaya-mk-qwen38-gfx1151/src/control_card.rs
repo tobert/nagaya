@@ -1,5 +1,5 @@
 //! The card gate of the device control op (`hip/src/engine/control.hip`): it gives the bits of the host op of
-//! `control.rs` for each op, each row and each value (milestone 34 step 7).
+//! `control.rs` for each op, each row and each value.
 //!
 //! The rows and the vector come from a linear congruential generator, as the tests of `control.rs` make them. Their
 //! dot products depend on the order of the sum, so a kernel with another order or a fused product fails here. The test

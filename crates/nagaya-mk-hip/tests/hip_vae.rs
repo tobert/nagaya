@@ -1,4 +1,4 @@
-//! The ops of the VAE decoder on gfx1151, each against a CPU form (milestone 22 step 4). Stop `nagaya.service` first
+//! The ops of the VAE decoder on gfx1151, each against a CPU form. Stop `nagaya.service` first
 //! (spec 3.1). Run: `cargo test -p nagaya-mk-hip --features hip --test hip_vae -- --test-threads=1`.
 #![cfg(feature = "hip")]
 

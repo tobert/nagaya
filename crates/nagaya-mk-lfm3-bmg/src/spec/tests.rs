@@ -618,7 +618,7 @@ fn both_models_declare_a_control_table_of_8_vectors_and_the_residual_tap() {
             }
         ]
     );
-    // Omni has the same table since milestone 25 step 9. Its vector acts on its text passes: a frame of its speech is
+    // Omni has the same table. Its vector acts on its text passes: a frame of its speech is
     // a `frame` call, which takes no control list (spec 11.12).
     let omni = Backbone::parse(OMNI_CONFIG).unwrap();
     let o = limits(&omni, &c, 1000, None);

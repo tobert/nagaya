@@ -1,4 +1,4 @@
-//! A wait that never ends must trap, not hang (Milestone 37 step 6). A trap leaves the primary context of the process
+//! A wait that never ends must trap, not hang. A trap leaves the primary context of the process
 //! unusable, so this test lives in its own test binary.
 //!
 //! `NAGAYA_TEST_CARDS=<pci address> cargo test -p nagaya-mk-cuda --features cuda --test cuda_spin`

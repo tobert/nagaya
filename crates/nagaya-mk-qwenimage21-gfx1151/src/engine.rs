@@ -1,5 +1,4 @@
-//! The Qwen-Image 2.1 engine on gfx1151: the `Engine` trait with the image calls (engine-abi "Image", spec 11.9c;
-//! milestone 22 step 7).
+//! The Qwen-Image 2.1 engine on gfx1151: the `Engine` trait with the image calls (engine-abi "Image", spec 11.9c).
 //!
 //! `image_begin` encodes the template ids, or takes the rows of a conditioning hit, and runs the condition rows
 //! through the transformer once. Each `image_step` runs one step of each image, and `image_decode` decodes each

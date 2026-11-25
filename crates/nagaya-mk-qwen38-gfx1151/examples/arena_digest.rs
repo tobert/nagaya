@@ -1,4 +1,4 @@
-//! Print the SHA-256 of the engine's weight arena, so that two builds can show the same arena bytes (milestone 15).
+//! Print the SHA-256 of the engine's weight arena, so that two builds can show the same arena bytes.
 //!
 //! The example opens the engine and finds the arena by its memfd name, `qwen38-weights` (`engine.hip` `create_arena`).
 //! It reads the arena through `/proc/self/fd`, because the seals forbid a writable map. The example never closes the

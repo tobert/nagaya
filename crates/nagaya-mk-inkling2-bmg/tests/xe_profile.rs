@@ -1,4 +1,4 @@
-//! The profile of the Inkling 2 engine on a B70 card (milestone 36 item 0): where the time of a decode step and of
+//! The profile of the Inkling 2 engine on a B70 card: where the time of a decode step and of
 //! a prefill block goes, for each op kind. The profile binary gives the bits of the engine binary, and its clocks
 //! cover each launch.
 //!
@@ -286,7 +286,7 @@ fn the_profile_of_a_decode_step_and_a_prefill_block() {
 }
 
 /// The tokens each second of a batch of 1, 2, 4 and 8 decode rows at 3 cycles, each row at about position 1,024 of
-/// its own slot (milestone 36 item 12). Then the profile of a step of 8 rows. The rows of a pass share the fixed costs
+/// its own slot. Then the profile of a step of 8 rows. The rows of a pass share the fixed costs
 /// of a step: the weights of the dense ops, the head and the task boundaries.
 #[test]
 fn the_speed_of_a_batch_of_decode_rows() {

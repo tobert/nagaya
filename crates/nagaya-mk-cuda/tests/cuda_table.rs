@@ -1,4 +1,4 @@
-//! GPU gate of the task table (milestone 37, wave B foundation): `d` of the descriptor points to a table of 16 words.
+//! GPU gate of the task table: `d` of the descriptor points to a table of 16 words.
 //! The producer warp copies it to shared memory with the descriptor. `OP_SELFTEST_TABLE` writes the words that its
 //! item sees. Each task has its own table, and the tasks do not wait on one another, so the producer runs ahead of
 //! the consumers: a table that the consumers read too early, or a table of another task, shows.

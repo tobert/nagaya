@@ -1726,11 +1726,11 @@ pub const INKLING2_ATTN_MAX_BLOCK: u32 = 512;
 /// sums of positions do not wrap in `u32`, and the distances fit an `int`.
 pub const INKLING2_ATTN_MAX_POSITIONS: u32 = 1 << 24;
 
-/// The keys of one chunk of a sliding layer. **Proposed** (Claude Opus 5.5, 2026-11-21): small chunks spread a decode
+/// The keys of one chunk of a sliding layer. **Proposed**: small chunks spread a decode
 /// step over 5 chunks of each head, and a block of 512 takes at most 7 chunks of scratch.
 pub const INKLING2_SLIDING_CHUNK_KEYS: u32 = 256;
 
-/// The keys of one chunk of a full layer. **Proposed** (Claude Opus 5.5, 2026-11-21): a block of 512 in a slot of
+/// The keys of one chunk of a full layer. **Proposed**: a block of 512 in a slot of
 /// 32,768 positions takes 16 chunks, about 102 MiB of scratch. A decode step walks at most 16 rounds in each chunk.
 pub const INKLING2_FULL_CHUNK_KEYS: u32 = 2048;
 

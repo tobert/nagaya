@@ -4,7 +4,7 @@
 //! Every check of a call is a rule of `held::Held`, and each check runs before the call changes anything. So a
 //! refused call changes nothing. The engine adds no numeric step: a pass gives the bits of `Pass::run_slot`.
 //!
-//! Errors (milestone 37 step 11, decision 4):
+//! Errors:
 //! - A refused check changes nothing, and the call says `Refused`.
 //! - A failed launch poisons its slot. The slot refuses each call that changes it until a clear.
 //! - A sticky CUDA error (the 700 class) leaves the context of the GPU unusable. The call that met it gives the
@@ -436,7 +436,7 @@ impl Engine for Inkling2Sm121Engine {
         self.last_error = None;
         if !taps.is_empty() {
             return Err(self.refuse_pass(format!(
-                "the pass names {} taps; the engine declares no taps until milestone 37 step 13",
+                "the pass names {} taps; the engine declares no taps yet",
                 taps.len()
             )));
         }

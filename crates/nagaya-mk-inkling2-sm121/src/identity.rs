@@ -3,7 +3,7 @@
 //!
 //! The digest is the digest of the B70 engine (`nagaya_mk_inkling2_bmg::engine::checkpoint_digest`): the two engines
 //! read one checkpoint, so they name it with one digest. This module reads the file in chunks, so that it needs no
-//! map of 19 GB. Proposed (milestone 37 step 11, Sonnet 5.5): the two engines may share one function later.
+//! map of 19 GB. Proposed: the two engines may share one function later.
 
 use std::fs::File;
 use std::os::unix::fs::FileExt;

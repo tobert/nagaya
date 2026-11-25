@@ -1,4 +1,4 @@
-//! GPU gate of `CudaDevice::memory_info` (milestone 37 step 11): the driver reports the free and the total bytes, and the
+//! GPU gate of `CudaDevice::memory_info`: the driver reports the free and the total bytes, and the
 //! free bytes fall by the bytes of an allocation that the GPU touched, and rise again when it is freed.
 //!
 //! `NAGAYA_TEST_CARDS=<pci address> cargo test -p nagaya-mk-cuda --features cuda --test cuda_mem_info -- --test-threads=1`

@@ -1,5 +1,4 @@
-//! The gates of the Inkling 2 engine on a B70 card against the `f32` oracle of transformers (spec 8.3, milestone 35
-//! step 5): the row after each of the 48 runs of the prompt "plain", the top-64 logits and the logsumexp of five
+//! The gates of the Inkling 2 engine on a B70 card against the `f32` oracle of transformers (spec 8.3): the row after each of the 48 runs of the prompt "plain", the top-64 logits and the logsumexp of five
 //! prompts, and a prefill with 7 decode steps on the held state, for both models.
 //!
 //! Each gap prints. A test skips when the model or the oracle file is absent. Release the card first, and run alone:

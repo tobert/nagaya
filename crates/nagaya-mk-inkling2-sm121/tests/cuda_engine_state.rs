@@ -1,4 +1,4 @@
-//! GPU gates of the state rules of the engine (milestone 37 step 11):
+//! GPU gates of the state rules of the engine:
 //!
 //! - The limits of the engine are the plan of the factory, and an open refuses slots that do not fit the memory.
 //! - A refused pass changes nothing. A poisoned slot refuses each call that changes it until a clear, and the other

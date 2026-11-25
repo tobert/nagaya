@@ -2,8 +2,7 @@
 //!
 //! The interpreter is one OpenCL C kernel in `kernels/`. Each work-group walks a ring of task descriptors, and each
 //! task names an op (`protocol`). `level_zero` opens the cards, loads a kernel binary and runs a ring. `build.rs`
-//! compiles one binary for each engine with `ocloc`, so an op of one engine does not change the binary of another
-//! (`AGENTS.md` milestone 17 step 4). The parts that touch a card need the feature `xe`.
+//! compiles one binary for each engine with `ocloc`, so an op of one engine does not change the binary of another engine. The parts that touch a card need the feature `xe`.
 
 // The copy of the code of the first Gemma 4 engine keeps these lints until the port of each part
 // (`nagaya-mk-gemma4-bmg`).
