@@ -33,8 +33,7 @@ reply parser of a model. It needs no GPU.
 A megakernel runs a whole pass in one launch, so a host profiler sees one long call. Thus the B70 interpreter has a
 profile binary. It holds the same ops, and it records a clock at the start and the end of each task. The ops keep
 their bits, and the binary of each engine keeps its bytes. The Inkling 2 engine has it first
-(`Inkling2Engine::open_profiled`, `tests/xe_profile.rs`), and milestone 36 holds its first profile. We will make the
-profile a feature of each engine.
+(`Inkling2Engine::open_profiled`, `tests/xe_profile.rs`). We will make the profile a feature of each engine.
 
 ## Status
 

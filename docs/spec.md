@@ -3193,7 +3193,7 @@ rest, and holds a snapshot at each boundary. These notes fix the choices that th
 - A reply ends with `context_full` when the prompt and the reply reach `context_tokens`. When it also reaches
   `max_tokens`, it ends with `context_full` (gogi "Generations", `finish`).
 - `decision_context_tokens` is `context_tokens`: a decision reads its context in the slots of a build, and the job
-  takes the lowest slot that fits. **Proposed** (Claude Fable 5.2). Reason: the owner said on 2026-11-17 that a
+  takes the lowest slot that fits. **Proposed**. Reason: a
   decision of LFM3 Omni uses its slots of 32,768 positions. The limit was 3,072, and one large image has 1,875
   positions. The same rule for each engine is the simplest one.
 - The other decision limits are those of the first Gemma 4 engine: `contexts_per_decision` 8, `case_bytes` 65536
@@ -4640,7 +4640,7 @@ the simplest one that the suite and a fake can check.
   part in its context, is a 400 that names it.
 - A family with no media refuses `case_media` with a 400 that names `case_media[0]`, as the check of objects does.
 
-**The plain read of the LFM3 family.** **Proposed** (Claude Fable 5.2).
+**The plain read of the LFM3 family.** **Proposed**.
 Reason: a trial of 2026-11-17 on both LFM3 models. The layout of the first Gemma 4 engine puts every question in one
 spec turn. With it, a spec of 4 questions gave 236 right answers of 324 on 9 images, and 229 of 324 on 9 text cases.
 One question in each read gave 324 of 324 and 321 of 324.
@@ -4667,7 +4667,7 @@ each turn are the proposal.
 - **A queue read** does not change.
 - The Qwen3.8 library and the Gemma 4 library keep the old layout. The trial did not run on them.
 
-**Text questions of the LFM3 family.** **Proposed** (Claude Fable 5.2).
+**Text questions of the LFM3 family.** **Proposed**.
 Reason: the owner asked for the capability `describe` on 2026-11-17. gogi gives the contract ("Specs",
 "Decisions"), but no server and no suite check has it. Each rule below is the simplest one that keeps gogi's words.
 
@@ -4966,8 +4966,8 @@ speech model is in `crates/nagaya/tests/speech_context.rs`.
 (ontology "Run"). Each run of a layer has state of its own: its keys and values, or its recurrent state. A loop is a
 member of each context, in the contract (decided 2026-11-18).
 
-The notes below fill the choices that gogi leaves to the server. Each note is **Proposed** (Claude Opus 5.5,
-2026-11-18). Reason: each is the simplest one.
+The notes below fill the choices that gogi leaves to the server. Each note is **Proposed**. Reason: each is the simplest
+one.
 
 - **The capability.** A served model declares `layer_loops` when its engine declares `layer_loops` (engine-abi
   "Layer loops"). Its `layer_loops` member copies `limits().layer_loops` of the engine. A `loop` for another served
@@ -4997,8 +4997,8 @@ trained with one.
 model built to cycle runs for each position (ontology "Cycle"). A context with no `cycles` runs the served model's
 `default`. A cycle is not a layer loop (decided 2026-11-21).
 
-The notes below fill the choices that gogi leaves to the server. Each note is **Proposed** (Claude Opus 5.5,
-2026-11-21). Reason: each is the simplest one, and each follows the rule of the loop in 11.16.
+The notes below fill the choices that gogi leaves to the server. Each note is **Proposed**. Reason: each is the simplest
+one, and each follows the rule of the loop in 11.16.
 
 - **The capability.** A served model declares `cycles` when its engine declares `cycles` (engine-abi "Inkling 2").
   Its `cycles` member copies `limits().cycles` of the engine: `min`, `max`, `default`, `start` and `end`.
@@ -5019,18 +5019,18 @@ The notes below fill the choices that gogi leaves to the server. Each note is **
   (`Limits::check_segment_cycles`).
 - **A reply with audio** runs at the default count only. A frame feeds its position as a plain pass. Another count
   is a 400 that names `cycles`.
-- **`ensemble`** takes contexts with other counts of cycles. The rows of each count run in a pass of their own, and
-  the job combines the rows of all counts (`docs/lab.md`, "`ensemble`: joined forks"). **Proposed** (Claude Opus 5.5,
-  2026-11-21). Reason: the segments of one pass run one count, and each row of a step reads only its own context.
+- **`ensemble`** takes contexts with other counts of cycles. The rows of each count run in a pass of their own, and the
+  job combines the rows of all counts (`docs/lab.md`, "`ensemble`: joined forks"). **Proposed**. Reason: the segments of
+  one pass run one count, and each row of a step reads only its own context.
 - **Rows of layers.** The tap `residual` of an engine with cycles gives the row after each run (engine-abi "Inkling
   2"). A control vector and a trace read the row of each layer after its last run, as for a loop (11.16).
-  **Proposed** (Claude Opus 5.5, 2026-11-21). Reason: a vector and a trace keep one row for each layer.
+  **Proposed**. Reason: a vector and a trace keep one row for each layer.
 
 The tests are in `crates/nagaya/tests/council_cycles.rs` and `crates/nagaya/tests/http_conformance.rs`.
 
-**11.18 The served Inkling 2 models.** The kind `mk-inkling2-bmg` serves `Inkling-2-Mini` and the variable-loop
-research model (milestone 35, engine-abi "Inkling 2"). Each rule below is **Proposed** (Claude Opus 5.5,
-2026-11-21). Reason: each is the rule of the LFM3 kind (11.11), and the docs leave the choice open.
+**11.18 The served Inkling 2 models.** The kind `mk-inkling2-bmg` serves `Inkling-2-Mini` and the variable-loop research
+model (milestone 35, engine-abi "Inkling 2"). Each rule below is **Proposed**. Reason: each is the rule of the LFM3 kind
+(11.11), and the docs leave the choice open.
 
 - **The served name.** The served model of an engine of this kind is its engine name in the profile. One kind
   serves two models, and a profile can hold two engines of one model, so the `model` of the identity is not unique.

@@ -905,14 +905,11 @@ so the worst wait behind other work is one quantum.
 
 A watchdog thread reports each quantum that runs past the bound.
 
-The size of a quantum is a balance. Amy, 2026-11-22: "I'd say 1-10s chunks are fine in the nagaya, we want there to
-be opportunities to pipeline and have hot caches and so on, but also we do some chunky work sharing, and want health
-checks". Thus a bound from 1,000 to 10,000 ms is in range. Split expensive work at a rough boundary where a switch
-of work is possible, even if the scheduler seldom switches there.
+The size of a quantum is a balance. Thus a bound from 1,000 to 10,000 ms is in range. Split expensive work at a rough
+boundary where a switch of work is possible, even if the scheduler seldom switches there.
 
-Each engine chooses the bound that suits its model and its device (Amy, 2026-11-22). The guidance is a quantum
-below 10 s, and an engine can make its own tradeoff. Amy, 2026-11-22: "if we have a case where we need to allow for
-a continuous run for a few minutes let's make it possible."
+Each engine chooses the bound that suits its model and its device. The guidance is a quantum
+below 10 s, and an engine can make its own tradeoff.
 
 **A long pass with a declared bound** (accepted 2026-11-22).
 Before this rule, the watchdog did not read `max_quantum_ms`. It stopped the process when a group sent no beat for
@@ -937,8 +934,7 @@ Before this rule, the watchdog did not read `max_quantum_ms`. It stopped the pro
 - The read-only route `GET /nagaya/v1/devices/{id}/busy` shows the long pass to other clients: the group, the devices,
   `bound_ms`, `elapsed_ms` and `overdue`.
 - The scheduler does not read the bound. It chooses by the order of classes, as for each quantum. The bound comes
-  from the segments, and the body of a job builds them in its quantum, after the choice. Decided 2026-11-22. Amy:
-  "if I want to prioritize interactive work, the thing should be scheduled as batch in the first place".
+  from the segments, and the body of a job builds them in its quantum, after the choice. Decided 2026-11-22.
 - Not in the first version: a long stage quantum, and beats from the device while a pass runs.
 - Reason: a group timeout that grows with the largest bound slows the detection of a real hang in every pass. A
   bound for each kind of pass cannot tell a short feed block from a long one. A declared bound for each pass keeps
@@ -1396,10 +1392,10 @@ The vision tower of Omni follows these rules.
   is a text block for both. Thus the gates of 8.3 that make token segments run on an engine that declares
   `tokens+rows`. Only an engine that declares `rows` skips them.
 - **The ops.** The tower runs on the LFM3 binary. The binary also holds the ops of the embedding binary, and its
-  `OP_GEGLU` stays SwiGLU. The ops of the tower are `OP_VISION_ROPE` (100), `OP_VISION_CONV` (101) and
-  `OP_VISION_ATTN` (102), the attention in both directions. It gives the bits of `OP_BIATTN` (`docs/perf.md`,
-  "The vision tower on a large image").
-  The LayerNorm of the projector reads F32 weights, so the open uploads its BF16 weights as F32. Each value is exact.
+  `OP_GEGLU` stays SwiGLU. The ops of the tower are `OP_VISION_ROPE` (100), `OP_VISION_CONV` (101) and `OP_VISION_ATTN`
+  (102), the attention in both directions. It gives the bits of `OP_BIATTN` (a measure of the vision tower on a large
+  image). The LayerNorm of the projector reads F32 weights, so the open uploads its BF16 weights as F32. Each value is
+  exact.
 - **The memory terms.** The weights of the tower and of the projector are the term `vision` on `device(0)`. The
   buffers of the tower are in `work`, sized for the largest image of 8,192 patches. `lfm3` has neither.
 - **The output.** The rows of the encoder stay on the card. The pass copies them over the embedding rows of the
@@ -1442,7 +1438,7 @@ The layout of a latent span has these rules. Reason: the engine must check the r
 
 Both LFM3 models have 24 layers. Layers 0 and 1 are convolutions, and a group of four follows from layer 2: full
 attention, convolution, sliding attention, convolution. Layers 22 and 23 start a sixth group. Each rule below is
-**Proposed** (Claude Opus 5.5, 2026-11-18).
+**Proposed**.
 
 - **The limits.** `bounds` is `[2, 6, 10, 14, 18, 22]`, the edges of the groups. `count` is 4. `extra_runs` comes
   from the profile, and it is a multiple of 4. With 0, the engine declares no `layer_loops`.
@@ -1491,7 +1487,7 @@ is 196,608 bytes. Thus a table of 8 entries is 1.5 MiB on a card of 32 GiB.
 ## Layer loops
 
 This section holds the engine's part of the rules of layer loops (spec 11.16, gogi "Layer loops"). Each rule is
-**Proposed** (Claude Opus 5.5, 2026-11-18).
+**Proposed**.
 
 ```
 limits().layer_loops: {layers, bounds, count, extra_runs}?   the spans that the engine runs more than once
@@ -1534,7 +1530,7 @@ most.
 
 The engine kind `mk-inkling2-bmg` serves Inkling 2 Mini and the variable-loop research model on one B70 card
 (milestone 35). The facts come from the checkpoint and from transformers `inkling2_loop` at `046bdb8cc2`. Each rule
-is **Proposed** (Claude Opus 5.5, 2026-11-21).
+is **Proposed**.
 
 ```
 limits().cycles: {min, max, default}?   the counts of cycles that the engine runs
@@ -1582,7 +1578,7 @@ engine declares no `layer_loops`.
   card. A snapshot of 1 cycle still holds the reserve rows, as zeros (review by ChatGPT through kaibo `gpt-plan`).
 - The identity names `state` 2, the layout of these parts. Thus a snapshot of the parts before `cycles` does not
   share a recipe with one after.
-- Each rule of this list from "The part `cycles`" is **Proposed** (Claude Opus 5.5, 2026-11-21).
+- Each rule of this list from "The part `cycles`" is **Proposed**.
 
 **The weights on the card.** Expanded to `bf16`, the experts take about 49 GB, which is more than the 32 GiB of the
 card. Thus the experts stay in the format of the checkpoint: NVFP4 in layers 0 to 19, and MXFP8 in layers 20 to 23.
@@ -1656,8 +1652,8 @@ of cells and 10 rings.
 - The card gate `tests/xe_fit.rs` ran on 2026-11-21. A slot of 262,144 positions asks for 40,679,296,644 bytes.
   The driver puts 34,031,300,608 of them on the card, and the open is refused. Then a slot of 164,352 opens, and it
   holds 34,016,722,944 bytes of the card.
-- Each rule of the two items above is **Proposed** (Claude Opus 5.5, 2026-11-21, by the review of DeepSeek through
-  kaibo). Reason: a slot in system memory is a silent fallback, and spec 8.5 asks for a crash first.
+- Each rule of the two items above is **Proposed**. Reason: a slot in system memory is a silent fallback, and spec 8.5
+  asks for a crash first.
 - The ledger does not stop it. The budget of a card in the B70 example is 32 GiB. With it, the ledger admits up to
   170,585 positions at 24 and 110,533 at 48. The driver and the kernels take about 0.24 GB more than the terms.
   - Thus a profile names a slot of at most 164,352 positions at 3 cycles.
@@ -1707,7 +1703,7 @@ images of Inkling 2", "The lab of Inkling 2"). A segment of rows with no tokens 
 
 Images follow the pattern of LFM3 ("LFM3", "The LFM3 vision binding"). The family prepares the rows of an image.
 The engine runs the vision tower inside the pass, and the rows of the projector replace the placeholders. The facts
-come from transformers `inkling2` at `046bdb8cc2`. Each rule is **Proposed** (Claude Opus 5.5, 2026-11-21).
+come from transformers `inkling2` at `046bdb8cc2`. Each rule is **Proposed**.
 
 - **No resize.** The processor pads each image on the right and at the bottom to a multiple of 40 px. The pad value
   is -1 on the scale of 0 to 255 (`image_processing_inkling2.py:89`). Then each value `v` becomes
@@ -1726,11 +1722,11 @@ come from transformers `inkling2` at `046bdb8cc2`. Each rule is **Proposed** (Cl
   first position, then `grid_t = 1`, `grid_h = 2 * rows`, `grid_w = 2 * columns` and 0. The grid counts patches.
   Reason: one reader and one rule serve both engines, because the span has `grid_t * grid_h * grid_w / 4` positions.
 - **Sizes.** The family accepts each side of 1 to 4,096 px. A side past 4,096 px is a 400 that names the part, and
-  the council never resizes an image. Thus an image has at most 103 by 103 = 10,609 image tokens. @tobert decided
-  the bound on 2026-11-21: "yep, match the model card. use the 4096 rule". The model card says: "For optimal
+  the council never resizes an image. Thus an image has at most 103 by 103 = 10,609 image tokens. Decided
+  2026-11-21. The model card says: "For optimal
   performance, each image dimension should be between 40px to 4096px".
-- A side below 40 px pads to 40 px, as the reference pads it. Thus a small image has one token. @tobert chose this
-  on 2026-11-21. Reason: the 40 px of the model card is advice for quality, and the reference accepts a small image.
+- A side below 40 px pads to 40 px, as the reference pads it. Thus a small image has one token. Decided
+  2026-11-21. Reason: the 40 px of the model card is advice for quality, and the reference accepts a small image.
 
 **What the engine runs.** The tower runs over each image of the pass alone: its class row and its `4 * T` patches,
 for `T` image tokens. These are the steps:
@@ -1758,8 +1754,7 @@ take the term `vision` on `device(0)`. The two models hold the same tensors.
 **The host form.** `src/host/vision.rs` holds the tower in `f32`, and it uses the rules of the processor of the
 family library. It is the oracle of the family and of the device ops.
 
-**The choices of the family.** The rules above leave these choices open. Each one is **Proposed** (Claude Opus 5.5,
-2026-11-21).
+**The choices of the family.** The rules above leave these choices open. Each one is **Proposed**.
 
 - **One copy of the rules.** The rules of the processor are in `nagaya-text-inkling2` (`processor`), and the host
   form of the engine uses them. Reason: the engine crate depends on the family crate for its identity, so the rules
@@ -1778,7 +1773,7 @@ family library. It is the oracle of the family and of the device ops.
 - **Objects.** The process gives the family a reader of the objects of this machine, as for LFM3. A family with no
   reader refuses an image part with a 400 that names the part.
 
-**The choices of the tower.** Each one is **Proposed** (Claude Opus 5.5, 2026-11-21).
+**The choices of the tower.** Each one is **Proposed**.
 
 - **The ops.** The binary adds `OP_INKLING2_VISION_EMBED` (180), `OP_INKLING2_VISION_ROPE` (181) and
   `OP_INKLING2_VISION_ATTN` (182) in `kernels/inkling2_vision_ops.cl`. The tower also uses `OP_MATMUL`, `OP_BIAS`,
@@ -1803,9 +1798,8 @@ family library. It is the oracle of the family and of the device ops.
 - **The merge.** The class row and the patch rows are one buffer. The projector reads the rows after the class row
   as `T` rows of 4,096 values, so the merge needs no op.
 
-**The choices of the pass.** These rules tie the tower to a pass of the engine. Each one is **Proposed** (Claude
-Opus 5.5, 2026-11-21). Reason: each is the rule of "The LFM3 vision binding" or of its code, and the docs leave the
-choice open.
+**The choices of the pass.** These rules tie the tower to a pass of the engine. Each one is **Proposed**. Reason: each
+is the rule of "The LFM3 vision binding" or of its code, and the docs leave the choice open.
 
 - **Inputs.** The engine declares `tokens+rows`. Both models hold the tower, so both declare it. A segment of tokens
   alone, with no `meta`, is a text block, as for LFM3.
@@ -1847,7 +1841,7 @@ choice open.
   - The square law rests on one measurement, the largest image. A measurement of smaller images can change the
     rule.
   - The card gate `crates/nagaya/tests/xe_inkling2_long_pass.rs` runs a cold image of 4,096 px through the process,
-    with the watchdog at its defaults. It passed on card 0 on 2026-11-22, on `7f6880a`. The pass of 10,631 tokens
+    with the watchdog at its defaults. It passed on card 0 on 2026-11-22,. The pass of 10,631 tokens
     declared 88,200 ms, and the route showed 57,309 ms elapsed with `overdue` false. The generation took 75,073 ms.
 - **The tower in quanta of its own** (from ChatGPT through kaibo `gpt-plan`, 2026-11-21; accepted 2026-11-22 under
   D8). The family keeps the bound of 4,096 px. The tower runs in quanta before the pass that reads its rows. Each
@@ -1865,8 +1859,7 @@ choice open.
 ### The first Inkling 2 binding
 
 The text path of `crates/nagaya-mk-inkling2-bmg` follows these rules. It uses the interpreter of `nagaya-mk-bmg`
-with the ops of `kernels/inkling2_ops.cl`, in a binary of its own (`MK_INKLING2`). Each rule is **Proposed** (Claude
-Opus 5.5, 2026-11-21).
+with the ops of `kernels/inkling2_ops.cl`, in a binary of its own (`MK_INKLING2`). Each rule is **Proposed**.
 
 - **The ring of one run.** A run of layer `l` reads `x`, the residual, and `B`, the block outputs of this cycle.
   It writes `x` again. Each name below is one buffer of the block. A run is these tasks, in this order:
@@ -1925,7 +1918,7 @@ Opus 5.5, 2026-11-21).
     a sliding layer, and 2,048 on a full layer. Thus the terms of a position come in the same order in each block.
   - A decode step is a block of one position. It has no op of its own, because another op would sum in another
     order. The card test counts the values of a decode step that differ from the block.
-  - Each rule of the two items above is **Proposed** (Claude Opus 5.5, 2026-11-21).
+  - Each rule of the two items above is **Proposed**.
 - **The gate of each op.** Each device op has a host form in `src/host/`, and the card test of the op compares
   them. The expansion gives equal bits. An op that sums gives the bits of its host form in the same order, or a
   measured gap that its test names.
@@ -1939,8 +1932,7 @@ Opus 5.5, 2026-11-21).
   before, and the input of the cycles. The block outputs hold at most 4 rows of each position. The engine copies the
   residual and the block outputs after layer 5, and each cycle starts from the copy.
 
-**The host spec.** `src/spec.rs` holds the rules of the engine that need no card. These rules are **Proposed**
-(Claude Opus 5.5, 2026-11-21).
+**The host spec.** `src/spec.rs` holds the rules of the engine that need no card. These rules are **Proposed**.
 
 - **The config.** The kind is `mk-inkling2-bmg`, and its config has four keys:
   - `model_dir` names the model folder. It has no default, because one kind serves two models.
@@ -1957,7 +1949,7 @@ Opus 5.5, 2026-11-21).
   entries `12 * (c - 2)` to `12 * (c - 2) + 11` of the reserve.
 - **Slot sizes.** Each sliding run holds a ring of 2,048 rows and a spill of 1,024, in a slot of any size. In a
   slot of 2,048 positions or fewer, the ring does not wrap, so the run still holds every position.
-  - **Proposed** (Claude Opus 5.5, 2026-11-21): the ring in a short slot. Reason: `OP_INKLING2_ATTN` applies the
+  - **Proposed**: the ring in a short slot. Reason: `OP_INKLING2_ATTN` applies the
     window only to a ring, and it finds the value plane at 3,072 rows after the key plane. A short slot of cells
     would attend to keys past the window.
   - A slot of 2,048 positions takes 1,144,684,544 bytes with a reserve of 24.
@@ -2003,7 +1995,7 @@ Opus 5.5, 2026-11-21).
   `control` and latent rows.
 
 **The ring builder.** `src/model.rs` builds the tasks of a pass, and `src/weights.rs` puts the weights on the card.
-Each rule is **Proposed** (Claude Opus 5.5, 2026-11-21).
+Each rule is **Proposed**.
 
 - **The weights on the card.** Some tensors go into one allocation, so that one op reads them:
   - On a full layer, `wk_dv` and `k_sconv.weight_proj` are one matrix of 1,056 rows. Thus one matmul writes the
@@ -2033,11 +2025,11 @@ Each rule is **Proposed** (Claude Opus 5.5, 2026-11-21).
     block of 512, by 9.1e-6 at most. The splits `[300, 337]` and `[100, 412, 125]` gave the bits of `[512, 125]`.
   - The card run of 2026-11-22, with the flag: 185,519 logits differ, by 1.24e-5 at most. The splits give the same
     bits as before. The card test `xe_batch` gave equal bits for blocks of 2, 5 and 8 tokens and their decode steps.
-  - **Proposed** (Claude Opus 5.5, 2026-11-22): the flag on each matmul. Reason: a batch of decode rows needs the
+  - **Proposed**: the flag on each matmul. Reason: a batch of decode rows needs the
     bits of each row alone.
 - **A batch of decode rows** (milestone 36 item 11). A pass of 2 to 8 segments runs one decode token of each, each on
   its own slot at its own position (`model::batch`). Reason: swarms and parallel contexts share the fixed costs of a
-  step. Each rule of this item is **Proposed** (Claude Opus 5.5, 2026-11-22).
+  step. Each rule of this item is **Proposed**.
   - A segment of a batch is one token with no media, and it asks for the logits of its token. The segments are on
     slots of their own, and they have one control list and one count of cycles. A batch names no tap. Any other
     batch is refused before a slot changes (`Held::check_batch`).
@@ -2081,9 +2073,8 @@ Each rule is **Proposed** (Claude Opus 5.5, 2026-11-21).
 
 ### The lab of Inkling 2
 
-These rules add the taps, the control vectors and the latent rows of milestone 35 step 8. Each rule is **Proposed**
-(Claude Opus 5.5, 2026-11-21). Reason: each follows the rule of LFM3 ("Control vectors", "Latent rows of LFM3"), and
-the docs leave the choice open.
+These rules add the taps, the control vectors and the latent rows of milestone 35 step 8. Each rule is **Proposed**.
+Reason: each follows the rule of LFM3 ("Control vectors", "Latent rows of LFM3"), and the docs leave the choice open.
 
 ```
 limits().taps: residual, fold, blocks, messages, gates, routes
@@ -2158,7 +2149,7 @@ the oracle have one layout.
 
 The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop research model on one NVIDIA GB10
 (`sm_121`) GPU (milestone 37). It uses the shared persistent interpreter of `nagaya-mk-cuda`. Each rule below is
-**Proposed** (Claude Sonnet 5.5, 2026-11-22), except the rule of the trunk, which the owner decided on 2026-11-22.
+**Proposed**, except the rule of the trunk, which the owner decided on 2026-11-22.
 
 - **The trunk is `f32`.** The trunk of this engine is `f32`, and the quantizers take `f32` rows. vLLM runs the trunk
   in `bf16` and quantizes `bf16` rows. Decided 2026-11-22. A `bf16` trunk is a later choice.
@@ -2191,7 +2182,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   - A raw scale of `2^-127` or less gives the byte 0. The byte stops at 254. The byte 255 is an error.
   - The inverse is the exact reciprocal of the scale, and `2^127` for the byte 0.
   - Each value is `v × inverse`, clamped to ±448, then rounded to `e4m3` nearest even.
-- **Flips of discrete choices.** Measured with the quantized reference (`dc574559`, `7015d894`). Two choices of a
+- **Flips of discrete choices.** Measured with the quantized reference. Two choices of a
   pass change when a sum changes in its last bit, so two orders of the same sums can give other logits.
   - A code of the quantizer flips. On Inkling 2 Mini, 13 to 18 rows of a decode of 8 tokens flipped between the
     cache run and the run with no cache. On a tiny model, one flip moved a logit by up to 8.
@@ -2199,7 +2190,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     equal scores to the last bits swap slots.
   - The reference replays the route and the codes of the cache run in the run with no cache. Then the gap is about
     2e-5 on both models, and the limit of the check is 1e-3.
-  - **The rules of the engine.** **Proposed** (Claude Opus 5.5, 2026-11-22). The slot order of a token is the
+  - **The rules of the engine.** **Proposed**. The slot order of a token is the
     ascending order of the expert ids. A tie of scores at the eighth place picks the lower id. Thus the slots do not
     depend on the order of a sum. The codes of a row depend on its sums, so rule 4 of milestone 37 keeps them
     consistent inside the engine.
@@ -2315,8 +2306,8 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     no probe launched one.
 
 - **The CUDA interpreter.** The persistent interpreter of `nagaya-mk-cuda` is milestone 37 step 7. Substeps 2 to 6
-  are built and merged (`f4fc865d`, `d5e5d493`). Each rule below says if the code holds it. A rule marked
-  **Proposed** (Claude Opus 5.5, 2026-11-22) is not in the code yet. These are the matmul core, the fusions and
+  are built and merged. Each rule below says if the code holds it. A rule marked
+  **Proposed** is not in the code yet. These are the matmul core, the fusions and
   the members of the engine identity. The facts of the GB10 above replace each hardware guess that this
   text had before the probes ran.
 
@@ -2326,7 +2317,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   - A weight never depends on the task before it. Thus a block can fetch its next weights before its inputs are
     ready.
 
-  **Dependencies.** Built in substeps 2 to 4 (`70e88a5b`, `789a5754`, `31dfb91f`) and changed in `8c0cc25d`.
+  **Dependencies.** Built in substeps 2 to 4 and changed.
   - Each task has a counter, which is its signal. Its index in the ring is the index of the counter.
   - A block runs all its items of a task and then runs `__syncthreads`. Thread 0 then adds the count of the
     block's items to the counter with one `red.release.gpu.global.add.u32`. A block with no item of the task adds
@@ -2349,7 +2340,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   - An op that reads `blockIdx` (a probe or a self-test) is marked `per_block`, and its item count is the grid size.
   - The kernel has one path. The strict chain exists only as the helper `ring::chained`, for timing probes.
   - The per-run scratch (`q`, `attn`, `act`) has two copies that alternate. This removes the write-after-read waits.
-    This rule is **Proposed** (Claude Opus 5.5, 2026-11-22). The engine does not use it yet.
+    This rule is **Proposed**. The engine does not use it yet.
   - A wait changes the timing only. The bits come from the cut and from the merge order.
   - The gate of substep 3 ran three chains of copies, two of them behind slow fills. 15 of the 16 blocks of the
     third chain left their wait about 1.2 ms before the slow fill ended. Each result was exact, and each counter
@@ -2370,9 +2361,9 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     A `bf16` item is 16 x 768 x 2 bytes, 24.6 KB. The op `q` (N 3,072, K 2,304) has 576 items: 12 on each of 48
     blocks.
   - Block `b` of `G` runs the item `b` first. A task with at most `G` items gives each block that one item.
-  - **Proposed** (Claude Opus 5.5, 2026-11-23), built in `122c2fa7`: a task with more than `G` items gives the later
+  - **Proposed**, built: a task with more than `G` items gives the later
     items by claim. The static order `b`, `b + G`, `b + 2G` made long tails, because each block runs at a random
-    speed. The tails took 9.9 ms of a decode step of 31.1 ms (measured in `73ee3a82`).
+    speed. The tails took 9.9 ms of a decode step of 31.1 ms.
     - The scoreboard holds one claim word for each task, after the events. A launch zeroes the events and the claim
       words together, so a ring that runs again starts at claim 0.
     - A claim is an integer add of 1 to the claim word. Claim `k` gives the item `G + k`. A claim at or beyond the
@@ -2381,18 +2372,18 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
       The ops prefetch the weights of the held item, so the prefetch has the exact target.
     - A block adds the count of its items to the event of the task, once, after its last item.
     - The bits come from the item, not from the block that runs it. The gates at `G` of 48, 24, 7 and 1 hold.
-    - A decode step at 1 row went from 31.1 ms to 26.2 ms in the kernel (`a3ca9153`). End to end it takes 26.9 to
+    - A decode step at 1 row went from 31.1 ms to 26.2 ms in the kernel. End to end it takes 26.9 to
       27.9 ms, 35.9 to 37.2 tokens each second. The tails fell from 9.9 to 5.1 ms. A boundary still costs 832 ns.
     - A test ran each item in any block, the first item too: each item ran once, and every gate kept its bits.
     - UP and DOWN have one item for each block, so a claim cannot help them. Their tails are 2.85 ms of the step.
-  - Built in `31dfb91f`. `OP_COPY` copies `items` items of `n` floats each. `Ring::run_grid(G)` takes `G` from 1
+  - Built. `OP_COPY` copies `items` items of `n` floats each. `Ring::run_grid(G)` takes `G` from 1
     to the SM count. Five buffers were bit-identical at `G` of 48, 24, 7 and 1, and equal to the host copy.
   - The expert ops of a prefill are the exception. Their item count comes from the plan on the device. A ticket may
     balance them better. A ticket is not a sum, so design rule 8 allows it. The spread column of the profile decides.
   - `Kt`, the tile sizes and the merge order never depend on the count of rows (design rule 4). Each token column
     of an MMA is independent.
 
-  **Merge groups.** Built in `b823f850`. Some epilogues join several items. These are four cases:
+  **Merge groups.** Built. Some epilogues join several items. These are four cases:
   - the merge of K slices;
   - the L2 clip of a head over 8 tiles;
   - the amax of a row of an expert;
@@ -2407,15 +2398,15 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     epilogue.
   - The merging block can change from run to run. The result cannot, because the order of the sum is fixed.
   - The host zeroes the merge counters before each run, with `Ring::zero_device`. This is an open point. A real
-    engine needs the ring to zero them at the launch. **Proposed** (Claude Sonnet 5.5, 2026-11-22): a task of the
+    engine needs the ring to zero them at the launch. **Proposed**: a task of the
     ring zeroes the counters that the next merge groups use.
   - The gate is `tests/cuda_merge.rs`. Groups of 11, 16 and 66 items ran 20 times at `G` of 48, 24, 7, 1 and 20.
     Each result equaled the host sum bit for bit. The test fails on each of these mutations: the reverse order,
     a target off by one in either direction, and a relaxed add.
 
-  **Prefetch** (design rule 6). Built in `8816080b`.
+  **Prefetch** (design rule 6). Built.
   - The load repacks the weights so that the bytes of each item are one span at `b + item * item_bytes`. This
-    is **Proposed** (Claude Opus 5.5, 2026-11-22). The engine does not repack yet.
+    is **Proposed**. The engine does not repack yet.
   - A block of the producer shape has 288 threads. Warp 0 is the producer. It copies the next descriptor into one
     of two slots in shared memory. It prefetches the first item of its block with a bulk L2 prefetch, one item
     ahead. Then it waits at the scoreboard.
@@ -2432,7 +2423,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     the launch.
   - The read rate in the producer shape is 244 to 246 GB/s, about 97% of the measured peak.
   - A consumer reads with `ld.global.nc.L1::no_allocate.v4`. The prefill ring of `cp.async.bulk` and the
-    `mbarrier` objects are **Proposed** (Claude Opus 5.5, 2026-11-22), and the code does not hold them yet.
+    `mbarrier` objects are **Proposed**, and the code does not hold them yet.
   - An expert op prefetches only after the wait on the plan, because the plan names its experts.
   - A bandwidth of 252 GB/s and a latency of about 600 ns give about 150 KB in flight. That is about 3.1 KB for each
     SM. An item is 24 KB, so one item ahead is enough.
@@ -2444,7 +2435,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   - The probe shows these PTX forms in `cuobjdump -sass` for `sm_121a` (see "The facts of the GB10"). The device
     attribute of cluster launch is 1, but the design uses no cluster and no multicast.
 
-  **The descriptor** has 128 bytes, aligned to 128, inline in the ring. Built in `70e88a5b`. `build.rs` writes each
+  **The descriptor** has 128 bytes, aligned to 128, inline in the ring. Built. `build.rs` writes each
   offset into `mk_protocol.h`. The `.cu` file checks each with `static_assert`, and a Rust `offset_of!` test checks
   each. An argument block would add one dependent load for each
   task. About 600 tasks take about 77 KB.
@@ -2476,7 +2467,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   - The result is about 10 to 12 tasks for each run, and about 550 tasks for a decode step. The B70 engine has
     1,635.
 
-  **Blocks, threads and shared memory.** The producer shape of `8816080b` holds the first four rules.
+  **Blocks, threads and shared memory.** The producer shape of the prefetch holds the first four rules.
   - One block runs on each SM, with 288 threads. Warp 0 is the producer. Warps 1 to 8 are consumers. Thus each
     thread has 168 registers at most (see "The register budget").
   - The interpreter used 114 registers at step 7, and 168 with the ops of wave A. It uses no stack and no local
@@ -2488,7 +2479,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     refuses 101,249 B.
   - The producer warp owns the descriptor fetch, the waits, the prefetches and the two descriptor slots. The
     consumers wait on the full barrier, and they publish the signal.
-  - **Proposed** (Claude Opus 5.5, 2026-11-22): a block has 96 KB (98,304 B) of dynamic shared memory. It holds 4
+  - **Proposed**: a block has 96 KB (98,304 B) of dynamic shared memory. It holds 4
     weight stages of 16 KB and a 24 KB activation tile in three `bf16` terms, in fragment order. It also holds 8
     KB for partials, the `mbarrier` objects and the next descriptor. The plan fits, with about 5 KB to spare.
   - Spill gate: each op must fit 168 registers. The build fails unless `-Xptxas -v` shows 0 bytes of spill.
@@ -2536,8 +2527,8 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     of 10^4 runs for each grid size checks it, but it is not a proof (see "Dependencies").
   - One large switch over many ops can press the instruction cache.
   - LPDDR5x gives about 252 GB/s, not 273 GB/s, so budgets use the measured peak.
-  - **The ops of wave A** (milestone 37 step 9). Wave A is built and merged: the dense matmul (`d7390c03`), then the
-    quantizers and the expert ops (`9a1019d9`). Each op has a card gate with the model required.
+  - **The ops of wave A** (milestone 37 step 9). Wave A is built and merged: the dense matmul, then the
+    quantizers and the expert ops. Each op has a card gate with the model required.
     - **The dense matmul** `OP_MATMUL_BF16` (opcode 40, `kernels/matmul_bf16.cuh`). It computes
       `y[r, n] = sum_k x[r, k] * W[n, k]` for 1 to 16 rows. The rows are `f32`, and `W` is `bf16`.
       - The repack (`repack.rs`) writes each work item as one span of `16 * Kt * 2` bytes. An item is a tile of
@@ -2643,7 +2634,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
       - The bits do not depend on the grid (G of 48, 24, 7 and 1).
       - A merge counter is 0 after a run, so a second run needs no zeroing.
       - The test of a trap runs the bad task in a child process. A shape that the op does not support traps.
-    - **`OP_EMBED`** (opcode 70, `ops_rows.cuh`, `8f0c6876`). Item `r` is the row `r`.
+    - **`OP_EMBED`** (opcode 70, `ops_rows.cuh`). Item `r` is the row `r`.
       - It reads the `bf16` row of a token and writes the normed row `w * (v * f)` to `x` and to `B[0]`. Here `f`
         is the factor of the raw row. It also writes the factor of the written row to `x` and to `B[0]`. A token
         outside the vocabulary traps.
@@ -2651,7 +2642,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
         embedding. Table: slot 0 the norm weight, slot 1 the plane `B[0]`, slot 2 its factors.
       - Oracle: `Model::embed`. Bound 8 epsilons. Worst: 2.74 epsilons of a value, 1.97 of a factor. `B[0]` equals
         `x` bit for bit. The sources give no time for this op. The design budget is about 1 us.
-    - **`OP_MIX`** (71, `ops_rows.cuh`, `8662dc58`). The attention residual and the message mix.
+    - **`OP_MIX`** (71, `ops_rows.cuh`). The attention residual and the message mix.
       - An item is one pair of a query and a row. The first `n * rows` items are the attention mix: `n` queries (1
         or 3) over a stack of `k` rows (2 to 5). The other `kt * rows` items are the message mix: `kt` queries
         (4) over a stack of `group_items` rows (2). The op has no merge group.
@@ -2666,7 +2657,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
       - Oracle: `ops::attention_residual`. Bound 8 epsilons of the largest normed value. Worst: 4.24 epsilons, and
         2.33 for a factor.
       - Speed: 3.7 to 4.0 us at 1 row on 1 to 7 SMs. The design budget is about 2 us.
-    - **`OP_GATE_DOWN`** (72, `ops_rows.cuh`, `src/rows.rs`, `21884cca`). The down matmul of `n` gates (1 to 3).
+    - **`OP_GATE_DOWN`** (72, `ops_rows.cuh`, `src/rows.rs`). The down matmul of `n` gates (1 to 3).
       - A gate has 24 items: 4 tiles of 16 columns and 6 K slices of 768. The matrix is `[64, 4608]`. The slices 0
         to 2 read `a_i`, and the slices 3 to 5 read `m_i`, each times its row factor. Thus the unweighted norm of
         `[a_i, m_i]` is the prologue of the load.
@@ -2678,7 +2669,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
       - Oracle: an `f64` sum. Bound 4 epsilons of the sum of the absolute terms. Worst: 0.39 epsilons.
       - Speed on weights from DRAM, 1.77 MB: 11.1 to 12.0 us at 1 row (146 GB/s), 19.3 us at 16 rows. The design
         budget is 7.4 us.
-    - **`OP_GATE_UP`** (73, `ops_rows.cuh`, `src/rows.rs`, `21884cca`). It computes `u_i = (1 - tanh(F g_i)) * a_i +
+    - **`OP_GATE_UP`** (73, `ops_rows.cuh`, `src/rows.rs`). It computes `u_i = (1 - tanh(F g_i)) * a_i +
       tanh(G g_i) * m_i` for `n` gates, with the output of `OP_GATE_DOWN` as input.
       - A gate has 36 items and no K split, because K is 64. Each warp holds 8 channels. The repack puts the forget
         row of a channel at the row `g` of the MMA tile and its gain row at the row `g + 8`. Thus a lane holds both
@@ -2696,12 +2687,12 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
         `w * rf * (|h| + |m|)` (bound 48). The output `u` is a difference, so its error is 21 epsilons of
         `|h| + |m|` at the worst.
       - Speed: 12.8 to 13.8 us at 1 row (139 GB/s), 27.4 us at 16 rows. The design budget is 7.4 us.
-    - **`OP_MIX_OUT`** (74, `ops_rows.cuh`, `98db31a0`). The output residual before the head. It is `OP_MIX` with
+    - **`OP_MIX_OUT`** (74, `ops_rows.cuh`). The output residual before the head. It is `OP_MIX` with
       one query and no message mix: the op traps unless `n` is 1 and `kt` is 0. It writes the mixed row and its
       factor. The head is a matmul with `FLAG_NORM`, and it reads them as its prologue.
       - Oracle: `ops::attention_residual` with the output query. Bound 8 epsilons. Worst: 1.51 epsilons for a value
         and 1.24 for the factor. Speed: 3.8 us at 1 row (1 item), 4.4 us at 16 rows.
-    - **`OP_PROJ`** (44, `ops_dense.cuh`, `src/proj.rs`, `13c6814a`, `32589716`). One task for the q, relative, sink,
+    - **`OP_PROJ`** (44, `ops_dense.cuh`, `src/proj.rs`). One task for the q, relative, sink,
       gate, k and v matmuls of an attention layer, and the dynamic taps of a full layer.
       - The joined matrix `J` has K of 2,304. A sliding layer has 8,608 rows (538 tiles), and a full layer has
         8,672 rows (542 tiles). The join moves rows and changes no value. Each segment reads its own normed input
@@ -2735,10 +2726,10 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
         layer at 16 rows). A block of 512 rows equals the host form in 14 rows, with the conv state.
       - The bits are equal at 1, 7, 16, 17, 100 and 512 rows and at the four grids. The cache planes equal the host
         image of `cache.rs` in both formats, and the chain `OP_PROJ` then `OP_ATTN` matches the host forms.
-      - Speed: 188 us at 1 row for 39.7 MB (83.8% of 252 GB/s; the floor is 80%), 187.0 us after `6b3066ee`. At 16
+      - Speed: 188 us at 1 row for 39.7 MB (83.8% of 252 GB/s; the floor is 80%), 187.0 us. At 16
         rows 289 to 305 us. At 512 rows 8.6 to 8.9 ms, because an item reads its `x` slice again for each of 538
         tiles. The design budget is 165 us at 1 row.
-    - **`OP_ROUTE`** (55, `ops_moe.cuh`, `c1213f79`). The router matmul of `gate.weight` (128 by 2,304) with the
+    - **`OP_ROUTE`** (55, `ops_moe.cuh`). The router matmul of `gate.weight` (128 by 2,304) with the
       bias. Then the sigmoid, the top 8, and the list of pairs of the expert ops. It takes 1 to 1,024 rows.
       - An item is a row tile of 16 rows, a column tile of 16 experts and a K slice of 768. A row tile has 24 items.
         There are three levels of merge:
@@ -2749,7 +2740,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
         3. The last row tile builds the list of pairs. The experts go in ascending order, and the rows of an expert
            go in ascending order, 16 rows for each pair.
       - Each level resets its own counter. The op reads `h_e`, which is already normed. It allows `FLAG_PAIRS` only,
-        and it traps on `FLAG_NORM` (`2a48f4f1`). Its table holds the bias only.
+        and it traps on `FLAG_NORM`. Its table holds the bias only.
       - The op keeps its own copy of the `bf16` MMA step, so a change of the dense lane does not move its bits.
       - Fields: `a` is the rows, `b` the router, and `c` the picks (`rows * 8` ids, then `rows * 8` weights).
         `e` is the list of pairs with its header, and `f` the scratch (`route_scratch_words`). `p0` is the route
@@ -2765,7 +2756,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
       - Speed at 1 row: 7.8 to 8.2 us with warm code, 9.9 us with cold code. The design budget is 3.5 us.
       - The matmul and its partials take about 5 us. Level 1 takes 0.7 us, the picks 2.9 us, and the plan
         1.4 us.
-    - **The expert ops with `FLAG_UP`** (`OP_EXPERT_NVFP4` 53 and `OP_EXPERT_MXFP8` 54, `experts.cuh`, `980c9068`).
+    - **The expert ops with `FLAG_UP`** (`OP_EXPERT_NVFP4` 53 and `OP_EXPERT_MXFP8` 54, `experts.cuh`).
       The up matmul of a layer.
       - The repack of `w13` (`repack_expert_up`) puts the gate `i` in the row `g` and the up `i` in the row `g + 8`
         of the MMA tile. The epilogue gives `swiglu(gate, up) * route_weight` in `f32`. The route weight comes
@@ -2791,7 +2782,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
       - Speed, 8 experts at 1 row: NVFP4 109.7 us (217.7 GB/s, 86.4% of 252 GB/s), budget 100 us. The floor is 80%,
         and the test asserts it. MXFP8 187.7 us (92.6%), budget 182 us.
       - The plain op of wave A took 106.9 and 182.3 us in the same session.
-    - **The expert ops with `FLAG_DOWN`** (53 and 54, `experts.cuh`, `bff00b72`). The down matmul of a layer.
+    - **The expert ops with `FLAG_DOWN`** (53 and 54, `experts.cuh`). The down matmul of a layer.
       - It reads the quantized row of the slot `y_row`, so the one list of pairs that `OP_ROUTE` writes serves the
         up and the down matmul. Slot `8 t + j` is the output of the expert `j` of the token `t`, with the experts in
         ascending order.
@@ -2817,7 +2808,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
       - Speed, 8 experts at 1 row, 11.9 MB of weights: NVFP4 65.7 us (181.8 GB/s, 72.1% of 252 GB/s), budget 50 us.
         MXFP8 100.3 us (86.6%), budget 91 us. The tail of the finisher and the boundary are a larger share than in
         the up op. The plain op of wave A took 55.4 and 98.4 us in the same session.
-    - **`OP_ATTN`** (80, `ops_attn.cuh`, `src/attn.rs`, `946ddebc`). The attention of a run, with the sink, the
+    - **`OP_ATTN`** (80, `ops_attn.cuh`, `src/attn.rs`). The attention of a run, with the sink, the
       relative bias and the output gate. It reads the `f32`, `bf16` or `e4m3` cache, for a decode or for a block.
       - A row of the MMA is a pair of a position and a query head. Thus the 3 query heads of a KV head share one
         read of the cache. Eight warps run an item.
@@ -2833,7 +2824,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
           Four are the cubin of each format (`MK_CACHE_F32`, `MK_CACHE_BF16`, `MK_CACHE_E4M3`) and a profile cubin
           of `bf16`. One is the spin cubin for tests. Two are the probe cubin and its profile cubin (`MK_PROBES`).
         - A cubin traps on a task whose flags name a format that it does not hold (`cache_flags_ok`).
-        - The probe ops are in the two probe cubins only (`5def986c`). An engine cubin holds no probe op, and it
+        - The probe ops are in the two probe cubins only. An engine cubin holds no probe op, and it
           traps on a probe opcode (the default case of `run_op`). The speed tests of the expert, router and dense
           ops flush with `OP_PROBE_READ`, so they run on the probe profile cubin.
         - The pass takes its format from `Pass::with_cache_format`, and `CacheFormat::cubin` names its cubin. The
@@ -2846,7 +2837,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
         gives a partial. The partials of a (KV head, tile) merge in chunk order, from the state (sink, 1, 0).
         A chunk with no key of a row is skipped. The chunk size is a member of the engine identity.
       - The sum `l` and the output `o` of the merge are double-float values (two `f32` words). Both modes use the
-        same order and the same explicit intrinsics (`cb8927bd`, merged in `bba9771f`). The serial `f32` merge
+        same order and the same explicit intrinsics. The serial `f32` merge
         drifted to 2.1e-5 of the row maximum at 524,288 positions. The double-float merge keeps the error of a full
         run at 1.1e-6 to 1.8e-6 at each depth to 524,288 positions, in each format. This change moved bits: it is
         a new engine identity. `tests/long_support/merge_model.rs` is the host model of the merge order.
@@ -2873,7 +2864,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
         with no spill. One row at 1,023 positions takes 26.7 us. A prefill of 512 rows at 8,192 positions takes 9.78
         ms on a full layer, bound by the loop over keys.
       - At depth the op runs to 524,288 positions in each format with no fault. That includes 2,048 chunks in the
-        split mode (`46970cbd`). The test `cuda_long_attn` asserts 4e-6 of the row maximum at 409,600 and at 524,288
+        split mode. The test `cuda_long_attn` asserts 4e-6 of the row maximum at 409,600 and at 524,288
         positions. Kernel times of one full run, on the profile cubin:
         - A decode step at 1 row takes the times below, in ms, for `f32`, `bf16` and `e4m3`.
           - At 8,192 positions: 0.34, 0.19 and 0.12.
@@ -2890,12 +2881,12 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
         - `bf16`: 268 MB in 1.56 ms, 172 GB/s.
         - `e4m3`: 134 MB in 1.08 ms, 125 GB/s.
         - A block of 512 rows at 8,192 positions takes 9.53 ms (`f32`), 7.96 ms (`bf16`) and 7.71 ms (`e4m3`).
-      - The slot plan follows the layout (`32589716`). The bytes of a slot, for `f32`, `bf16` and `e4m3`:
+      - The slot plan follows the layout. The bytes of a slot, for `f32`, `bf16` and `e4m3`:
         - At 524,288 positions: 34,866,888,704, 17,435,361,280 and 8,719,597,568.
         - At 409,600 positions: 27,350,695,936, 13,677,264,896 and 6,840,549,376.
       - The attention scratch (the partials of the split mode) takes 415,236,192 bytes. The state layout number is
         3, and the engine identity holds the cache format.
-    - **`OP_OUT_MIX`** (45, `kernels/ops_out_mix.cuh`, `src/outmix.rs`, `7a0d74f8`). It is the output matmul `wo`
+    - **`OP_OUT_MIX`** (45, `kernels/ops_out_mix.cuh`, `src/outmix.rs`). It is the output matmul `wo`
       (K of 3,072, 2,304 columns), its short convolution, the residual and the mix of the MLP input.
       - Items: 576, which are 144 tiles of 16 columns times 4 K slices of 768. The item that merges a tile runs the
         epilogue of its 16 channels over all rows: the convolution `attn_conv` with its state, then the residual.
@@ -2926,12 +2917,12 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
       - the order of the slot sum, the taps and the finisher of the down op;
       - the chunk of 256 keys, the cache format, and the state layout number 3.
 
-      `32589716` moved the bits of the gate output of `OP_PROJ`, because `OP_ATTN` now applies the sigmoid.
+      The cache layout moved the bits of the gate output of `OP_PROJ`, because `OP_ATTN` now applies the sigmoid.
 
-  - **The block form of the matmul** (a prefill). **Proposed** (Claude Opus 5.5, 2026-11-22), built in `a59e4adf`.
+  - **The block form of the matmul** (a prefill). **Proposed**, built.
     `FLAG_BLOCK_FORM` puts `OP_MATMUL_BF16` or `OP_PROJ` into the form for many rows. The host picks the form. The
     form is not part of the engine identity, because it gives the bits of the decode form.
-    - **The probes** (`d8c52595`, `tests/cuda_probe_prefill.rs`):
+    - **The probes** (`tests/cuda_probe_prefill.rs`):
       - 4 chains for each warp give 0.642 MMA/ns on each SM, the rate of 8 chains (126 TFLOP/s in `bf16`).
       - Shared memory on one SM: `ld.shared.v4` reads about 970 B/ns, `v2` about 810 B/ns. A store writes about
         320 B/ns. MMAs that read their operands from shared memory run at 99 to 100% of the register rate.
@@ -2957,28 +2948,28 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     - **Bits.** The block form equals the decode form at 17, 32, 33, 100, 511 and 512 rows on three shapes. It
       equals it at G of 48, 24, 7 and 1. `OP_PROJ` gives the bits of its decode form at 1 to 512 rows, on both
       kinds of layer and both cache formats.
-    - **Speed** at 512 rows (`a59e4adf`), with the decode form in brackets: `wq` 464 us (1,382), `OP_PROJ` 3.03 ms
+    - **Speed** at 512 rows, with the decode form in brackets: `wq` 464 us (1,382), `OP_PROJ` 3.03 ms
       (8.68), the head 31.7 ms (106). The design expected about 0.7 ms for `OP_PROJ`. The copies and the MMAs do
       not overlap well: the tuning list holds the causes. The form wins when it has at least 48 items, the width of
       the grid.
 
   - **The register structure.** All ops are inline in one kernel with `__launch_bounds__(288, 1)`
-    (`kernels/megakernel.cu:655`). The kernel has 168 registers, no stack frame and no spill (`6b3066ee`). The
+    (`kernels/megakernel.cu:655`). The kernel has 168 registers, no stack frame and no spill. The
     build fails on a spill in any function, and on a frame in an entry function (`src/ptxas.rs`).
     - **The problem.** The merge of the five lanes spilled 32 bytes with a 24-byte frame at 168 registers
-      (`42198d21`). The interpreter kept about ten words across each op. A call inside an op, such as a quantizer or
+     . The interpreter kept about ten words across each op. A call inside an op, such as a quantizer or
       the slow path of a division, makes `ptxas` save those words. Removing any one of `OP_PROJ`, `OP_ATTN` or the
       MXFP8 expert op ended the spill. Thus each op is at the cap, and the interpreter state decided.
     - **The rule.** The interpreter keeps no state in registers across an op.
       - The totals of thread 0 (tasks run, wait time, execution time, the two timestamps) are five words in shared
-        memory (`35e6fe5b`).
-      - The kernel parameters come from the parameter bank with `ld.param` at each use (`42198d21`). They are the
+        memory.
+      - The kernel parameters come from the parameter bank with `ld.param` at each use. They are the
         count of tasks, the scoreboard, the base event, the stats and the profile. The loop of `run_items` keeps only
         its item.
       - An op that adds register pressure can make `ptxas` spill. Lower the live set of the op. Do not add interpreter
         state in registers.
     - **The measured rejection of `__noinline__` ops.** Each large op as a `__noinline__` function gave 0 spill in
-      each function, but the ops were slower (`35e6fe5b`, `42198d21`):
+      each function, but the ops were slower:
       - the attention at 1 row and 1,023 positions: 27.2 to 47.5 us;
       - `OP_PROJ` at 1 row: 192.7 to 220.5 us;
       - the head: 3,987 to 4,055 us. The expert ops: about +5%;
@@ -2987,26 +2978,26 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
 
       `ptxas` gives the registers of the whole kernel together, so a call gives an op no more registers. Reading the
       descriptor in place in the flat shape gave a boundary of 1,119 ns, 12% worse than the copy. The row functions
-      of the quantizers are `__noinline__`, one copy each (`quant.cuh`, `980c9068`).
-    - **The speed after the change.** The numbers stay within 2 to 4% of those before it (`42198d21`):
+      of the quantizers are `__noinline__`, one copy each (`quant.cuh`).
+    - **The speed after the change.** The numbers stay within 2 to 4% of those before it:
       - the head at 1 row 3,911 us, and `OP_PROJ` 187.0 us;
       - the attention at 65,536 positions 203.5 GB/s, and at 1 row 26.7 us;
       - the boundary 809 ns (producer shape) and 1,013 ns (flat shape).
 
       185 GPU tests passed with the model required.
     - **The note on `__fdividef`.** The sigmoids of `experts.cuh` and `ops_moe.cuh` and the route weight use
-      `__fdividef`. A plain `/` also gives 0 spill now, so the spill is not the reason (`42198d21`). They keep it
+      `__fdividef`. A plain `/` also gives 0 spill now, so the spill is not the reason. They keep it
       to keep the bits that the pinned hashes of the gates use.
 
-  - **The task graph of a layer run.** **Proposed** (Claude Opus 5.5, 2026-11-22). Wave B fuses the ops of one run
+  - **The task graph of a layer run.** **Proposed**. Wave B fuses the ops of one run
     into few tasks. The B70 order of the ops is `crates/nagaya-mk-inkling2-bmg/src/model.rs:536-936`, and its
     semantics are `host/forward.rs:362-569`.
     - **Status.** The graph stays **Proposed**, and the pass (lane P) is not built. The ops are built, and the
       sources are in "The ops of wave B".
       - Built: `EMBED`, `MIX`, `GATE_DOWN`, `GATE_UP`, `PROJ`, `ATTN`, `ROUTE`, `UP`, `DOWN` and `MIX_OUT`.
         Not built: `OUT_MIX` (45).
-      - Built, in the list of changes to the descriptor below: items 1 and 2 (`bf1ef144`, `c71cf95a`) and item 3
-        (`cd14b32d`). Also items 4, 5 and 7 (`590ae990`, `dfb986b0`) and item 8 (`b1b5a81d`, `21884cca`).
+      - Built, in the list of changes to the descriptor below: items 1 and 2 and item 3
+       . Also items 4, 5 and 7 and item 8.
       - The sources do not show item 6, the prefetch of the pair list. The expert ops set `item_bytes` to 0.
       - Where the build differs from the table below: `OP_ATTN` applies the sigmoid of the gate, so `PROJ` writes
         the raw gate. A quantizer task quantizes `h_e`, and the `GATE_UP` finisher does not.
@@ -3069,7 +3060,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
          and the shape words.
       2. Flags: `FLAG_NORM` (1 << 3), `FLAG_PAIRS` (1 << 5), and `FLAG_UP` and
          `FLAG_DOWN` on the opcodes 53 and 54. `FLAG_SOFTCAP_30` and `FLAG_MXFP8` exist.
-         Bit 4 is free, and a task with it traps (`e564c82e`).
+         Bit 4 is free, and a task with it traps.
       3. Row tiles in the matmul. The op traps today for more than 16 rows (`matmul_bf16.cuh:89`). Add a loop over
          row tiles in an item, and partials of rows by 16.
       4. The route weight in the pair: add `weight: [f32; 16]` to `ExpertPair`, and move the pair list from `f`
@@ -3109,7 +3100,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
 
       Lane P builds the run ring. Milestone 37 step 9 lists the oracle of each lane. Each oracle is a host form of
       the B70 crate, through a dev-dependency with no `xe` feature.
-  - **The pass as built** (milestone 37 step 10, `fe396b6e`, `src/pass/` of `nagaya-mk-inkling2-sm121`). The pass
+  - **The pass as built** (milestone 37 step 10, `src/pass/` of `nagaya-mk-inkling2-sm121`). The pass
     builds the task ring of a decode step and of a prefill block at 1 to 5 cycles.
     - **The tasks.** A run with no messages has 8 tasks: MIX, PROJ, ATTN, OUT_MIX, QUANT, ROUTE, UP and DOWN. Layer 0
       has 7, with no MIX. A run with messages has 12: the mix with the messages, the three gates down and up, and the
@@ -3126,17 +3117,17 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     - **The row factors.** Each producer of a row writes its row factor. DOWN writes the factor of `x` into slot 6 of
       its table (`EXPERT_TABLE_OUT_RF`).
     - **The counters of OP_ATTN and OP_ROUTE.** Their offset depended on the rows, so a call after a smaller call
-      merged too early (found in `8f9f4339`). Now the counters sit first, at a fixed size: 24 words for OP_ATTN and
-      580 for OP_ROUTE (`c1c923d9`). Rule: the head of the counters of an op never depends on the count of rows.
+      merged too early. Now the counters sit first, at a fixed size: 24 words for OP_ATTN and
+      580 for OP_ROUTE. Rule: the head of the counters of an op never depends on the count of rows.
     - **The cache of the rings.** The pass keeps the ring of each shape: rows, cycles, logit rows and the form of
-      PROJ (`8aee95f9`). A call of a loaded shape patches only the positions of PROJ and ATTN and the chunks of
+      PROJ. A call of a loaded shape patches only the positions of PROJ and ATTN and the chunks of
       ATTN. Each span covers a whole plane or a whole region, so no span changes.
     - **The gates of a run** read the tape (milestone 37 step 10). The worst errors, relative to the rms of the tape,
       are 4.2e-5 for the attention output, 2.6e-5 for `r` and 2.3e-5 for `h_e`. The route picks equal the tape on all
       240 rows. The MoE output equals the tape within 3.8e-6 on NVFP4 runs and 1.5e-6 on MXFP8 runs. At most 12 of
       11,520 UP codes and 10 of 46,080 DOWN codes flip in a run.
     - **The quantized reference expands each NVFP4 expert in `f32`**, as this binding does:
-      `(e2m1 × block_scale) × (w_amax / w_denominator)`, with no `bf16` rounding of any term (`09b50eb4`). Before,
+      `(e2m1 × block_scale) × (w_amax / w_denominator)`, with no `bf16` rounding of any term. Before,
       it took the `bf16` expansion of transformers, and the MoE output differed by up to 2.6e-2. The quantized call
       gives the rows of an expert in token order, as the replay of the tape does.
     - **The gate of coherence**, against the quantized golden at 3 cycles, on 15 prompts. Two runs of the CPU
@@ -3146,7 +3137,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
       - The gap of the logsumexp is under 4.6. Measured: 0.002 to 0.51.
       - A prefill of 17 ids has 7 decode steps after it. At most one greedy token differs, where the golden's margin
         is under 0.5. Measured: 8 of 8 equal. Step 5 is a near tie, with a margin of 0.279.
-      - Each cache format passes the same gate (`173a126e`, the golden of `09b50eb4`):
+      - Each cache format passes the same gate (the golden of the host forward):
 
         | cache | gap over the 64 top ids | gap of the logsumexp | wrong top tokens | greedy tokens |
         |---|---|---|---|---|
@@ -3162,7 +3153,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
       32 tokens each second. 16 rows take 76.7 ms, 209 tokens each second. With the cache of the rings, the host
       adds 0.67 ms to a call. With the claim of items ("Work items and assignment"), a step takes 26.9 to 27.9 ms end
       to end at 1 row in a test build.
-    - **Speed in a release build** (`862460b0`, 3 runs). A decode step at 1 row takes 26.53 to 26.69 ms end to end:
+    - **Speed in a release build** (3 runs). A decode step at 1 row takes 26.53 to 26.69 ms end to end:
       37.5 to 37.7 tokens each second. The kernel takes 26.02 to 26.19 ms: 38.2 to 38.4. 16 rows give 216 to 217
       tokens each second. The host time of 0.5 ms is mostly the read of the logits.
     - **The cut of the expert items** is a host rule: UP takes 9 tiles of a pair in an item, and DOWN takes 3. The
@@ -3182,7 +3173,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
       | MIX | 4.9 | 2 | |
       | HEAD | 3,981 | 3,840 | 232 |
 
-- **The pass for many slots** (milestone 37 step 11, merged in `3829bc2a`). One pass holds many slots, each of its
+- **The pass for many slots** (milestone 37 step 11, merged). One pass holds many slots, each of its
   own length, with the reserve of the most cycles.
   - A call names its slot and its cycles. Its logit rows are a strictly rising set inside a span of 16 rows, or
     none. With none, the call has no MIX_OUT and no HEAD.
@@ -3194,7 +3185,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   - The parts of a slot are the k and v rows of a range and the conv state. The rows are position-major
     `[n][8][128]` in the stored bytes. The conv state is `[3][6656]` `f32`.
   - A sliding state keeps the last `RING_ROWS` (1,536) positions. A write refuses a non-finite value.
-- **The host spec** (milestone 37 step 11, merged in `ded4cfd9`). The reasons: one binary for each
+- **The host spec** (milestone 37 step 11, merged). The reasons: one binary for each
   scenario, a snapshot that holds the stored bits, and limits that declare only what the engine serves.
   - The config key `cache` is `f32`, `bf16` or `e4m3`, with the default `f32`. It selects the cubin of that format.
     The identity numbers hold `cache` and the `cubin_blake3` of that cubin.
@@ -3204,7 +3195,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     no work reserve of the tower.
   - The held-state rules mirror the B70 `Held`, with a ring of 1,536 rows, no spill, and tokens only (`held.rs`).
     `identity.rs` mirrors the digest of the checkpoint and the text facts.
-- **The engine** (milestone 37 step 11, merged in `e2e6cbdb`).
+- **The engine** (milestone 37 step 11, merged).
   - The engine opens one GPU with the cubin of its cache format. It owns the device, the weights and the pass. It
     frees them in this order: pass, weights, device. A drop that leaves a device buffer panics.
   - The open refuses before it reads the weights when the planned device bytes pass the available bytes. After the
@@ -3249,7 +3240,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     - `describe` gives the identity and the limits with no load of weights. It opens the GPU for its driver version
       and its multiprocessor count, and it reads the digest through the cache. `open_problem` compares the planned
       device bytes with the available bytes of the GPU and `freed_bytes`, and it keeps the floor of 2 GiB.
-- **The quality of the cache formats at depth** (milestone 37 step 11, merged in `ae89d9bb`). The reference is the
+- **The quality of the cache formats at depth** (milestone 37 step 11, merged). The reference is the
   `f32` cache, on the PG-19 text, in windows of 16 rows at 4K, 32K and 128K positions.
   - `bf16` kept the top token on 48 of 48 rows. The mean KL was 3.5e-2 to 8.1e-3.
   - `e4m3` kept it on 46 of 48 rows, and the two others were near ties. The mean KL was 2.4e-2 to 9.6e-3.
@@ -3403,7 +3394,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
   gives the bytes, in `f32`:
   - A full run holds 2 planes of one row of 1,024 values for each position. The 8 full runs of 409,600 positions
     take 26,844,184,576 bytes with their convolution state.
-  - Each of the 40 sliding runs holds a ring of 1,536 rows, with no spill copy (`32589716`). The ring is the least
+  - Each of the 40 sliding runs holds a ring of 1,536 rows, with no spill copy. The ring is the least
     multiple of the chunk of 256 keys that holds the window and a block of 512 rows (`sliding_ring_rows`, `attn.rs`).
   - The bytes of a slot, from the tests of `spec.rs` (`e4m3` has a unit scale):
 

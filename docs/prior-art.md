@@ -1,7 +1,7 @@
 # Prior art
 
 This doc records what other systems teach the nagaya, the exokernel of `docs/spec.md`, and what we take from
-each. An item is a proposal until Amy decides it. Each item says where it lands: an ontology term, an ABI call, a
+each. An item is a proposal until @tobert decides it. Each item says where it lands: an ontology term, an ABI call, a
 scheduler or store rule, or a decision.
 When `docs/spec.md` now states the rule, the item gives the spec section. This doc is history: where it and the
 spec differ, the spec is the rule (2026-10-20, after kaibo found stale items here).
@@ -65,8 +65,8 @@ chapters 02, 07, 08, 09, 14 and 15 as engine-internal. We checked the load-beari
 ### 2. Memory: one ledger per machine
 
 - **One byte target, mandatory first, elastic as the remainder** (05 "1. One byte target"). Proposed: a Ledger noun
-  under Holding, with one budget per tier (spec 4.1). gfx1151host and sm121host have one shared pool, and b70host has
-  two. Each engine declares terms in `limits().memory` (spec 4.2):
+  under Holding, with one budget per tier (spec 4.1). The Strix Halo machine and the GB10 machine have one shared pool,
+  and the B70 machine has two. Each engine declares terms in `limits().memory` (spec 4.2):
   - mandatory `{name, bytes, lifetime}`, per engine, per context, or loaned to one holder at a time;
   - elastic `{name, unit_bytes, min_units, max_units}`. `min_units` is the term's minimum;
   - a key by phase, where the bytes differ by phase.

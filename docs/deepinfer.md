@@ -2,14 +2,13 @@
 
 DeepInfer is DeepSeek's inference framework for DeepSeek V4.1 Flash (Apache-2.0). This doc records what it teaches
 the nagaya, the exokernel of `docs/spec.md`, and where each lesson lands. It follows the rules of
-`docs/prior-art.md`: an item is a proposal until Amy decides it.
+`docs/prior-art.md`: an item is a proposal until @tobert decides it.
 
-The clone is `~/src/research/DeepInfer` at `774ce24`, with the submodules DeepGEMM, FlashMLA, DeepEP and DeepSelect.
+The clone is `~/src/research/DeepInfer`, with the submodules DeepGEMM, FlashMLA, DeepEP and DeepSelect.
 Three Claude readers read the code on 2026-10-20: the kernels, the scheduler and state, and the cluster code. They
 ran nothing. Senpai (Claude Opus 5.5) checked the load-bearing citations against the code.
 
-Amy, 2026-10-20: "we don't have a deepseek on the roadmap yet, but maybe we can learn from their code for our
-megakernel and clustering".
+
 
 ## What DeepInfer is
 
@@ -49,7 +48,7 @@ Four of their designs match rules that the spec already states. This is evidence
 ## Proposed changes to the spec
 
 Each item gives the lesson, its source, and the place in our docs where it lands. Claude Opus 5.5 proposed them on
-2026-10-20, and Amy decided them the same day by interview. Each item starts with its decision.
+2026-10-20, and @tobert decided them the same day by interview. Each item starts with its decision.
 
 ### 1. A sampler draw that is a function of the seed and the position (spec 11.2)
 
@@ -70,7 +69,7 @@ The sampler holds no state between tokens. A fork gets a child seed: a hash of t
 Reason: park, restore and fork then keep the sampler's bits with nothing to save. A generation that resumes after a
 restart gives the same tokens. Speculative drafts (11.2) get their own purpose, so a draft never moves a later draw.
 
-**For Amy:** this conflicts with milestone 12. Milestone 12 asks the sampler to match the PCG64 draws of the first
+**For @tobert:** this conflicts with milestone 12. Milestone 12 asks the sampler to match the PCG64 draws of the first
 Qwen3.8 engine bit for bit. We can match its draws and keep a step counter in each job, or take the new rule and match
 only its filter order.
 
@@ -145,9 +144,9 @@ DeepInfer finds devices from sysfs, procfs and `/dev`. It reads NVML through `ct
 runtime to count devices (`deep_cluster/hardware/nvidia.py:18-129`). Each probe takes a root path, so a test runs it
 against a fake sysfs tree.
 
-Proposed: the inventory probe in 2.1 takes a root path, and its tests use fixed trees for gfx1151host, b70host and
-sm121host. DeepInfer assumes one vendor for each machine and records no links between devices. Our inventory keeps the
-measured edges of the tier graph (ontology "Tier").
+Proposed: the inventory probe in 2.1 takes a root path. Its tests use fixed trees for the Strix Halo machine, the
+B70 machine and the GB10 machine. DeepInfer assumes one vendor for each machine and records no links between devices.
+Our inventory keeps the measured edges of the tier graph (ontology "Tier").
 
 ### 6. One directory of kernels for each vendor
 
@@ -165,7 +164,7 @@ extra vendor, but we have three.
 
 ### 7. Routing goes to the chain (spec 11.1)
 
-**Decided:** deferred. Amy expects fleets with sticky sessions for each model and machine (spec 11.1).
+**Decided:** deferred. @tobert expects fleets with sticky sessions for each model and machine (spec 11.1).
 
 DeepInfer's store is shared and fast, so any engine can load any prefix. Their prefill balancer thus ignores where a
 prefix lives (doc line 111). Our links are gigabit. A few hundred MB of state takes seconds to move.
