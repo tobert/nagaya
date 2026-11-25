@@ -2825,8 +2825,8 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
         rule 9. The parts join in warp order in shared memory. The softmax is online.
       - An `f32` cache gives 6 MMAs for each product tile. A `bf16` or `e4m3` cache gives 3, because its value is
         exact in `bf16`.
-      - **The formats of the cache, one cubin for each** (Proposed, Opus 5.5, 2026-11-23). Reason: a choice that is
-        fixed for an engine is a binary, not a branch, and the nagaya swaps the binaries for a test run.
+      - **The formats of the cache, one cubin for each.** Reason: a choice that is fixed for an engine is a binary,
+        not a branch, and the nagaya swaps the binaries for a test run.
         - `f32` (4 bytes, `FLAG_F32`), `bf16` (2 bytes, `FLAG_BF16`) and `e4m3` (1 byte, a unit scale, no flag).
           PROJ writes a `bf16` value from the `f32` value, nearest even, with no scale.
         - `build.rs` builds 9 cubins. Two are the default cubin, which holds `f32` and `e4m3`, and its profile cubin.
@@ -3188,15 +3188,14 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     none. With none, the call has no MIX_OUT and no HEAD.
   - The pass allocates no device memory in a call: one arena is made at open. The ring cache holds at most 64
     lists, and it drops the least recently used.
-  - A clear zeroes the conv states and the position, and it resets the poison (**Proposed**, Opus 5.5). The planes
-    are never read above the position, so stale rows do not matter. A gate shows the bits of a fresh slot. Reason:
-    a full zero of a slot of 35 GB.
+  - A clear zeroes the conv states and the position, and it resets the poison. The planes are never read
+    above the position, so stale rows do not matter. A gate shows the bits of a fresh slot. Reason: a full zero of
+    a slot of 35 GB.
   - The parts of a slot are the k and v rows of a range and the conv state. The rows are position-major
     `[n][8][128]` in the stored bytes. The conv state is `[3][6656]` `f32`.
   - A sliding state keeps the last `RING_ROWS` (1,536) positions. A write refuses a non-finite value.
-- **The host spec** (milestone 37 step 11, merged in `ded4cfd9`). The three rules below are **Proposed** (Opus 5.5).
-  Reason: one binary for each scenario, a snapshot that holds the stored bits, and limits that declare only what the
-  engine serves.
+- **The host spec** (milestone 37 step 11, merged in `ded4cfd9`). The reasons: one binary for each
+  scenario, a snapshot that holds the stored bits, and limits that declare only what the engine serves.
   - The config key `cache` is `f32`, `bf16` or `e4m3`, with the default `f32`. It selects the cubin of that format.
     The identity numbers hold `cache` and the `cubin_blake3` of that cubin.
   - `feed.block` and `cache` are `ReferenceDefining` bit settings. The dtype of the k and v parts is `F32`, `BF16`
@@ -3208,22 +3207,48 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
 - **The engine** (milestone 37 step 11, merged in `e2e6cbdb`).
   - The engine opens one GPU with the cubin of its cache format. It owns the device, the weights and the pass. It
     frees them in this order: pass, weights, device. A drop that leaves a device buffer panics.
-  - The open refuses before it reads the weights when the planned device bytes pass the free bytes. After the load
-    it refuses when fewer than 2 GiB stay free, and when the weights take more device bytes than the plan. Real
-    weights take 18,886,376,960 bytes against a plan of 18,889,360,896. Each message names the bytes.
-  - Reason: on unified memory, other work and the page cache move the free bytes by tens of GB while an open runs.
-    Thus a comparison of the free bytes before and after the load cannot hold. This rule of memory is **Proposed**
-    (Opus 5.5).
+  - The open refuses before it reads the weights when the planned device bytes pass the available bytes. After the
+    load it refuses when fewer than 2 GiB stay available, and when the weights take more device bytes than the plan.
+    Real weights take 18,886,376,960 bytes against a plan of 18,889,360,896. Each message names the bytes and the count.
+  - The available bytes are `MemAvailable` of `/proc/meminfo`, capped at the total of `cuMemGetInfo`, on a device with
+    `CU_DEVICE_ATTRIBUTE_INTEGRATED` of 1. On a discrete device they are the free bytes of `cuMemGetInfo`. A missing
+    `MemAvailable` line or a bad number is an error. The rule lives in `nagaya_mk_cuda::memory`.
+  - Reason, measured in a probe of 2026-11-24: on the GB10, `cuMemGetInfo` leaves the page cache out of the free
+    bytes. The kernel reclaims the page cache for a GPU allocation.
+    - CUDA gave 41.4 GiB free, and `MemAvailable` was 113.6 GiB. The probe allocated and wrote 104 GiB of device
+      memory in 9.9 s.
+    - The page cache fell from 70.7 to 0.7 GiB. After the free, CUDA gave 113.0 GiB free.
+    - Thus the free bytes of the driver refuse an open that fits.
+  - Other work moves the available bytes by tens of GB while an open runs. So the open does not compare the count
+    before and after the load.
   - The limits are the plan of the factory. A refused call changes nothing.
   - A failed launch poisons the slot. The pass, the part writes and `set_n` above 0 are refused until `slot_clear`
     or `set_n(0)`. Reads and other slots work.
   - A sticky CUDA error (700, 701, 702, 715, 719 or 999) marks the engine dead. The call returns the poison, and
-    each later call panics for a planned restart (spec 8.5). **Proposed** (Opus 5.5). Reason: the context of the
-    GPU cannot run again after such an error.
+    each later call panics for a planned restart (spec 8.5). Reason: the context of the GPU cannot
+    run again after such an error.
   - A pass at position 0 starts from conv zeros.
   - The conformance suite passes with 2 slots of 2,048 positions. Four gates do not apply, the same four as for
     LFM3: `seal_only_at_boundaries`, `quantum_same_boundaries`, `segments_exact_bits` and `stage_path_bits`.
-  - The digest of the checkpoint takes 15.9 s at each open.
+  - The digest of the checkpoint takes 15.9 s when the engine reads the whole file.
+  - The digest has a memo and a cache file, so `describe` and the open do not read the checkpoint again.
+    Reason: the open and `describe` need the same digest, and a read takes 15.9 s.
+    - A memo in the process keeps each digest by its key. One process reads a checkpoint once.
+    - A cache file keeps the digest across starts. It lives in `$XDG_CACHE_HOME/nagaya/digests/`, or in
+      `~/.cache/nagaya/digests/` when the variable is not set. Each checkpoint has one small file.
+    - The key holds these facts. The weights file gives the canonical path, `st_dev`, `st_ino`, the size, and `mtime`
+      and `ctime` in nanoseconds. The key also holds the BLAKE3 of the text of `config.json` and the version of the
+      digest key.
+    - A user tool cannot set `ctime`, and any write changes it. So a changed file misses the cache.
+    - A missing file, a file that does not parse and a key that differs are each a miss. A miss computes the digest
+      and writes the file again, through a temporary file and a rename.
+    - The engine takes the key before it reads. A file that changes during the read gets a new `ctime`, so no later
+      call finds the digest that the read gave.
+    - An I/O error of the cache folder is a warning in the log. The open goes on with a computed digest. The engine
+      never guesses a digest.
+    - `describe` gives the identity and the limits with no load of weights. It opens the GPU for its driver version
+      and its multiprocessor count, and it reads the digest through the cache. `open_problem` compares the planned
+      device bytes with the available bytes of the GPU and `freed_bytes`, and it keeps the floor of 2 GiB.
 - **The quality of the cache formats at depth** (milestone 37 step 11, merged in `ae89d9bb`). The reference is the
   `f32` cache, on the PG-19 text, in windows of 16 rows at 4K, 32K and 128K positions.
   - `bf16` kept the top token on 48 of 48 rows. The mean KL was 3.5e-2 to 8.1e-3.
@@ -3232,7 +3257,142 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
     a near tie, with a margin of 0.33 or less.
   - The prefill to 131,072 positions takes 368 s for `f32` and 335 s for `bf16` and `e4m3`.
   - The test `cuda_kv_quality` runs only with `--ignored` and `NAGAYA_HAYSTACK_DIR`, the folder of the PG-19 test
-    split. The binding names no path. The test does not cover 400K positions or retrieval.
+    split. The binding names no path. `cuda_retrieval` covers retrieval.
+- **The retrieval of a fact from early in 400K positions** (milestone 37 step 11, measured 2026-11-24). The test
+  `cuda_retrieval` builds one context of about 409,000 tokens: one user message of PG-19 books with seven needles, then
+  an assistant turn. A needle is a registry entry with a code word and an access number from a seed. Each question
+  is a later user turn. The template writes the effort `none`, and the model still reasons first.
+  A retrieval is right when the parsed content holds the code word and the number, within 512 tokens.
+  - The prefill pays once for each format. The test reads the slot through the part calls. It writes a snapshot
+    file, keyed by the identity digest, the hash of the context tokens, the format and the seed. The engine does not
+    go back, so each question restores every part again. The restore checks the BLAKE3 of the file.
+  - After a restore, the first four logit rows have the bits of the pass after the prefill, in each format and in
+    both contexts. A second process that restores the snapshot gives the same bits.
+  - The first context has 408,975 tokens, with the seed 20261124 and the books from 0. The second has 409,434 tokens,
+    with the seed 20261125 and the books from 15. The seed changes the needles and the books. Both have the same
+    seven depths. The results, with `f32` as the reference. `=` marks the same text as `f32`, and a number is the
+    first token that differs:
+
+    | context | needle at | `f32` | `bf16` | `e4m3` | text of `bf16` and `e4m3` |
+    |---|---:|---|---|---|---|
+    | 1 | 0.91% | right | right | right | 40 and 91 |
+    | 1 | 4.54% | right | right | right | 39 and 105 |
+    | 1 | 9.19% | right | right | right | 117 and 109 |
+    | 1 | 24.53% | right | right | right | 105 and 97 |
+    | 1 | 50.34% | right | right | right | 5 and 5 |
+    | 1 | 73.67% | right | right | right | = and 22 |
+    | 1 | 89.31% | right | right | right | 39 and 39 |
+    | 2 | 1.00% | right | right | right | 6 and 5 |
+    | 2 | 5.02% | right | right | right | 6 and 6 |
+    | 2 | 10.36% | right | right | right | 6 and 20 |
+    | 2 | 26.33% | right | wrong | right | 6 and 6 |
+    | 2 | 51.54% | wrong | right | right | 5 and 5 |
+    | 2 | 75.91% | right | right | wrong | 6 and 6 |
+    | 2 | 90.44% | right | right | right | 42 and 42 |
+
+  - The count of right answers in the 14 needles is 13 for `f32`, 12 for `bf16` and 12 for `e4m3`. In the first
+    context all three formats found all seven needles. In the second, `bf16` and `e4m3` each lost one needle that
+    `f32` found, and each found one that `f32` missed.
+  - Each of the three wrong answers gave the code word or the number of another needle of the context. The wrong
+    answer of `f32` at 51.54% is the answer of the needle at 75.91%. The wrong number of `bf16` and of `e4m3` is the
+    number of the needle at 90.44%. The three formats confuse entries of the registry, and `f32` does it too.
+  - The greedy text of `bf16` equals `f32` for 1 of 14 questions, and the text of `e4m3` for none. Most differences
+    are a change of wording, such as "the code word is" against a list.
+  - A context of 15,888 tokens, with the same questions, gave `bf16` 7 of 7 and `e4m3` 6 of 7. `e4m3` failed the
+    needle at 74.93%, where `f32` found it.
+  - The costs at about 409,000 positions, from the first context. The second gives the same within 2%:
+
+    | format | prefill | snapshot file | read of the parts | restore | decode step |
+    |---|---:|---:|---:|---:|---:|
+    | `f32` | 2,143 s | 27,309,745,752 bytes | 98 s | 28 s | 165 ms |
+    | `bf16` | 1,804 s | 13,656,794,697 bytes | 62 s | 17 s | 112 ms |
+    | `e4m3` | 1,853 s | 6,830,319,176 bytes | 47 s | 10 s | 86 ms |
+
+  - The gate of retrieval passes a format when its retrievals match those of `f32`, and the format is right where
+    `f32` is right. It does not need the greedy text to equal `f32`. Each format changes its wording at a near tie,
+    within 5 to 117 tokens. A gate on the text would fail a format for a harmless change. The retrieval of the facts
+    is the part that the cache can break.
+  - Run the gate of retrieval with more than one context before it decides on a format. One context of seven needles
+    is too small to give a rate. `NAGAYA_RET_SEED` makes another context.
+  - By this rule `bf16` and `e4m3` pass the first context and fail the second. The second shows that `f32` also
+    misses a needle, so the failures are not only a loss of the cache format. No format is ranked by 14 needles.
+
+- **The latency by position and format** (milestone 37 step 11, `tests/cuda_latency.rs`, 2026-11-24). A slot is
+  filled to a position with seeded finite rows through the part calls, with no prefill. The planes are never read
+  above the position. Each cell is the wall time of one call of the engine after a warm-up call, in ms.
+  - The calls have 1, 16, 128 and 512 rows. The call of 16 rows gives 16 logit rows, and each other call gives one.
+    The cycles are 3 (the default) and 5 (the most).
+  - A block of 512 rows takes more than `max_quantum_ms` in 10 of the 12 cells at 409,600 positions or more. The
+    longest is 8,393 ms (`f32`, 5 cycles, 524,288 positions).
+  - The depth cost of a block of many tiles does not depend on the format: the MMA bounds it. A step of 1 row
+    depends on the bytes of the format. At 524,288 positions and 5 cycles it takes 305 ms (`f32`) or 159 ms
+    (`e4m3`).
+  - The same block in two runs differed by up to 14%. The ceiling of a cell in the test is its largest measure
+    plus 20% and 25 ms. The test also asserts the model of the next entry, and that a call past the quantum has
+    its bound.
+  - A slot of 524,288 positions with an `f32` cache and 5 cycles needs 71.8 GB of free GPU memory. The page cache of
+    the machine held the free memory at 67.5 GB in one run, and the open refused. So the ordinary gate measures
+    that position at 3 cycles with a second engine, and the full run is the test marked `ignore`. The full matrix
+    takes about 11 minutes.
+  - Times in ms for 1, 16, 128 and 512 rows:
+
+    | format | cycles | positions | 1 | 16 | 128 | 512 |
+    |---|---:|---:|---:|---:|---:|---:|
+    | `f32` | 3 | 1,024 | 30 | 102 | 250 | 771 |
+    | `f32` | 3 | 32,768 | 42 | 100 | 297 | 1,044 |
+    | `f32` | 3 | 131,072 | 74 | 155 | 526 | 1,951 |
+    | `f32` | 3 | 409,600 | 172 | 368 | 1,166 | 5,136 |
+    | `f32` | 3 | 524,288 | 206 | 425 | 1,453 | 5,728 |
+    | `f32` | 5 | 1,024 | 44 | 170 | 388 | 1,183 |
+    | `f32` | 5 | 32,768 | 61 | 143 | 438 | 1,573 |
+    | `f32` | 5 | 131,072 | 109 | 227 | 783 | 2,944 |
+    | `f32` | 5 | 409,600 | 247 | 520 | 1,743 | 7,193 |
+    | `f32` | 5 | 524,288 | 305 | 692 | 2,199 | 8,393 |
+    | `bf16` | 3 | 1,024 | 31 | 101 | 243 | 755 |
+    | `bf16` | 3 | 32,768 | 37 | 94 | 277 | 963 |
+    | `bf16` | 3 | 131,072 | 56 | 144 | 460 | 1,706 |
+    | `bf16` | 3 | 409,600 | 111 | 304 | 971 | 3,709 |
+    | `bf16` | 3 | 524,288 | 150 | 405 | 1,312 | 5,124 |
+    | `bf16` | 5 | 1,024 | 43 | 170 | 384 | 1,166 |
+    | `bf16` | 5 | 32,768 | 53 | 134 | 409 | 1,447 |
+    | `bf16` | 5 | 131,072 | 85 | 214 | 687 | 2,678 |
+    | `bf16` | 5 | 409,600 | 165 | 445 | 1,457 | 5,669 |
+    | `bf16` | 5 | 524,288 | 214 | 617 | 1,770 | 7,698 |
+    | `e4m3` | 3 | 1,024 | 30 | 99 | 246 | 764 |
+    | `e4m3` | 3 | 32,768 | 35 | 94 | 278 | 976 |
+    | `e4m3` | 3 | 131,072 | 48 | 150 | 468 | 1,719 |
+    | `e4m3` | 3 | 409,600 | 88 | 312 | 995 | 3,815 |
+    | `e4m3` | 3 | 524,288 | 104 | 409 | 1,211 | 5,121 |
+    | `e4m3` | 5 | 1,024 | 42 | 169 | 384 | 1,179 |
+    | `e4m3` | 5 | 32,768 | 50 | 137 | 411 | 1,462 |
+    | `e4m3` | 5 | 131,072 | 71 | 210 | 699 | 2,591 |
+    | `e4m3` | 5 | 409,600 | 132 | 459 | 1,488 | 6,391 |
+    | `e4m3` | 5 | 524,288 | 159 | 569 | 1,813 | 7,651 |
+
+- **The bound of a block at depth.** The engine declares a bound for a pass that its model of time puts above
+  `max_quantum_ms`, and it splits no block.
+  - The need: the first measure of the latency gate gave 8,391 ms for a block of 512 rows. The block was at 524,288
+    positions, in an `f32` cache, with 5 cycles. At 3 cycles it gave 4,965 to 5,567 ms. `max_quantum_ms` is 5,000 ms,
+    so such a block is a long pass (D8, "A long pass with a declared bound").
+  - The limits declare `max_long_quantum_ms` of 60,000 ms. The largest block that a slot can hold is 512 rows at
+    1,048,576 positions with 5 cycles. Its estimate is 18,107 ms and its bound is 27,161 ms, so the bound never
+    clamps below its estimate. A host test checks this.
+  - `pass_bound_ms` reads the one segment through the checks of the held state: its first position, its rows and its
+    cycles. A pass that the checks refuse, or a pass with taps, gives `Ok(None)`. The pass then refuses itself.
+  - The model gives microseconds: `(100,000 + 1,350 * rows) * runs / 48 + full * (pos0 + rows) * rate / 1,000`.
+    - `runs` is 24 + 12 * (cycles - 1), and `full` is 4 + 2 * (cycles - 1): the runs with a full cache.
+    - `rate` in ns is the larger of 90 and 42 times the 16-row tiles of the block. One tile reads the keys of a run
+      once, so a block of 16 rows or fewer pays the 90.
+    - The formats take the same constants. The `f32` cache sets the 90 and the 42, and the others are faster.
+    - The model is above each cell of the table of the latency gate. It is at most 1.5 times the time of a block of
+      512 rows at 131,072 positions or more.
+  - The bound is 1.5 times the estimate, rounded up to a whole millisecond. The engine declares none when that is
+    5,000 ms or less. Then the estimate is at most 3,334 ms, and the model is above each measure.
+  - A block of 512 rows declares a bound from position 235,904 at 3 cycles, and from position 132,608 at 5 cycles.
+  - Reason: D8 gives chunks of 1 to 10 s, and a long pass where the work needs it. A block of 512 rows at depth is
+    such work. A smaller block does not cut the cost of the attention in proportion, because each tile of 16 rows
+    reads the keys again. A profile can still set `max_block` lower.
+  - Each bound of the model is below the timeout of 30 s. Thus the bound changes only the warning of a slow pass.
 
 - **Identity and oracle.** Because expert activations are quantized to NVFP4 and MXFP8, this engine has its own
   quantized host oracle and engine identity. Its `numbers` hold `quant` (`nvfp4_fouroversix_mae+mxfp8_ue8m0`),

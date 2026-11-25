@@ -1348,11 +1348,14 @@ dependencies = [
  "blake3",
  "nagaya-abi",
  "nagaya-conformance",
+ "nagaya-council",
+ "nagaya-jinja",
  "nagaya-mk-bmg",
  "nagaya-mk-cuda",
  "nagaya-mk-inkling2-bmg",
  "nagaya-text-inkling2",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

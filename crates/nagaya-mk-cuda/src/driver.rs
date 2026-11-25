@@ -9,6 +9,7 @@ use std::cell::Cell;
 use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_void};
 use std::ptr;
 
+use crate::memory::{Available, available_bytes};
 use crate::{KERNEL_ENTRY, match_addresses};
 
 type CUresult = c_int;
@@ -21,6 +22,7 @@ pub type CUdeviceptr = u64;
 
 const CUDA_SUCCESS: CUresult = 0;
 const CU_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT: c_int = 16;
+const CU_DEVICE_ATTRIBUTE_INTEGRATED: c_int = 18;
 const CU_DEVICE_ATTRIBUTE_COOPERATIVE_LAUNCH: c_int = 95;
 const CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_BLOCK_OPTIN: c_int = 97;
 const CU_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES: c_int = 1;
@@ -347,6 +349,21 @@ impl CudaDevice {
         // SAFETY: both pointers name live `usize` values, and the context of this device is current.
         unsafe { check(cuMemGetInfo(&mut free, &mut total), "cuMemGetInfo")? };
         Ok((free, total))
+    }
+
+    /// The bytes that an open may take, and the total of the driver (`crate::memory`). On a GPU with unified memory the
+    /// bytes are `MemAvailable` of the host, capped at the total, because the kernel reclaims the page cache for a GPU
+    /// allocation (a probe of 2026-11-24). On a discrete GPU they are the free bytes of `cuMemGetInfo`.
+    pub fn available_bytes(&self) -> Result<(Available, usize), String> {
+        let (free, total) = self.memory_info()?;
+        let integrated = self.attribute(CU_DEVICE_ATTRIBUTE_INTEGRATED)? == 1;
+        let meminfo = if integrated {
+            std::fs::read_to_string("/proc/meminfo")
+                .map_err(|e| format!("cannot read /proc/meminfo: {e}. The memory rule of the open needs it"))?
+        } else {
+            String::new()
+        };
+        Ok((available_bytes(integrated, free as u64, total as u64, &meminfo)?, total))
     }
 
     /// Free device memory allocated by [`Self::alloc_device`].

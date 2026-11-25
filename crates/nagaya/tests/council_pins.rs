@@ -278,7 +278,9 @@ fn a_snapshot_read_and_a_pin_write_do_not_deadlock() {
     use std::time::Duration;
 
     const THREADS: usize = 4;
-    const ROUNDS: usize = 3000;
+    // Each pin write ends in an fsync. At 3.4 ms an fsync (a measure of 2026-11-24), 3,000 rounds passed the timeout
+    // with no deadlock. 200 rounds take about 10 s, and the old lock order still hangs them each time.
+    const ROUNDS: usize = 200;
     let f = Fixture::new();
     let service = Arc::new(f.attach_again());
     let id = service

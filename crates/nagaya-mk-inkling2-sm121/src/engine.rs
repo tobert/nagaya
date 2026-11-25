@@ -21,6 +21,7 @@ use nagaya_abi::{
 };
 use nagaya_mk_cuda::NVCC_VERSION;
 use nagaya_mk_cuda::driver::CudaDevice;
+use nagaya_mk_cuda::memory::Available;
 
 use crate::health::{after_open_problem, check_logit_rows, is_sticky, weights_problem};
 use crate::held::{Block, CONV_BYTES, Held, Part, Source, check_values};
@@ -147,7 +148,7 @@ impl Drop for Inkling2Sm121Engine {
 }
 
 /// The identity of an engine of `config` on a device with the driver `driver` and `sms` multiprocessors (spec 12.1).
-fn identity_of(
+pub(crate) fn identity_of(
     model: Model,
     checkpoint_digest: String,
     facts: TextFacts,
@@ -173,7 +174,7 @@ fn identity_of(
 }
 
 /// The bytes of device memory that `limits` declares: the weights, the slots and the work.
-fn device_bytes(limits: &Limits) -> u64 {
+pub(crate) fn device_bytes(limits: &Limits) -> u64 {
     limits
         .memory
         .mandatory
@@ -184,24 +185,26 @@ fn device_bytes(limits: &Limits) -> u64 {
 }
 
 /// The message of an open that the free memory of the GPU cannot hold. It names the bytes and what the reader can do.
-fn memory_message(planned: u64, free: u64, total: u64, config: &Config) -> String {
+fn memory_message(planned: u64, available: Available, total: u64, config: &Config) -> String {
     let advice = if config.cache == nagaya_mk_cuda::attn::CacheFormat::E4m3 {
         "Name fewer slots or slots of fewer positions in `slots`"
     } else {
         "Name fewer slots or slots of fewer positions in `slots`, or set `cache` to `bf16` or `e4m3`"
     };
+    let label = available.count.label();
+    let available_bytes = available.bytes;
     format!(
-        "the engine needs {planned} bytes of GPU memory for its weights, its slots and its work, and the GPU has {free} \
-         bytes free of {total}. {advice}, or stop the programs that hold GPU memory"
+        "the engine needs {planned} bytes of GPU memory for its weights, its slots and its work, and the {label} is {available_bytes} \
+         bytes, with {total} bytes in all on the GPU. {advice}, or stop the programs that hold GPU memory"
     )
 }
 
 impl Inkling2Sm121Engine {
     /// Open the GPU at the PCI address `pci`, and upload the weights of the model folder of `config`.
     ///
-    /// The open checks the config and the plan first, then the free memory of the GPU against the planned bytes, and
+    /// The open checks the config and the plan first, then the available memory of the GPU against the planned bytes, and
     /// only then it reads the whole checkpoint. After its allocations it checks that the GPU still holds a floor of
-    /// free memory. The open refuses with a message that names the bytes, and it frees what it took.
+    /// available memory. The open refuses with a message that names the bytes, and it frees what it took.
     pub fn open(config: Config, pci: &str) -> Result<Self, String> {
         config.check()?;
         let dir = config.model_dir.clone();
@@ -210,9 +213,9 @@ impl Inkling2Sm121Engine {
         let model = Model::read(&dir)?;
         let device = CudaDevice::open_by_pci(pci, config.cache.cubin())?;
         let planned = device_bytes(&limits);
-        let (free_before, total) = device.memory_info()?;
-        if planned > free_before as u64 {
-            return Err(memory_message(planned, free_before as u64, total as u64, &config));
+        let (before, total) = device.available_bytes()?;
+        if planned > before.bytes {
+            return Err(memory_message(planned, before, total as u64, &config));
         }
         let (driver, sms) = (device.driver_version(), device.sm_count());
         let config_path = dir.join("config.json");
@@ -220,7 +223,7 @@ impl Inkling2Sm121Engine {
             .map_err(|e| format!("cannot read `{}`: {e}", config_path.display()))?;
         let facts = identity::text_facts(&dir)?;
         let digest_start = Instant::now();
-        let digest = identity::checkpoint_digest(&config_text, &dir.join(WEIGHTS_FILE))?;
+        let digest = identity::checkpoint_digest_cached(&config_text, &dir.join(WEIGHTS_FILE))?;
         let digest_ms = digest_start.elapsed().as_millis() as u64;
 
         let mut owner = Owner::new(device);
@@ -245,8 +248,8 @@ impl Inkling2Sm121Engine {
         // The pre-check counted the planned bytes against the free bytes. After the allocations the GPU must still hold
         // a floor of free memory, because the free bytes of a unified memory are the memory of the machine.
         let counted = owner.weights_bytes() + owner.pass().slots.iter().map(|slot| slot.bytes() as u64).sum::<u64>();
-        let (free_after, _) = owner.device().memory_info()?;
-        if let Some(message) = after_open_problem(counted, free_before as u64, free_after as u64) {
+        let (after, _) = owner.device().available_bytes()?;
+        if let Some(message) = after_open_problem(counted, before.bytes, after.bytes, after.count) {
             return Err(message);
         }
         let identity = identity_of(model, digest, facts, &config, (driver, sms));
@@ -410,6 +413,22 @@ impl Engine for Inkling2Sm121Engine {
 
     fn limits(&self) -> Limits {
         self.limits.clone()
+    }
+
+    /// A block that the model of time puts above `max_quantum_ms` declares a bound (`bound::pass_bound_ms`). A pass that
+    /// the checks refuse runs nothing, so it declares none, and `pass` gives the refusal.
+    fn pass_bound_ms(&self, segments: &[Segment], taps: &[Tap]) -> Result<Option<std::num::NonZeroU32>, String> {
+        if !taps.is_empty() {
+            return Ok(None);
+        }
+        let Ok(block) = self.held.check_pass(segments, self.config.max_block) else {
+            return Ok(None);
+        };
+        Ok(crate::bound::pass_bound_ms(
+            block.pos0,
+            block.tokens.len(),
+            block.cycles,
+        ))
     }
 
     fn pass(&mut self, segments: &[Segment], taps: &[Tap]) -> Result<PassOut, PassError> {

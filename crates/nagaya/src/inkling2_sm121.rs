@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use nagaya_abi::Limits;
+use nagaya_abi::{Identity, Limits};
 use nagaya_mk_inkling2_sm121::spec::{self, Config};
 
 use crate::admission::{GroupDevice, PlanError};
@@ -126,20 +126,49 @@ pub fn served_names(engine: &str, _config: &toml::Table) -> Option<Vec<String>> 
     Some(vec![engine.to_owned()])
 }
 
+/// The refusal of an open whose identity differs from its description, or `None` (spec 11.1). The process serves a
+/// text engine on demand from the description, so the engine that opens must report the same facts.
+pub fn identity_mismatch(described: &Identity, opened: &Identity) -> Option<String> {
+    (described != opened).then(|| {
+        format!(
+            "`{KIND}` opened with another identity than its description: the description gave {described:?}, and the \
+             open gave {opened:?}. The model folder, the build or the driver changed after the start; restart the \
+             process"
+        )
+    })
+}
+
 #[cfg(feature = "cuda")]
 pub use factory::Inkling2Sm121Factory;
 
 #[cfg(feature = "cuda")]
 mod factory {
-    use nagaya_abi::{Engine, Limits};
-    use nagaya_mk_inkling2_sm121::engine::Inkling2Sm121Engine;
+    use std::sync::Mutex;
 
-    use super::{check_devices, config};
+    use nagaya_abi::{Engine, Identity, Limits};
+    use nagaya_mk_inkling2_sm121::engine::Inkling2Sm121Engine;
+    use nagaya_mk_inkling2_sm121::spec::Config;
+
+    use super::{KIND, check_devices, config, identity_mismatch};
     use crate::admission::{Factory, GroupDevice, OpenError, OpenErrorKind, PlanError};
 
-    /// Factory for `mk-inkling2-sm121`.
+    /// Factory for `mk-inkling2-sm121`. It keeps each identity that it described, by the config and the GPU, so an
+    /// open checks that it reports the same identity (spec 11.1).
     #[derive(Default)]
-    pub struct Inkling2Sm121Factory;
+    pub struct Inkling2Sm121Factory {
+        described: Mutex<Vec<((Config, String), Identity)>>,
+    }
+
+    impl Inkling2Sm121Factory {
+        /// Change each stored description, so that the next open meets another identity than its description. A test
+        /// uses it to reach the refusal, because a real change needs a new build or a new driver.
+        #[doc(hidden)]
+        pub fn corrupt_descriptions_for_test(&self) {
+            for (_, identity) in self.described.lock().expect("the lock of the descriptions").iter_mut() {
+                identity.checkpoint_digest.push_str("-changed");
+            }
+        }
+    }
 
     impl Factory for Inkling2Sm121Factory {
         fn plan(&self, table: &toml::Table, devices: &[GroupDevice]) -> Result<Limits, PlanError> {
@@ -150,6 +179,39 @@ mod factory {
             super::served_names(engine, config)
         }
 
+        /// The identity and the limits of an open on the GPU of the group, with no load of weights (spec 11.1). It
+        /// reads the digest of the checkpoint through the cache of the digest.
+        fn describe(
+            &self,
+            table: &toml::Table,
+            devices: &[GroupDevice],
+        ) -> Result<Option<(Identity, Limits)>, PlanError> {
+            check_devices(devices)?;
+            let config = config(table)?;
+            let pci = devices[0].pci_address.clone();
+            let (identity, limits) =
+                nagaya_mk_inkling2_sm121::describe::describe(&config, &pci).map_err(|message| PlanError {
+                    message: format!("`{KIND}` cannot describe: {message}"),
+                })?;
+            let key = (config, pci);
+            let mut described = self.described.lock().expect("the lock of the descriptions");
+            described.retain(|(seen, _)| *seen != key);
+            described.push((key, identity.clone()));
+            Ok(Some((identity, limits)))
+        }
+
+        /// The problem that an open on the GPU of the group would meet now (spec 3.3b). It reads no weights.
+        fn open_problem(&self, table: &toml::Table, devices: &[GroupDevice], freed_bytes: u64) -> Option<String> {
+            if let Err(error) = check_devices(devices) {
+                return Some(error.message);
+            }
+            let config = match config(table) {
+                Ok(config) => config,
+                Err(error) => return Some(error.message),
+            };
+            nagaya_mk_inkling2_sm121::describe::open_problem(&config, &devices[0].pci_address, freed_bytes)
+        }
+
         fn open(&self, table: &toml::Table, devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
             let err = |message: String| OpenError {
                 kind: OpenErrorKind::Other,
@@ -157,7 +219,15 @@ mod factory {
             };
             check_devices(devices).map_err(|e| err(e.message))?;
             let config = config(table).map_err(|e| err(e.message))?;
-            let engine = Inkling2Sm121Engine::open(config, &devices[0].pci_address).map_err(err)?;
+            let pci = devices[0].pci_address.clone();
+            let engine = Inkling2Sm121Engine::open(config.clone(), &pci).map_err(err)?;
+            let key = (config, pci);
+            let described = self.described.lock().expect("the lock of the descriptions");
+            if let Some((_, identity)) = described.iter().find(|(seen, _)| *seen == key)
+                && let Some(message) = identity_mismatch(identity, &engine.identity())
+            {
+                return Err(err(message));
+            }
             Ok(Box::new(engine))
         }
     }

@@ -5048,6 +5048,10 @@ research model (milestone 35, engine-abi "Inkling 2"). Each rule below is **Prop
   council needs a generation prompt for the first logit row, so the family gives that token. After the prompt "chat",
   the reference writes it with a probability of 1 - 6e-12 (`inkling2-mini.decode.safetensors`). The reply parser
   then starts in the header of the message, so the name of a tool call is not content.
+- **Thinking off.** A context with `thinking: false` renders the effort `none`, which the template writes as
+  `Thinking effort level: 0`. The model still writes reasoning first. Its model card says: "Setting reasoning effort
+  to its minimum does not fully disable reasoning." Thus a reply can spend its `max_tokens` in the reasoning channel.
+  The B70 and GB10 engines gave the same reasoning for the same prompt on 2026-11-24.
 - **On demand.** The factory describes an engine with no load (11.1): the identity and the limits come from the
   folder, sysfs and the Level Zero driver. The checkpoint digest reads every tensor, so the description of each start
   reads about 20 GB. An open that reports another identity than its description is an error.

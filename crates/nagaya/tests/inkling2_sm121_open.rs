@@ -44,8 +44,8 @@ fn the_open_gives_the_limits_that_the_factory_planned() {
         );
         table.insert("cache".to_owned(), toml::Value::String(cache.to_owned()));
         let devices = [device.clone()];
-        let planned = Inkling2Sm121Factory.plan(&table, &devices).unwrap();
-        let engine = Inkling2Sm121Factory
+        let planned = Inkling2Sm121Factory::default().plan(&table, &devices).unwrap();
+        let engine = Inkling2Sm121Factory::default()
             .open(&table, &devices)
             .unwrap_or_else(|e| panic!("{}", e.message));
         assert_eq!(

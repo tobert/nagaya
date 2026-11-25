@@ -88,7 +88,7 @@ fn the_limits_are_the_plan_and_an_open_refuses_slots_that_do_not_fit() {
         Err(error) => error,
     };
     assert!(
-        error.contains("bytes of GPU memory") && error.contains("bytes free"),
+        error.contains("bytes of GPU memory") && error.contains("MemAvailable of the host"),
         "{error}"
     );
     assert!(error.contains("`slots`") && error.contains("`cache`"), "{error}");

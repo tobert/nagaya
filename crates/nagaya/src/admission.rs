@@ -245,7 +245,7 @@ impl Registry {
         #[cfg(feature = "cuda")]
         registry.register(
             crate::inkling2_sm121::KIND,
-            Box::new(crate::inkling2_sm121::Inkling2Sm121Factory),
+            Box::new(crate::inkling2_sm121::Inkling2Sm121Factory::default()),
         );
         #[cfg(feature = "fake")]
         registry.register_fakes();
