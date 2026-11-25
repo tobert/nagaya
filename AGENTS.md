@@ -15,6 +15,11 @@ is done, each change must move the repository toward that reader, not away:
 
 - Do not write an old name in new text or new code ("Names").
 - Do not add a host name, a network address or a home path to code, tests or tools. Read them from config.
+- When an example, a test or a commit message needs an IPv4 address, use an RFC 5737 documentation block:
+  `192.0.2.0/24`, `198.51.100.0/24` or `203.0.113.0/24`.
+- When an example, test or commit message needs a host name, name the target hardware, such as `gfx1151host`,
+  `b70host` or `sm121host`.
+- Mask a real address or host name to those placeholders before you write a doc, a test or a commit message.
 - Do not add a quote, a private note or a session record to a doc. `signoff.md` holds those, and it stays local.
 - Name the owner less, and name her machines less. Where a doc must name her, write @tobert, which GitHub makes
   a link. A rule stands without the name of the person who decided it.
@@ -29,6 +34,8 @@ is done, each change must move the repository toward that reader, not away:
 - Report the real counts: tests run, tests passed, and each thing that you chose not to do.
 - Use a worktree for a lane of work: `~/src/wt/nagaya-<topic>`. Give each worktree its own target directory.
 - Tell another session of the project before you change a file that it uses.
+- Credit an authoring model with `Co-Authored-By: <Model> <email>`. Credit a reviewing model, such as a kaibo peer,
+  with `Reviewed-by: <Model> <email>`.
 - Use a little 日本語（にほんご） when it fits; add ふりがな for kanji.
 
 頑張（がんば）って！
