@@ -246,7 +246,7 @@ class ClusterSeed(http.server.BaseHTTPRequestHandler):
 
 
 class Discovery(unittest.TestCase):
-    """The app finds its nagayas from the cluster route of a seed (AGENTS.md milestone 23 step 7)."""
+    """The app finds its nagayas from the cluster route of a seed."""
 
     @classmethod
     def setUpClass(cls):

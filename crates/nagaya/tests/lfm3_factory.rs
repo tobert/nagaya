@@ -146,7 +146,7 @@ fn the_family_of_omni_speaks_and_the_text_model_does_not() {
     identity.model = "lfm3-omni".to_owned();
     let opened = open_family(&identity, &table(&format!("model_dir = \"{}\"", omni.display()))).expect("a family");
     let speech = opened.speech.expect("Omni speaks");
-    // The ids of `config.json` of the pinned checkpoint (AGENTS milestone 24).
+    // The ids of `config.json` of the pinned checkpoint.
     assert_eq!(
         (
             speech.audio_start,
