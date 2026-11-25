@@ -492,6 +492,8 @@ def process_stream(
 
 
 def main() -> int:
+    # Enforce a safe umask so generated repos never inherit a permissive 0000 umask.
+    os.umask(0o022)
     parser = argparse.ArgumentParser(description="Rewrite git history for publication.")
     parser.add_argument("--source", required=True, help="Path to the source git repository.")
     parser.add_argument("--dest", required=True, help="Path to the new target git repository (must not exist).")
