@@ -1,8 +1,7 @@
 # Swarm ideas
 
-This doc holds ideas, not rules. Milestone 29 builds some of them (`AGENTS.md`). Amy asked for it on 2026-11-09,
-after she read SwarmEvolve: "I'm more interested in how we can do the parallel processing and then the merge." A copy
-of the paper is in `~/papers/2611.08483-swarmevolve.pdf`.
+This doc holds ideas, not rules. Milestone 29 builds some of them (`AGENTS.md`). @tobert asked for it on 2026-11-09.
+The source is SwarmEvolve (arXiv 2611.08483): its parallel processing and its merge.
 
 ## The paper
 
@@ -146,7 +145,7 @@ today with an early merge. The fields of a decision stay. A new pool method, suc
 
 ## A text swarm
 
-Amy is thinking about a text swarm in kaijutsu. The nagaya gives it these parts now:
+@tobert is thinking about a text swarm in kaijutsu. The nagaya gives it these parts now:
 
 - The store shares the prefix of a problem and a parent across the agents.
 - `continuation` and generations write each agent's short text. The paper's 40 tokens of text came close to its
@@ -157,7 +156,7 @@ Milestone 27 added batched passes, so 8 agents of a round decode in one pass on 
 
 ## The first trials
 
-Milestone 29 step 1 ran on 2026-11-09 and 2026-11-10, on b70host. The task is online bin packing, after
+Milestone 29 step 1 ran on 2026-11-09 and 2026-11-10, on the B70 machine. The task is online bin packing, after
 FunSearch: 5 sets of 5,000 items, with sizes from a Weibull shape. A program is one numpy expression that scores
 each bin. The score is the percent of excess bins over the lower bound. Best fit scores 4.08 on the train seed and
 4.14 on the test seed. A sandbox with no network runs each program on the CPU.
@@ -195,8 +194,7 @@ What the logs show:
 
 ## Plan, then code
 
-Amy, 2026-11-10: "I feel like we shouldn't try to get good code out of the thinking swarm. we need to distill it into
-something focused". LFM3 writes good ideas at a high temperature, but it loses precision in a long context. Thus a
+LFM3 writes good ideas at a high temperature, but it loses precision in a long context. Thus a
 round has three parts:
 
 1. **Swarm 1 thinks.** Agents write short ideas at a high temperature.
@@ -253,8 +251,7 @@ What the trials show:
 
 ## Swarms on both cards
 
-Amy, 2026-11-10: "over time I'm wondering if swarms could run on both cards, so we can do 16x experiments, or 8x with
-other work going on". The profile of b70host names `lfm3-1`, a second `LFM3-1.7B` on card 1. It is resident,
+The profile of the B70 machine names `lfm3-1`, a second `LFM3-1.7B` on card 1. It is resident,
 because the process builds no text model on demand. Thus a swarm has 16 slots: 8 on each card. It holds about 12 GB,
 and an SDXL engine plans 21 GB. Thus an image engine of card 1 needs `lfm3-1` unloaded first, through the load routes
 (spec 3.3b).
@@ -265,8 +262,7 @@ and an SDXL engine plans 21 GB. Thus an image engine of card 1 needs `lfm3-1` un
 
 ## An agent's interface to a swarm
 
-Amy, 2026-11-10: "the step loop as a general thing seems powerful. how might an agent interface with a swarm and set up
-looping params?" The answer has three layers.
+The answer has three layers.
 
 **1. Calls with their knobs.** The nagaya gives the parts, and each call takes its own settings:
 
@@ -298,8 +294,7 @@ when the round trips cost more than the decode.
 
 ## A swarm in the chat of the web app
 
-Amy, 2026-11-10: "I'm thinking later we'll add a way for me to try a swarm from the web ui in a chat for creative
-stuff." The stages map to a chat with no evaluator: the user judges.
+The stages map to a chat with no evaluator: the user judges.
 
 - **Think:** agents answer from other angles, such as tone, point of view or a turn of the plot.
 - **Select:** the chat shows each idea, and the user picks. A vote or the novelty filter can pick instead.

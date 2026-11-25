@@ -2,24 +2,20 @@
 
 This doc studies one tool: a control vector that changes the residual of a model while it runs. It asks if the
 nagaya can carry the tool, and what the tool costs. It is a design note, not a milestone. No code exists for it.
-Amy accepted each Proposed note here on 2026-11-08 (spec, header).
+@tobert accepted each Proposed note here on 2026-11-08 (spec, header).
 
-Amy, 2026-11-06: "I'm mostly interested in the technique's viability. could we write a docs/cv.md about adding
-control vector support, which I'll come back to later. I want to think about it alongside the delayed j-lens feature
-and other model debugging/tweaking capabilities we want to have options for."
+
 
 ## Decisions of 2026-11-07
 
-Amy decided these rules by interview, for milestone 25 (`AGENTS.md`). Amy: "I'd like to try this runtime technique
-and figure out how to work it into the protocol as an option". Spec 11.12 and engine-abi "Control vectors" hold the
-rules.
+@tobert decided these rules by interview, for milestone 25 (`AGENTS.md`). Spec 11.12 and engine-abi "Control vectors"
+hold the rules.
 
 - A council v2 context names its control vectors, beside `thinking`. This replaces the note on choice 1 below.
 - One op gives `add`, `ablate` and `clamp`.
 - The nagaya makes a vector on the card, with a residual tap and a job. The route is council v2, in gogi.
-- The first prompt sets are public. Amy, 2026-11-07: "we'll use some public data at first so we can work without
-  seeing that data".
-- `LFM3-1.7B` comes first, and Omni follows. Amy sets each strength by hand.
+- The first prompt sets are public.
+- `LFM3-1.7B` comes first, and Omni follows. @tobert sets each strength by hand.
 
 The open questions below get these answers, each Proposed by Claude Opus 5.5 on 2026-11-07:
 
@@ -27,7 +23,7 @@ The open questions below get these answers, each Proposed by Claude Opus 5.5 on 
 2. The op runs on the prompt pass and on each decode step.
 3. The op does not touch the output of the embedding. It runs only after a layer.
 4. A turn with another list is another context, with another root recipe.
-5. The search for strengths waits. Amy sets them by hand.
+5. The search for strengths waits. @tobert sets them by hand.
 
 ## The term
 
@@ -36,7 +32,7 @@ each. It is a state object (ontology "State object"): it has a content id and be
 call the same thing a "steering vector". llama.cpp calls it a control vector, and so does this doc.
 
 Use the term "control vector" in the ontology, spec 6.12 and spec 13.1.
-Reason: it names the file and its strengths together, and llama.cpp uses that name. Amy decides.
+Reason: it names the file and its strengths together, and llama.cpp uses that name. @tobert decides.
 
 ## What it does
 
@@ -102,7 +98,7 @@ There are two places to choose a control vector. They have different costs.
    strengths starts a new root recipe, with no prefix reuse.
 
 Build choice 1 first. Leave choice 2 as a design. Reason: choice 1 needs
-no change to the council v2 contract. Its cache rule is the rule of a served model today. Amy decides.
+no change to the council v2 contract. Its cache rule is the rule of a served model today. @tobert decides.
 
 A request route needs a contract in gogi first (spec 11.1). mkviolet `docs/06-council-jlens-extensions.md` drafted
 `steer` for council v1, with a rule that a steered decision says `"steered": true` in its identity. That draft is a
@@ -146,7 +142,7 @@ a vector for each layer.
 
 Design one engine hook, "the residual after layer `l`", for both taps and
 control vectors. An engine declares the layers where it supports the hook. Reason: one op, one test and one
-declaration serve both tools. Amy decides.
+declaration serve both tools. @tobert decides.
 
 ## Tests
 
@@ -162,10 +158,9 @@ These tests show that the tool works. Each one can fail.
 
 ## The stream of thought: the trials of 2026-11-11
 
-Milestone 33 step 2. With thinking off, a second turn of `lfm3` can write a first draft, then a second `</think>`,
-then its answer. The reference model in transformers does the same, so the cause is the model. Amy, 2026-11-11:
-"think of it (hah!) more as being able to dial up the stream of consciousness nature of non-thinking calls to the
-model". Each count below is of 24 replies at temperature 1.0 on b70host, unless the row says another value.
+Milestone 33 step 2. With thinking off, a second turn of `lfm3` can write a first draft, then a second `</think>`, then
+its answer. The reference model in transformers does the same, so the cause is the model. Each count below is of 24
+replies at temperature 1.0 on the B70 machine, unless the row says another value.
 
 **The trigger.** An old reply with an empty think block in the history. A first turn gave a draft in 0 of 72
 replies. A second turn gave 15 (a color), 6 (a story) and 23 (arithmetic). An old reply with a short reasoning gave
@@ -214,7 +209,7 @@ The table gives the drafts with `add` at each strength, and the right answers of
   their answer, where 17 did with no step.
 
 Not tried: latent steps, then a `</think>` that the request writes. The route puts the steps last, so it cannot
-feed a token after them. The raw replies of these trials are in `target/trials-2026-11-11/` on b70host, which
+feed a token after them. The raw replies of these trials are in `target/trials-2026-11-11/` on the B70 machine, which
 git does not hold.
 
 **Soft inputs** (`docs/lab.md`, "Soft inputs in a request"), 2026-11-12, the build of `9367f8c`. Each row is 24
@@ -342,7 +337,7 @@ on, 1500 tokens at most, the seeds 0 to 23. Five prompts ran on `lfm3`, and five
   In each, `moi` cut the median reasoning by 10% to 28%, and the score rose by 0.03 to 0.12.
 - Five prompts reasoned past 1500 tokens in most replies, with either setting. Haiku and the sonnet never ended.
   The first 400 characters of their reasoning count syllables and rhymes. Nobody read the rest, so a loop is a guess.
-  A loop is the trap that Amy named on 2026-11-12. A stop of the kind of Cold Stop is the tool for it.
+  A loop is the trap that @tobert named on 2026-11-12. A stop of the kind of Cold Stop is the tool for it.
 
 Thus `moi` with `beta` 0.25 in the reasoning gains over twelve creative prompts. The reasoning is shorter, more
 replies end, and the score stays. The gain is not large, but no prompt went against it.

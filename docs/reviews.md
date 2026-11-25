@@ -38,7 +38,7 @@ bandwidths, `council_v2.rs`, `stage.h`, `test_segments.py`, `docs/painter.md`.
 
 ## 2026-10-17: consistency pass (Claude, after D1 and D3)
 
-Amy asked for a read of every file for consistency and use of the ontology.
+@tobert asked for a read of every file for consistency and use of the ontology.
 
 - The first Qwen3.8 engine's "stage" (`stage.h`, "A stage is one op with its arguments") is our op. Noted in Op; ABI
   telemetry is `op_times()`.
@@ -51,8 +51,8 @@ Amy asked for a read of every file for consistency and use of the ontology.
 - Content id: the parent's id is hashed only for a piece of a chain; the first Qwen3.8 engine's whole snapshots have no
   parent.
 - D1 said per-card use makes mkviolet two engines; Gemma 4 does not fit on one card, so per-card means smaller
-  engines. D2 deferred to the first port. Decision status listed: D4-D7 not yet reviewed with Amy.
-- Machines: the third lab machine is the DGX Spark; gfx1151host and the Spark are 128 GB unified LPDDR5X.
+  engines. D2 deferred to the first port. Decision status listed: D4-D7 not yet reviewed with @tobert.
+- Machines: the third lab machine is the DGX Spark; the Strix Halo machine and the Spark are 128 GB unified LPDDR5X.
 - References into other repos named their repo (mkviolet `docs/03`, `council_v2.rs`; the first Qwen3.8 engine
   `docs/painter.md`).
 - README said the ABI "names as a contract" the residual boundary; it does not, D1 defers it.
@@ -78,9 +78,9 @@ The 12 that change the design, and what we did:
 |---|---|---|
 | 1 | The ledger must admit `open`, but `limits()` exists only after `open` | a static `plan(config) -> limits` call |
 | 2 | No thread writes the host and NVMe parts of the ledger | one ledger owner; device threads send requests |
-| 3 | A D1(a) pass on two cards breaks one thread per device | one thread per device group (Amy) |
-| 4 | The audit's fresh process is a second GPU client | the audit runs after each start, in-process (Amy) |
-| 5 | v0 scope differs between the spec, README and ABI | image batch and training are in v0 (Amy); the ABI gains both sections |
+| 3 | A D1(a) pass on two cards breaks one thread per device | one thread per device group |
+| 4 | The audit's fresh process is a second GPU client | the audit runs after each start, in-process |
+| 5 | v0 scope differs between the spec, README and ABI | image batch and training are in v0; the ABI gains both sections |
 | 6 | D10 shapes by slot capacity, so equal coverage gives different content ids | cells and ring parts are shaped by coverage |
 | 7 | D10 stores ring parts whole in a delta | a delta holds the rows after its parent's end |
 | 8 | A refused restore would quarantine a good entry | quarantine only when verification fails |
@@ -99,7 +99,7 @@ Not right:
 - ds4's failed fit used medians per cell, and Theil-Sen was the correction. The fault was our wording.
 - Boundaries need no ABI declaration. Clients mark them (`snap: true`); the engine only seals.
 
-Amy's answers:
+@tobert's answers:
 
 - v0 is inference, image batch and training.
 - The audit runs across restarts.
@@ -125,7 +125,7 @@ kaibo listed 24 findings. We corrected these in `AGENTS.md`:
 - a commit prefix for changes to more than one crate, and `.gitignore` for weights;
 - a rule for gaps: the agent writes a **Proposed** choice into the doc and commits it alone.
 
-Amy decided the nine design gaps in an interview on the same day:
+@tobert decided the nine design gaps in an interview on the same day:
 
 | Gap | Decision | Where |
 |---|---|---|

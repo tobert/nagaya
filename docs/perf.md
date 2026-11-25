@@ -105,7 +105,7 @@ the tail of the distribution, so it is another request, not the same one faster.
 
 Changes that keep the bits, in the order of their size:
 
-- Run the members of a pass on other threads. Each row is apart from the others. Done in `c75285a`: the row
+- Run the members of a pass on other threads. Each row is apart from the others. Done: the row
   threads. One member alone still draws on its device thread.
 - Sort the keys with a radix sort. The keys are `u64` and their order is total, so the order stays.
 - Keep the vectors of a job from one token to the next.
