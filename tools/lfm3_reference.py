@@ -341,7 +341,7 @@ def greedy(model, ids, steps):
 
 def run_control(model, backbone, lm_head, tokenizer, layer_count, out, facts, label="lfm3"):
     """The control vector gate of one model (spec 11.12): the means of two prompt sets, and each operation. `label` is
-    `lfm3` or `lfm3-omni`; Omni's vector acts on its text passes only (AGENTS.md milestone 25 step 9)."""
+    `lfm3` or `lfm3-omni`; Omni's vector acts on its text passes only."""
     sets = {}
     tensors = {}
     for name, texts in (("positive", CONTROL_POSITIVE), ("negative", CONTROL_NEGATIVE)):

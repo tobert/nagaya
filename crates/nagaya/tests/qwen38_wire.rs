@@ -148,7 +148,10 @@ fn plan_refuses_a_shard_that_is_not_a_file() {
     let table = config("weights_bytes = 1000");
     install.export();
     std::fs::remove_file(&install.shards[1]).unwrap();
-    let message = Qwen38Factory.plan(&table, &[gfx1151host_device()]).unwrap_err().to_string();
+    let message = Qwen38Factory
+        .plan(&table, &[strix_halo_device()])
+        .unwrap_err()
+        .to_string();
     assert!(message.contains(SHARDS) && message.contains("two.gguf"), "{message}");
 }
 
@@ -158,7 +161,7 @@ fn plan_declares_the_weights_term_from_the_config() {
     let install = Install::new();
     install.export();
     let limits = Qwen38Factory
-        .plan(&config("weights_bytes = 65498251264"), &[gfx1151host_device()])
+        .plan(&config("weights_bytes = 65498251264"), &[strix_halo_device()])
         .unwrap();
     let weights = limits
         .memory
@@ -184,7 +187,7 @@ fn plan_refuses_a_config_without_a_usable_weights_size_or_with_an_unknown_key() 
         ("weights_bytes = 1000\nslots = 4", "slots"),
     ] {
         let message = Qwen38Factory
-            .plan(&config(text), &[gfx1151host_device()])
+            .plan(&config(text), &[strix_halo_device()])
             .unwrap_err()
             .to_string();
         assert!(message.contains(needle), "config `{text}` gave `{message}`");
@@ -193,7 +196,7 @@ fn plan_refuses_a_config_without_a_usable_weights_size_or_with_an_unknown_key() 
 
 #[test]
 fn an_open_error_of_the_qwen38_binding_is_a_crash() {
-    // The engine is linked into the binary, so no library pin can refuse the start (AGENTS.md milestone 15).
+    // The engine is linked into the binary, so no library pin can refuse the start.
     let other = qwen38::open_error(Qwen38Error::new("qwen38_engine_open returned no engine"));
     assert_eq!(other.kind, OpenErrorKind::Other);
     assert!(!other.kind.refuses_start());
@@ -258,7 +261,7 @@ fn the_strix_halo_profile_admits_on_the_probed_strix_halo_tree_with_the_registry
     assert_eq!(admitted.engines[1].name, "qwen-image-fusal");
 }
 
-fn gfx1151host_device() -> GroupDevice {
+fn strix_halo_device() -> GroupDevice {
     GroupDevice {
         id: 0,
         name: "gfx1151".to_owned(),
@@ -273,7 +276,7 @@ fn plan_and_open_refuse_a_group_of_any_size_but_one() {
     let install = Install::new();
     install.export();
     let table = config("weights_bytes = 1000");
-    for devices in [vec![], vec![gfx1151host_device(), gfx1151host_device()]] {
+    for devices in [vec![], vec![strix_halo_device(), strix_halo_device()]] {
         let message = Qwen38Factory.plan(&table, &devices).unwrap_err().to_string();
         assert!(message.contains("exactly one device"), "{message}");
         let message = Qwen38Factory

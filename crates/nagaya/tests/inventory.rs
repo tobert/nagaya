@@ -1,6 +1,6 @@
 use nagaya::inventory::{Device, FakeProbe, Inventory, Probe, ProbeError};
 
-fn gfx1151host_inventory() -> Inventory {
+fn strix_halo_inventory() -> Inventory {
     Inventory {
         devices: vec![Device {
             id: 0,
@@ -16,13 +16,13 @@ fn gfx1151host_inventory() -> Inventory {
 
 #[test]
 fn the_fake_probe_gives_the_inventory() {
-    let inventory = gfx1151host_inventory();
+    let inventory = strix_halo_inventory();
     assert_eq!(FakeProbe::new(inventory.clone()).probe().unwrap(), inventory);
 }
 
 #[test]
 fn a_device_is_found_by_its_id() {
-    let inventory = gfx1151host_inventory();
+    let inventory = strix_halo_inventory();
     assert_eq!(inventory.device(0).unwrap().name, "gfx1151");
     assert_eq!(inventory.device(0).unwrap().memory_bytes, 128 << 30);
     assert!(inventory.device(1).is_none());
@@ -40,7 +40,7 @@ fn a_failed_probe_is_an_error() {
     assert!(error.to_string().contains("no device was found"), "{error}");
 }
 
-fn b70host_inventory() -> Inventory {
+fn b70_pair_inventory() -> Inventory {
     let device = |id, address: &str| Device {
         id,
         name: format!("device-{id}"),
@@ -61,12 +61,12 @@ fn b70host_inventory() -> Inventory {
 
 #[test]
 fn a_device_is_not_ignored_by_default() {
-    assert!(gfx1151host_inventory().devices.iter().all(|device| !device.ignored));
+    assert!(strix_halo_inventory().devices.iter().all(|device| !device.ignored));
 }
 
 #[test]
 fn an_ignored_device_keeps_its_id_and_the_others_are_not_marked() {
-    let mut inventory = b70host_inventory();
+    let mut inventory = b70_pair_inventory();
     inventory.ignore(&["0000:80:00.0".to_owned()]).unwrap();
     assert_eq!(
         inventory
@@ -81,7 +81,7 @@ fn an_ignored_device_keeps_its_id_and_the_others_are_not_marked() {
 
 #[test]
 fn an_ignored_address_in_capital_letters_matches() {
-    let mut inventory = b70host_inventory();
+    let mut inventory = b70_pair_inventory();
     inventory.devices[1].pci_address = "0000:c2:00.0".to_owned();
     inventory.ignore(&["0000:C2:00.0".to_owned()]).unwrap();
     assert!(inventory.devices[1].ignored);
@@ -89,7 +89,7 @@ fn an_ignored_address_in_capital_letters_matches() {
 
 #[test]
 fn an_ignored_address_that_the_probe_did_not_find_refuses_the_start_and_names_it() {
-    let mut inventory = b70host_inventory();
+    let mut inventory = b70_pair_inventory();
     let error = inventory
         .ignore(&["0000:80:00.0".to_owned(), "0000:99:00.0".to_owned()])
         .unwrap_err();
