@@ -24,7 +24,7 @@ fn a_peer_that_stops_leaves_the_live_view_and_is_marked_dead() {
 
     two.shutdown();
     let view = wait_for_view(&one, "host-two dead and not live", |view| {
-        !view.live.iter().any(|node| node.name == "host-two") && view.dead.iter().any(|name| name == "host-two")
+        !view.live.iter().any(|node| node.name == "host-two") && view.dead.iter().any(|id| id.starts_with("host-two:"))
     });
     assert_eq!(view.live.len(), 1, "{view}");
     assert!(view.live[0].is_self);

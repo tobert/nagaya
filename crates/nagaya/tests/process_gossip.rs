@@ -70,7 +70,7 @@ fn a_stopped_process_is_marked_dead_by_the_other() {
     assert_eq!(two.terminate().code(), Some(0));
     // The failure detector (phi-accrual) marks the peer dead; the live view loses it.
     let view = wait_for_view(&watcher, "host-two dead and not live", |view| {
-        !view.live.iter().any(|node| node.name == "host-two") && view.dead.iter().any(|name| name == "host-two")
+        !view.live.iter().any(|node| node.name == "host-two") && view.dead.iter().any(|id| id.starts_with("host-two:"))
     });
     assert!(view.live.iter().any(|node| node.name == "host-one"), "{view}");
     one.lines.wait_for_line("gossip: peer host-two:", " is dead", WAIT);

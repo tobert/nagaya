@@ -201,7 +201,7 @@ impl NodeView {
 pub struct ClusterView {
     /// The nodes that the failure detector holds live, with this node.
     pub live: Vec<NodeView>,
-    /// The names of the nodes that the failure detector marked dead (spec 2.3). A dead node is not live.
+    /// The chitchat ids of the dead runs, without the earlier run of a live node (spec 11.4a). A dead run is not live.
     pub dead: Vec<String>,
 }
 
@@ -320,8 +320,8 @@ impl Gossip {
                 })
                 .collect();
             live.sort_by(|left, right| left.name.cmp(&right.name));
-            let mut dead: Vec<String> = chitchat.dead_nodes().map(|id| id.node_id.to_string()).collect();
-            dead.sort();
+            let running: Vec<&ChitchatId> = chitchat.live_nodes().collect();
+            let dead = dead_runs(&running, chitchat.dead_nodes());
             ClusterView { live, dead }
         }))
     }
@@ -431,4 +431,62 @@ fn reserve_port(bind: SocketAddr) -> std::io::Result<SocketAddr> {
         return Ok(bind);
     }
     UdpSocket::bind(bind)?.local_addr()
+}
+
+/// The ids of the dead runs, in byte order, without the earlier run of a live node (spec 11.4a, "The cluster route").
+///
+/// An earlier run has the name and the gossip address of a live node, and a lower generation. chitchat keeps it for
+/// 24 hours, so without this rule a node that restarted shows as live and dead at once.
+fn dead_runs<'a>(live: &[&ChitchatId], dead: impl Iterator<Item = &'a ChitchatId>) -> Vec<String> {
+    let earlier = |gone: &ChitchatId| {
+        live.iter().any(|now| {
+            now.node_id == gone.node_id
+                && now.gossip_advertise_addr == gone.gossip_advertise_addr
+                && now.generation_id > gone.generation_id
+        })
+    };
+    let mut ids: Vec<String> = dead.filter(|gone| !earlier(gone)).map(|id| format!("{id:?}")).collect();
+    ids.sort();
+    ids
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(name: &str, generation: u64, port: u16) -> ChitchatId {
+        ChitchatId::new(name.to_owned(), generation, SocketAddr::from(([10, 0, 0, 1], port)))
+    }
+
+    #[test]
+    fn a_dead_run_is_its_full_id() {
+        let gone = id("host-c", 100, 8092);
+        assert_eq!(
+            dead_runs(&[], [&gone].into_iter()),
+            vec!["host-c:100:10.0.0.1:8092".to_owned()]
+        );
+    }
+
+    #[test]
+    fn the_earlier_run_of_a_live_node_is_left_out() {
+        let now = id("host-a", 200, 8092);
+        let earlier = id("host-a", 100, 8092);
+        assert_eq!(dead_runs(&[&now], [&earlier].into_iter()), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_dead_run_with_another_address_or_a_higher_generation_stays() {
+        let now = id("host-a", 200, 8092);
+        let elsewhere = id("host-a", 100, 9000);
+        let later = id("host-a", 300, 8092);
+        let other = id("host-b", 100, 8092);
+        assert_eq!(
+            dead_runs(&[&now], [&other, &later, &elsewhere].into_iter()),
+            vec![
+                "host-a:100:10.0.0.1:9000".to_owned(),
+                "host-a:300:10.0.0.1:8092".to_owned(),
+                "host-b:100:10.0.0.1:8092".to_owned(),
+            ]
+        );
+    }
 }

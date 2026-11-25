@@ -63,7 +63,7 @@ fn the_route_gives_each_live_node_its_engines_conflicts_and_refusal() {
     own.is_self = true;
     let view = ClusterView {
         live: vec![own, b, c],
-        dead: vec!["host-d".to_owned()],
+        dead: vec!["host-d:100:127.0.0.1:8092".to_owned()],
     };
     a.cluster
         .set(ClusterState::observe(&ClusterState::default(), &view, "host-a", &[]));
@@ -71,7 +71,7 @@ fn the_route_gives_each_live_node_its_engines_conflicts_and_refusal() {
     assert_eq!(reply.status, 200, "{}", reply.text());
     let body = reply.json();
     assert_eq!(body["node"], "host-a");
-    assert_eq!(body["dead"], json!(["host-d"]));
+    assert_eq!(body["dead"], json!(["host-d:100:127.0.0.1:8092"]));
     let names: Vec<&str> = body["nodes"]
         .as_array()
         .unwrap()

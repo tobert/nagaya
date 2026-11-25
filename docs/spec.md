@@ -3305,11 +3305,14 @@ GET /nagaya/v1/cluster
                "gossip": "<address>:8092", "http": "<address>:8091",
                "engines": [{"name": "gemma", "state": "ready", "models": ["gemma-4-26b-a4b"]}],
                "conflicts": {"name": null, "models": []}, "refused": null}],
-    "dead": ["node-c"]}
+    "dead": ["node-c:1793577500000:<address>:8092"]}
 ```
 
 - `node` is the name of the node that answers. `nodes` holds the live nodes, this node too, in byte order of the name.
-  `dead` holds the names that the failure detector marked dead (2.3).
+  `dead` holds the chitchat id of each run that the failure detector marked dead (2.3), in byte order.
+- `dead` leaves out the earlier run of a live node. That is a dead id with the name and the gossip address of a live
+  node, and a lower generation. Decided 2026-11-25, by interview. Reason: chitchat keeps a dead run for 24 hours, so
+  a node that restarted showed as live and dead at once. A name alone cannot tell the two runs apart.
 - `id` is the chitchat id, `name:generation:address` (2.3). `gossip` is the gossip address. `http` comes from the key
   `server` (2.3).
 - `engines` comes from the keys `engine:<name>`, in byte order of the name. `models` lists the `model` of each
