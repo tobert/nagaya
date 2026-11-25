@@ -54,7 +54,7 @@ POST /nagaya/v1/lab/project
   the route does not forward.
 - **Inkling 2.** The head is the first 200,058 rows of `model.llm.unembed.weight`, and the final norm is
   `model.llm.norm.weight`. A score has no softcap, because a vector has no scale. The end token is `eos_token_id` of
-  `generation_config.json`. The profile names no J-Lens of Inkling 2. **Proposed** (Claude Opus 5.5, 2026-11-21).
+  `generation_config.json`. The profile names no J-Lens of Inkling 2. **Proposed**.
 - **No engine.** The route reads the checkpoint of the model folder of the profile, not the engine. Thus it runs
   while the engine is `unloaded` or `loading`, and it never gives a 503.
 - **`through`.** `unembed`, or `jlens` ("The rules of the J-Lens"). Another value is a 400 that names `through`.
@@ -460,7 +460,7 @@ POST /nagaya/v1/lab/ensemble
   `strength` that is not finite is a 400 that names `strength`.
 - **The passes of a step.** The rows of a step join in passes by the rule of the joins of the scheduler. A pass holds
   one count of cycles, one control list, one loop, and at most `max_segments` rows. An engine with no batched passes
-  runs each row in a pass of its own. **Proposed** (Claude Opus 5.5, 2026-11-21). Reason: each row of a step reads only
+  runs each row in a pass of its own. **Proposed**. Reason: each row of a step reads only
   its own context, so the passes of the groups give the rows of one pass.
 - **One list and one loop.** The contexts share one control list and one layer loop (spec 11.16). A context with
   another list is a 400 that names `contexts[i].control`, and another loop names `contexts[i].loop`.
