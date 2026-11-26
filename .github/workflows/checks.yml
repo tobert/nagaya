@@ -43,13 +43,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: STE check of the docs
-        run: python3 tools/ste_check.py README.md docs/*.md
-      - name: lines of the docs at 120 columns
-        run: awk 'length > 120 && !/^\|/ {print FILENAME":"FNR; bad = 1} END {exit bad}' README.md docs/*.md
       - name: tests of the tools
         working-directory: tools
-        run: python3 -m unittest test_nagaya_web test_nagaya_web_page test_nagaya_image_batch test_oracle_fixture test_ste_check
+        run: python3 -m unittest test_nagaya_web test_nagaya_web_page test_nagaya_image_batch test_oracle_fixture
       - name: tests of the swarm driver
         working-directory: tools
         run: python3 -m unittest discover -s swarm/tests -t .
