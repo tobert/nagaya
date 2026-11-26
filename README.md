@@ -1,90 +1,112 @@
 # 長屋 nagaya
 
-A *nagaya* (長屋（ながや）) is a row house: one building, several households, each with its own door. This nagaya is
-the one process on each machine that owns the GPUs. Engines live in it, and each engine has its own door.
+A *nagaya* (長屋（ながや）) is a traditional Japanese row house: one building, several households, each with its own door. **nagaya** is the single process on each machine that owns the GPUs. Model engines live inside it, each behind its own door.
 
-The nagaya is three things:
+nagaya is three things:
 
-- **An exokernel for megakernels.** A megakernel engine runs the pass of a model as one GPU kernel. The nagaya divides
-  a machine among its engines: device memory, host memory, NVMe, and time on each device. It decides where state
-  lives, what runs next on each device, and what the store keeps. It never decides what a model calculates. Each
-  engine keeps its own key and value layout, its own recurrent state and its own kernels.
-- **A reference implementation.** The Cargo workspace in `crates/` is that process in Rust, with its engines.
-- **The council v2 API, as served.** Clients speak council v2 to the nagaya. The contract is
-  [gogi](https://github.com/tobert/gogi). The nagaya serves it for each engine of a cluster of machines. Its own
-  routes are under `/nagaya/v1`.
+- **An exokernel for megakernels.** Each engine runs a model pass as a persistent GPU kernel and keeps its own KV layout, recurrent state, quantization format, and kernels. nagaya never inspects or alters what a model computes—it governs device memory, host memory, NVMe, and GPU time across engines.
+- **A Rust reference implementation.** A 30-crate Cargo workspace with custom megakernel engines across three GPU vendors (AMD HIP, Intel Level Zero / OpenCL C, and NVIDIA CUDA / PTX).
+- **A [council v2](https://github.com/tobert/gogi) server.** Clients speak the council v2 protocol (defined by [gogi](https://github.com/tobert/gogi)) to any node in a cluster. Machine and lifecycle controls live under `/nagaya/v1`.
 
-## The engines
-
-Each engine gives the same bits for the same identity and the same inputs. A change that moves a bit changes the
-identity of the engine.
-
-| Target | Hardware | Engines |
-|---|---|---|
-| `gfx1151` | one AMD Strix Halo GPU with 128 GB of unified memory, through HIP | Qwen3.8, Qwen-Image 2.1 |
-| `bmg` | Intel Arc Pro B70 cards, through Level Zero and OpenCL C kernels | Gemma 4 (two cards), Qwen3-TTS, SDXL, EmbeddingGemma 2, LFM3, Inkling 2 |
-
-A crate name tells the kind, the model and the target: `nagaya-mk-qwen38-gfx1151` is the megakernel engine of
-Qwen3.8 on `gfx1151`. A family library, such as `nagaya-text-lfm3`, holds the tokenizer, the chat template and the
-reply parser of a model. It needs no GPU.
-
-### The profile of a megakernel
-
-A megakernel runs a whole pass in one launch, so a host profiler sees one long call. Thus the B70 interpreter has a
-profile binary. It holds the same ops, and it records a clock at the start and the end of each task. The ops keep
-their bits, and the binary of each engine keeps its bytes. The Inkling 2 engine has it first
-(`Inkling2Engine::open_profiled`, `tests/xe_profile.rs`). We will make the profile a feature of each engine.
-
-## Status
-
-The nagaya is a research project. It runs on two machines of one home lab: a Strix Halo machine and a machine with two
-B70 cards. The API of `/nagaya/v1` can change. The council v2 routes follow gogi.
-
-The nagaya trusts its network. Its HTTP routes have no authentication. Bind it to an address that only your clients
-can reach.
-
-## Build
-
-You need a Rust toolchain. A build with no feature needs no GPU, no driver and no model file:
-
+```mermaid
+flowchart LR
+    Clients["Clients & Web UI<br/>(council v2 · /nagaya/v1)"] --> Coord["nagaya process<br/>HTTP · Gossip (chitchat)"]
+    Coord <--> Peers["Peer machines<br/>(heterogeneous GPUs)"]
+    Coord --> Core["Exokernel core<br/>Ledger · Scheduler · BLAKE3 Store"]
+    Core --> HIP["gfx1151 (HIP)<br/>Qwen3.8 · Qwen-Image 2.1"]
+    Core --> BMG["bmg (Level Zero / OpenCL C)<br/>Gemma 4 · LFM3 · Inkling 2<br/>SDXL · Qwen3-TTS · EmbeddingGemma 2"]
+    Core --> CUDA["sm121 (CUDA / PTX)<br/>Inkling 2 (NVFP4/MXFP8)"]
 ```
+
+## What the API and kernels support
+
+nagaya implements the [council v2](https://github.com/tobert/gogi) contract and exposes kernel-level capabilities that standard chat-completion servers hide:
+
+- **Decision API & raw reads (`/council/v2/specs`, `/decisions`, `/reads`):** Define reusable question specs (up to 26 choices, free-text `describe`, and leave-one-out ablation) and read exact log-probabilities directly from model logits across up to 8 contexts in one call—no sampling noise or JSON-parsing hacks.
+- **Generations, continuations & batched replies (`/council/v2/generations`):** Streaming and non-streaming generation with explicit `thinking` control, tool calling, parallel multi-reply fan-out (up to 8 replies per call in batched decode passes), and cheap continuation from saved snapshots.
+- **Content-addressed contexts, snapshots & media (`/contexts`, `/snapshots`, `/objects`):** Build contexts with explicit `snap: true` boundaries, pin BLAKE3-addressed snapshots across restarts, and pass content-addressed media objects (`image/png`, `image/jpeg`, `audio/wav`, `video/mp4`, `video/webm`) with lease-based keeps.
+- **Multimodal, image, speech & embeddings (`/generations`, `/embeddings`):** Native image generation (SDXL with inpainting/LoRA, Qwen-Image 2.1), speech synthesis (Qwen3-TTS, LFM3-Omni), multimodal vision/audio/video inputs, and task-conditioned Matryoshka embeddings (EmbeddingGemma 2 at 768/512/256/128 dims).
+- **In-kernel steering, looping & interpretability (`/control-vectors`, `/nagaya/v1/lab/*`):**
+  - **Control vectors:** Extract difference-of-means steering vectors from positive/negative context sets and apply them per-layer inside the forward pass.
+  - **Layer loops & recurrent cycles:** Re-run spans of middle layers per token (`layer_loops` on LFM3) or adjust native recurrent reasoning depth (`cycles` 1–5 on Inkling 2).
+  - **Lab inspection:** Logit-lens and J-Lens weight projections (`/lab/project`), per-step/per-layer traces (`/lab/trace`), ensembles (`/lab/ensemble`), vector composition (`/lab/compose`), soft inputs, and latent steps.
+
+## Core design
+
+- **Bit-exact determinism as a contract.** For a given engine identity and inputs, every run produces the exact same bits. Engine identity hashes weights, tokenizer, chat template, build, plan table lineage, and arithmetic settings; load-time canaries catch drift.
+- **Explicit memory ledger.** Engines declare mandatory and elastic memory terms up front. The ledger admits allocations against configured tier budgets before any GPU memory is claimed—never by probing free VRAM.
+- **Bounded-quantum scheduling.** Engines run in bounded quanta (`interactive`, `batch`, `filler`) and yield between them. Preempted contexts park bit-for-bit across device memory, host memory, and NVMe without altering downstream outputs.
+- **Surviving weight arenas & chain joining.** Sealed snapshots are stored as canonical safetensors indexed by BLAKE3 content ID and recipe, with owner quotas and chain joining. On supported targets, weight arenas survive service restarts through systemd's file-descriptor store.
+- **Heterogeneous clustering.** Nodes discover each other via UDP gossip (`chitchat`), share inventory and model status, and route council v2 requests transparently across AMD, Intel, and NVIDIA machines. Any node can serve as coordinator.
+
+## Hardware targets & engines
+
+| Target | Hardware & Runtime | Engines & Modalities |
+|---|---|---|
+| `gfx1151` | AMD Strix Halo (128 GB unified, HIP) | **Qwen3.8** (text, reasoning, tools, decisions, steering), **Qwen-Image 2.1** (images) |
+| `bmg` | Intel Arc Pro B70 (Level Zero + OpenCL C interpreter) | **Gemma 4** (2-card pipeline), **LFM3 / LFM3-Omni** (text, vision, audio, video, speech, steering, layer loops), **Inkling 2** (recurrent-cycle reasoning, vision), **SDXL** (images, inpainting, LoRA), **Qwen3-TTS** (speech), **EmbeddingGemma 2** (embeddings) |
+| `sm121` | NVIDIA DGX Spark / GB10 (128 GB unified, CUDA / PTX interpreter) | **Inkling 2** (native NVFP4/MXFP8, FP8 `e4m3` KV cache, 4×128K slots) |
+
+Crate names follow `nagaya-<kind>-<model>-<target>`: `nagaya-mk-lfm3-bmg` is the B70 megakernel engine for LFM3, while `nagaya-text-lfm3` is its GPU-free family library (tokenizer, Jinja chat template, reply and tool-call parsers).
+
+## Building & running
+
+You need a current Rust toolchain. A default build compiles the workspace with no GPU, vendor SDK, or model files:
+
+```sh
 cargo build --release -p nagaya
 ```
 
-That binary has no engine. The features add the engines:
+That binary has no GPU engines enabled (it exits with code 3 if started without an engine feature). Enable the feature for your hardware:
 
-| Feature | Adds | Needs |
+| Feature | Enables | Build requirements |
 |---|---|---|
-| `hip` | the `gfx1151` engines | ROCm, with its `clang++` |
-| `xe` | the `bmg` engines | the Level Zero loader, and `ocloc` to compile the kernels |
-| `video` | the video inputs of LFM3 | the libraries of ffmpeg, and libclang |
+| `hip` | `gfx1151` engines | ROCm (`/opt/rocm`) with `clang++` |
+| `xe` | `bmg` engines | Intel Level Zero loader and `ocloc` |
+| `cuda` | `sm121` engines | CUDA Driver API (`libcuda`) and `nvcc` 13.2 (`sm_121a`) |
+| `video` | Video inputs for LFM3-Omni | FFmpeg development libraries and `libclang` |
 
-`docs/deploy.md` tells how to install the process as a systemd user unit. `deploy/` holds the config, the profile
-and the unit of each machine of the lab, as examples.
+Example release builds:
 
-## Checks
-
-These checks need no GPU and no model file:
-
-```
-cargo fmt --all
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace --tests
-cargo test --workspace --tests --no-default-features
-python3 tools/ste_check.py README.md docs/*.md
+```sh
+cargo build --release -p nagaya --features hip        # AMD Strix Halo
+cargo build --release -p nagaya --features xe,video   # Intel Arc Pro B70 pair
+cargo build --release -p nagaya --features cuda       # NVIDIA DGX Spark (GB10)
 ```
 
-A test that needs a model file reads its path from a variable, and it skips when the file is absent. A GPU test
-needs its feature (`hip` or `xe`) and the hardware. `AGENTS.md` lists each variable and each GPU check.
+See [`docs/deploy.md`](docs/deploy.md) for systemd user unit installation, bootstrap config (`nagaya.toml`), placement profiles (`profile.toml`), and rollback procedures. Ready-to-adapt examples live in `deploy/strix-halo/`, `deploy/b70-pair/`, and `deploy/dgx-spark/`.
 
-## Documents
+## Web UI & tools
 
-- `docs/spec.md`: the spec. It says what the nagaya is and what it does, one rule at a time. Read it after this file.
-- `docs/engine-abi.md`: the engine ABI: the calls of an engine, how each engine maps onto them, and the decisions
-  D1 to D11.
-- `docs/ontology.md`: each term, defined once.
-- `docs/new-engine.md`: the checklist for a new engine, a new family, a new card or a new machine.
-- `docs/deploy.md`: the build and the install on each machine.
-- `docs/lab.md`: the lab routes, which look inside a model: taps, control vectors, traces and lenses.
+- **Web app (`tools/nagaya_web.py` + `tools/web/`):** A zero-dependency Python standard-library proxy and browser UI covering Chat, Images, Speech, Embeddings, Engine swaps, Steering, and Lab inspection across all nodes in a cluster:
+  ```sh
+  python3 tools/nagaya_web.py --seed http://192.0.2.10:8091
+  ```
+- **Swarm driver (`tools/swarm/`):** Recipe-driven batch and multi-context execution driver against council v2.
 
-The docs and the code comments use Simplified Technical English (ASD-STE100). `tools/ste_check.py` checks the docs.
+## Repository layout
+
+| Path | Contents |
+|---|---|
+| `crates/nagaya-abi`, `nagaya-ledger`, `nagaya-sched`, `nagaya-store`, `nagaya-telemetry`, `nagaya-conformance` | Pure-Rust exokernel core, memory ledger, scheduler, content-addressed store, OpenTelemetry export, and engine conformance suite |
+| `crates/nagaya-council`, `nagaya-jinja`, `nagaya-text-*` | Council v2 request logic, Jinja2-compatible template engine, and GPU-free model family libraries |
+| `crates/nagaya-mk-hip`, `nagaya-mk-bmg`, `nagaya-mk-cuda`, `crates/nagaya-mk-*-*` | Shared GPU interpreters and model-specific megakernel engines (HIP, OpenCL C, CUDA C++/PTX) |
+| `crates/nagaya` | Main daemon: hardware inventory probe, device threads, HTTP server, gossip, systemd lifecycle |
+| `deploy/` | Example configs, placement profiles, and systemd user units for Strix Halo, B70 pair, and DGX Spark |
+| `tools/` | Web UI, swarm driver, Python reference oracles, and compiler stubs (`ocloc-stub`, `nvcc-stub`) |
+
+## Status & security
+
+nagaya is an active research project running daily on a three-machine home lab (AMD Strix Halo, dual Intel Arc Pro B70, NVIDIA DGX Spark). The council v2 endpoints track [gogi](https://github.com/tobert/gogi); internal control routes under `/nagaya/v1` may change without notice.
+
+**Network trust:** nagaya has **no authentication** on its HTTP or gossip ports. Bind `http_bind` and `gossip_bind` only to a private network or VPN (such as a tailnet) that you trust. The same applies to `tools/nagaya_web.py`.
+
+## Documentation
+
+- [`docs/spec.md`](docs/spec.md) — Normative specification: architecture, inventory, ledger, scheduler, store, lifecycle, and API rules. Start here.
+- [`docs/engine-abi.md`](docs/engine-abi.md) — The `Engine` trait, design decisions D1–D11, and how each target engine maps onto the ABI.
+- [`docs/ontology.md`](docs/ontology.md) — Glossary of core terms (quantum, segment, ledger, term, recipe, arena, etc.).
+- [`docs/deploy.md`](docs/deploy.md) — Building, installing, configuring, and operating nagaya as a systemd user service.
+- [`docs/lab.md`](docs/lab.md) — Interpretability and research routes: control vectors, projections, lenses, traces, and layer loops.
+- [`docs/new-engine.md`](docs/new-engine.md) — Checklist for adding a new engine, model family, card, or machine.
+- [`AGENTS.md`](AGENTS.md) — Contributor and coding-agent guide: workspace rules, test suites, GPU test windows, and environment variables.
