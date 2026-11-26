@@ -36,10 +36,10 @@ resolver = "3"
 # gogi is the contract of council v2 (github.com/tobert/gogi). The pin is a commit of its `main`, so a build gives the
 # same code at each fetch. Move the pin when gogi changes the contract.
 [workspace.dependencies]
-gogi-proto = { git = "https://github.com/tobert/gogi", rev = "c769ea2023cd1903ba325feac10eb761806ed039" }
-gogi-fake = { git = "https://github.com/tobert/gogi", rev = "c769ea2023cd1903ba325feac10eb761806ed039" }
-gogi-toy = { git = "https://github.com/tobert/gogi", rev = "c769ea2023cd1903ba325feac10eb761806ed039" }
-gogi-conformance = { git = "https://github.com/tobert/gogi", rev = "c769ea2023cd1903ba325feac10eb761806ed039" }
+gogi-proto = { git = "https://github.com/tobert/gogi", rev = "7d789e50885fd28c79b0abfa7acdccfba840b679" }
+gogi-fake = { git = "https://github.com/tobert/gogi", rev = "7d789e50885fd28c79b0abfa7acdccfba840b679" }
+gogi-toy = { git = "https://github.com/tobert/gogi", rev = "7d789e50885fd28c79b0abfa7acdccfba840b679" }
+gogi-conformance = { git = "https://github.com/tobert/gogi", rev = "7d789e50885fd28c79b0abfa7acdccfba840b679" }
 
 [profile.dev]
 debug = "line-tables-only"
