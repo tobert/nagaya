@@ -15,7 +15,8 @@ pub struct DeviceGroup {
     pub engines: Vec<usize>,
 }
 
-/// Group the profile's engines by their devices. Two engines that use one device share a group (spec 3.2).
+/// Group the profile's engines by their devices. Two engines that use one device share a group (spec 3.2). Every
+/// engine with no devices is in the one CPU group (spec 3.2c).
 ///
 /// The overlap is transitive: an engine that uses a device of two groups joins them into one. The groups keep the
 /// order of their first engine. The devices of a group are the union, in the order of first appearance.
@@ -29,7 +30,13 @@ pub fn device_groups(profile: &PlacementProfile) -> Vec<DeviceGroup> {
         let mut rest = Vec::with_capacity(groups.len());
         let mut slot = None;
         for group in groups {
-            if group.devices.iter().any(|device| engine.devices.contains(device)) {
+            // A CPU engine (`devices = []`) joins the CPU group, the one group with no devices (spec 3.2c).
+            let joins = if engine.devices.is_empty() {
+                group.devices.is_empty()
+            } else {
+                group.devices.iter().any(|device| engine.devices.contains(device))
+            };
+            if joins {
                 slot.get_or_insert(rest.len());
                 merge_into(&mut merged, group);
             } else {

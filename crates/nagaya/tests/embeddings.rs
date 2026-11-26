@@ -166,6 +166,7 @@ impl Fixture {
                 interval_copies: 0,
                 objects: None,
             }),
+            cpu: None,
         };
         let inventory = Inventory {
             devices: vec![Device {

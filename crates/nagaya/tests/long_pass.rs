@@ -162,6 +162,7 @@ fn started(plan: Plan) -> (Process, Arc<AtomicUsize>) {
         engines: vec![placement("long", "long", &[0])],
         budgets: budgets(&[0]),
         store: None,
+        cpu: None,
     };
     let mut process = Start::new(profile, registry, inventory(&[0]))
         .heartbeat(BEAT)
@@ -448,6 +449,7 @@ fn a_long_pass_on_a_device_thread_is_not_a_stall_and_its_result_reaches_the_job(
         engines: vec![placement("long", "long", &[0]), wide],
         budgets: budgets(&[0, 1]),
         store: None,
+        cpu: None,
     };
     let mut process = Start::new(profile, registry, inventory(&[0, 1]))
         .heartbeat(BEAT)
@@ -546,6 +548,7 @@ fn the_route_busy_shows_the_long_pass_of_a_device() {
         engines: vec![placement("long", "long", &[0])],
         budgets: budgets(&[0]),
         store: None,
+        cpu: None,
     };
     let council = council(&process, profile);
     let path = "/nagaya/v1/devices/0/busy";

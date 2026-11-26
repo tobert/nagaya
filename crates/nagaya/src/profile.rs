@@ -233,9 +233,17 @@ pub struct StoreSpec {
     pub objects: Option<u64>,
 }
 
+/// The CPU group of the profile (spec 3.2c).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CpuSpec {
+    /// The threads of the group's workers. The process checks it against the pool set (spec 3.2a) at the start.
+    pub threads: u32,
+}
+
 /// A machine's placement profile (spec 2.4).
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "ProfileInput")]
 pub struct PlacementProfile {
     /// The engines.
     pub engines: Vec<EnginePlacement>,
@@ -244,6 +252,55 @@ pub struct PlacementProfile {
     /// The store's budgets. A profile with engines must name them (spec 4.1 rule).
     #[serde(default)]
     pub store: Option<StoreSpec>,
+    /// The CPU group (spec 3.2c): present when and only when the profile has an engine with `devices = []`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu: Option<CpuSpec>,
+}
+
+/// A profile as it is written, before the rules of the CPU group.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProfileInput {
+    engines: Vec<EnginePlacement>,
+    budgets: Vec<BudgetSpec>,
+    #[serde(default)]
+    store: Option<StoreSpec>,
+    #[serde(default)]
+    cpu: Option<CpuSpec>,
+}
+
+impl TryFrom<ProfileInput> for PlacementProfile {
+    type Error = String;
+
+    fn try_from(input: ProfileInput) -> Result<Self, String> {
+        let cpu_engine = input.engines.iter().find(|e| e.devices.is_empty());
+        match (cpu_engine, input.cpu) {
+            (Some(e), None) => {
+                return Err(format!(
+                    "engine `{}` has `devices = []`, so it runs in the CPU group, and the profile has no `[cpu]` table; \
+                     add `[cpu]` with `threads` (spec 3.2c)",
+                    e.name
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(
+                    "the profile has a `[cpu]` table and no engine with `devices = []`; remove the table, or \
+                     add a CPU engine (spec 3.2c)"
+                        .to_owned(),
+                );
+            }
+            (_, Some(CpuSpec { threads: 0 })) => {
+                return Err("`[cpu] threads` is 0; the CPU group needs at least 1 thread (spec 3.2c)".to_owned());
+            }
+            _ => {}
+        }
+        Ok(PlacementProfile {
+            engines: input.engines,
+            budgets: input.budgets,
+            store: input.store,
+            cpu: input.cpu,
+        })
+    }
 }
 
 /// A profile that cannot be read, parsed or written.

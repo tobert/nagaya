@@ -49,6 +49,7 @@ fn profile(engines: Vec<EnginePlacement>, nvme: u64) -> PlacementProfile {
             interval_copies: 0,
             objects: None,
         }),
+        cpu: None,
     }
 }
 

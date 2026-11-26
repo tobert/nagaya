@@ -147,6 +147,7 @@ fn profile(engines: Vec<EnginePlacement>) -> PlacementProfile {
             interval_copies: 0,
             objects: None,
         }),
+        cpu: None,
     }
 }
 

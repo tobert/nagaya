@@ -46,6 +46,7 @@ fn profile(engines: &[&str], device: u64) -> PlacementProfile {
             interval_copies: 0,
             objects: None,
         }),
+        cpu: None,
     }
 }
 

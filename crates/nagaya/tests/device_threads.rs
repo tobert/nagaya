@@ -268,6 +268,7 @@ fn start_on(
             interval_copies: 0,
             objects: None,
         }),
+        cpu: None,
     };
     let inventory = Inventory {
         devices: (0..2)

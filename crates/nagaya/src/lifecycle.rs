@@ -169,6 +169,7 @@ pub fn active_profile(store_dir: &Path) -> Result<PlacementProfile, ProfileError
             engines: Vec::new(),
             budgets: Vec::new(),
             store: None,
+            cpu: None,
         }),
         Err(error) => Err(error),
     }

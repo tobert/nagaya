@@ -68,6 +68,7 @@ fn example_profile() -> PlacementProfile {
             interval_copies: 3,
             objects: None,
         }),
+        cpu: None,
     }
 }
 

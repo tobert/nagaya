@@ -84,6 +84,7 @@ fn profile(engines: Vec<EnginePlacement>) -> PlacementProfile {
             interval_copies: 0,
             objects: None,
         }),
+        cpu: None,
     }
 }
 
@@ -477,6 +478,7 @@ fn a_stop_with_no_state_says_it_parked_nothing() {
         engines: Vec::new(),
         budgets: Vec::new(),
         store: None,
+        cpu: None,
     };
     let mut process = Start::new(profile, Registry::new(), inventory(&[]))
         .store(directory.path())

@@ -24,6 +24,7 @@ fn profile(engines: Vec<EnginePlacement>) -> PlacementProfile {
         engines,
         budgets: Vec::new(),
         store: None,
+        cpu: None,
     }
 }
 

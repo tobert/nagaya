@@ -116,6 +116,7 @@ fn profile() -> PlacementProfile {
             interval_copies: 0,
             objects: None,
         }),
+        cpu: None,
     }
 }
 

@@ -74,6 +74,7 @@ fn the_admission_carries_the_planned_limits() {
         engines: vec![engine("fake-one", "fake", 1)],
         budgets: vec![device_budget(0, 4096), host_budget(256)],
         store: None,
+        cpu: None,
     };
     let mut ledger = Ledger::new();
     let admitted = admit(&profile, &Registry::with_fake(), &inventory(&[0]), &mut ledger).unwrap();
@@ -89,6 +90,7 @@ fn the_mandatory_bytes_must_fit() {
         engines: vec![engine("fits", "fake", 1)],
         budgets: vec![device_budget(0, 4096), host_budget(256)],
         store: None,
+        cpu: None,
     };
     let mut ledger = Ledger::new();
     let admitted = admit(&profile, &Registry::with_fake(), &inventory(&[0]), &mut ledger).unwrap();
@@ -102,6 +104,7 @@ fn the_mandatory_bytes_must_fit() {
         engines: vec![engine("short", "fake", 1)],
         budgets: vec![device_budget(0, 4000), host_budget(256)],
         store: None,
+        cpu: None,
     };
     let mut ledger = Ledger::new();
     let before = ledger.clone();
@@ -121,6 +124,7 @@ fn the_elastic_minimum_must_fit() {
         engines: vec![engine("fits", "fake", 1)],
         budgets: vec![device_budget(0, 4096), host_budget(256)],
         store: None,
+        cpu: None,
     };
     let mut ledger = Ledger::new();
     let admitted = admit(&profile, &Registry::with_fake(), &inventory(&[0]), &mut ledger).unwrap();
@@ -137,6 +141,7 @@ fn the_elastic_minimum_must_fit() {
         engines: vec![engine("short", "fake", 1)],
         budgets: vec![device_budget(0, 4096), host_budget(200)],
         store: None,
+        cpu: None,
     };
     let mut ledger = Ledger::new();
     let before = ledger.clone();
@@ -156,6 +161,7 @@ fn an_unknown_kind_is_refused() {
         engines: vec![engine("ghost", "absent-kind", 1)],
         budgets: vec![host_budget(100)],
         store: None,
+        cpu: None,
     };
     let mut ledger = Ledger::new();
     let error = admit(&profile, &Registry::new(), &inventory(&[0]), &mut ledger).unwrap_err();
@@ -173,6 +179,7 @@ fn a_failed_plan_is_refused_and_names_the_engine() {
         engines: vec![engine("ghost", "broken", 1)],
         budgets: vec![host_budget(100)],
         store: None,
+        cpu: None,
     };
     let mut ledger = Ledger::new();
     let error = admit(&profile, &registry, &inventory(&[0]), &mut ledger).unwrap_err();
@@ -188,6 +195,7 @@ fn the_fake_engine_admits_with_its_limits() {
         engines: vec![engine("fake-one", "fake", 1)],
         budgets: vec![device_budget(0, 4096), host_budget(4096)],
         store: None,
+        cpu: None,
     };
     let mut ledger = Ledger::new();
     let admitted = admit(&profile, &Registry::with_fake(), &inventory(&[0]), &mut ledger).unwrap();
@@ -210,6 +218,7 @@ fn a_device_refusal_changes_nothing() {
         engines: vec![placement],
         budgets: vec![host_budget(100)],
         store: None,
+        cpu: None,
     };
     let mut ledger = Ledger::new();
     let before = ledger.clone();
@@ -229,6 +238,7 @@ fn a_profile_that_names_an_ignored_device_is_refused_and_changes_nothing() {
         engines: vec![placement],
         budgets: vec![host_budget(100)],
         store: None,
+        cpu: None,
     };
     let mut inventory = inventory(&[0]);
     inventory.devices[0].pci_address = "0000:80:00.0".to_owned();
@@ -267,6 +277,7 @@ fn an_engine_with_no_segments_is_refused_with_its_name_and_the_field() {
         engines: vec![engine("no-passes", "zero", 1)],
         budgets: vec![device_budget(0, 4096), host_budget(256)],
         store: None,
+        cpu: None,
     };
     let mut ledger = Ledger::new();
     let before = ledger.clone();
@@ -298,6 +309,7 @@ fn a_speech_engine_takes_no_pass_so_it_needs_no_segment() {
         engines: vec![engine("voice", "speech", 1)],
         budgets: vec![device_budget(0, 4096), host_budget(256)],
         store: None,
+        cpu: None,
     };
     admit(&profile, &registry, &inventory(&[0]), &mut Ledger::new()).expect("a speech engine with no segment");
 }
@@ -314,6 +326,7 @@ fn an_image_engine_takes_no_pass_so_it_needs_no_segment() {
         engines: vec![engine("sdxl-0", "image", 1)],
         budgets: vec![device_budget(0, 4096), host_budget(256)],
         store: None,
+        cpu: None,
     };
     admit(&profile, &registry, &inventory(&[0]), &mut Ledger::new()).expect("an image engine with no segment");
 }
@@ -328,6 +341,7 @@ fn one_segment_is_admitted() {
         engines: vec![engine("one-pass", "one", 1)],
         budgets: vec![device_budget(0, 4096), host_budget(256)],
         store: None,
+        cpu: None,
     };
     let mut ledger = Ledger::new();
     admit(&profile, &registry, &inventory(&[0]), &mut ledger).unwrap();

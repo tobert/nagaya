@@ -99,6 +99,7 @@ fn profile(engines: Vec<EnginePlacement>) -> PlacementProfile {
             },
         ],
         store: None,
+        cpu: None,
     }
 }
 
