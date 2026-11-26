@@ -21,3 +21,8 @@ blake3 = "1.8.5"
 nagaya-mk-beatthis-cpu = { path = "../nagaya-mk-beatthis-cpu" }
 safetensors = "0.8.0"
 serde_json = { version = "1.0.154", features = ["float_roundtrip", "preserve_order"] }
+
+# The bench runs on a card, so it builds only with `hip`.
+[[example]]
+name = "bench"
+required-features = ["hip"]

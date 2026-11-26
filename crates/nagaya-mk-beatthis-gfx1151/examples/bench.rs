@@ -61,6 +61,31 @@ fn main() {
                 ms[4],
                 shares.join(", ")
             );
+            if std::env::var_os("BENCH_TOP").is_some() {
+                let mut by_shape: BTreeMap<String, (f64, usize)> = BTreeMap::new();
+                for (task, t) in p.tasks.iter().zip(&times) {
+                    let shape = match *task {
+                        Task::Linear { rows, din, dout, .. } => format!("linear {rows}x{din}->{dout}"),
+                        Task::Attention { a, b, along, heads, .. } => format!("attention {a}x{b} {along:?} h{heads}"),
+                        Task::Conv {
+                            frames,
+                            f_in,
+                            cin,
+                            cout,
+                            ..
+                        } => format!("conv {frames}x{f_in}x{cin}->{cout}"),
+                        ref other => kind(other).to_owned(),
+                    };
+                    let e = by_shape.entry(shape).or_default();
+                    e.0 += t;
+                    e.1 += 1;
+                }
+                let mut rows: Vec<_> = by_shape.into_iter().collect();
+                rows.sort_by(|a, b| b.1.0.total_cmp(&a.1.0));
+                for (shape, (t, n)) in rows.iter().take(14) {
+                    println!("    {t:6.2} ms {:4.1}%  x{n:<3} {shape}", 100.0 * t / total);
+                }
+            }
         }
     }
 }

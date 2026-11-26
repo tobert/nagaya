@@ -31,10 +31,12 @@ __global__ void affine_k(const float* x, float* y, long n, int cols, const float
     if (t < n) bt_affine(x, y, cols, scale, shift, t);
 }
 
-__global__ void conv_k(const float* x, float* y, long n, int frames, int f_in, int cin, int cout, int kf, int kt,
-                       int stride, const float* kernel) {
-    long t = tile();
-    if (t < n) bt_conv(x, y, frames, f_in, cin, cout, kf, kt, stride, kernel, t);
+__global__ void __launch_bounds__(256) conv_tile_k(const float* x, float* y, int frames, int f_in, int cin, int cout,
+                                                   int kf, int kt, int stride, const float* kernel) {
+    __shared__ float xs[BT_LIN_TILE * BT_CONV_PAD];
+    __shared__ float ws[BT_LIN_TILE * BT_CONV_PAD];
+    bt_conv_tile(x, y, frames, f_in, cin, cout, kf, kt, stride, kernel, blockIdx.y, blockIdx.x, threadIdx.x, threadIdx.y,
+                 xs, ws);
 }
 
 __global__ void gelu_k(float* x, long n) {
@@ -50,8 +52,8 @@ __global__ void __launch_bounds__(BT_RMS_THREADS) rms_norm_tile_k(const float* x
 
 __global__ void __launch_bounds__(256) linear_tile_k(const float* x, float* y, long rows, int din, int dout,
                                                      const float* weight, const float* bias) {
-    __shared__ float xs[BT_LIN_TILE * BT_LIN_PAD];
-    __shared__ float ws[BT_LIN_TILE * BT_LIN_PAD];
+    __shared__ __attribute__((aligned(16))) float xs[BT_LIN_K * BT_LIN_ROW];
+    __shared__ __attribute__((aligned(16))) float ws[BT_LIN_K * BT_LIN_ROW];
     bt_linear_tile(x, y, rows, din, dout, weight, bias, blockIdx.y, blockIdx.x, threadIdx.x, threadIdx.y, xs, ws);
 }
 
@@ -93,7 +95,10 @@ int bt_hip_affine(const float* x, float* y, long n, int cols, const float* scale
 
 int bt_hip_conv(const float* x, float* y, long n, int frames, int f_in, int cin, int cout, int kf, int kt, int stride,
                 const float* kernel, hipStream_t s) {
-    conv_k<<<blocks(n), THREADS, 0, s>>>(x, y, n, frames, f_in, cin, cout, kf, kt, stride, kernel);
+    long rows = n / cout;
+    dim3 grid(static_cast<unsigned>((cout + BT_LIN_TILE - 1) / BT_LIN_TILE),
+              static_cast<unsigned>((rows + BT_LIN_TILE - 1) / BT_LIN_TILE));
+    conv_tile_k<<<grid, dim3(16, 16), 0, s>>>(x, y, frames, f_in, cin, cout, kf, kt, stride, kernel);
     return launched();
 }
 
@@ -134,7 +139,7 @@ int bt_hip_attention(const float* qkv, float* qk, const float* gates, float* out
     }
     int len = axis == 0 ? a : b;
     long seqs = axis == 0 ? b : a;
-    int qtiles = (len + BT_ATT_TILE - 1) / BT_ATT_TILE;
+    int qtiles = (len + BT_ATT_TILE * BT_ATT_Q - 1) / (BT_ATT_TILE * BT_ATT_Q);
     long groups = seqs * heads * qtiles;
     attention_tile_k<<<static_cast<unsigned>(groups), BT_ATT_TILE, 0, s>>>(qkv, qk, gates, out, a, b, axis, heads,
                                                                           qtiles);
