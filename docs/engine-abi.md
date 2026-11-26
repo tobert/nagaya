@@ -1169,6 +1169,30 @@ embed(ids) -> vector | why      runs one input and gives its pooled vector
 - **Later inputs.** Audio and images are optional members of a later call. An engine that lacks one refuses a call
   that names it.
 
+## Beats
+
+**The beats capability.** **Proposed** (2026-11-26). Reason: a beat tracker reads log-mel rows and gives two logits
+for each frame. It has no slot state, no tokens and no sampler, as an embedding has none (spec 11.19).
+
+A beats engine declares the `beats` capability. Its `pass` refuses. It has one call:
+
+```
+beats(rows, frames) -> logits | why      runs one chunk and gives its head outputs
+```
+
+- **Limits.** The engine declares `beats_max_frames`, the most frames of one call. Beat This! gives 1,500 (30 s).
+- **The rows.** They are `frames` rows of the family's log-mel, 128 values each, with zero rows at the borders of the
+  chunk (`nagaya-family-beatthis::chunks`). The engine never takes audio (D2).
+- **The logits.** `frames` rows of 2 values: the beat and downbeat outputs of the model's last linear. The family
+  adds the sum head, joins the chunks and picks the peaks.
+- **Quanta.** Each call is one quantum of kind `beats`, within `max_quantum_ms`.
+- **State.** None. A call holds nothing after it ends. The engine declares no part, no slot and no context.
+- **Devices.** None: the engine runs in the CPU group (spec 3.2c). Its `limits().devices` is empty, and its memory
+  terms are in `host`.
+- **Threads.** The factory's `open` gets the thread budget of the CPU group (`[cpu] threads`). **Proposed:** a count,
+  not a pool handle.
+- **Determinism.** The same identity and rows give the same bits, for each count of threads.
+
 ## Speech
 
 The first speech engine is Qwen3-TTS VoiceDesign on a B70 card.

@@ -596,8 +596,10 @@ on 2026-11-26. The rules marked **Proposed** are not her choices yet.
   parse. **Proposed:** no default, so a profile always states the budget.
 - **The threads.** The group thread is `nagaya-cpu`. At the first open of a CPU engine, the group starts `threads`
   worker threads, `nagaya-cpu-<index>`. One quantum can use every worker. The scheduler runs one quantum of the group
-  at a time (5.6), so two quanta never share the workers. **Proposed:** the engine gets the workers as a handle in
-  `open`. Its shape goes into engine-abi with the first CPU engine.
+  at a time (5.6), so two quanta never share the workers. **Proposed:** the first CPU engine gets the budget as a
+  count in `open` (engine-abi "Beats"). Its kernels start that many threads for each task, and the threads end
+  with the task. They inherit the mask of the group thread, the pool set. Reason: the simplest form that works. A
+  pool of persistent workers named `nagaya-cpu-<index>` comes when a measurement shows the cost of the starts.
 - **The cores.** The group thread and its workers pin to the pool set (3.2a), with the normal scheduling policy. No
   CPUs are kept apart for the group. Reason: idle cores kept apart do no work. A measurement of contention with the
   group threads and the CPU pool can change this rule.
@@ -1018,8 +1020,8 @@ speed, so it picks the size from its own measurements. (The first Qwen3.8 engine
 in its Python service, and that split moves into the wrapper of the Qwen3.8 engine.) The watchdog reports each quantum
 that runs past the bound (7.4).
 
-**5.2 Kinds.** Each quantum has a kind: `read`, `prefill`, `decode`, `embed`, `copy`, `step` (an image step), or
-`train` (a micro-batch). Metrics and the cost model use kinds. A kind does not set urgency (the first Qwen3.8 engine did
+**5.2 Kinds.** Each quantum has a kind: `read`, `prefill`, `decode`, `embed`, `copy`, `step` (an image step),
+`train` (a micro-batch), or `beats` (a chunk of a beat tracker, 11.19). Metrics and the cost model use kinds. A kind does not set urgency (the first Qwen3.8 engine did
 the same). An image job runs one `embed` for its text encoders, one `step` for each denoising step, and one `step` for
 the VAE decode (11.9). An embedding job runs one `embed` for each input (11.10).
 
@@ -3341,7 +3343,8 @@ messages with its model's own template, and the template is part of identity (go
 - `profile` and `cluster`: dynamic placement profiles and the `chitchat` cluster view (2.3, 2.4);
 - `cas/{content_id}`: plain HTTP `GET` and `HEAD` for content-addressed snapshots and tap artifacts across machines;
 - `render`, `tokenize` and `detokenize`: served by the family library for bench tools and semantic search;
-- `status` (9.7) and `traces` (13.1).
+- `status` (9.7) and `traces` (13.1);
+- `analysis/beats`: the beat and downbeat times of an audio object (11.19). It moves to the council when gogi has it.
 
 `render`, `tokenize` and `detokenize` (11.4b to 11.4d), the prefix in `identity` (11.4f), `profile` (3.3) and the
 load routes of 3.3b are built. The other routes in this list are not built. Embeddings are not in this list: gogi's
@@ -5125,6 +5128,44 @@ model (milestone 35, engine-abi "Inkling 2"). Each rule below is **Proposed**. R
   - A queue read holds no image. An image part of its context, or a `case_media`, is a 400 that names it.
 - **Cycles.** The served model declares `cycles` with the limit of the engine (11.17). The research model is trained
   at 1 to 5 cycles. Mini is post-trained at 3, so another count on Mini runs outside its training.
+
+**11.19 Beats.** **Proposed** (2026-11-26). Reason: kaijutsu needs the beat and downbeat times of audio while it plays
+(the clock-in of its time model) and of whole clips. Amy, 2026-11-26: "maybe we should have a place for various
+specialized models to hang out? we'll add more analysis models over time", and on the route: "nagaya first, gogi
+later". The model is Beat This! (CPJKU, ISMIR 2024; MIT for code and weights).
+
+- **The route.** `POST /nagaya/v1/analysis/beats`, an extension (11.4a). The path `analysis/<task>` holds each
+  specialized model to come: one route for each task, each with its own request and reply. It moves to
+  `/council/v2/analysis/beats` when gogi has the contract.
+- **The request.** `{"model", "audio", "class"?, "priority"?, "timeout_ms"?, "logits"?}`. `audio` is the content id
+  of an `audio/wav` object (6.15). `class`, `priority` and `timeout_ms` follow 5.3, 5.4 and 5.8; the class is
+  `interactive` by default. `logits` is false by default.
+- **The audio.** A WAV of 22,050 Hz mono, in 16-bit integers or 32-bit floats. Another rate, more channels or
+  another sample format is a 400 `invalid_request` with the param `audio`, and the message names the rate and the
+  channels. The nagaya does not resample: the client does (Amy: kaijutsu does its own transcoding for now). An
+  audio of less than 513 samples (23 ms) or more than 600 s is a 400 with the param `audio`.
+- **The reply.** `{"model", "beats", "downbeats", "frames", "fps", "logits"?, "usage"}`. `beats` and `downbeats`
+  are times in seconds from the first sample, in order. Each downbeat is also a beat, as upstream gives them.
+  `frames` is the count of frames, at `fps` 50. With `logits: true`, `logits` is `{"beat", "downbeat"}`: one f32
+  logit of each frame, so a client can pick its own peaks. `usage` is `{"chunks", "ms"}`.
+- **No tempo, no bar position.** A client derives them from the times. Reason: upstream gives none, and an
+  estimator of the nagaya would be a new algorithm with no oracle.
+- **The job.** The family reads the WAV, computes the log-mel, and splits it into chunks of at most 1,500 frames
+  (30 s), as upstream does. Each chunk is one quantum of kind `beats` on the CPU group (3.2c). Then the family joins
+  the logits (keep the earlier chunk) and picks the peaks (upstream's minimal postprocess). The engine sees log-mel
+  rows only, never audio (D2).
+- **The served model.** The name is the engine's name in the profile, such as `beatthis`. It is not a council model:
+  `GET /council/v2/identity` does not list it, and a council request that names it is a 404. The engine list of the
+  status feed (9.7) and of the cluster view (11.4a) shows it with its state.
+- **The engine.** The kind is `mk-beatthis-cpu`, in each build: it needs no GPU feature. Its config has `weights`: the
+  path of a checkpoint that `tools/beatthis_golden.sh` converted to safetensors (`final0` or `small0`). The
+  checkpoint's `hyper_parameters` give the plan (`nagaya-family-beatthis::plan`).
+- **Bits.** The engine's bits are its own (8.5): the same identity and audio give the same bits, for each count of
+  threads. The tests pin the logits of `small0` on a 10 s clip. The engine identity digests the weights file and the
+  build. **Open:** the canary of 8.1 for this engine.
+- **Limits.** `max_quantum_ms` is 10,000. Reason: a chunk of `final0` takes 1.4 s on 16 threads in a build of the
+  tests. The bound of 600 s of audio gives at most 21 quanta, so an interactive request holds the CPU group for
+  about 30 s at most.
 
 ## 12. Identity
 
