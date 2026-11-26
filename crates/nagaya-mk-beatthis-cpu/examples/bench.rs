@@ -1,9 +1,10 @@
 //! The time of one chunk on the CPU: `cargo run --release --example bench -- [--profile] [runs]`.
 //!
 //! It reads `small0` and `final0` from `BEATTHIS_MODEL_DIR`, and runs chunks of 500 frames (10 s) and 1500 frames
-//! (30 s) on 8 and 16 threads. It gives the median of `runs` runs (default 7) after one warm-up run. The input is a
-//! fixed pseudo-random log-mel; the time does not depend on the values. With `--profile` it also gives the median
-//! time of each task kind for each configuration.
+//! (30 s) on 8 and 16 threads. After one warm-up run, it gives the median and the least time of `runs` runs (default
+//! 7). The machine can be shared, so the least time is the better measure of a change. The input is a fixed
+//! pseudo-random log-mel; the time does not depend on the values. With `--profile` it also gives the median time of
+//! each task kind for each configuration.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -41,7 +42,7 @@ fn main() {
         .map(|a| a.parse().expect("runs is not a number"))
         .unwrap_or(7);
     let dir = PathBuf::from(std::env::var_os("BEATTHIS_MODEL_DIR").expect("set BEATTHIS_MODEL_DIR"));
-    println!("model  frames threads  median_ms");
+    println!("model  frames threads  median_ms  min_ms");
     for name in ["small0", "final0"] {
         let path = dir.join(format!("{name}.safetensors"));
         let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
@@ -82,9 +83,11 @@ fn main() {
                         whole.push(start.elapsed());
                     }
                 }
+                let min = whole.iter().min().copied().unwrap_or_default();
                 println!(
-                    "{name:6} {frames:6} {threads:7} {:10.1}",
-                    median(whole).as_secs_f64() * 1e3
+                    "{name:6} {frames:6} {threads:7} {:10.1} {:7.1}",
+                    median(whole).as_secs_f64() * 1e3,
+                    min.as_secs_f64() * 1e3
                 );
                 for (k, d) in kinds {
                     println!("    {k:10} {:8.1} ms", median(d).as_secs_f64() * 1e3);

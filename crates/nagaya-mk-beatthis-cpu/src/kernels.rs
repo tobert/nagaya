@@ -9,6 +9,8 @@ use std::f32::consts::FRAC_1_SQRT_2;
 
 use nagaya_family_beatthis::plan::Axis;
 
+use crate::lanes::F4;
+
 /// `sum of a[i] * b[i]`: lane `i % 8` holds the terms of its indexes in order, and the lanes join as
 /// `((l0 + l1) + (l2 + l3)) + ((l4 + l5) + (l6 + l7))`.
 pub fn dot(a: &[f32], b: &[f32]) -> f32 {
@@ -161,19 +163,80 @@ pub fn rms_norm(x: &[f32], y: &mut [f32], dim: usize, gamma: &[f32], threads: us
     });
 }
 
-/// `y[r, o] = dot(weight[o], x[r]) + bias[o]`.
+/// The dots of `R` rows of x against `O` rows of the weight, each with the lanes and the join of `dot`. The block
+/// loads each chunk of 8 values once for `R * O` dots, and keeps `R * O` sums of 8 lanes apart, so that the adds do
+/// not wait on each other.
+#[inline(always)]
+#[allow(clippy::needless_range_loop)]
+fn dots<const R: usize, const O: usize>(xs: [&[f32]; R], ws: [&[f32]; O]) -> [[f32; O]; R] {
+    let din = xs[0].len();
+    // l[r][o][h]: lanes 4h to 4h + 3 of the dot of row r and output o.
+    let mut l = [[[F4::zero(); 2]; O]; R];
+    let chunks = din / 8;
+    for c in 0..chunks {
+        for h in 0..2 {
+            let xc: [F4; R] = std::array::from_fn(|r| F4::at(xs[r], c * 8 + 4 * h));
+            let wc: [F4; O] = std::array::from_fn(|o| F4::at(ws[o], c * 8 + 4 * h));
+            for r in 0..R {
+                for o in 0..O {
+                    l[r][o][h] = l[r][o][h].add(xc[r].mul(wc[o]));
+                }
+            }
+        }
+    }
+    std::array::from_fn(|r| {
+        std::array::from_fn(|o| {
+            let (lo, hi) = (l[r][o][0].array(), l[r][o][1].array());
+            let mut lanes = [lo[0], lo[1], lo[2], lo[3], hi[0], hi[1], hi[2], hi[3]];
+            for k in 0..din % 8 {
+                let i = chunks * 8 + k;
+                lanes[k] += xs[r][i] * ws[o][i];
+            }
+            join(lanes)
+        })
+    })
+}
+
+/// The rows of x in a block of `linear`, and the outputs in a block.
+const LINEAR_ROWS: usize = 3;
+const LINEAR_OUTS: usize = 2;
+
+/// `y[r, o] = dot(weight[o], x[r]) + bias[o]`. A worker takes a run of whole rows, and computes them in blocks of
+/// `LINEAR_ROWS` rows by `LINEAR_OUTS` outputs (`dots`). Each value is one `dot`, so the blocks do not change its bits.
 pub fn linear(x: &[f32], y: &mut [f32], din: usize, dout: usize, weight: &[f32], bias: Option<&[f32]>, threads: usize) {
     assert_eq!(weight.len(), dout * din);
     assert_eq!(x.len() / din, y.len() / dout, "x and y have different rows");
+    let put = |v: f32, o: usize| match bias {
+        Some(b) => v + b[o],
+        None => v,
+    };
     split(y, dout, threads, |first, rows| {
-        for (k, row) in rows.chunks_exact_mut(dout).enumerate() {
-            let xr = &x[(first + k) * din..][..din];
-            for (o, v) in row.iter_mut().enumerate() {
-                let d = dot(&weight[o * din..][..din], xr);
-                *v = match bias {
-                    Some(b) => d + b[o],
-                    None => d,
-                };
+        let n = rows.len() / dout;
+        let xr = |r: usize| &x[(first + r) * din..][..din];
+        let wr = |o: usize| &weight[o * din..][..din];
+        let full = n - n % LINEAR_ROWS;
+        let outs = dout - dout % LINEAR_OUTS;
+        for o0 in (0..outs).step_by(LINEAR_OUTS) {
+            let ws: [&[f32]; LINEAR_OUTS] = std::array::from_fn(|o| wr(o0 + o));
+            for r0 in (0..full).step_by(LINEAR_ROWS) {
+                let v: [[f32; LINEAR_OUTS]; LINEAR_ROWS] = dots(std::array::from_fn(|r| xr(r0 + r)), ws);
+                for (r, vr) in v.iter().enumerate() {
+                    for (o, &vo) in vr.iter().enumerate() {
+                        rows[(r0 + r) * dout + o0 + o] = put(vo, o0 + o);
+                    }
+                }
+            }
+            for r in full..n {
+                let [v] = dots([xr(r)], ws);
+                for (o, &vo) in v.iter().enumerate() {
+                    rows[r * dout + o0 + o] = put(vo, o0 + o);
+                }
+            }
+        }
+        for o in outs..dout {
+            for r in 0..n {
+                let [[v]] = dots([xr(r)], [wr(o)]);
+                rows[r * dout + o] = put(v, o);
             }
         }
     });
