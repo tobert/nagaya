@@ -14,13 +14,24 @@ Examples:
     tools/nagaya_web.py --port 9000 --nagaya local=http://127.0.0.1:8091
     tools/nagaya_web.py --url http://127.0.0.1:8091    # one nagaya, with the name `nagaya`
 
-The app has no login. Bind it to another address than 127.0.0.1 only on a network that you trust.
+Logins: with `--auth none` (the default) the app has no login. Bind it to another address than 127.0.0.1 only on a
+network that you trust. With `--auth tailscale-serve` the app binds only to loopback, behind `tailscale serve` on the
+same machine:
+
+    tools/nagaya_web.py --auth tailscale-serve
+    tailscale serve --bg --https=443 http://127.0.0.1:8096
+
+Serve sets `Tailscale-User-Login` on each request from a tailnet user, and drops one that the client sends. The app
+answers 401 to a request without it, such as one from a tagged node, and logs the login with each request. A process
+on this machine can still reach 127.0.0.1 and send any header, so the machine is trusted.
+
 It needs only the Python standard library.
 """
 
 import argparse
 import http.client
 import http.server
+import ipaddress
 import json
 import os
 import pathlib
@@ -88,6 +99,19 @@ PREFIXES = ("/council/", "/nagaya/")
 REQUEST_HEADERS = ("content-type", "accept", "range")
 RESPONSE_HEADERS = ("content-type", "location", "content-range", "accept-ranges", "request-id", "cache-control")
 NAME = re.compile(r"[A-Za-z0-9_.-]+")
+# `none`: no login. `tailscale-serve`: the login is the header that `tailscale serve` sets (see the module docstring).
+AUTHS = ("none", "tailscale-serve")
+LOGIN_HEADER = "Tailscale-User-Login"
+
+
+def loopback(host):
+    """Whether a bind to `host` takes connections only from this machine."""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def nagaya(text):
@@ -99,8 +123,13 @@ def nagaya(text):
     return name, url.rstrip("/")
 
 
-def handler(nagayas):
-    """The request handler class for `nagayas`: a list of (name, URL), or one URL such as http://127.0.0.1:8091."""
+def handler(nagayas, auth="none"):
+    """The request handler class for `nagayas`: a list of (name, URL), or one URL such as http://127.0.0.1:8091.
+
+    `auth` is one of AUTHS. With `tailscale-serve`, each request needs a LOGIN_HEADER, else it is a 401.
+    """
+    if auth not in AUTHS:
+        raise ValueError(f"auth must be one of {', '.join(AUTHS)}, not {auth!r}")
     if isinstance(nagayas, str):
         nagayas = [("nagaya", nagayas)]
     targets = {}
@@ -114,9 +143,26 @@ def handler(nagayas):
     class Handler(http.server.BaseHTTPRequestHandler):
         # HTTP/1.0: the connection closes after each response, so a stream needs no length and no chunks.
         protocol_version = "HTTP/1.0"
+        login = None
+
+        def parse_request(self):
+            # Each method passes here first, so no route serves a request without a login.
+            if not super().parse_request():
+                return False
+            if auth == "none":
+                return True
+            self.login = self.headers.get(LOGIN_HEADER) or None
+            if self.login is None:
+                self.send_error(401, f"no {LOGIN_HEADER}",
+                                f"This app runs behind tailscale serve, which sets {LOGIN_HEADER} for a tailnet user. "
+                                f"The request has none: it did not come through serve, or it came from a tagged node. "
+                                f"Open the app at its https://<machine>.<tailnet>.ts.net address as a tailnet user.")
+                return False
+            return True
 
         def log_message(self, format, *args):
-            sys.stderr.write(f"{self.address_string()} {format % args}\n")
+            who = f" {self.login}" if self.login else ""
+            sys.stderr.write(f"{self.address_string()}{who} {format % args}\n")
 
         def do_GET(self):
             if self.path in ("/", "/index.html"):
@@ -212,7 +258,8 @@ def handler(nagayas):
     return Handler
 
 
-def main():
+def options(argv=None):
+    """The parsed command line. A `tailscale-serve` login off a loopback bind is an error."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--nagaya", type=nagaya, action="append", metavar="NAME=URL",
                         help="a nagaya to pass requests to; give it once for each nagaya. The first one serves the "
@@ -223,16 +270,29 @@ def main():
     parser.add_argument("--url", help="the base URL of one nagaya, with the name `nagaya`, in place of --nagaya")
     parser.add_argument("--host", default="127.0.0.1", help="the address to bind (default 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8096, help="the port to bind (default 8096)")
-    args = parser.parse_args()
+    parser.add_argument("--auth", choices=AUTHS, default="none",
+                        help="none: no login (default). tailscale-serve: each request needs the login that "
+                             "`tailscale serve` sets; the app binds only to loopback")
+    args = parser.parse_args(argv)
     if sum(map(bool, (args.url, args.nagaya, args.seed))) > 1:
         parser.error("give one of --url, --nagaya and --seed, not two")
+    if args.auth == "tailscale-serve" and not loopback(args.host):
+        # Off loopback, any client could send the login header itself, and the app could not tell it from serve's.
+        parser.error(f"--auth tailscale-serve needs a loopback --host such as 127.0.0.1, not {args.host!r}: a client "
+                     f"that reaches the app directly could send {LOGIN_HEADER} itself")
+    return args
+
+
+def main():
+    args = options()
     if args.url:
         nagayas = [("nagaya", args.url.rstrip("/"))]
     else:
         nagayas = args.nagaya or discover(seeds(args.seed, os.environ), socket.gethostname())
-    server = http.server.ThreadingHTTPServer((args.host, args.port), handler(nagayas))
+    server = http.server.ThreadingHTTPServer((args.host, args.port), handler(nagayas, args.auth))
     names = ", ".join(f"{n} at {u}" for n, u in nagayas)
-    print(f"nagaya web app on http://{args.host}:{args.port}, in front of {names}", file=sys.stderr)
+    login = "logins from tailscale serve" if args.auth == "tailscale-serve" else "no login"
+    print(f"nagaya web app on http://{args.host}:{args.port} ({login}), in front of {names}", file=sys.stderr)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

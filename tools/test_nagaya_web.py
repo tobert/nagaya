@@ -1,7 +1,9 @@
 """Tests of nagaya_web.py against a fake nagaya on a local port. Run: python3 -m unittest test_nagaya_web (in tools/)."""
 
+import contextlib
 import http.client
 import http.server
+import io
 import json
 import re
 import threading
@@ -224,6 +226,73 @@ class Nagayas(unittest.TestCase):
         self.assertEqual(nagaya_web.seeds(None, {"NAGAYA_URLS": " , "}), ["http://127.0.0.1:8090"])
         self.assertEqual(nagaya_web.seeds(None, {}), ["http://127.0.0.1:8090"])
 
+
+class TailscaleServe(unittest.TestCase):
+    """The app behind `tailscale serve`: each request needs the login that serve sets, and the bind is loopback."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.upstream = serve(http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeNagaya))
+        url = f"http://127.0.0.1:{cls.upstream.server_address[1]}"
+        app = nagaya_web.handler(url, auth="tailscale-serve")
+        cls.app = serve(http.server.ThreadingHTTPServer(("127.0.0.1", 0), app))
+
+    @classmethod
+    def tearDownClass(cls):
+        for server in (cls.app, cls.upstream):
+            server.shutdown()
+            server.server_close()
+
+    def request(self, method, path, headers=None, body=None):
+        c = http.client.HTTPConnection("127.0.0.1", self.app.server_address[1], timeout=10)
+        c.request(method, path, body=body, headers=headers or {})
+        r = c.getresponse()
+        return r.status, r.read()
+
+    def test_a_request_without_a_login_is_a_401_on_each_route_and_does_not_pass(self):
+        before = len(FakeNagaya.seen)
+        for method, path in (("GET", "/"), ("GET", "/app/web/core.js"), ("GET", "/app/nagayas"),
+                             ("GET", "/council/v2/identity"), ("POST", "/council/v2/generations"),
+                             ("PUT", "/nagaya/v1/profile"), ("DELETE", "/nagaya/v1/engines/x"),
+                             ("HEAD", "/council/v2/identity")):
+            for headers in ({}, {"Tailscale-User-Login": ""}, {"Tailscale-User-Login": "  "}):
+                status, body = self.request(method, path, headers, b"{}" if method in ("POST", "PUT") else None)
+                self.assertEqual(status, 401, (method, path, headers))
+                if method != "HEAD":
+                    self.assertIn(b"tailscale serve", body, (method, path))
+        self.assertEqual(len(FakeNagaya.seen), before)
+
+    def test_a_request_with_a_login_passes_and_the_log_names_the_login(self):
+        login = {"Tailscale-User-Login": "user@example.com"}
+        log = io.StringIO()
+        with contextlib.redirect_stderr(log):
+            status, body = self.request("GET", "/council/v2/identity", login)
+            page, _ = self.request("GET", "/", login)
+        self.assertEqual((status, json.loads(body), page), (200, {"models": []}, 200))
+        self.assertIn("user@example.com", log.getvalue())
+
+    def test_the_app_without_auth_needs_no_login(self):
+        app = serve(http.server.ThreadingHTTPServer(("127.0.0.1", 0), nagaya_web.handler(
+            f"http://127.0.0.1:{self.upstream.server_address[1]}")))
+        try:
+            c = http.client.HTTPConnection("127.0.0.1", app.server_address[1], timeout=10)
+            c.request("GET", "/council/v2/identity")
+            self.assertEqual(c.getresponse().status, 200)
+        finally:
+            app.shutdown()
+            app.server_close()
+
+    def test_serve_auth_binds_only_to_loopback(self):
+        # Off loopback, any client could send the header itself; only serve on this machine may reach the app.
+        for host in ("127.0.0.1", "127.0.0.2", "localhost"):
+            args = nagaya_web.options(["--auth", "tailscale-serve", "--host", host, "--url", "http://127.0.0.1:1"])
+            self.assertEqual((args.auth, args.host), ("tailscale-serve", host))
+        for host in ("0.0.0.0", "192.0.2.10", "b70host", ""):
+            err = io.StringIO()
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(err):
+                nagaya_web.options(["--auth", "tailscale-serve", "--host", host, "--url", "http://127.0.0.1:1"])
+            self.assertIn("loopback", err.getvalue(), host)
+        self.assertEqual(nagaya_web.options(["--host", "0.0.0.0", "--url", "http://127.0.0.1:1"]).auth, "none")
 
 
 class ClusterSeed(http.server.BaseHTTPRequestHandler):

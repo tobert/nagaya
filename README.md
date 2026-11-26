@@ -105,7 +105,7 @@ See [`docs/deploy.md`](docs/deploy.md) for systemd user unit installation, boots
 
 nagaya is an active research project running daily on a three-machine home lab (AMD Strix Halo, dual Intel Arc Pro B70, NVIDIA DGX Spark). The council v2 endpoints track [gogi](https://github.com/tobert/gogi); internal control routes under `/nagaya/v1` may change without notice.
 
-**Network trust:** nagaya has **no authentication** on its HTTP or gossip ports. Bind `http_bind` and `gossip_bind` only to a private network or VPN (such as a tailnet) that you trust. The same applies to `tools/nagaya_web.py`.
+**Network trust:** nagaya has **no authentication** on its HTTP or gossip ports. Bind `http_bind` and `gossip_bind` only to a private network or VPN (such as a tailnet) that you trust. `tools/nagaya_web.py` has no login by default either. With `--auth tailscale-serve` it binds only to loopback behind [`tailscale serve`](https://tailscale.com/kb/1312/serve) and answers each request without serve's `Tailscale-User-Login` with 401 (see its docstring). That gates the web app only: limit who reaches the nagaya ports with tailnet ACLs.
 
 ## Documentation
 
