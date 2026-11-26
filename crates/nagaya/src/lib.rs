@@ -5,6 +5,7 @@ pub mod affinity;
 pub mod arena;
 pub mod beats;
 pub mod beatthis;
+pub mod beatthis_gfx1151;
 pub mod bootstrap;
 pub mod cluster;
 pub mod council;

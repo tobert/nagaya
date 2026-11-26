@@ -8,8 +8,13 @@ edition = "2024"
 hip = ["dep:nagaya-mk-hip", "nagaya-mk-hip/hip"]
 
 [dependencies]
+nagaya-abi = { path = "../nagaya-abi" }
 nagaya-family-beatthis = { path = "../nagaya-family-beatthis" }
+sha2 = "0.10.9"
 nagaya-mk-hip = { path = "../nagaya-mk-hip", optional = true }
+
+[build-dependencies]
+sha2 = "0.10.9"
 
 [dev-dependencies]
 blake3 = "1.8.5"

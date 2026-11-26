@@ -231,6 +231,11 @@ impl Registry {
         // The CPU group needs no GPU feature (spec 3.2c).
         registry.register(crate::beatthis::KIND, Box::new(crate::beatthis::BeatThisFactory));
         #[cfg(feature = "hip")]
+        registry.register(
+            crate::beatthis_gfx1151::KIND,
+            Box::new(crate::beatthis_gfx1151::BeatThisGfx1151Factory),
+        );
+        #[cfg(feature = "hip")]
         registry.register(crate::qwen38::KIND, Box::new(crate::qwen38::Qwen38Factory));
         #[cfg(feature = "hip")]
         registry.register(

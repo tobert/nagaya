@@ -39,7 +39,39 @@ fn run(program: &Path, arguments: &[String], directory: &Path, what: &str) -> Ve
     output.stdout
 }
 
+/// Add each source file under `dir` to the fingerprint, in name order.
+fn add(dir: &Path, hasher: &mut sha2::Sha256) {
+    use sha2::Digest;
+    let mut files: Vec<_> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect();
+    files.sort();
+    for f in files {
+        if f.is_dir() {
+            add(&f, hasher);
+        } else if f
+            .extension()
+            .is_some_and(|e| matches!(e.to_str(), Some("rs" | "h" | "hip")))
+        {
+            hasher.update(f.file_name().unwrap().to_string_lossy().as_bytes());
+            hasher.update(std::fs::read(&f).unwrap());
+        }
+    }
+}
+
 fn main() {
+    // The engine has no canary yet (spec 11.19), so its identity holds a fingerprint of the sources whose bits it gives.
+    {
+        use sha2::Digest;
+        let mut h = sha2::Sha256::new();
+        for dir in ["src", "hip", "kernels", "../nagaya-family-beatthis/src"] {
+            add(Path::new(dir), &mut h);
+        }
+        println!(
+            "cargo:rustc-env=NAGAYA_BEATTHIS_GFX1151_SOURCE_SHA256={:x}",
+            h.finalize()
+        );
+        println!("cargo:rerun-if-changed=src");
+        println!("cargo:rerun-if-changed=../nagaya-family-beatthis/src");
+    }
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=hip");
     println!("cargo:rerun-if-changed=kernels");

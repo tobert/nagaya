@@ -1207,6 +1207,7 @@ dependencies = [
  "nagaya-family-beatthis",
  "nagaya-ledger",
  "nagaya-mk-beatthis-cpu",
+ "nagaya-mk-beatthis-gfx1151",
  "nagaya-mk-bmg",
  "nagaya-mk-embeddinggemma2-bmg",
  "nagaya-mk-gemma4-bmg",
@@ -1319,11 +1320,13 @@ name = "nagaya-mk-beatthis-gfx1151"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "nagaya-abi",
  "nagaya-family-beatthis",
  "nagaya-mk-beatthis-cpu",
  "nagaya-mk-hip",
  "safetensors",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

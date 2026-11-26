@@ -13,6 +13,7 @@ hip = [
     "nagaya-mk-qwen38-gfx1151/hip",
     "dep:nagaya-text-qwen38",
     "nagaya-mk-qwenimage21-gfx1151/hip",
+    "nagaya-mk-beatthis-gfx1151/hip",
 ]
 # The B70 engines: Gemma 4 on two cards, and Qwen3-TTS, SDXL, EmbeddingGemma 2, LFM3 and Inkling 2 on one each. The config parse and
 # the family libraries build with no feature.
@@ -52,6 +53,7 @@ nagaya-mk-qwenimage21-gfx1151 = { version = "0.1.0", path = "../nagaya-mk-qwenim
 nagaya-text-qwenimage21 = { version = "0.1.0", path = "../nagaya-text-qwenimage21" }
 nagaya-family-beatthis = { version = "0.1.0", path = "../nagaya-family-beatthis" }
 nagaya-mk-beatthis-cpu = { version = "0.1.0", path = "../nagaya-mk-beatthis-cpu" }
+nagaya-mk-beatthis-gfx1151 = { version = "0.1.0", path = "../nagaya-mk-beatthis-gfx1151" }
 nagaya-mk-embeddinggemma2-bmg = { version = "0.1.0", path = "../nagaya-mk-embeddinggemma2-bmg" }
 nagaya-text-embeddinggemma2 = { version = "0.1.0", path = "../nagaya-text-embeddinggemma2" }
 nagaya-mk-lfm3-bmg = { version = "0.1.0", path = "../nagaya-mk-lfm3-bmg" }

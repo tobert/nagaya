@@ -126,12 +126,12 @@ impl BeatsService {
     }
 }
 
-/// The beats services of the profile's engines of the kind `mk-beatthis-cpu`.
+/// The beats services of the profile's engines of the kinds `mk-beatthis-cpu` and `mk-beatthis-gfx1151`.
 pub fn services(profile: &PlacementProfile, ports: &Ports) -> Result<Vec<BeatsService>, String> {
     profile
         .engines
         .iter()
-        .filter(|e| e.kind == crate::beatthis::KIND)
+        .filter(|e| e.kind == crate::beatthis::KIND || e.kind == crate::beatthis_gfx1151::KIND)
         .map(|e| BeatsService::new(&e.name, ports.clone()))
         .collect()
 }
