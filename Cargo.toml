@@ -27,6 +27,7 @@ members = [
     "crates/nagaya-text-inkling2",
     "crates/nagaya-family-beatthis",
     "crates/nagaya-mk-beatthis-cpu",
+    "crates/nagaya-mk-beatthis-gfx1151",
     "crates/nagaya-council",
     "crates/nagaya-text-toy",
     "crates/nagaya-telemetry",

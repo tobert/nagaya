@@ -1315,6 +1315,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "nagaya-mk-beatthis-gfx1151"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "nagaya-family-beatthis",
+ "nagaya-mk-beatthis-cpu",
+ "nagaya-mk-hip",
+ "safetensors",
+ "serde_json",
+]
+
+[[package]]
 name = "nagaya-mk-bmg"
 version = "0.1.0"
 dependencies = [

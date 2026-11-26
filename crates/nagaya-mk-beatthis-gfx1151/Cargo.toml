@@ -1,0 +1,18 @@
+[package]
+name = "nagaya-mk-beatthis-gfx1151"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+# The HIP kernels and the runtime. A build without it has the plan check only.
+hip = ["dep:nagaya-mk-hip", "nagaya-mk-hip/hip"]
+
+[dependencies]
+nagaya-family-beatthis = { path = "../nagaya-family-beatthis" }
+nagaya-mk-hip = { path = "../nagaya-mk-hip", optional = true }
+
+[dev-dependencies]
+blake3 = "1.8.5"
+nagaya-mk-beatthis-cpu = { path = "../nagaya-mk-beatthis-cpu" }
+safetensors = "0.8.0"
+serde_json = { version = "1.0.154", features = ["float_roundtrip", "preserve_order"] }
