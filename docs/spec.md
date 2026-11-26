@@ -82,8 +82,8 @@ A capture of the tree of the B70 machine shows these facts:
 - Both cards have `local_cpulist` 0-31 and `numa_node` -1. Thus the machine has no NUMA locality to use (3.2b).
 
 Telemetry takes hardware attributes from the probed inventory, not from constants in code. A CPU that runs work is a
-device in the inventory too, with host memory as its tier. A machine with no GPU engine can also join the cluster to
-serve as a coordinator, run CPU devices (13.2), or hold a store tier.
+device in the inventory too, with host memory as its tier. Its engines are in the CPU group (3.2c). A machine with no
+GPU engine can also join the cluster to serve as a coordinator, run a CPU group (3.2c), or hold a store tier.
 
 **The probe reads files, not a GPU runtime.** The inventory probe reads sysfs, procfs and `/dev` under a root path.
 It does not open a GPU runtime to count devices. A call into a vendor library is allowed only when it opens no device
@@ -383,7 +383,8 @@ The placement profile is one TOML file. Each `[[engines]]` entry has `name`, `ki
 `family` table (11.3) and `share`. An entry can also have `residency` and `pinned` (3.3a).
 Each `[[budgets]]` entry has `tiers` and `bytes`, and a tier is
 `host` or `device(i)`. The `[store]` table has `nvme`, an optional `host` (4.1a), an optional `interval_copies`
-(6.13), 0 by default, and an optional `objects` (6.15).
+(6.13), 0 by default, and an optional `objects` (6.15). An entry with `devices = []` is a CPU engine, and a profile with
+a CPU engine has a `[cpu]` table with `threads` (3.2c).
 
 The key `pin_identity` is gone. A profile that names it does not parse, because the canary holds the bits of an engine
 (8.1).
@@ -476,7 +477,8 @@ thread priorities:
 - **A bounded CPU worker pool.** Rendering, tokenization, hashing, safetensors conversion, and CPU device passes (13.2)
   run on a bounded pool pinned to the remaining cores at `SCHED_BATCH`. Long CPU work yields between chunks to obey
   `max_quantum_ms`. On unified-memory machines, such as the Strix Halo machine, the scheduler pauses background CPU
-  memory work during a GPU pass to protect GPU memory bandwidth.
+  memory work during a GPU pass to protect GPU memory bandwidth. The CPU group follows this rule by class (3.2c).
+  **Open:** no code applies the pause yet.
 - **The row threads.** After a pass that several
   jobs share, each row has host work that uses no engine. That work is the read of its logit row and the draw of its
   token. The thread that ran the pass gives that work to its row threads, and it waits for all of them. Then it ends
@@ -577,6 +579,40 @@ The Level Zero runtime and IGC start threads of their own, as the HIP runtime do
 thread the mask of the thread that starts it. The engine calls `zeInit` on
 the group thread, so those threads start with the pool set. The nagaya does not pin a thread that a runtime starts.
 **Open:** measure the masks of the Level Zero threads on the B70 machine, as on gfx1151.
+
+**3.2c The CPU group.** Reason: some engines run on the CPU. The first is Beat This!, a beat tracker that kaijutsu
+calls while it plays. Later ones can be encoders and lenses (13.2). Amy, 2026-11-26: "let's add cpu device group.
+might be handy over time to think of it similarly for scheduling so let's try." A CPU engine thus gets the scheduler,
+the classes and the ledger of a GPU engine. Amy chose the count of groups, the pause rule and the cores by interview,
+on 2026-11-26. The rules marked **Proposed** are not her choices yet.
+
+- **A CPU engine.** A profile entry with `devices = []` is a CPU engine. Its `limits().devices` is empty, so the check
+  of 2.4 refuses a GPU kind with no devices, and a CPU kind with devices.
+- **One group for each machine.** Every CPU engine of the profile is in one CPU group. The group has one group thread
+  and one scheduler (5.3 to 5.6), as a GPU group has. Reason: the scheduler then orders the work of all CPU engines by
+  class and priority. An interactive call goes before a batch job of another CPU engine.
+- **The thread budget.** The `[cpu]` table of the profile has `threads`: from 1 to the number of CPUs in the pool set
+  (3.2a). A profile with a CPU engine and no `[cpu]` table does not parse. A `[cpu]` table with no CPU engine does not
+  parse. **Proposed:** no default, so a profile always states the budget.
+- **The threads.** The group thread is `nagaya-cpu`. At the first open of a CPU engine, the group starts `threads`
+  worker threads, `nagaya-cpu-<index>`. One quantum can use every worker. The scheduler runs one quantum of the group
+  at a time (5.6), so two quanta never share the workers. **Proposed:** the engine gets the workers as a handle in
+  `open`. Its shape goes into engine-abi with the first CPU engine.
+- **The cores.** The group thread and its workers pin to the pool set (3.2a), with the normal scheduling policy. No
+  CPUs are kept apart for the group. Reason: idle cores kept apart do no work. A measurement of contention with the
+  group threads and the CPU pool can change this rule.
+- **The bits do not change with the thread count.** One worker computes each output value whole, with a fixed order
+  of its sums. The split of the values among the workers can change with `threads`, and the order of the sums in a
+  value cannot. Thus the same identity and inputs give the same bits for each `threads`. **Proposed:** the
+  conformance suite (8.3) runs each CPU engine with 1 thread and with 2 or more, and compares the bits.
+- **Memory.** A CPU engine declares terms in the tier `host` only (4.2). A term in a tier `device(i)` is an error at
+  `plan`, and the profile is refused.
+- **The pause by class.** On a machine with unified memory, the pause of 3.2 applies to the CPU group by class. During a
+  GPU pass, an interactive CPU quantum runs. A batch or filler CPU quantum waits until the GPU pass ends. Reason: a call
+  from kaijutsu while it plays must not wait for each GPU pass. **Open:** measure how much a CPU quantum slows a
+  Qwen3.8 decode step on the Strix Halo machine, in a card window (15 item 19).
+- **Heartbeat and watchdog.** The CPU group has a heartbeat and a `max_quantum_ms`, as a GPU group has (7.4, 10.4).
+- **Telemetry.** The `device` attribute of the CPU group is `cpu` (9.4).
 
 **3.3 Engine lifecycle and profile swaps.** The nagaya opens each engine at start, from the profile. The HIP runtime
 cannot end inside a process: its teardown segfaults. Thus a profile change that must free such an engine persists the
@@ -5285,3 +5321,6 @@ pin them, so a measurement shows whether they leave the pool set.
 18\. How does a build find a reply that a client cut and sent back (11.3c, "the cuts from the index")? A build tries
 each sealed snapshot that a pass over the index finds. **Open:** can the index hold a few tokens of prefix and suffix,
 so that the search is more targeted?
+
+19\. How much does a CPU group quantum slow a GPU pass on a machine with unified memory (3.2c, "The pause by
+class")? Measure a Qwen3.8 decode step with and without an interactive Beat This! call on the Strix Halo machine.
