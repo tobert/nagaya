@@ -174,3 +174,165 @@ impl F4 {
         a
     }
 }
+
+/// `((l0 + l1) + (l2 + l3)) + ((l4 + l5) + (l6 + l7))`: the join of the 8 lanes of a dot.
+#[inline(always)]
+pub fn join(l: [f32; 8]) -> f32 {
+    ((l[0] + l[1]) + (l[2] + l[3])) + ((l[4] + l[5]) + (l[6] + l[7]))
+}
+
+/// Adds the tail terms `a[i] * b[i]` (the values past the last chunk of 8) to their lanes, and joins the lanes.
+#[inline(always)]
+fn finish(mut lanes: [f32; 8], a: &[f32], b: &[f32]) -> f32 {
+    let chunks = a.len() / 8;
+    for (k, lane) in lanes.iter_mut().enumerate().take(a.len() % 8) {
+        let i = chunks * 8 + k;
+        *lane += a[i] * b[i];
+    }
+    join(lanes)
+}
+
+/// The kernel code of one level (`isa::Level`). Each method gives the bits of the scalar form.
+pub trait Isa {
+    /// The dots of `R` rows of x against `O` rows of a weight, each with the 8 lanes and the join of
+    /// `kernels::dot`. A block loads each chunk of 8 values once for `R * O` dots, and keeps the `R * O` sums
+    /// apart, so the adds do not wait on each other.
+    fn dots<const R: usize, const O: usize>(xs: [&[f32]; R], ws: [&[f32]; O]) -> [[f32; O]; R];
+}
+
+/// SSE: the 8 lanes of a dot in two `F4`.
+pub struct Sse;
+
+impl Isa for Sse {
+    #[inline(always)]
+    #[allow(clippy::needless_range_loop)]
+    fn dots<const R: usize, const O: usize>(xs: [&[f32]; R], ws: [&[f32]; O]) -> [[f32; O]; R] {
+        let din = xs[0].len();
+        // l[r][o][h]: lanes 4h to 4h + 3 of the dot of row r and output o.
+        let mut l = [[[F4::zero(); 2]; O]; R];
+        for c in 0..din / 8 {
+            for h in 0..2 {
+                let xc: [F4; R] = std::array::from_fn(|r| F4::at(xs[r], c * 8 + 4 * h));
+                let wc: [F4; O] = std::array::from_fn(|o| F4::at(ws[o], c * 8 + 4 * h));
+                for r in 0..R {
+                    for o in 0..O {
+                        l[r][o][h] = l[r][o][h].add(xc[r].mul(wc[o]));
+                    }
+                }
+            }
+        }
+        std::array::from_fn(|r| {
+            std::array::from_fn(|o| {
+                let (lo, hi) = (l[r][o][0].array(), l[r][o][1].array());
+                finish([lo[0], lo[1], lo[2], lo[3], hi[0], hi[1], hi[2], hi[3]], xs[r], ws[o])
+            })
+        })
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+pub use wide::{Avx2, Avx512};
+
+/// The AVX2 and AVX-512 levels. Their methods run only in the functions of `isa::avx2` and `isa::avx512`, which the
+/// dispatch calls when the CPU has the instructions.
+#[cfg(target_arch = "x86_64")]
+mod wide {
+    use std::arch::x86_64::*;
+
+    use super::{Isa, finish};
+
+    /// AVX2: the 8 lanes of a dot in one register.
+    pub struct Avx2;
+
+    /// AVX-512F: the 8 lanes of two dots in one register.
+    pub struct Avx512;
+
+    #[inline(always)]
+    fn lanes8(v: __m256) -> [f32; 8] {
+        let mut a = [0.0f32; 8];
+        // SAFETY: `a` holds 8 values; the caller runs with AVX (isa::avx2 or isa::avx512).
+        unsafe { _mm256_storeu_ps(a.as_mut_ptr(), v) };
+        a
+    }
+
+    /// 8 values from `s[at..at + 8]`.
+    #[inline(always)]
+    fn load8(s: &[f32], at: usize) -> __m256 {
+        let c = &s[at..at + 8];
+        // SAFETY: `c` holds 8 values; the caller runs with AVX.
+        unsafe { _mm256_loadu_ps(c.as_ptr()) }
+    }
+
+    impl Isa for Avx2 {
+        #[inline(always)]
+        #[allow(clippy::needless_range_loop)]
+        fn dots<const R: usize, const O: usize>(xs: [&[f32]; R], ws: [&[f32]; O]) -> [[f32; O]; R] {
+            let din = xs[0].len();
+            // SAFETY: the caller runs with AVX2.
+            unsafe {
+                let mut l = [[_mm256_setzero_ps(); O]; R];
+                for c in 0..din / 8 {
+                    let xc: [__m256; R] = std::array::from_fn(|r| load8(xs[r], c * 8));
+                    for o in 0..O {
+                        let w = load8(ws[o], c * 8);
+                        for r in 0..R {
+                            l[r][o] = _mm256_add_ps(l[r][o], _mm256_mul_ps(xc[r], w));
+                        }
+                    }
+                }
+                std::array::from_fn(|r| std::array::from_fn(|o| finish(lanes8(l[r][o]), xs[r], ws[o])))
+            }
+        }
+    }
+
+    impl Isa for Avx512 {
+        /// The outputs go in pairs: one register holds the lanes of output `2p` in its low half and of `2p + 1` in
+        /// its high half, and the chunk of x is in both halves. An odd last output uses an AVX register.
+        #[inline(always)]
+        #[allow(clippy::needless_range_loop)]
+        fn dots<const R: usize, const O: usize>(xs: [&[f32]; R], ws: [&[f32]; O]) -> [[f32; O]; R] {
+            let din = xs[0].len();
+            let pairs = O / 2;
+            let mut out = [[0.0f32; O]; R];
+            // SAFETY: the caller runs with AVX-512F.
+            unsafe {
+                let mut l = [[_mm512_setzero_ps(); O]; R];
+                let mut odd = [_mm256_setzero_ps(); R];
+                for c in 0..din / 8 {
+                    let xc: [__m512; R] = std::array::from_fn(|r| {
+                        _mm512_castpd_ps(_mm512_broadcast_f64x4(_mm256_castps_pd(load8(xs[r], c * 8))))
+                    });
+                    for p in 0..pairs {
+                        let lo = _mm512_castps256_ps512(load8(ws[2 * p], c * 8));
+                        let w = _mm512_castpd_ps(_mm512_insertf64x4::<1>(
+                            _mm512_castps_pd(lo),
+                            _mm256_castps_pd(load8(ws[2 * p + 1], c * 8)),
+                        ));
+                        for r in 0..R {
+                            l[r][p] = _mm512_add_ps(l[r][p], _mm512_mul_ps(xc[r], w));
+                        }
+                    }
+                    if O % 2 == 1 {
+                        let w = load8(ws[O - 1], c * 8);
+                        for r in 0..R {
+                            odd[r] = _mm256_add_ps(odd[r], _mm256_mul_ps(_mm512_castps512_ps256(xc[r]), w));
+                        }
+                    }
+                }
+                for r in 0..R {
+                    for p in 0..pairs {
+                        let mut a = [0.0f32; 16];
+                        _mm512_storeu_ps(a.as_mut_ptr(), l[r][p]);
+                        let (lo, hi) = a.split_at(8);
+                        out[r][2 * p] = finish(lo.try_into().unwrap(), xs[r], ws[2 * p]);
+                        out[r][2 * p + 1] = finish(hi.try_into().unwrap(), xs[r], ws[2 * p + 1]);
+                    }
+                    if O % 2 == 1 {
+                        out[r][O - 1] = finish(lanes8(odd[r]), xs[r], ws[O - 1]);
+                    }
+                }
+            }
+            out
+        }
+    }
+}

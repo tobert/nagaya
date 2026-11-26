@@ -1,10 +1,11 @@
-//! The time of one chunk on the CPU: `cargo run --release --example bench -- [--profile] [runs]`.
+//! The time of one chunk on the CPU: `cargo run --release --example bench -- [--profile] [--level L] [runs]`.
 //!
 //! It reads `small0` and `final0` from `BEATTHIS_MODEL_DIR`, and runs chunks of 500 frames (10 s) and 1500 frames
 //! (30 s) on 8 and 16 threads. After one warm-up run, it gives the median and the least time of `runs` runs (default
 //! 7). The machine can be shared, so the least time is the better measure of a change. The input is a fixed
 //! pseudo-random log-mel; the time does not depend on the values. With `--profile` it also gives the median time of
-//! each task kind for each configuration.
+//! each task kind for each configuration. `--level sse|avx2|avx512` caps the kernels at that level (`isa::Level`);
+//! the default is the best level of the CPU.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -15,6 +16,7 @@ use nagaya_family_beatthis::mel::MELS;
 use nagaya_family_beatthis::plan::{self, Config, Task};
 use nagaya_family_beatthis::weights::{self, Tensors};
 use nagaya_mk_beatthis_cpu as cpu;
+use nagaya_mk_beatthis_cpu::isa::{self, Level};
 
 fn kind(t: &Task) -> &'static str {
     match t {
@@ -36,12 +38,27 @@ fn median(mut v: Vec<Duration>) -> Duration {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let profile = args.iter().any(|a| a == "--profile");
+    let level = match args.iter().position(|a| a == "--level") {
+        Some(i) => {
+            let name = args.get(i + 1).expect("--level takes a name");
+            *Level::ALL
+                .iter()
+                .find(|l| l.name() == name)
+                .unwrap_or_else(|| panic!("no level {name}: sse, avx2 or avx512"))
+        }
+        None => isa::detected(),
+    };
+    isa::with_level(level, || bench(&args, profile))
+}
+
+fn bench(args: &[String], profile: bool) {
     let runs: usize = args
         .iter()
-        .find(|a| !a.starts_with("--"))
+        .find(|a| !a.starts_with("--") && Level::ALL.iter().all(|l| l.name() != *a))
         .map(|a| a.parse().expect("runs is not a number"))
         .unwrap_or(7);
     let dir = PathBuf::from(std::env::var_os("BEATTHIS_MODEL_DIR").expect("set BEATTHIS_MODEL_DIR"));
+    println!("level {}", isa::level().name());
     println!("model  frames threads  median_ms  min_ms");
     for name in ["small0", "final0"] {
         let path = dir.join(format!("{name}.safetensors"));

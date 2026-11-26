@@ -4,6 +4,7 @@
 //! model runs the same plan with its own kernels, so this crate is also the reference of each port.
 
 pub mod engine;
+pub mod isa;
 pub mod kernels;
 mod lanes;
 mod pool;

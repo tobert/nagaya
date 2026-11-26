@@ -7,6 +7,7 @@
 
 #[path = "../../nagaya-family-beatthis/tests/common/mod.rs"]
 mod common;
+mod levels;
 
 use std::time::Instant;
 
@@ -194,6 +195,38 @@ fn the_bits_of_final0_are_pinned() {
         PIN_FINAL0,
         "the logits of final0 moved"
     );
+}
+
+fn digest(beat: &[f32], down: &[f32]) -> String {
+    let mut h = blake3::Hasher::new();
+    for v in beat.iter().chain(down) {
+        h.update(&v.to_le_bytes());
+    }
+    h.finalize().to_hex().to_string()
+}
+
+/// Each level of the kernels (`isa::Level`) that the CPU has gives the bits of the pins: small0 on the 10 s case,
+/// and final0 on the 30 s case. A level that the CPU does not have is skipped by name.
+#[test]
+fn each_level_gives_the_bits_of_the_pins() {
+    let Some(g) = common::golden() else { return };
+    let Some(small) = model("small0") else { return };
+    let Some(fin) = model("final0") else { return };
+    let (short, _) = g.f32("click97_34.wave");
+    let (long, _) = g.f32("click120_44.wave");
+    // The bits of the four logit rows of the first level, SSE.
+    let mut first: Option<Vec<u32>> = None;
+    levels::each_level("each_level_gives_the_bits_of_the_pins", |level| {
+        let (sb, sd) = piece(&small, &short, 4);
+        let (fb, fd) = piece(&fin, &long, 8);
+        assert_eq!(digest(&sb, &sd), PIN_SMALL0, "small0 at {level:?}");
+        assert_eq!(digest(&fb, &fd), PIN_FINAL0, "final0 at {level:?}");
+        let bits: Vec<u32> = [sb, sd, fb, fd].iter().flatten().map(|x| x.to_bits()).collect();
+        match &first {
+            Some(want) => assert!(bits == *want, "{level:?} gives other bits than SSE"),
+            None => first = Some(bits),
+        }
+    });
 }
 
 const PIN_SMALL0: &str = "258ef4d80827179d3ec83cec4dc4626af06347721ca7a537da618dd7daac7a57";
