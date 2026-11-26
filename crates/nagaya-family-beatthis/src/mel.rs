@@ -167,6 +167,20 @@ fn reflected(samples: &[f32], index: usize) -> f32 {
     samples[i as usize]
 }
 
+/// The magnitudes of one frame, divided by sqrt(`N_FFT`) = 32, into `mag`. `re` and `im` are scratch.
+fn frame_magnitudes(samples: &[f32], frame: usize, re: &mut [f64; N_FFT], im: &mut [f64; N_FFT], mag: &mut [f64]) {
+    let w = window();
+    for n in 0..N_FFT {
+        re[n] = f64::from(reflected(samples, frame * HOP + n)) * w[n];
+        im[n] = 0.0;
+    }
+    fft(re, im);
+    for f in 0..BINS {
+        // sqrt is exact to the last bit (IEEE 754); 1/32 is a power of two, so the scale adds no error.
+        mag[f] = (re[f] * re[f] + im[f] * im[f]).sqrt() / 32.0;
+    }
+}
+
 /// The magnitude spectrum, `frames(samples.len())` rows of `BINS` values, divided by sqrt(`N_FFT`) = 32.
 pub fn magnitudes(samples: &[f32]) -> Result<Vec<f64>, Error> {
     if samples.len() < MIN_SAMPLES {
@@ -175,41 +189,59 @@ pub fn magnitudes(samples: &[f32]) -> Result<Vec<f64>, Error> {
             minimum: MIN_SAMPLES,
         });
     }
-    let w = window();
     let t = frames(samples.len());
-    let mut out = Vec::with_capacity(t * BINS);
+    let mut out = vec![0.0f64; t * BINS];
     let (mut re, mut im) = ([0.0f64; N_FFT], [0.0f64; N_FFT]);
-    for frame in 0..t {
-        for n in 0..N_FFT {
-            re[n] = f64::from(reflected(samples, frame * HOP + n)) * w[n];
-            im[n] = 0.0;
-        }
-        fft(&mut re, &mut im);
-        for f in 0..BINS {
-            // sqrt is exact to the last bit (IEEE 754); 1/32 is a power of two, so the scale adds no error.
-            out.push((re[f] * re[f] + im[f] * im[f]).sqrt() / 32.0);
-        }
+    for (frame, mag) in out.as_chunks_mut::<BINS>().0.iter_mut().enumerate() {
+        frame_magnitudes(samples, frame, &mut re, &mut im, mag);
     }
     Ok(out)
 }
 
-/// The log-mel spectrum, `frames(samples.len())` rows of `MELS` values: `log1p(1000 * mel)`, rounded once to f32.
+/// The most threads of one log-mel. Each frame is computed whole by one thread, so the count changes no bit.
+const MEL_THREADS: usize = 4;
+/// The fewest frames for each thread; a short input runs on the caller's thread alone.
+const MEL_FRAMES_PER_THREAD: usize = 128;
+
+/// The log-mel spectrum, `frames(samples.len())` rows of `MELS` values: `log1p(1000 * mel)`, rounded once to f32. The
+/// frames are split over up to 4 threads; each frame is computed whole, in the same order, by one thread.
 pub fn log_mel(samples: &[f32]) -> Result<Vec<f32>, Error> {
-    let mags = magnitudes(samples)?;
-    let fb = filterbank();
-    let bands = bands();
-    let mut out = Vec::with_capacity(mags.len() / BINS * MELS);
-    let (rows, rest) = mags.as_chunks::<BINS>();
-    debug_assert!(rest.is_empty());
-    for row in rows {
-        for (m, &(lo, hi)) in bands.iter().enumerate() {
-            // The bins outside the band have a filter of +0, and the sum is never below 0, so they add nothing.
-            let mut sum = 0.0f64;
-            for f in lo..hi {
-                sum += row[f] * fb[f * MELS + m];
+    if samples.len() < MIN_SAMPLES {
+        return Err(Error::TooShort {
+            samples: samples.len(),
+            minimum: MIN_SAMPLES,
+        });
+    }
+    let t = frames(samples.len());
+    let mut out = vec![0.0f32; t * MELS];
+    let threads = (t / MEL_FRAMES_PER_THREAD).clamp(1, MEL_THREADS);
+    let per = t.div_ceil(threads);
+    let run = |first: usize, rows: &mut [f32]| {
+        let fb = filterbank();
+        let bands = bands();
+        let (mut re, mut im) = ([0.0f64; N_FFT], [0.0f64; N_FFT]);
+        let mut mag = [0.0f64; BINS];
+        for (k, row) in rows.as_chunks_mut::<MELS>().0.iter_mut().enumerate() {
+            frame_magnitudes(samples, first + k, &mut re, &mut im, &mut mag);
+            for (m, &(lo, hi)) in bands.iter().enumerate() {
+                // The bins outside the band have a filter of +0, and the sum is never below 0, so they add nothing.
+                let mut sum = 0.0f64;
+                for f in lo..hi {
+                    sum += mag[f] * fb[f * MELS + m];
+                }
+                row[m] = libm::log1p(1000.0 * sum) as f32;
             }
-            out.push(libm::log1p(1000.0 * sum) as f32);
         }
+    };
+    if threads == 1 {
+        run(0, &mut out);
+    } else {
+        std::thread::scope(|s| {
+            for (n, rows) in out.chunks_mut(per * MELS).enumerate() {
+                let run = &run;
+                s.spawn(move || run(n * per, rows));
+            }
+        });
     }
     Ok(out)
 }
