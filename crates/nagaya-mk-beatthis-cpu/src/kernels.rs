@@ -259,6 +259,18 @@ pub fn add_into(acc: &mut [f32], x: &[f32], threads: usize) {
     }
 }
 
+/// `x[i] = expf(x[i] - shift)`, with the bits of `libm::expf`: 4 values at once in `F4::exp`.
+pub fn exps(x: &mut [f32], shift: f32) {
+    let (body, tail) = x.as_chunks_mut::<4>();
+    let s = F4::splat(shift);
+    for c in body {
+        F4::load(c).sub(s).exp().store(c);
+    }
+    for v in tail {
+        *v = libm::expf(*v - shift);
+    }
+}
+
 /// The tokens of one block of the scores: `scores` computes the scores of this many tokens at once.
 const TOKENS: usize = 4;
 
@@ -413,9 +425,7 @@ pub fn attention(
             );
             scores(&q, &kt, stride, scale, &mut p);
             let max = p.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-            for x in p.iter_mut() {
-                *x = libm::expf(*x - max);
-            }
+            exps(&mut p, max);
             let total = sum(&p);
             for x in p.iter_mut() {
                 *x /= total;

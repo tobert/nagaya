@@ -155,3 +155,54 @@ fn the_elementwise_kernels_give_the_bits_of_the_reference() {
         }
     }
 }
+
+/// `exps` against `libm::expf` on a sweep of the bit patterns of f32, on each pattern near a bound of a branch of
+/// `expf`, and on the specials. The sweep holds each sign, NaN, the infinities, and the subnormals.
+#[test]
+fn exps_gives_the_bits_of_libm() {
+    let mut xs: Vec<f32> = (0..=u32::MAX).step_by(251).map(f32::from_bits).collect();
+    for bound in [
+        0x3900_0000u32,
+        0x3eb1_7218,
+        0x3f85_1592,
+        0x42ae_ac50,
+        0x42b1_7218,
+        0x42cf_f1b5,
+        0x7f80_0000,
+    ] {
+        for sign in [0, 0x8000_0000u32] {
+            for d in 0..64 {
+                xs.push(f32::from_bits((bound | sign) - 32 + d));
+            }
+        }
+    }
+    xs.extend([
+        0.0,
+        -0.0,
+        1.0,
+        -1.0,
+        f32::NAN,
+        -f32::NAN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::MIN_POSITIVE,
+    ]);
+    // Each value at each place in a block of 4, and in the tail.
+    for start in 0..5 {
+        for shift in [0.0f32, 3.5, -20.0] {
+            let mut got = xs[start..].to_vec();
+            kernels::exps(&mut got, shift);
+            for (i, (&x, &g)) in xs[start..].iter().zip(&got).enumerate() {
+                // black_box keeps the compiler from folding `x - 0.0` to `x`, which would keep a signaling NaN.
+                let want = libm::expf(x - std::hint::black_box(shift));
+                assert!(
+                    g.to_bits() == want.to_bits(),
+                    "exps of {x:e} ({:#010x}) - {shift}: {g:e} ({:#010x}), and libm gives {want:e} ({:#010x}) (value {i})",
+                    x.to_bits(),
+                    g.to_bits(),
+                    want.to_bits()
+                );
+            }
+        }
+    }
+}
