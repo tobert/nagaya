@@ -11,6 +11,8 @@ pub enum Error {
     Format { bits: u16, float: bool },
     /// The input has too few samples for the reflect padding of the spectrum.
     TooShort { samples: usize, minimum: usize },
+    /// A tensor of the checkpoint is missing, not f32, or not of the shape that the plan reads.
+    Tensor { name: String, why: String },
     /// The hyper_parameters of a checkpoint are missing, not JSON, or name a model that this family does not build.
     Config(String),
 }
@@ -29,6 +31,11 @@ impl fmt::Display for Error {
                 "the audio has {bits}-bit {} samples, and Beat This! takes 16-bit integer or 32-bit float samples. \
                  Convert it on the client.",
                 if *float { "float" } else { "integer" }
+            ),
+            Error::Tensor { name, why } => write!(
+                f,
+                "the checkpoint's tensor {name} is not usable: {why}. Convert a Beat This! checkpoint with \
+                 tools/beatthis_golden.sh."
             ),
             Error::Config(m) => write!(
                 f,

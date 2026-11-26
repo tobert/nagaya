@@ -6,9 +6,10 @@ edition = "2024"
 [dependencies]
 # The reader of a WAV request part. Pure Rust; the family takes 22,050 Hz mono only.
 hound = "3.5.1"
+# The reader of a converted checkpoint.
+safetensors = "0.8.0"
 # The hyper_parameters of a converted checkpoint are JSON in its safetensors metadata.
 serde_json = { version = "1.0.154", features = ["float_roundtrip", "preserve_order"] }
 
 [dev-dependencies]
 blake3 = "1.8.5"
-safetensors = "0.8.0"

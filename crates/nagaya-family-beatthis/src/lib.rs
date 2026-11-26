@@ -11,5 +11,6 @@ pub mod error;
 pub mod mel;
 pub mod peaks;
 pub mod plan;
+pub mod weights;
 
 pub use error::Error;
