@@ -6,7 +6,7 @@
 
 #[cfg(target_arch = "x86_64")]
 mod imp {
-    use std::arch::x86_64::{__m128, _mm_add_ps, _mm_loadu_ps, _mm_mul_ps, _mm_setzero_ps, _mm_storeu_ps};
+    use std::arch::x86_64::{__m128, _mm_add_ps, _mm_loadu_ps, _mm_mul_ps, _mm_set1_ps, _mm_setzero_ps, _mm_storeu_ps};
 
     #[derive(Clone, Copy)]
     pub struct F4(__m128);
@@ -16,6 +16,11 @@ mod imp {
         pub fn zero() -> Self {
             // SAFETY: SSE is in each x86_64 CPU.
             F4(unsafe { _mm_setzero_ps() })
+        }
+        #[inline(always)]
+        pub fn splat(v: f32) -> Self {
+            // SAFETY: SSE is in each x86_64 CPU.
+            F4(unsafe { _mm_set1_ps(v) })
         }
         #[inline(always)]
         pub fn load(a: &[f32; 4]) -> Self {
@@ -49,6 +54,10 @@ mod imp {
         #[inline(always)]
         pub fn zero() -> Self {
             F4([0.0; 4])
+        }
+        #[inline(always)]
+        pub fn splat(v: f32) -> Self {
+            F4([v; 4])
         }
         #[inline(always)]
         pub fn load(a: &[f32; 4]) -> Self {

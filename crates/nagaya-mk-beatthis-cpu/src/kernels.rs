@@ -260,29 +260,68 @@ pub fn add_into(acc: &mut [f32], x: &[f32], threads: usize) {
 }
 
 /// The tokens of one block of the scores: `scores` computes the scores of this many tokens at once.
-const TOKENS: usize = 8;
+const TOKENS: usize = 4;
 
-/// `out[t] = dot(q, k_t) * scale` for each token `t`, from `kt`, the keys transposed: `kt[i * stride + t]` is value
-/// `i` of token `t`. It keeps the lanes of `dot` for each token, so each score has the bits of `dot`. `stride` is a
-/// multiple of `TOKENS`, and the tokens past the end of `out` are padding.
+/// `out[t] = dot(q, k_t) * scale` for each token `t`, from `kt`, the keys in blocks of `TOKENS` tokens: value `i` of
+/// token `t` is at `kt[(t / TOKENS) * hd * TOKENS + i * TOKENS + t % TOKENS]`. It keeps the lanes of `dot` for each token (one `F4` of `TOKENS` tokens for each lane), so each
+/// score has the bits of `dot`. `stride` is a multiple of `TOKENS`, and the tokens past the end of `out` are padding.
 fn scores(q: &[f32], kt: &[f32], stride: usize, scale: f32, out: &mut [f32]) {
     let hd = q.len();
     debug_assert!(stride.is_multiple_of(TOKENS) && out.len() <= stride && kt.len() == hd * stride);
+    let scale = F4::splat(scale);
     for t0 in (0..out.len()).step_by(TOKENS) {
-        // l[k][t]: lane k of the dot of token t0 + t.
-        let mut l = [[0.0f32; TOKENS]; 8];
-        for (i, &qi) in q.iter().enumerate() {
-            let ks: &[f32; TOKENS] = kt[i * stride + t0..][..TOKENS].try_into().unwrap();
-            let lane = &mut l[i % 8];
-            for t in 0..TOKENS {
-                lane[t] += qi * ks[t];
+        // l[k]: lane k of the dots of the tokens t0 to t0 + 3.
+        let mut l = [F4::zero(); 8];
+        let block = &kt[t0 * hd..][..TOKENS * hd];
+        let term = |i: usize| F4::splat(q[i]).mul(F4::at(block, i * TOKENS));
+        let chunks = hd / 8;
+        for c in 0..chunks {
+            for (k, lane) in l.iter_mut().enumerate() {
+                *lane = lane.add(term(c * 8 + k));
             }
         }
-        let n = TOKENS.min(out.len() - t0);
-        for t in 0..n {
-            let j = ((l[0][t] + l[1][t]) + (l[2][t] + l[3][t])) + ((l[4][t] + l[5][t]) + (l[6][t] + l[7][t]));
-            out[t0 + t] = j * scale;
+        for (k, lane) in l.iter_mut().enumerate().take(hd % 8) {
+            *lane = lane.add(term(chunks * 8 + k));
         }
+        let j = ((l[0].add(l[1])).add(l[2].add(l[3]))).add((l[4].add(l[5])).add(l[6].add(l[7])));
+        let v = j.mul(scale).array();
+        let n = TOKENS.min(out.len() - t0);
+        out[t0..t0 + n].copy_from_slice(&v[..n]);
+    }
+}
+
+/// `o[d] = sum over t of p[t] * v[t * hd + d]`, the terms in the order of t, from `o[d] = 0`.
+fn weighted_sum(p: &[f32], v: &[f32], o: &mut [f32]) {
+    let hd = o.len();
+    let mut d0 = 0;
+    // Blocks of 32 values in 8 `F4`, then of 4 values, then single values. Each value is its own sum.
+    while d0 + 32 <= hd {
+        let mut acc = [F4::zero(); 8];
+        for (t, &w) in p.iter().enumerate() {
+            let w = F4::splat(w);
+            for (j, a) in acc.iter_mut().enumerate() {
+                *a = a.add(w.mul(F4::at(v, t * hd + d0 + 4 * j)));
+            }
+        }
+        for (j, a) in acc.iter().enumerate() {
+            o[d0 + 4 * j..][..4].copy_from_slice(&a.array());
+        }
+        d0 += 32;
+    }
+    while d0 + 4 <= hd {
+        let mut acc = F4::zero();
+        for (t, &w) in p.iter().enumerate() {
+            acc = acc.add(F4::splat(w).mul(F4::at(v, t * hd + d0)));
+        }
+        o[d0..][..4].copy_from_slice(&acc.array());
+        d0 += 4;
+    }
+    for d in d0..hd {
+        let mut acc = 0.0f32;
+        for (t, &w) in p.iter().enumerate() {
+            acc += w * v[t * hd + d];
+        }
+        o[d] = acc;
     }
 }
 
@@ -300,8 +339,8 @@ fn rotate(src: &[f32], cs: &[(f32, f32)], dst: &mut [f32], step: usize) {
 /// the tokens in order, and the gate.
 ///
 /// A worker takes a run of the rows in the order (sequence, head, position). For each (sequence, head) that it meets,
-/// it rotates the keys into a transposed copy and copies the values, so that the scores of a query read memory in
-/// order. The rows go to a scratch buffer in that order, and a last pass puts them in the order of the output.
+/// it rotates the keys into blocks of `TOKENS` tokens (`scores`) and copies the values, so that the scores and the
+/// sum of `p * v` of a query read memory in order. The rows go to a scratch buffer in that order, and a last pass puts them in the order of the output.
 #[allow(clippy::too_many_arguments)]
 pub fn attention(
     qkv: &[f32],
@@ -358,8 +397,8 @@ pub fn attention(
                     rotate(
                         &row[width + h * hd..][..hd],
                         &table[t * half..][..half],
-                        &mut kt[t..],
-                        stride,
+                        &mut kt[(t / TOKENS) * hd * TOKENS + t % TOKENS..],
+                        TOKENS,
                     );
                     v[t * hd..][..hd].copy_from_slice(&row[2 * width + h * hd..][..hd]);
                 }
@@ -381,12 +420,7 @@ pub fn attention(
             for x in p.iter_mut() {
                 *x /= total;
             }
-            o.fill(0.0);
-            for (t, &w) in p.iter().enumerate() {
-                for (od, vd) in o.iter_mut().zip(&v[t * hd..][..hd]) {
-                    *od += w * vd;
-                }
-            }
+            weighted_sum(&p, &v, o);
             let g = gates[r * heads + h];
             let gate = 1.0 / (1.0 + libm::expf(-g));
             for x in o.iter_mut() {
