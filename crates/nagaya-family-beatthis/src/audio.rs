@@ -1,5 +1,5 @@
 //! The WAV reader. Beat This! takes 22,050 Hz mono. The family refuses other audio and does not resample, so the
-//! client owns the resampler (Amy, 2026-11-26: kaijutsu does its own transcoding for now).
+//! client owns the resampler: kaijutsu does its own transcoding for now (decided 2026-11-26).
 
 use crate::Error;
 

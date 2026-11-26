@@ -13,6 +13,7 @@ Coding-agent and contributor guide for **nagaya** — an exokernel for GPU megak
 
 ## Non-negotiable rules
 
+- **Work happens in public:** `main` and every pushed branch are public on GitHub, and each push publishes at once. Write each doc, comment and commit message for any reader. Record a decision as "Decided <date>" with its reason, not as a quote of a person or a session. Quotes, names and private context go in private notes outside the repository. A slip stays in history: fix it with a cleanup commit on top, not a force-push.
 - **Public repo hygiene:** Never commit old codenames (`mkviolet`, `gmk`, `diffusepal`, `/mk/v1`), real hostnames, real IPs, or home paths (`mk` stays in `nagaya-mk-*` crate names and internal kernel symbols). Use RFC 5737 IPs (`192.0.2.0/24`, `198.51.100.0/24`, `203.0.113.0/24`) and hardware placeholders (`gfx1151host`, `b70host`, `sm121host`).
 - **Clarity and high information density:** In docs, comments, error messages, and commit messages. Comments explain *what* or *why*; error messages say what failed, why, and what the caller can do.
 - **Spec is contract:** If code and spec disagree, stop and report. If a doc leaves a choice open, commit the simplest choice marked **Proposed** with your rationale, then proceed.

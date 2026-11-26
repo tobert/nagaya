@@ -477,8 +477,8 @@ thread priorities:
 - **A bounded CPU worker pool.** Rendering, tokenization, hashing, safetensors conversion, and CPU device passes (13.2)
   run on a bounded pool pinned to the remaining cores at `SCHED_BATCH`. Long CPU work yields between chunks to obey
   `max_quantum_ms`. On unified-memory machines, such as the Strix Halo machine, the scheduler pauses background CPU
-  memory work during a GPU pass to protect GPU memory bandwidth. The CPU group follows this rule by class (3.2c).
-  **Open:** no code applies the pause yet.
+  memory work during a GPU pass to protect GPU memory bandwidth. The CPU group does not pause (3.2c). **Open:** no
+  code applies the pause yet.
 - **The row threads.** After a pass that several
   jobs share, each row has host work that uses no engine. That work is the read of its logit row and the draw of its
   token. The thread that ran the pass gives that work to its row threads, and it waits for all of them. Then it ends
@@ -581,10 +581,9 @@ the group thread, so those threads start with the pool set. The nagaya does not 
 **Open:** measure the masks of the Level Zero threads on the B70 machine, as on gfx1151.
 
 **3.2c The CPU group.** Reason: some engines run on the CPU. The first is Beat This!, a beat tracker that kaijutsu
-calls while it plays. Later ones can be encoders and lenses (13.2). Amy, 2026-11-26: "let's add cpu device group.
-might be handy over time to think of it similarly for scheduling so let's try." A CPU engine thus gets the scheduler,
-the classes and the ledger of a GPU engine. Amy chose the count of groups, the pause rule and the cores by interview,
-on 2026-11-26. The rules marked **Proposed** are not her choices yet.
+calls while it plays. Later ones can be encoders and lenses (13.2). A CPU engine gets the scheduler, the classes and
+the ledger of a GPU engine, so CPU work schedules as GPU work does. Decided 2026-11-26, by interview: the count of
+groups, the pause and the cores. The rules marked **Proposed** are not decided yet.
 
 - **A CPU engine.** A profile entry with `devices = []` is a CPU engine. Its `limits().devices` is empty, so the check
   of 2.4 refuses a GPU kind with no devices, and a CPU kind with devices.
@@ -609,10 +608,11 @@ on 2026-11-26. The rules marked **Proposed** are not her choices yet.
   conformance suite (8.3) runs each CPU engine with 1 thread and with 2 or more, and compares the bits.
 - **Memory.** A CPU engine declares terms in the tier `host` only (4.2). A term in a tier `device(i)` is an error at
   `plan`, and the profile is refused.
-- **The pause by class.** On a machine with unified memory, the pause of 3.2 applies to the CPU group by class. During a
-  GPU pass, an interactive CPU quantum runs. A batch or filler CPU quantum waits until the GPU pass ends. Reason: a call
-  from kaijutsu while it plays must not wait for each GPU pass. **Open:** measure how much a CPU quantum slows a
-  Qwen3.8 decode step on the Strix Halo machine, in a card window (15 item 19).
+- **No pause.** The CPU group does not pause during a GPU pass, in any class. Decided 2026-11-26. Reason: the
+  Strix Halo machine may be bound by memory bandwidth, but 8 cores of CPU work may cost a GPU pass little. Learn
+  from the metrics before a rule. This replaces the pause by class of the same day, which was never built. **Open:**
+  compare `nagaya.quantum.run.duration` of Qwen3.8 `decode` quanta with and without `beats` quanta (15 item 19).
+  Look again on the DGX Spark machine (sm121).
 - **Heartbeat and watchdog.** The CPU group has a heartbeat and a `max_quantum_ms`, as a GPU group has (7.4, 10.4).
 - **Telemetry.** The `device` attribute of the CPU group is `cpu` (9.4).
 
@@ -5130,9 +5130,9 @@ model (milestone 35, engine-abi "Inkling 2"). Each rule below is **Proposed**. R
   at 1 to 5 cycles. Mini is post-trained at 3, so another count on Mini runs outside its training.
 
 **11.19 Beats.** **Proposed** (2026-11-26). Reason: kaijutsu needs the beat and downbeat times of audio while it plays
-(the clock-in of its time model) and of whole clips. Amy, 2026-11-26: "maybe we should have a place for various
-specialized models to hang out? we'll add more analysis models over time", and on the route: "nagaya first, gogi
-later". The model is Beat This! (CPJKU, ISMIR 2024; MIT for code and weights).
+(the clock-in of its time model) and of whole clips. More specialized models of analysis will follow, so they share
+one place in the routes. The route starts in the nagaya and moves to gogi later (decided 2026-11-26). The model is
+Beat This! (CPJKU, ISMIR 2024; MIT for code and weights).
 
 - **The route.** `POST /nagaya/v1/analysis/beats`, an extension (11.4a). The path `analysis/<task>` holds each
   specialized model to come: one route for each task, each with its own request and reply. It moves to
@@ -5142,7 +5142,7 @@ later". The model is Beat This! (CPJKU, ISMIR 2024; MIT for code and weights).
   `interactive` by default. `logits` is false by default.
 - **The audio.** A WAV of 22,050 Hz mono, in 16-bit integers or 32-bit floats. Another rate, more channels or
   another sample format is a 400 `invalid_request` with the param `audio`, and the message names the rate and the
-  channels. The nagaya does not resample: the client does (Amy: kaijutsu does its own transcoding for now). An
+  channels. The nagaya does not resample: the client does, as kaijutsu does its own transcoding for now. An
   audio of less than 513 samples (23 ms) or more than 600 s is a 400 with the param `audio`.
 - **The reply.** `{"model", "beats", "downbeats", "frames", "fps", "logits"?, "usage"}`. `beats` and `downbeats`
   are times in seconds from the first sample, in order. Each downbeat is also a beat, as upstream gives them.
@@ -5363,5 +5363,6 @@ pin them, so a measurement shows whether they leave the pool set.
 each sealed snapshot that a pass over the index finds. **Open:** can the index hold a few tokens of prefix and suffix,
 so that the search is more targeted?
 
-19\. How much does a CPU group quantum slow a GPU pass on a machine with unified memory (3.2c, "The pause by
-class")? Measure a Qwen3.8 decode step with and without an interactive Beat This! call on the Strix Halo machine.
+19\. How much does a CPU group quantum slow a GPU pass on a machine with unified memory (3.2c, "No pause")? Compare
+`nagaya.quantum.run.duration` of Qwen3.8 `decode` quanta with and without `beats` quanta on the Strix Halo machine,
+and on the DGX Spark machine.
