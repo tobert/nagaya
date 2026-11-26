@@ -14,29 +14,55 @@ use nagaya_family_beatthis::plan::{self, Config, Plan, Task};
 use nagaya_family_beatthis::weights::{self, Tensors};
 use sha2::{Digest, Sha256};
 
-/// The bound of one chunk. A chunk of `final0` takes 1.4 s on 16 threads in a build of the tests (spec 11.19).
+/// The bound of one chunk. A whole chunk of `final0` took 0.23 to 0.31 s on 8 threads with AVX-512, and 0.64 s with
+/// SSE, in a release build on `gfx1151host` (Zen 5), measured 2026-11-26 (spec 11.19).
 pub const MAX_QUANTUM_MS: u32 = 10_000;
 
-/// The host bytes of the engine: its prepared weights, the buffers of a plan of one whole chunk, and the q and k
-/// that its largest attention rotates. The weights are the same for each chunk length, and a shorter chunk needs
-/// fewer bytes.
+/// The host bytes of the engine: its prepared weights, the buffers of a plan of one whole chunk, and the largest
+/// scratch of a task (`host_bytes_for`) with a worker for each CPU of the machine, the most that `[cpu] threads`
+/// can give (spec 3.2c). The weights are the same for each chunk length, and a shorter chunk needs fewer bytes.
 pub fn host_bytes(config: &Config) -> u64 {
+    let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
+    host_bytes_for(config, cpus)
+}
+
+/// The host bytes of the engine on `threads` workers: the weights, the buffers of a plan of one whole chunk, and the
+/// largest scratch of a task. An attention has its rows in their order of work, a table of cos and sin, and keys,
+/// values and scores for each worker (`kernels::attention_scratch`). A conv has a copy of its kernel. `SMALL` holds
+/// the rest.
+pub fn host_bytes_for(config: &Config, threads: usize) -> u64 {
     let p = plan::build(config, CHUNK);
     let weights: usize = p.weights.iter().map(|w| w.prep.len()).sum();
     let buffers: usize = p.buffers.iter().sum();
-    let rotated = p
+    let scratch = p
         .tasks
         .iter()
         .map(|t| match *t {
             Task::Attention {
-                a, b, heads, head_dim, ..
-            } => a * b * 2 * heads * head_dim,
+                a,
+                b,
+                along,
+                heads,
+                head_dim,
+                ..
+            } => {
+                let len = match along {
+                    plan::Axis::A => a,
+                    plan::Axis::B => b,
+                };
+                let (shared, worker) = crate::kernels::attention_scratch(a * b, len, heads, head_dim);
+                shared + threads.max(1) * worker
+            }
+            Task::Conv { cin, cout, kf, kt, .. } => cout * kf * kt * cin,
             _ => 0,
         })
         .max()
         .unwrap_or(0);
-    4 * (weights + buffers + rotated) as u64
+    4 * (weights + buffers + scratch) as u64 + SMALL
 }
+
+/// The bytes of the small allocations of a run: the list of the buffers and the like.
+const SMALL: u64 = 4096;
 
 /// The limits of the engine for a checkpoint of `config`. It runs in the CPU group, so it names no device.
 pub fn limits(config: &Config) -> Limits {

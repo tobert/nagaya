@@ -534,6 +534,14 @@ fn rotate(src: &[f32], cs: &[(f32, f32)], dst: &mut [f32], step: usize) {
     }
 }
 
+/// The f32 values of the scratch of `attention` (rows of `heads * hd` values, sequences of `len` tokens): those that
+/// the call shares (its rows in their order of work, and the table of cos and sin), and those of each worker.
+pub fn attention_scratch(rows: usize, len: usize, heads: usize, hd: usize) -> (usize, usize) {
+    let shared = rows * heads * hd + len * (hd / 2) * 2;
+    let worker = hd * len.next_multiple_of(TOKENS) + len * hd + hd + QUERIES * len;
+    (shared, worker)
+}
+
 /// The inputs of the workers of `attention`.
 struct Attend<'a> {
     qkv: &'a [f32],
