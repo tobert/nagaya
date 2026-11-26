@@ -132,6 +132,28 @@ The Strix Halo unit sets `OTEL_EXPORTER_OTLP_ENDPOINT` to `http://127.0.0.1:4317
 nagaya exports OTLP over gRPC (spec 9.1). Without a collector, the exporter logs a transport error every 5 s, so
 remove the line. In the B70 unit the line is a comment. Remove the `#` when a collector runs.
 
+## The web app
+
+`deploy/nagaya-web.service` runs `tools/nagaya_web.py` on `127.0.0.1:8096` with `--auth tailscale-serve`.
+`tailscale serve` on the same machine gives it an HTTPS address on the tailnet and sets `Tailscale-User-Login` on each
+request. The app answers 401 to a request without it (the docstring of `tools/nagaya_web.py`). One machine of the
+cluster is enough: the app finds the other nagayas from the cluster route.
+
+```
+printf 'NAGAYA_URLS=http://<http_bind>\n' > ~/.config/nagaya/web.env
+cp ~/src/nagaya/deploy/nagaya-web.service ~/.config/systemd/user/nagaya-web.service
+systemctl --user daemon-reload
+systemctl --user enable --now nagaya-web.service
+tailscale serve --bg --https=443 http://127.0.0.1:8096
+```
+
+- `tailscale serve` needs root or the tailscale operator: run `sudo tailscale set --operator=$USER` once. The serve
+  config persists in tailscaled through a reboot, so it needs no unit.
+- The page is then at `https://<machine>.<tailnet>.ts.net/`. `tailscale serve status` shows it.
+- The login gates the web app only. The nagaya ports still have no authentication, so limit who reaches them with
+  tailnet ACLs.
+- The app logs to the journal: `journalctl --user -u nagaya-web.service`.
+
 ## Check a start
 
 1. Read the state of the unit and its log.

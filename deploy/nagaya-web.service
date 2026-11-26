@@ -1,0 +1,27 @@
+# The web app (`tools/nagaya_web.py`) as a systemd user unit, behind `tailscale serve` (docs/deploy.md, "The web app").
+# Install: copy this file to ~/.config/systemd/user/nagaya-web.service, and write the seeds into
+#          ~/.config/nagaya/web.env as `NAGAYA_URLS=http://<http_bind>,...`. Then `systemctl --user daemon-reload`.
+# The unit runs the script from the checkout, so a pull changes the app at its next restart.
+[Unit]
+Description=nagaya web app on 127.0.0.1:8096, behind tailscale serve
+# Ordering only: on a machine with a nagaya, start after it. The app needs a seed that answers, not this one.
+After=nagaya.service network-online.target
+Wants=network-online.target
+# The app holds no state, so a crash loop costs nothing: no limit on the starts.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=%h/src/nagaya
+# NAGAYA_URLS: the seeds that the app asks for the cluster route, with `,` between them. The file stays on the
+# machine, so the repository holds no address.
+EnvironmentFile=%h/.config/nagaya/web.env
+# Loopback only: `tailscale serve` on this machine is the one way in, and it sets the login of each request.
+ExecStart=/usr/bin/python3 %h/src/nagaya/tools/nagaya_web.py --auth tailscale-serve --host 127.0.0.1 --port 8096
+# The app exits when no seed answers, for example at boot while the nagaya starts. It holds no state, so it starts
+# again every 10 s until a seed answers.
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
