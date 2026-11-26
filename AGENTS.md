@@ -4,7 +4,6 @@ Coding-agent and contributor guide for **nagaya** — an exokernel for GPU megak
 
 ## Where to look
 
-- [`signoff.md`](signoff.md) — Local-only session handoff (read first when present; never commit).
 - [`README.md`](README.md) — Architecture overview, hardware targets, and code reading order.
 - [`Cargo.toml`](Cargo.toml) — All 30 workspace crates (`nagaya-<kind>-<model>-<target>` across `gfx1151`, `bmg`, `sm121`). Keep pure logic out of engine crates and `crates/nagaya`.
 - [`docs/spec.md`](docs/spec.md) & [`docs/engine-abi.md`](docs/engine-abi.md) — Normative specification and `Engine` trait contract (D1–D11).
@@ -19,7 +18,7 @@ Coding-agent and contributor guide for **nagaya** — an exokernel for GPU megak
 - **Spec is contract:** If code and spec disagree, stop and report. If a doc leaves a choice open, commit the simplest choice marked **Proposed** with your rationale, then proceed.
 - **Bit-exact determinism & fail-fast (`spec 8.5`):** Same engine identity + inputs = identical bits. Any change that moves bits must update engine identity and note it in the commit message. Never add silent fallbacks or risk corrupting state.
 - **Test-first & mutation testing:** Write the test first, watch it fail, implement, then mutate the code under test to verify the test catches it, restore, and record the tested mutation in the commit message. **Never mutate a pointer or size read by a GPU kernel.**
-- **GPU safety (`spec 3.1`):** Single compute client per GPU. Check `systemctl --user is-active nagaya.service` (`--user` is required) and `nvidia-smi` (on `sm121`) before GPU tests. Run GPU tests with `--test-threads=1`, `NAGAYA_TEST_CARDS` for free cards only, and a separate `CARGO_TARGET_DIR` (the service runs `target/release/nagaya`). Never touch an unrelated GPU process or the display iGPU. Log service stops/starts/deploys in `signoff.md` and leave `nagaya.service` active.
+- **GPU safety (`spec 3.1`):** Single compute client per GPU. Check `systemctl --user is-active nagaya.service` (`--user` is required) and `nvidia-smi` (on `sm121`) before GPU tests. Run GPU tests with `--test-threads=1`, `NAGAYA_TEST_CARDS` for free cards only, and a separate `CARGO_TARGET_DIR` (the service runs `target/release/nagaya`). Never touch an unrelated GPU process or the display iGPU, and leave `nagaya.service` active.
 - **Explicit reporting:** Report real counts (tests run, passed, skipped, and anything intentionally not run), verify `file:line` citations, and report sandbox/tool blockers clearly.
 - **Isolation & external repos:** Use git worktrees (`~/src/wt/nagaya-<topic>`) with separate `CARGO_TARGET_DIR` for parallel lanes. Do not edit other repos except `gogi` (edit on a branch, merge to `main`, push, and bump `rev` in `Cargo.toml`).
 
