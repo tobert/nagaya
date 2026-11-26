@@ -223,3 +223,50 @@ fn exps_gives_the_bits_of_libm() {
         }
     });
 }
+
+/// `erfs` against `libm::erff` at each level, on a sweep of the bit patterns of f32, on each pattern near a bound
+/// of a branch of `erff`, and on the specials.
+#[test]
+fn erfs_gives_the_bits_of_libm() {
+    each_level("erfs_gives_the_bits_of_libm", |level| {
+        let mut xs: Vec<f32> = (0..=u32::MAX).step_by(251).map(f32::from_bits).collect();
+        for bound in [
+            0x3180_0000u32,
+            0x3f58_0000,
+            0x3fa0_0000,
+            0x4036_db6d,
+            0x40c0_0000,
+            0x7f80_0000,
+        ] {
+            for sign in [0, 0x8000_0000u32] {
+                for d in 0..64 {
+                    xs.push(f32::from_bits((bound | sign) - 32 + d));
+                }
+            }
+        }
+        xs.extend([
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            f32::NAN,
+            -f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+        ]);
+        for start in 0..17 {
+            let mut got = xs[start..].to_vec();
+            kernels::erfs(&mut got);
+            for (&x, &g) in xs[start..].iter().zip(&got) {
+                let want = libm::erff(x);
+                assert!(
+                    g.to_bits() == want.to_bits(),
+                    "{level:?}: erfs of {x:e} ({:#010x}): {:#010x}, and libm gives {:#010x}",
+                    x.to_bits(),
+                    g.to_bits(),
+                    want.to_bits()
+                );
+            }
+        }
+    });
+}

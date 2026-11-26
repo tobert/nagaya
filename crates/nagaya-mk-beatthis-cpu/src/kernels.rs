@@ -161,18 +161,49 @@ pub fn conv(
 pub fn gelu(x: &mut [f32], threads: usize) {
     let width = 1024.min(x.len().max(1));
     let n = x.len();
-    let mut tail = n % width;
-    let (body, rest) = x.split_at_mut(n - tail);
-    split(body, width, threads, |_, rows| {
-        for v in rows.iter_mut() {
-            *v = *v * 0.5 * (1.0 + libm::erff(*v * FRAC_1_SQRT_2));
-        }
-    });
-    for v in rest.iter_mut() {
-        *v = *v * 0.5 * (1.0 + libm::erff(*v * FRAC_1_SQRT_2));
-        tail -= 1;
+    let (body, rest) = x.split_at_mut(n - n % width);
+    let level = isa::level();
+    split(body, width, threads, |_, rows| gelu_at(level, rows));
+    gelu_at(level, rest);
+}
+
+leveled! {
+    fn gelu_at(x: &mut [f32]) = gelu_of;
+}
+
+#[inline(always)]
+fn gelu_of<I: Isa>(x: &mut [f32]) {
+    let n = I::V::N;
+    let body = x.len() - x.len() % n;
+    let (half, r2) = (I::V::splat(0.5), I::V::splat(FRAC_1_SQRT_2));
+    for i in (0..body).step_by(n) {
+        let v = I::V::at(x, i);
+        v.mul(half).mul(I::V::splat(1.0).add(lanes::erf(v.mul(r2)))).put(x, i);
     }
-    debug_assert_eq!(tail, 0);
+    for v in &mut x[body..] {
+        *v = *v * 0.5 * (1.0 + libm::erff(*v * FRAC_1_SQRT_2));
+    }
+}
+
+/// `x[i] = erff(x[i])`, with the bits of `libm::erff`: `lanes::erf` on the vectors of the level.
+pub fn erfs(x: &mut [f32]) {
+    erfs_at(isa::level(), x);
+}
+
+leveled! {
+    fn erfs_at(x: &mut [f32]) = erfs_of;
+}
+
+#[inline(always)]
+fn erfs_of<I: Isa>(x: &mut [f32]) {
+    let n = I::V::N;
+    let body = x.len() - x.len() % n;
+    for i in (0..body).step_by(n) {
+        lanes::erf(I::V::at(x, i)).put(x, i);
+    }
+    for v in &mut x[body..] {
+        *v = libm::erff(*v);
+    }
 }
 
 /// `y[r] = x[r] / max(|x[r]|, 1e-12) * sqrt(dim) * gamma`, in that order, as `F.normalize` and the model's scale.

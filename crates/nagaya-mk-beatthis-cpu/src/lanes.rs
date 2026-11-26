@@ -34,6 +34,8 @@ pub trait Vf: Copy {
     fn trunc(self) -> Self;
     /// `2^k` in each lane, for `k` a whole number in -126..=127.
     fn pow2(self) -> Self;
+    /// The value of the bits `bits & mask` in each lane.
+    fn and_bits(self, mask: u32) -> Self;
 
     /// `f` of each value, one by one.
     #[inline(always)]
@@ -87,6 +89,127 @@ pub fn exp<V: Vf>(x: V) -> V {
     let main = y.mul(kf.pow2());
     let v = V::select(x.abs_bits_gt(0x3900_0000), main, V::splat(1.0).add(x));
     V::select(zero, V::zero(), v)
+}
+
+/// `libm::erff` of each value, with its bits: the code of `libm::erff` (FreeBSD's `erff`) with each branch computed
+/// for the lanes that need it, and a select of the branch of each lane. Its exps are `exp`, with the bits of
+/// `libm::expf`. When a lane holds a NaN or an infinity, all the values go to `libm::erff` one by one.
+#[inline(always)]
+pub fn erf<V: Vf>(x: V) -> V {
+    const ERX: f32 = f32::from_bits(0x3f58_560b);
+    const EFX8: f32 = f32::from_bits(0x3f83_75d4);
+    const PP: [u32; 5] = [0x3e03_75d4, 0xbea6_6beb, 0xbce9_528f, 0xbbbd_1489, 0xb7c7_56b1];
+    const QQ: [u32; 5] = [0x3ecb_bbce, 0x3d85_2a63, 0x3ba6_8116, 0x390a_ee49, 0xb684_e21a];
+    const PA: [u32; 7] = [
+        0xbb1a_cdc6,
+        0x3ed4_6805,
+        0xbebe_9208,
+        0x3ea2_fe54,
+        0xbde3_1cc2,
+        0x3d11_51b3,
+        0xbb0d_f9c0,
+    ];
+    const QA: [u32; 6] = [
+        0x3dd9_f331,
+        0x3f0a_5785,
+        0x3d93_1ae7,
+        0x3e01_3307,
+        0x3c5f_6e13,
+        0x3c44_5aa3,
+    ];
+    const RA: [u32; 8] = [
+        0xbc21_a093,
+        0xbf31_a0b7,
+        0xc128_f022,
+        0xc279_8057,
+        0xc322_658c,
+        0xc338_9ae7,
+        0xc2a2_932b,
+        0xc11d_077e,
+    ];
+    const SA: [u32; 8] = [
+        0x419d_35ce,
+        0x4309_a863,
+        0x43d9_486f,
+        0x4421_58c9,
+        0x43d6_810b,
+        0x42d9_451f,
+        0x40d2_3f7c,
+        0xbd77_7f97,
+    ];
+    const RB: [u32; 7] = [
+        0xbc21_a092,
+        0xbf4c_9dd4,
+        0xc18e_104b,
+        0xc320_a2ea,
+        0xc41f_6441,
+        0xc480_230b,
+        0xc3f1_c275,
+    ];
+    const SB: [u32; 7] = [
+        0x41f2_b459,
+        0x43a2_e571,
+        0x44c0_1759,
+        0x4547_fdbb,
+        0x451f_90ce,
+        0x43ed_43a7,
+        0xc1b3_8712,
+    ];
+    // `c[0] + s * (c[1] + s * (... + s * c[n - 1]))`, as libm writes it.
+    #[inline(always)]
+    fn horner<V: Vf>(s: V, c: &[u32]) -> V {
+        let mut acc = V::splat(f32::from_bits(c[c.len() - 1]));
+        for &k in c[..c.len() - 1].iter().rev() {
+            acc = V::splat(f32::from_bits(k)).add(s.mul(acc));
+        }
+        acc
+    }
+    // `1 + s * (c[0] + s * (...))`.
+    #[inline(always)]
+    fn one_plus<V: Vf>(s: V, c: &[u32]) -> V {
+        V::splat(1.0).add(s.mul(horner(s, c)))
+    }
+    if V::any(x.abs_bits_gt(0x7f7f_ffff)) {
+        return x.map(libm::erff);
+    }
+    let one = V::splat(1.0);
+    let neg = x.negative();
+    let ax = x.and_bits(0x7fff_ffff);
+    // The branches by |x|: tiny below 2^-28, small below 0.84375, near below 1.25, far below 6, else flat.
+    let small_up = x.abs_bits_gt(0x317f_ffff);
+    let near_up = x.abs_bits_gt(0x3f57_ffff);
+    let far_up = x.abs_bits_gt(0x3f9f_ffff);
+    let flat = x.abs_bits_gt(0x40bf_ffff);
+    let signed = |y: V| V::select(neg, y.mul(V::splat(-1.0)), y);
+    let mut v = V::splat(0.125).mul(V::splat(8.0).mul(x).add(V::splat(EFX8).mul(x)));
+    if V::any(V::and_not(near_up, small_up)) {
+        let z = x.mul(x);
+        let y = horner(z, &PP).div(one_plus(z, &QQ));
+        v = V::select(small_up, x.add(x.mul(y)), v);
+    }
+    if V::any(V::and_not(far_up, near_up)) {
+        let s = ax.sub(one);
+        let p = horner(s, &PA);
+        let q = one_plus(s, &QA);
+        let erfc = one.sub(V::splat(ERX)).sub(p.div(q));
+        v = V::select(near_up, signed(one.sub(erfc)), v);
+    }
+    let far = V::and_not(flat, far_up);
+    if V::any(far) {
+        // Lanes of other branches take |x| = 2, so their exps stay in the main range of `exp`.
+        let a = V::select(far, ax, V::splat(2.0));
+        let s = one.div(a.mul(a));
+        let third = a.abs_bits_gt(0x4036_db6c);
+        let r = V::select(third, horner(s, &RB), horner(s, &RA));
+        let big_s = V::select(third, one_plus(s, &SB), one_plus(s, &SA));
+        let z = a.and_bits(0xffff_e000);
+        let e1 = exp(z.mul(V::splat(-1.0)).mul(z).sub(V::splat(0.5625)));
+        let e2 = exp(z.sub(a).mul(z.add(a)).add(r.div(big_s)));
+        let erfc = e1.mul(e2).div(a);
+        v = V::select(far_up, signed(one.sub(erfc)), v);
+    }
+    let flat_v = signed(one.sub(V::splat(f32::from_bits(0x0380_0000))));
+    V::select(flat, flat_v, v)
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -179,6 +302,10 @@ mod x86 {
                 ))))
             }
         }
+        #[inline(always)]
+        fn and_bits(self, mask: u32) -> Self {
+            F4(unsafe { _mm_and_ps(self.0, _mm_castsi128_ps(_mm_set1_epi32(mask as i32))) })
+        }
     }
 
     /// 8 values in an AVX register.
@@ -266,6 +393,10 @@ mod x86 {
                 ))))
             }
         }
+        #[inline(always)]
+        fn and_bits(self, mask: u32) -> Self {
+            F8(unsafe { _mm256_and_ps(self.0, _mm256_castsi256_ps(_mm256_set1_epi32(mask as i32))) })
+        }
     }
 
     /// 16 values in an AVX-512 register.
@@ -351,6 +482,15 @@ mod x86 {
                 ))))
             }
         }
+        #[inline(always)]
+        fn and_bits(self, mask: u32) -> Self {
+            F16(unsafe {
+                _mm512_castsi512_ps(_mm512_and_si512(
+                    _mm512_castps_si512(self.0),
+                    _mm512_set1_epi32(mask as i32),
+                ))
+            })
+        }
     }
 }
 
@@ -421,6 +561,9 @@ mod plain {
             F4(self
                 .0
                 .map(|k| f32::from_bits(((k as i32).wrapping_add(127) as u32) << 23)))
+        }
+        fn and_bits(self, mask: u32) -> Self {
+            F4(self.0.map(|v| f32::from_bits(v.to_bits() & mask)))
         }
     }
 }
