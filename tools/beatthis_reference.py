@@ -123,7 +123,9 @@ def parts_hooks(model, store):
     for name, module in names.items():
 
         def hook(_m, _args, out, name=name):
-            store[name] = out.detach()[0].clone()
+            # A piece of more than one chunk runs the model once for each; keep chunk 0, as the docs say.
+            if name not in store:
+                store[name] = out.detach()[0].clone()
 
         handles.append(module.register_forward_hook(hook))
     return handles
@@ -238,8 +240,17 @@ def main():
             for k, v in store.items():
                 golden[f"parts.{k}"] = v.numpy()
             model64 = load_model(ckpt, "cpu").double()
+            store64, handles64 = {}, []
+            if name == PARTS_MODEL and case == PARTS_CASE:
+                handles64 = parts_hooks(model64, store64)
             with torch.inference_mode():
                 beat64, down64, _, _ = predict(model64, spect64)
+            for h in handles64:
+                h.remove()
+            for k, v in store64.items():
+                golden[f"parts64.{k}"] = v.numpy()
+            golden[f"{name}.{case}.beat64"] = beat64.double().numpy()
+            golden[f"{name}.{case}.downbeat64"] = down64.double().numpy()
             b_s, d_s = post(beat, down)
             golden[f"{name}.{case}.beat"] = beat.numpy()
             golden[f"{name}.{case}.downbeat"] = down.numpy()

@@ -25,6 +25,7 @@
 #   <case>.spect64            [T, 128] f64  the same from the f64 window and filters: the gate of an f64 engine
 #   <model>.<case>.beat       [T]           beat logits after the sum head, chunks joined keep_first
 #   <model>.<case>.downbeat   [T]           downbeat logits
+#   <model>.<case>.beat64, .downbeat64  f64 the logits of the f64 run (the sum head of beat_this rounds the beat to f32)
 #   <model>.<case>.beats_s    [B]  f64      beat times in seconds, minimal postprocess
 #   <model>.<case>.downbeats_s [D] f64      downbeat times in seconds, each moved onto a beat
 #   join.<T>.beat, .downbeat  [T]           upstream's split and keep_first join of fake logits for T frames: the
@@ -37,6 +38,7 @@
 #   parts.layer{0..5}.attn    [T', 512]     the attention output of each layer, before its residual add
 #   parts.layer{0..5}.ff      [T', 512]     the feed-forward output of each layer, before its residual add
 #   parts.final_norm          [T', 512]     after the last RMSNorm
+#   parts64.<name>            f64           each parts.* row from the f64 run, for a gate as tight as torch's own f32 error
 #
 # <weights>/<model>.safetensors holds the tensors of BeatThis.state_dict in f32, without num_batches_tracked. Its
 # metadata holds the SHA-256 of the source checkpoint and its hyper_parameters. cases.json holds the versions, the
