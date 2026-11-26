@@ -61,11 +61,18 @@ fn the_rows_have_the_shape_of_the_frames() {
     assert_eq!(mel::log_mel(&x).unwrap().len(), mel::frames(x.len()) * MELS);
 }
 
-/// The tables come from libm's cos, ln and exp. A change of libm that moves them fails here, not in a client.
+/// The tables come from the libm crate's cos, log and exp. A change of that crate that moves them fails here.
 #[test]
 fn the_tables_are_pinned() {
     assert_eq!(hash_f64(mel::window()), PIN_WINDOW, "the window moved");
     assert_eq!(hash_f64(mel::filterbank()), PIN_FILTERS, "the mel filters moved");
+}
+
+/// The f64 magnitudes hold the bits of the FFT and its twiddles, which the rounding to f32 can hide.
+#[test]
+fn the_magnitude_bits_are_pinned() {
+    let mags = mel::magnitudes(&synthetic(22_050)).unwrap();
+    assert_eq!(hash_f64(&mags), PIN_MAGNITUDES, "the f64 magnitudes moved");
 }
 
 /// The bits of the spectrum are this library's own. A change that moves them must update the engine identity.
@@ -99,9 +106,10 @@ fn the_log_mel_bits_of_quiet_audio_are_pinned() {
     );
 }
 
-const PIN_WINDOW: &str = "62be1167f9e0901ff24b8da8f2e1b4da6381515703ef933c652a9b636fc65ecc";
+const PIN_WINDOW: &str = "c963bdf4dbde52f25eba776f0a2e95d74ad299736650104f527da19d7c83b207";
 const PIN_LOG_MEL_QUIET: &str = "1c83496f4681b8fc6d4001cde102dff39c3270391252a4a00fcb03f21affc0c6";
-const PIN_FILTERS: &str = "5101aba1a123188817f8320b34b4cd1aded1a07847ecf10c74fb28f56a1e12a2";
+const PIN_MAGNITUDES: &str = "5a1c2aa63b7a5643c9b6f8891681db9fd9ebf473bbeadec667261c3052f9ddda";
+const PIN_FILTERS: &str = "f5f4bcf02295d4fb73966e7340d28d3d8bea2368afb848d8ded10b6e71bf583f";
 const PIN_LOG_MEL: &str = "8f0a131f5054cf9abe2659266c9da8d221dbb41e185bcd966ab1e2f13aaf07e5";
 
 // The reference of these gates is torchaudio with f64 as the default dtype (`tools/beatthis_golden.sh`). This module

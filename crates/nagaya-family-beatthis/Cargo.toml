@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 # The reader of a WAV request part. Pure Rust; the family takes 22,050 Hz mono only.
 hound = "3.5.1"
+# cos, sin, log, exp and log1p of the log-mel in pure Rust, so its bits do not depend on the libm of the machine.
+libm = "0.2.16"
 # The reader of a converted checkpoint.
 safetensors = "0.8.0"
 # The hyper_parameters of a converted checkpoint are JSON in its safetensors metadata.

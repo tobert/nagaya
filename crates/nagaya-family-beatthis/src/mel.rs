@@ -4,6 +4,8 @@
 //! padding of 512 at each end, a magnitude spectrum divided by sqrt(1024), 128 Slaney mel filters from 30 Hz to
 //! 11 kHz with no area normalization, then `log1p(1000 * mel)`. This module computes in f64 and rounds once to f32,
 //! as the LFM3 family does. The gate against the reference is a tolerance; the bits of this module are its own.
+//! cos, sin, log, exp and log1p come from the `libm` crate (a pure Rust port of musl), not the machine's libm, so the
+//! bits do not change with the machine or an update of its C library.
 
 use std::f64::consts::PI;
 use std::sync::OnceLock;
@@ -35,7 +37,7 @@ pub fn frames(samples: usize) -> usize {
 /// The periodic Hann window: `0.5 - 0.5 cos(2 pi n / N_FFT)`.
 pub fn window() -> &'static [f64; N_FFT] {
     static TABLE: OnceLock<[f64; N_FFT]> = OnceLock::new();
-    TABLE.get_or_init(|| std::array::from_fn(|n| 0.5 - 0.5 * (2.0 * PI * n as f64 / N_FFT as f64).cos()))
+    TABLE.get_or_init(|| std::array::from_fn(|n| 0.5 - 0.5 * libm::cos(2.0 * PI * n as f64 / N_FFT as f64)))
 }
 
 const F_SP: f64 = 200.0 / 3.0;
@@ -45,13 +47,13 @@ const F_MIN: f64 = 30.0;
 const F_MAX: f64 = 11_000.0;
 
 fn logstep() -> f64 {
-    6.4f64.ln() / 27.0
+    libm::log(6.4) / 27.0
 }
 
 /// `torchaudio.functional._hz_to_mel` with `mel_scale="slaney"`.
 fn hz_to_mel(hz: f64) -> f64 {
     if hz >= MIN_LOG_HZ {
-        MIN_LOG_MEL + (hz / MIN_LOG_HZ).ln() / logstep()
+        MIN_LOG_MEL + libm::log(hz / MIN_LOG_HZ) / logstep()
     } else {
         hz / F_SP
     }
@@ -60,7 +62,7 @@ fn hz_to_mel(hz: f64) -> f64 {
 /// `torchaudio.functional._mel_to_hz` with `mel_scale="slaney"`.
 fn mel_to_hz(mel: f64) -> f64 {
     if mel >= MIN_LOG_MEL {
-        MIN_LOG_HZ * (logstep() * (mel - MIN_LOG_MEL)).exp()
+        MIN_LOG_HZ * libm::exp(logstep() * (mel - MIN_LOG_MEL))
     } else {
         F_SP * mel
     }
@@ -115,7 +117,7 @@ fn twiddles() -> &'static [(f64, f64); N_FFT / 2] {
     TABLE.get_or_init(|| {
         std::array::from_fn(|k| {
             let a = 2.0 * PI * k as f64 / N_FFT as f64;
-            (a.cos(), -a.sin())
+            (libm::cos(a), -libm::sin(a))
         })
     })
 }
@@ -206,7 +208,7 @@ pub fn log_mel(samples: &[f32]) -> Result<Vec<f32>, Error> {
             for f in lo..hi {
                 sum += row[f] * fb[f * MELS + m];
             }
-            out.push((1000.0 * sum).ln_1p() as f32);
+            out.push(libm::log1p(1000.0 * sum) as f32);
         }
     }
     Ok(out)
