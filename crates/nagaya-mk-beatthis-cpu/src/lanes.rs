@@ -49,9 +49,9 @@ mod imp {
         }
 
         /// `libm::expf` of each value, with its bits. The code is the code of `libm::expf` (FreeBSD's `expf`) for
-        /// the values in its main range, `2^-14 < |x| < 87.34`, done on 4 values at once with selects for its
+        /// the values in its main range, `2^-13 < |x| < 87.34`, done on 4 values at once with selects for its
         /// branches. There `k` is in -126..=126, so `scalbnf(y, k)` is one multiply by `2^k`, as in `libm`. A value
-        /// of at most `2^-14` in magnitude gives `1 + x`, and a value of at most -103.97 gives 0, as in `libm`. When
+        /// of at most `2^-13` in magnitude gives `1 + x`, and a value of at most -103.97 gives 0, as in `libm`. When
         /// a value is in neither range (NaN, a large positive value, or a value from -103.97 to -87.34) in a lane, all 4
         /// values go to `libm::expf` one by one.
         #[inline(always)]

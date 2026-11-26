@@ -49,16 +49,22 @@ impl Pool {
             remaining: AtomicUsize::new(0),
             panicked: AtomicBool::new(false),
         });
-        let workers = (0..threads)
-            .map(|i| {
-                let shared = shared.clone();
-                std::thread::Builder::new()
-                    .name(format!("nagaya-cpu-{i}"))
-                    .spawn(move || work(&shared, i))
-                    .unwrap_or_else(|e| panic!("cannot start the worker thread nagaya-cpu-{i}: {e}"))
-            })
-            .collect();
-        Pool { shared, workers }
+        let mut pool = Pool {
+            shared,
+            workers: Vec::with_capacity(threads),
+        };
+        for i in 0..threads {
+            let shared = pool.shared.clone();
+            match std::thread::Builder::new()
+                .name(format!("nagaya-cpu-{i}"))
+                .spawn(move || work(&shared, i))
+            {
+                Ok(w) => pool.workers.push(w),
+                // The drop of `pool` ends the workers that started.
+                Err(e) => panic!("cannot start the worker thread nagaya-cpu-{i}: {e}"),
+            }
+        }
+        pool
     }
 
     /// Runs `f(i)` on worker `i` for each worker, and returns when each has ended. A panic of a worker panics here.
