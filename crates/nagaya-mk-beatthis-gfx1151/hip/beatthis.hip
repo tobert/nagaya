@@ -4,6 +4,7 @@
 #include <hip/hip_runtime.h>
 
 #define BT_FN __device__ static inline
+#define BT_HOSTDEV __host__ __device__ static inline
 #define BT_G
 #define bt_expf expf
 #define bt_erff erff
@@ -57,17 +58,25 @@ __global__ void __launch_bounds__(256) linear_tile_k(const float* x, float* y, l
     bt_linear_tile(x, y, rows, din, dout, weight, bias, blockIdx.y, blockIdx.x, threadIdx.x, threadIdx.y, xs, ws);
 }
 
-__global__ void __launch_bounds__(64) attention_tile_k(const float* qkv, const float* qk, const float* gates, float* out,
-                                                       int a, int b, int axis, int heads, int qtiles) {
+__global__ void __launch_bounds__(64) attention_tile_k(const float* qkv, const float* qk, float* partial, int a, int b,
+                                                       int axis, int heads, int qtiles, int parts) {
     __shared__ float ks[BT_ATT_TILE * BT_ATT_HD];
     __shared__ float vs[BT_ATT_TILE * BT_ATT_HD];
-    // blockIdx.x = (seq * heads + h) * qtiles + qtile
+    // blockIdx.x = ((seq * heads + h) * qtiles + qtile) * parts + part
     long g = blockIdx.x;
+    int part = static_cast<int>(g % parts);
+    g /= parts;
     int qtile = static_cast<int>(g % qtiles);
-    long rest = g / qtiles;
-    int h = static_cast<int>(rest % heads);
-    long seq = rest / heads;
-    bt_attention_tile(qkv, qk, gates, out, a, b, axis, heads, seq, h, qtile, threadIdx.x, ks, vs);
+    g /= qtiles;
+    int h = static_cast<int>(g % heads);
+    long seq = g / heads;
+    bt_attention_tile(qkv, qk, partial, a, b, axis, heads, seq, h, qtile, part, threadIdx.x, ks, vs);
+}
+
+__global__ void attention_merge_k(const float* partial, const float* gates, float* out, long n, int a, int b, int axis,
+                                  int heads) {
+    long t = tile();
+    if (t < n) bt_attention_merge(partial, gates, out, a, b, axis, heads, t);
 }
 
 __global__ void add_into_k(float* acc, const float* x, long n) {
@@ -125,11 +134,19 @@ int bt_hip_add_into(float* acc, const float* x, long n, hipStream_t s) {
     return launched();
 }
 
-int bt_hip_attention(const float* qkv, float* qk, const float* gates, float* out, int a, int b, int axis, int heads,
-                     int hd, const float* freqs, hipStream_t s) {
+long bt_hip_attention_partial_floats(int a, int b, int axis, int heads) {
+    return bt_attention_partial_floats(a, b, axis, heads);
+}
+
+int bt_hip_attention(const float* qkv, float* qk, float* partial, long partial_floats, const float* gates, float* out,
+                     int a, int b, int axis, int heads, int hd, const float* freqs, hipStream_t s) {
     // The tiled attention unrolls a head dim of 32 (kernels/beatthis_ops.h). Another head dim is a defect of the plan.
     if (hd != BT_ATT_HD) {
         return -1;
+    }
+    // A scratch smaller than the parts need would be written past its end: refuse it, nothing runs.
+    if (partial_floats < bt_attention_partial_floats(a, b, axis, heads)) {
+        return -2;
     }
     long rows = static_cast<long>(a) * b;
     rope_k<<<blocks(rows), THREADS, 0, s>>>(qkv, qk, rows, b, axis, heads, hd, freqs);
@@ -140,9 +157,16 @@ int bt_hip_attention(const float* qkv, float* qk, const float* gates, float* out
     int len = axis == 0 ? a : b;
     long seqs = axis == 0 ? b : a;
     int qtiles = (len + BT_ATT_TILE * BT_ATT_Q - 1) / (BT_ATT_TILE * BT_ATT_Q);
-    long groups = seqs * heads * qtiles;
-    attention_tile_k<<<static_cast<unsigned>(groups), BT_ATT_TILE, 0, s>>>(qkv, qk, gates, out, a, b, axis, heads,
-                                                                          qtiles);
+    int parts = bt_attention_parts(len);
+    long groups = seqs * heads * qtiles * parts;
+    attention_tile_k<<<static_cast<unsigned>(groups), BT_ATT_TILE, 0, s>>>(qkv, qk, partial, a, b, axis, heads, qtiles,
+                                                                          parts);
+    e = launched();
+    if (e != 0) {
+        return e;
+    }
+    long n = rows * heads;
+    attention_merge_k<<<blocks(n), THREADS, 0, s>>>(partial, gates, out, n, a, b, axis, heads);
     return launched();
 }
 

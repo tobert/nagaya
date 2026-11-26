@@ -17,8 +17,8 @@ use nagaya_family_beatthis::plan::{self, Config, Task};
 /// The bound of one chunk. A naive chunk of `final0` takes about 1 s on the card (spec 11.19).
 pub const MAX_QUANTUM_MS: u32 = 10_000;
 
-/// The device bytes of the engine: its prepared weights, the buffers of a plan of one whole chunk, and the rotated q
-/// and k of its largest attention.
+/// The device bytes of the engine: its prepared weights, the buffers of a plan of one whole chunk, the rotated q and
+/// k of its largest attention, and its partial sums.
 pub fn device_bytes(config: &Config) -> u64 {
     let p = plan::build(config, CHUNK);
     let weights: usize = p.weights.iter().map(|w| w.prep.len()).sum();
@@ -34,7 +34,24 @@ pub fn device_bytes(config: &Config) -> u64 {
         })
         .max()
         .unwrap_or(0);
-    4 * (weights + buffers + rotated) as u64
+    // The partial sums of the split attention (kernels/beatthis_ops.h, bt_attention_partial_floats): 256 keys a
+    // part, 34 values a query, head and part.
+    let partial = p
+        .tasks
+        .iter()
+        .map(|t| match *t {
+            Task::Attention { a, b, along, heads, .. } => {
+                let len = match along {
+                    plan::Axis::A => a,
+                    plan::Axis::B => b,
+                };
+                len.div_ceil(256) * a * b * heads * 34
+            }
+            _ => 0,
+        })
+        .max()
+        .unwrap_or(0);
+    4 * (weights + buffers + rotated + partial) as u64
 }
 
 /// The limits of the engine on one card, for a checkpoint of `config`.

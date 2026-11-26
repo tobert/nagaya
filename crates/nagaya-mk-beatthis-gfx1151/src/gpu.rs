@@ -53,9 +53,12 @@ unsafe extern "C" {
         s: *mut c_void,
     ) -> c_int;
     fn bt_hip_add_into(acc: *mut f32, x: *const f32, n: c_long, s: *mut c_void) -> c_int;
+    fn bt_hip_attention_partial_floats(a: c_int, b: c_int, axis: c_int, heads: c_int) -> c_long;
     fn bt_hip_attention(
         qkv: *const f32,
         qk: *mut f32,
+        partial: *mut f32,
+        partial_floats: c_long,
         gates: *const f32,
         out: *mut f32,
         a: c_int,
@@ -72,6 +75,8 @@ unsafe extern "C" {
 struct Scratch {
     bufs: Vec<DeviceBuffer>,
     qk: DeviceBuffer,
+    partial: DeviceBuffer,
+    partial_floats: usize,
 }
 
 /// The prepared weights of a checkpoint in device memory, the stream of the card, and the scratch of each chunk
@@ -84,6 +89,28 @@ pub struct Gpu {
 
 fn err(e: HipError) -> String {
     format!("{}: HIP error {} ({})", e.call, e.code, e.text)
+}
+
+fn axis(along: Axis) -> c_int {
+    match along {
+        Axis::A => 0,
+        Axis::B => 1,
+    }
+}
+
+/// The partial sums of the largest attention of a plan, in values, as the kernels count them.
+fn partial_floats(plan: &Plan) -> usize {
+    plan.tasks
+        .iter()
+        .map(|t| match *t {
+            // SAFETY: a pure function of four integers.
+            Task::Attention { a, b, along, heads, .. } => unsafe {
+                bt_hip_attention_partial_floats(a as c_int, b as c_int, axis(along), heads as c_int) as usize
+            },
+            _ => 0,
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// The rotated q and k of the largest attention of a plan, in values.
@@ -176,10 +203,22 @@ impl Gpu {
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(err)?;
                 let qk = DeviceBuffer::new(4 * rotated(plan).max(1)).map_err(err)?;
-                e.insert(Scratch { bufs, qk })
+                let partial_floats = partial_floats(plan).max(1);
+                let partial = DeviceBuffer::new(4 * partial_floats).map_err(err)?;
+                e.insert(Scratch {
+                    bufs,
+                    qk,
+                    partial,
+                    partial_floats,
+                })
             }
         };
-        let Scratch { bufs, qk } = &*scratch;
+        let Scratch {
+            bufs,
+            qk,
+            partial,
+            partial_floats,
+        } = &*scratch;
         // Two plans of one length and config are one plan (plan::build), so the cached sizes hold. Check them anyway.
         assert!(
             bufs.len() == plan.buffers.len()
@@ -195,7 +234,7 @@ impl Gpu {
             let started = Instant::now();
             // SAFETY: Plan::check proved that each task reads and writes inside its buffers, and each buffer and weight
             // has the size of the plan (asserted above). The buffers live in the cache of this Gpu.
-            let code = unsafe { self.launch(task, &p, qk, s) };
+            let code = unsafe { self.launch(task, &p, qk, (partial, *partial_floats), s) };
             check("a Beat This! launch", code).map_err(|e| format!("task {i} ({task:?}): {}", err(e)))?;
             if let Some(times) = times.as_deref_mut() {
                 self.stream.synchronize().map_err(err)?;
@@ -229,6 +268,7 @@ impl Gpu {
         task: &Task,
         p: &impl Fn(nagaya_family_beatthis::plan::Buf) -> *mut f32,
         qk: &DeviceBuffer,
+        (partial, partial_floats): (&DeviceBuffer, usize),
         s: *mut c_void,
     ) -> c_int {
         // SAFETY: the caller's contract.
@@ -310,14 +350,13 @@ impl Gpu {
                 } => bt_hip_attention(
                     p(qkv),
                     qk.ptr() as *mut f32,
+                    partial.ptr() as *mut f32,
+                    partial_floats as c_long,
                     p(gates),
                     p(out),
                     a as c_int,
                     b as c_int,
-                    match along {
-                        Axis::A => 0,
-                        Axis::B => 1,
-                    },
+                    axis(along),
                     heads as c_int,
                     head_dim as c_int,
                     self.w(freqs),

@@ -7,6 +7,8 @@
 //               (OpenCL C);
 //   BT_G        the qualifier of a pointer to global memory: empty (HIP, CUDA) or `__global` (OpenCL C);
 //   bt_expf, bt_erff, bt_sinf, bt_cosf, bt_sqrtf   the f32 math functions of the target;
+//   BT_HOSTDEV  the qualifier of a function that the host calls too: `__host__ __device__ static inline` (HIP,
+//               CUDA) or `static inline` (OpenCL C);
 //   BT_L        the qualifier of a pointer to the shared memory of a workgroup: empty (HIP, CUDA) or `__local`;
 //   BT_BARRIER() a barrier of the workgroup that also orders its shared memory.
 // The functions named `_tile` run on a whole workgroup. The kernel declares their shared arrays and passes them in,
@@ -119,13 +121,15 @@ BT_FN void bt_rope(const BT_G float* qkv, BT_G float* qk, int b, int axis, int h
 
 // Tiled linear. A workgroup of 16 by 16 threads computes a tile of 64 rows by 64 outputs of y = x weight^T + bias;
 // thread (ty, tx) holds the 4 by 4 values at rows row0 + 4 ty + i and outputs o0 + 4 tx + j. The k dimension comes in
-// slices of 16 through shared memory, stored k-major (xs and ws: 16 rows of 68 values, the last 4 a pad), so the 4
-// values that a thread reads at one k are side by side and load as one vector. Each value sums its k in order from 0
-// to din - 1 in one accumulator, then adds the bias: which thread computes a value changes no bit. A value past the
-// rows or the outputs is not written.
+// slices of 32 through shared memory, stored k-major (xs and ws: 32 rows of 68 values, the last 4 a pad), so the 4
+// values that a thread reads at one k are side by side. Each thread loads its 8 values of x and of weight for the next
+// slice into registers while it computes the current one, so the reads of global memory overlap the sums. Each value
+// sums its k in order from 0 to din - 1 in one accumulator, then adds the bias: which thread or tile computes a value
+// changes no bit. A value past the rows or the outputs is not written.
 #define BT_LIN_TILE 64
-#define BT_LIN_K 16
+#define BT_LIN_K 32
 #define BT_LIN_ROW 68
+#define BT_LIN_EACH (BT_LIN_TILE * BT_LIN_K / 256)
 BT_FN void bt_linear_tile(const BT_G float* x, BT_G float* y, long rows, int din, int dout, const BT_G float* weight,
                           const BT_G float* bias, long tile_r, int tile_o, int tx, int ty, BT_L float* xs,
                           BT_L float* ws) {
@@ -138,17 +142,39 @@ BT_FN void bt_linear_tile(const BT_G float* x, BT_G float* y, long rows, int din
         }
     }
     int me = ty * 16 + tx;
+    float px[BT_LIN_EACH];
+    float pw[BT_LIN_EACH];
+    for (int e = 0; e < BT_LIN_EACH; e++) {
+        int l = me + 256 * e;
+        int rr = l / BT_LIN_K;
+        int k = l % BT_LIN_K;
+        long r = r0 + rr;
+        int o = o0 + rr;
+        px[e] = (r < rows && k < din) ? x[r * din + k] : 0.0f;
+        pw[e] = (o < dout && k < din) ? weight[(long)o * din + k] : 0.0f;
+    }
     for (int k0 = 0; k0 < din; k0 += BT_LIN_K) {
-        for (int l = me; l < BT_LIN_TILE * BT_LIN_K; l += 256) {
+        BT_BARRIER();
+        for (int e = 0; e < BT_LIN_EACH; e++) {
+            int l = me + 256 * e;
             int rr = l / BT_LIN_K;
             int kk = l % BT_LIN_K;
-            int k = k0 + kk;
-            long r = r0 + rr;
-            int o = o0 + rr;
-            xs[kk * BT_LIN_ROW + rr] = (r < rows && k < din) ? x[r * din + k] : 0.0f;
-            ws[kk * BT_LIN_ROW + rr] = (o < dout && k < din) ? weight[(long)o * din + k] : 0.0f;
+            xs[kk * BT_LIN_ROW + rr] = px[e];
+            ws[kk * BT_LIN_ROW + rr] = pw[e];
         }
         BT_BARRIER();
+        int k1 = k0 + BT_LIN_K;
+        if (k1 < din) {
+            for (int e = 0; e < BT_LIN_EACH; e++) {
+                int l = me + 256 * e;
+                int rr = l / BT_LIN_K;
+                int k = k1 + l % BT_LIN_K;
+                long r = r0 + rr;
+                int o = o0 + rr;
+                px[e] = (r < rows && k < din) ? x[r * din + k] : 0.0f;
+                pw[e] = (o < dout && k < din) ? weight[(long)o * din + k] : 0.0f;
+            }
+        }
         int kn = din - k0 < BT_LIN_K ? din - k0 : BT_LIN_K;
         for (int kk = 0; kk < kn; kk++) {
             const BT_L float* xk = xs + kk * BT_LIN_ROW + 4 * ty;
@@ -161,7 +187,6 @@ BT_FN void bt_linear_tile(const BT_G float* x, BT_G float* y, long rows, int din
                 }
             }
         }
-        BT_BARRIER();
     }
     for (int i = 0; i < 4; i++) {
         long r = r0 + 4 * ty + i;
@@ -178,6 +203,7 @@ BT_FN void bt_linear_tile(const BT_G float* x, BT_G float* y, long rows, int din
 }
 
 #define BT_CONV_PAD 17
+#define BT_CONV_K 16
 
 // Tiled conv as an implicit GEMM. Its shared rows are 17 values (BT_CONV_PAD), row-major. Each row of the product is one frame and output frequency (t, o), each column one
 // output channel, and k runs over (i, j, ci) as the prepared kernel [cout, kf, kt, cin] lays them out. The tile and
@@ -199,10 +225,10 @@ BT_FN void bt_conv_tile(const BT_G float* x, BT_G float* y, int frames, int f_in
         }
     }
     int me = ty * 16 + tx;
-    for (int k0 = 0; k0 < din; k0 += BT_LIN_K) {
-        for (int l = me; l < BT_LIN_TILE * BT_LIN_K; l += 256) {
-            int rr = l / BT_LIN_K;
-            int kk = l % BT_LIN_K;
+    for (int k0 = 0; k0 < din; k0 += BT_CONV_K) {
+        for (int l = me; l < BT_LIN_TILE * BT_CONV_K; l += 256) {
+            int rr = l / BT_CONV_K;
+            int kk = l % BT_CONV_K;
             int k = k0 + kk;
             long r = r0 + rr;
             float xv = 0.0f;
@@ -223,7 +249,7 @@ BT_FN void bt_conv_tile(const BT_G float* x, BT_G float* y, int frames, int f_in
             ws[rr * BT_CONV_PAD + kk] = (co < cout && k < din) ? kernel[(long)co * din + k] : 0.0f;
         }
         BT_BARRIER();
-        int kn = din - k0 < BT_LIN_K ? din - k0 : BT_LIN_K;
+        int kn = din - k0 < BT_CONV_K ? din - k0 : BT_CONV_K;
         for (int kk = 0; kk < kn; kk++) {
             float xv[4];
             float wv[4];
@@ -253,22 +279,40 @@ BT_FN void bt_conv_tile(const BT_G float* x, BT_G float* y, int frames, int f_in
     }
 }
 
-// Tiled attention. A workgroup of 64 threads holds 128 queries of one sequence and one head: thread lid has the
-// queries at positions qtile * 128 + lid and qtile * 128 + 64 + lid, so each read of shared memory serves two queries.
-// The keys and values come in tiles of 64 through shared memory (ks and vs: 64 rows of BT_ATT_HD values). Each query
-// keeps a running max, a running sum and its weighted sum of v (online softmax). The keys of a tile go in groups of 8:
-// the 8 scores first, then one new max for the group, one rescale by exp(m - m') when it grew, then the 8 exps and
-// the 8 terms of the sums, in key order. The head dim is fixed at 32, so each loop unrolls and each array stays in
-// registers; the launcher refuses another head dim. The dot of q and k keeps 8 lanes joined in pairs, as bt_dot does.
+// Tiled attention, split over the keys. A workgroup of 64 threads holds 128 queries of one sequence and one head
+// (thread lid has positions qtile * 128 + lid and qtile * 128 + 64 + lid) and one part of the keys: part p of `parts`
+// takes the keys [p * per, (p + 1) * per) with per = ceil(len / parts). The keys and values come in tiles of 64 through
+// shared memory. Each query keeps a running max, a running sum and its weighted sum of v (online softmax), with the
+// keys of a tile in groups of 8: the 8 scores, one new max, one rescale by exp(m - m'), then the 8 terms, in key order.
+// The part writes (max, sum, acc[32]) of each query to `partial`; bt_attention_merge joins the parts in order.
+// `parts` is bt_attention_parts(len), a function of the length alone, so the bits do not depend on the card.
+// The head dim is fixed at 32, so each loop unrolls and each array stays in registers; the launcher refuses another.
 #define BT_ATT_TILE 64
 #define BT_ATT_Q 2
 #define BT_ATT_HD 32
 #define BT_ATT_GROUP 8
-BT_FN void bt_attention_tile(const BT_G float* qkv, const BT_G float* qk, const BT_G float* gates, BT_G float* out, int a,
-                             int b, int axis, int heads, long seq, int h, int qtile, int lid, BT_L float* ks,
-                             BT_L float* vs) {
+#define BT_ATT_KEYS_PER_PART 256
+#define BT_ATT_PART (BT_ATT_HD + 2)
+
+BT_HOSTDEV int bt_attention_parts(int len) {
+    return (len + BT_ATT_KEYS_PER_PART - 1) / BT_ATT_KEYS_PER_PART;
+}
+
+// The values of `partial` for a grid of rows and heads: parts * rows * heads * (32 + 2).
+BT_HOSTDEV long bt_attention_partial_floats(int a, int b, int axis, int heads) {
+    int len = axis == 0 ? a : b;
+    return (long)bt_attention_parts(len) * a * b * heads * BT_ATT_PART;
+}
+
+BT_FN void bt_attention_tile(const BT_G float* qkv, const BT_G float* qk, BT_G float* partial, int a, int b, int axis,
+                             int heads, long seq, int h, int qtile, int part, int lid, BT_L float* ks, BT_L float* vs) {
     int width = heads * BT_ATT_HD;
     int len = axis == 0 ? a : b;
+    int parts = bt_attention_parts(len);
+    int per = (len + parts - 1) / parts;
+    int kb = part * per;
+    int ke = kb + per < len ? kb + per : len;
+    long rows = (long)a * b;
     float scale = 1.0f / bt_sqrtf((float)BT_ATT_HD);
     int valid[BT_ATT_Q];
     long r[BT_ATT_Q];
@@ -287,9 +331,9 @@ BT_FN void bt_attention_tile(const BT_G float* qkv, const BT_G float* qk, const 
         m[u] = -3.402823466e38f;
         l[u] = 0.0f;
     }
-    for (int k0 = 0; k0 < len; k0 += BT_ATT_TILE) {
+    for (int k0 = kb; k0 < ke; k0 += BT_ATT_TILE) {
         int kp = k0 + lid;
-        if (kp < len) {
+        if (kp < ke) {
             long kr = axis == 0 ? (long)kp * b + seq : seq * b + kp;
             for (int d = 0; d < BT_ATT_HD; d++) {
                 ks[lid * BT_ATT_HD + d] = qk[kr * 2 * width + width + h * BT_ATT_HD + d];
@@ -297,7 +341,7 @@ BT_FN void bt_attention_tile(const BT_G float* qkv, const BT_G float* qk, const 
             }
         }
         BT_BARRIER();
-        int kn = len - k0 < BT_ATT_TILE ? len - k0 : BT_ATT_TILE;
+        int kn = ke - k0 < BT_ATT_TILE ? ke - k0 : BT_ATT_TILE;
         for (int g0 = 0; g0 < kn; g0 += BT_ATT_GROUP) {
             int gn = kn - g0 < BT_ATT_GROUP ? kn - g0 : BT_ATT_GROUP;
             float sc[BT_ATT_Q][BT_ATT_GROUP];
@@ -347,11 +391,48 @@ BT_FN void bt_attention_tile(const BT_G float* qkv, const BT_G float* qk, const 
     }
     for (int u = 0; u < BT_ATT_Q; u++) {
         if (valid[u]) {
-            float gate = 1.0f / (1.0f + bt_expf(-gates[r[u] * heads + h]));
+            BT_G float* p = partial + ((part * rows + r[u]) * heads + h) * BT_ATT_PART;
+            p[0] = m[u];
+            p[1] = l[u];
             for (int d = 0; d < BT_ATT_HD; d++) {
-                out[r[u] * width + h * BT_ATT_HD + d] = acc[u][d] / l[u] * gate;
+                p[2 + d] = acc[u][d];
             }
         }
+    }
+}
+
+// The join of the parts of one query and head, t = row * heads + h, in part order: M = the max of the maxes, then the
+// sum and acc of each part scaled by exp(m_p - M), added in order. Then acc / sum times the gate. A part with no keys
+// has the max -FLT_MAX and adds zeros.
+BT_FN void bt_attention_merge(const BT_G float* partial, const BT_G float* gates, BT_G float* out, int a, int b,
+                              int axis, int heads, long t) {
+    int len = axis == 0 ? a : b;
+    int parts = bt_attention_parts(len);
+    long rows = (long)a * b;
+    long r = t / heads;
+    int h = (int)(t % heads);
+    float mx = -3.402823466e38f;
+    for (int p = 0; p < parts; p++) {
+        float mp = partial[((p * rows + r) * heads + h) * BT_ATT_PART];
+        mx = mp > mx ? mp : mx;
+    }
+    float l = 0.0f;
+    float acc[BT_ATT_HD];
+    for (int d = 0; d < BT_ATT_HD; d++) {
+        acc[d] = 0.0f;
+    }
+    for (int p = 0; p < parts; p++) {
+        const BT_G float* q = partial + ((p * rows + r) * heads + h) * BT_ATT_PART;
+        float f = bt_expf(q[0] - mx);
+        l += q[1] * f;
+        for (int d = 0; d < BT_ATT_HD; d++) {
+            acc[d] += q[2 + d] * f;
+        }
+    }
+    float gate = 1.0f / (1.0f + bt_expf(-gates[r * heads + h]));
+    int width = heads * BT_ATT_HD;
+    for (int d = 0; d < BT_ATT_HD; d++) {
+        out[r * width + h * BT_ATT_HD + d] = acc[d] / l * gate;
     }
 }
 

@@ -165,4 +165,4 @@ fn two_runs_give_the_same_bits() {
     );
 }
 
-const PIN_GFX1151_SMALL0: &str = "7f4bbb5653fb58205d7783936f808b40da42a5cd56731f116f416dbf26a82bf7";
+const PIN_GFX1151_SMALL0: &str = "7b1ce38828152a73534aff17c364896c1cec7cd4410513d3f02ada2eab4c2b93";
