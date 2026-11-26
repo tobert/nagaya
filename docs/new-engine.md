@@ -26,8 +26,11 @@ no edit in another repository.
 - The engine kind in a profile is the crate name: `mk-qwen38-gfx1151`, `mk-gemma4-bmg`
   (`crates/nagaya/src/qwen38.rs:12`, `crates/nagaya-mk-gemma4-bmg/src/spec.rs:24`). The engine name in the profile is
   short: `qwen38`, `gemma`.
-- A family library is `nagaya-text-<family>`. Its name in the identity is the family: `qwen38`, `gemma4`, `toy`
-  (`crates/nagaya-mk-gemma4-bmg/src/spec.rs:30`).
+- A family library is `nagaya-family-<family>`. Its name in the identity is the family: `qwen38`, `gemma4`, `toy`
+  (`crates/nagaya-mk-gemma4-bmg/src/spec.rs:30`). The older family libraries still have the prefix `nagaya-text-`,
+  from the first ones, which held only text logic. A rename moves them to `nagaya-family-` later. A new family uses
+  `nagaya-family-` now. Reason: a family library holds all the logic of a model that needs no card, and some of it is
+  not text, such as the beat times of `nagaya-family-beatthis`.
 - One engine crate for each vendor and device (spec 8.3).
 
 A port adds these things:
@@ -35,7 +38,7 @@ A port adds these things:
 | Thing | Where |
 |---|---|
 | the engine crate | `crates/nagaya-<kind>-<model>-<target>/` |
-| the family library, when the family is new | `crates/nagaya-text-<family>/` |
+| the family library, when the family is new | `crates/nagaya-family-<family>/` |
 | the factory module and the family opener | `crates/nagaya/src/<engine>.rs`, as `qwen38.rs` and `gemma4.rs`, named in `crates/nagaya/src/lib.rs` |
 | the kind in the engine registry | `crates/nagaya/src/admission.rs:191` (`Registry::compiled_in`) |
 | the family in the family registry | `crates/nagaya/src/serving.rs:53` (`FamilyRegistry::compiled_in`) |
