@@ -6,7 +6,11 @@
 //   BT_FN       the qualifier of a device function, such as `__device__ static inline` (HIP, CUDA) or `static inline`
 //               (OpenCL C);
 //   BT_G        the qualifier of a pointer to global memory: empty (HIP, CUDA) or `__global` (OpenCL C);
-//   bt_expf, bt_erff, bt_sinf, bt_cosf, bt_sqrtf   the f32 math functions of the target.
+//   bt_expf, bt_erff, bt_sinf, bt_cosf, bt_sqrtf   the f32 math functions of the target;
+//   BT_L        the qualifier of a pointer to the shared memory of a workgroup: empty (HIP, CUDA) or `__local`;
+//   BT_BARRIER() a barrier of the workgroup that also orders its shared memory.
+// The functions named `_tile` run on a whole workgroup. The kernel declares their shared arrays and passes them in,
+// as OpenCL C asks, and passes the workgroup's ids, so no function here reads a thread id.
 // The build must not contract a multiply and an add (`-ffp-contract=off`), so the bits are those of this source on
 // one target. Each target has its own bits (spec 8.5): its math functions are its own.
 //
@@ -69,27 +73,34 @@ BT_FN void bt_gelu(BT_G float* x, long t) {
     x[t] = v * 0.5f * (1.0f + bt_erff(v * 0.70710678118654752f));
 }
 
-// RMSNorm of row r: y = x / max(|x|, 1e-12) * sqrt(dim) * gamma, in that order.
-BT_FN void bt_rms_norm(const BT_G float* x, BT_G float* y, int dim, const BT_G float* gamma, long r) {
+// RMSNorm of one row on a workgroup of 32 threads: y = x / max(|x|, 1e-12) * sqrt(dim) * gamma, in that order.
+// Thread lid sums the squares of the values lid, lid + 32, ... in order; the 32 sums join in a fixed tree in shared
+// memory (part: 32 values). Then each thread writes the values lid, lid + 32, ...
+#define BT_RMS_THREADS 32
+BT_FN void bt_rms_norm_tile(const BT_G float* x, BT_G float* y, int dim, const BT_G float* gamma, long r, int lid,
+                            BT_L float* part) {
     const BT_G float* xr = x + r * dim;
     BT_G float* yr = y + r * dim;
-    float norm = bt_sqrtf(bt_dot(xr, xr, dim));
+    float sum = 0.0f;
+    for (int i = lid; i < dim; i += BT_RMS_THREADS) {
+        sum += xr[i] * xr[i];
+    }
+    part[lid] = sum;
+    BT_BARRIER();
+    for (int step = BT_RMS_THREADS / 2; step > 0; step /= 2) {
+        if (lid < step) {
+            part[lid] = part[lid] + part[lid + step];
+        }
+        BT_BARRIER();
+    }
+    float norm = bt_sqrtf(part[0]);
     if (norm < 1e-12f) {
         norm = 1e-12f;
     }
     float scale = bt_sqrtf((float)dim);
-    for (int i = 0; i < dim; i++) {
+    for (int i = lid; i < dim; i += BT_RMS_THREADS) {
         yr[i] = xr[i] / norm * scale * gamma[i];
     }
-}
-
-// Linear: the value t of y[rows, dout] = dot(weight[o], x[r]) + bias[o]. `bias` may be 0.
-BT_FN void bt_linear(const BT_G float* x, BT_G float* y, int din, int dout, const BT_G float* weight,
-                     const BT_G float* bias, long t) {
-    int o = (int)(t % dout);
-    long r = t / dout;
-    float d = bt_dot(weight + (long)o * din, x + r * din, din);
-    y[t] = bias ? d + bias[o] : d;
 }
 
 // AddInto: acc[t] += x[t].
@@ -131,44 +142,141 @@ BT_FN void bt_rope(const BT_G float* qkv, BT_G float* qk, int b, int axis, int h
     }
 }
 
-// Attention of row r and head h: out[r, h] = sigmoid(gate) * sum over the tokens of softmax(q k / sqrt(hd)) * v. Two
-// passes over the keys: the max, then exp(s - max) with its sum and the weighted sum of v, divided at the end. Thus
-// a thread keeps no array of scores. The head dim is at most 64 (Beat This! has 32).
-BT_FN void bt_attention(const BT_G float* qkv, const BT_G float* qk, const BT_G float* gates, BT_G float* out, int a,
-                        int b, int axis, int heads, int hd, long t) {
-    int h = (int)(t % heads);
-    long r = t / heads;
-    int width = heads * hd;
-    int len = axis == 0 ? a : b;
-    float scale = 1.0f / bt_sqrtf((float)hd);
-    const BT_G float* q = qk + r * 2 * width + h * hd;
-    float max = -3.402823466e38f;
-    for (int pos = 0; pos < len; pos++) {
-        const BT_G float* k = qk + bt_token(r, b, axis, pos) * 2 * width + width + h * hd;
-        float s = bt_dot(q, k, hd) * scale;
-        if (s > max) {
-            max = s;
+// Tiled linear. A workgroup of 16 by 16 threads computes a tile of 64 rows by 64 outputs of y = x weight^T + bias;
+// thread (ty, tx) holds the 4 by 4 values at rows row0 + ty + 16 i and outputs o0 + tx + 16 j. The k dimension comes in
+// slices of 16 through shared memory (xs and ws: 64 rows of 17 values each, the 17th a pad against bank conflicts).
+// Each value sums its k in order from 0 to din - 1 in one accumulator, then adds the bias. A value past the rows or
+// the outputs is not written.
+#define BT_LIN_TILE 64
+#define BT_LIN_K 16
+#define BT_LIN_PAD 17
+BT_FN void bt_linear_tile(const BT_G float* x, BT_G float* y, long rows, int din, int dout, const BT_G float* weight,
+                          const BT_G float* bias, long tile_r, int tile_o, int tx, int ty, BT_L float* xs,
+                          BT_L float* ws) {
+    long r0 = tile_r * BT_LIN_TILE;
+    int o0 = tile_o * BT_LIN_TILE;
+    float acc[4][4];
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+            acc[i][j] = 0.0f;
         }
     }
-    float acc[64];
-    for (int d = 0; d < hd; d++) {
+    int me = ty * 16 + tx;
+    for (int k0 = 0; k0 < din; k0 += BT_LIN_K) {
+        for (int l = me; l < BT_LIN_TILE * BT_LIN_K; l += 256) {
+            int rr = l / BT_LIN_K;
+            int kk = l % BT_LIN_K;
+            int k = k0 + kk;
+            long r = r0 + rr;
+            int o = o0 + rr;
+            xs[rr * BT_LIN_PAD + kk] = (r < rows && k < din) ? x[r * din + k] : 0.0f;
+            ws[rr * BT_LIN_PAD + kk] = (o < dout && k < din) ? weight[(long)o * din + k] : 0.0f;
+        }
+        BT_BARRIER();
+        int kn = din - k0 < BT_LIN_K ? din - k0 : BT_LIN_K;
+        for (int kk = 0; kk < kn; kk++) {
+            float xv[4];
+            float wv[4];
+            for (int i = 0; i < 4; i++) {
+                xv[i] = xs[(ty + 16 * i) * BT_LIN_PAD + kk];
+                wv[i] = ws[(tx + 16 * i) * BT_LIN_PAD + kk];
+            }
+            for (int i = 0; i < 4; i++) {
+                for (int j = 0; j < 4; j++) {
+                    acc[i][j] += xv[i] * wv[j];
+                }
+            }
+        }
+        BT_BARRIER();
+    }
+    for (int i = 0; i < 4; i++) {
+        long r = r0 + ty + 16 * i;
+        if (r >= rows) {
+            continue;
+        }
+        for (int j = 0; j < 4; j++) {
+            int o = o0 + tx + 16 * j;
+            if (o < dout) {
+                y[r * dout + o] = bias ? acc[i][j] + bias[o] : acc[i][j];
+            }
+        }
+    }
+}
+
+// Tiled attention. A workgroup of 64 threads holds 64 queries of one sequence and one head: thread lid has the query
+// at position qtile * 64 + lid. The keys and values come in tiles of 64 through shared memory (ks and vs: 64 rows of
+// BT_ATT_HD values). Each query keeps a running max, a running sum and its weighted sum of v, in key order (online
+// softmax): a new max m' rescales the sums by exp(m - m'). At the end it divides by the sum and multiplies by the gate.
+// The head dim is fixed at 32, as Beat This! has it, so each loop unrolls and each array stays in registers; the
+// launcher refuses another head dim. The dot of q and k keeps 8 lanes joined in pairs, as bt_dot does.
+#define BT_ATT_TILE 64
+#define BT_ATT_HD 32
+BT_FN void bt_attention_tile(const BT_G float* qkv, const BT_G float* qk, const BT_G float* gates, BT_G float* out, int a,
+                             int b, int axis, int heads, long seq, int h, int qtile, int lid, BT_L float* ks,
+                             BT_L float* vs) {
+    int width = heads * BT_ATT_HD;
+    int len = axis == 0 ? a : b;
+    float scale = 1.0f / bt_sqrtf((float)BT_ATT_HD);
+    int pos = qtile * BT_ATT_TILE + lid;
+    int valid = pos < len;
+    long r = axis == 0 ? (long)pos * b + seq : seq * b + pos;
+    float q[BT_ATT_HD];
+    float acc[BT_ATT_HD];
+    for (int d = 0; d < BT_ATT_HD; d++) {
+        q[d] = valid ? qk[r * 2 * width + h * BT_ATT_HD + d] : 0.0f;
         acc[d] = 0.0f;
     }
-    float total = 0.0f;
-    for (int pos = 0; pos < len; pos++) {
-        long tok = bt_token(r, b, axis, pos);
-        const BT_G float* k = qk + tok * 2 * width + width + h * hd;
-        float e = bt_expf(bt_dot(q, k, hd) * scale - max);
-        total += e;
-        const BT_G float* v = qkv + tok * 3 * width + 2 * width + h * hd;
-        for (int d = 0; d < hd; d++) {
-            acc[d] += e * v[d];
+    float m = -3.402823466e38f;
+    float l = 0.0f;
+    for (int k0 = 0; k0 < len; k0 += BT_ATT_TILE) {
+        int kp = k0 + lid;
+        if (kp < len) {
+            long kr = axis == 0 ? (long)kp * b + seq : seq * b + kp;
+            for (int d = 0; d < BT_ATT_HD; d++) {
+                ks[lid * BT_ATT_HD + d] = qk[kr * 2 * width + width + h * BT_ATT_HD + d];
+                vs[lid * BT_ATT_HD + d] = qkv[kr * 3 * width + 2 * width + h * BT_ATT_HD + d];
+            }
         }
+        BT_BARRIER();
+        int kn = len - k0 < BT_ATT_TILE ? len - k0 : BT_ATT_TILE;
+        if (valid) {
+            for (int j = 0; j < kn; j++) {
+                const BT_L float* kj = ks + j * BT_ATT_HD;
+                float l0 = 0.0f, l1 = 0.0f, l2 = 0.0f, l3 = 0.0f, l4 = 0.0f, l5 = 0.0f, l6 = 0.0f, l7 = 0.0f;
+                for (int d = 0; d < BT_ATT_HD; d += 8) {
+                    l0 += q[d] * kj[d];
+                    l1 += q[d + 1] * kj[d + 1];
+                    l2 += q[d + 2] * kj[d + 2];
+                    l3 += q[d + 3] * kj[d + 3];
+                    l4 += q[d + 4] * kj[d + 4];
+                    l5 += q[d + 5] * kj[d + 5];
+                    l6 += q[d + 6] * kj[d + 6];
+                    l7 += q[d + 7] * kj[d + 7];
+                }
+                float sc = (((l0 + l1) + (l2 + l3)) + ((l4 + l5) + (l6 + l7))) * scale;
+                if (sc > m) {
+                    float shrink = bt_expf(m - sc);
+                    l *= shrink;
+                    for (int d = 0; d < BT_ATT_HD; d++) {
+                        acc[d] *= shrink;
+                    }
+                    m = sc;
+                }
+                float e = bt_expf(sc - m);
+                l += e;
+                const BT_L float* vj = vs + j * BT_ATT_HD;
+                for (int d = 0; d < BT_ATT_HD; d++) {
+                    acc[d] += e * vj[d];
+                }
+            }
+        }
+        BT_BARRIER();
     }
-    float gate = 1.0f / (1.0f + bt_expf(-gates[r * heads + h]));
-    BT_G float* o = out + r * width + h * hd;
-    for (int d = 0; d < hd; d++) {
-        o[d] = acc[d] / total * gate;
+    if (valid) {
+        float gate = 1.0f / (1.0f + bt_expf(-gates[r * heads + h]));
+        for (int d = 0; d < BT_ATT_HD; d++) {
+            out[r * width + h * BT_ATT_HD + d] = acc[d] / l * gate;
+        }
     }
 }
 
