@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use nagaya_abi::{Engine, Limits};
-use nagaya_mk_beatthis_cpu::engine::{self, BeatThisEngine};
+use nagaya_mk_beatthis_cpu::engine::{self, BeatThisEngine, OpenFailure};
 
 use crate::admission::{Factory, GroupDevice, OpenError, OpenErrorKind, PlanError};
 
@@ -80,8 +80,20 @@ impl Factory for BeatThisFactory {
 
     fn open_cpu(&self, table: &toml::Table, threads: u32) -> Result<Box<dyn Engine>, OpenError> {
         let path = weights(table).map_err(|e| open_error(e.message))?;
-        let engine = BeatThisEngine::open(&path, threads)
-            .map_err(|message| open_error(format!("`{KIND}` cannot open: {message}")))?;
+        // A canary refusal stops the start with exit 3 and no restart, as the Qwen3.8 canary does (spec 8.1, 10.4).
+        let engine = BeatThisEngine::open(&path, threads).map_err(|failure| match failure {
+            OpenFailure::Canary(refusal) => OpenError {
+                kind: OpenErrorKind::Canary,
+                message: refusal.to_string(),
+            },
+            OpenFailure::Other(message) => open_error(format!("`{KIND}` cannot open: {message}")),
+        })?;
+        let identity = nagaya_abi::Engine::identity(&engine);
+        tracing::info!(
+            "the Beat This! engine passed its canary at load canary_hash={} checkpoint={} target=cpu threads={threads}",
+            identity.canary_hash,
+            identity.checkpoint_digest
+        );
         Ok(Box::new(engine))
     }
 }

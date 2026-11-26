@@ -23,9 +23,38 @@ pub struct BeatThisGpuEngine {
     last_error: Option<String>,
 }
 
+pub use nagaya_family_beatthis::canary::OpenFailure;
+
 impl BeatThisGpuEngine {
-    /// Read and prepare the checkpoint at `path`, and upload it to the current card.
-    pub fn open(path: &Path) -> Result<Self, String> {
+    /// Read and prepare the checkpoint at `path`, upload it to the current card, and check the canary against its
+    /// record (`crate::canary`). A checkpoint with no record, or other bits, does not open.
+    pub fn open(path: &Path) -> Result<Self, OpenFailure> {
+        let mut engine = Self::open_unchecked(path).map_err(OpenFailure::Other)?;
+        let measured = engine.measure_canary().map_err(OpenFailure::Other)?;
+        nagaya_family_beatthis::canary::verify(crate::canary::TABLE, crate::canary::TARGET, &engine.digest, &measured)
+            .map_err(OpenFailure::Canary)?;
+        Ok(engine)
+    }
+
+    /// The SHA-256 of the weights file, as the key of the canary records.
+    pub fn checkpoint_digest(&self) -> &str {
+        &self.digest
+    }
+
+    /// Run the canary chunks through the engine and give their hash.
+    pub fn measure_canary(&mut self) -> Result<String, String> {
+        use nagaya_family_beatthis::canary;
+        let mut outs = Vec::with_capacity(canary::FRAMES.len());
+        for (i, &frames) in canary::FRAMES.iter().enumerate() {
+            let out = Beats::beats(self, &canary::input(i), frames as u32).map_err(|e| e.message)?;
+            outs.push(out);
+        }
+        Ok(canary::hash(&outs))
+    }
+
+    /// Read, prepare and upload the checkpoint at `path`, with no canary. Only the card test that measures a record
+    /// uses it; a server opens with `open`.
+    pub fn open_unchecked(path: &Path) -> Result<Self, String> {
         let mut bytes = Vec::new();
         std::fs::File::open(path)
             .and_then(|mut f| f.read_to_end(&mut bytes))
@@ -102,8 +131,9 @@ impl Engine for BeatThisGpuEngine {
         ] {
             numbers.insert(k.to_owned(), v.to_string());
         }
-        // No canary yet (spec 11.19), so the build facts stay in the digest (12.1).
-        numbers.insert(
+        // The canary holds the bits (spec 8.1), so the build facts stay out of the digest (12.1).
+        let mut build = BTreeMap::new();
+        build.insert(
             "source_sha256".to_owned(),
             env!("NAGAYA_BEATTHIS_GFX1151_SOURCE_SHA256").to_owned(),
         );
@@ -121,8 +151,10 @@ impl Engine for BeatThisGpuEngine {
             numbers,
             plan_table: "nagaya-family-beatthis::plan".to_owned(),
             bit_settings: Vec::new(),
-            canary_hash: String::new(),
-            build: BTreeMap::new(),
+            canary_hash: nagaya_family_beatthis::canary::record(crate::canary::TABLE, &self.digest)
+                .unwrap_or_default()
+                .to_owned(),
+            build,
         }
     }
 

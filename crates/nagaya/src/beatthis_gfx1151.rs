@@ -27,7 +27,7 @@ pub fn plan(table: &toml::Table, devices: &[GroupDevice]) -> Result<Limits, Plan
 #[cfg(feature = "hip")]
 mod factory {
     use nagaya_abi::{Engine, Limits};
-    use nagaya_mk_beatthis_gfx1151::engine::BeatThisGpuEngine;
+    use nagaya_mk_beatthis_gfx1151::engine::{BeatThisGpuEngine, OpenFailure};
 
     use super::KIND;
     use crate::admission::{Factory, GroupDevice, OpenError, OpenErrorKind, PlanError};
@@ -57,8 +57,20 @@ mod factory {
         fn open(&self, table: &toml::Table, devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError> {
             super::plan(table, devices).map_err(|e| open_error(e.message))?;
             let path = weights(table).map_err(|e| open_error(e.message))?;
-            let engine = BeatThisGpuEngine::open(&path)
-                .map_err(|message| open_error(format!("`{KIND}` cannot open: {message}")))?;
+            // A canary refusal stops the start with exit 3 and no restart (spec 8.1, 10.4).
+            let engine = BeatThisGpuEngine::open(&path).map_err(|failure| match failure {
+                OpenFailure::Canary(refusal) => OpenError {
+                    kind: OpenErrorKind::Canary,
+                    message: refusal.to_string(),
+                },
+                OpenFailure::Other(message) => open_error(format!("`{KIND}` cannot open: {message}")),
+            })?;
+            let identity = nagaya_abi::Engine::identity(&engine);
+            tracing::info!(
+                "the Beat This! engine passed its canary at load canary_hash={} checkpoint={} target=gfx1151",
+                identity.canary_hash,
+                identity.checkpoint_digest
+            );
             Ok(Box::new(engine))
         }
     }

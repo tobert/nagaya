@@ -5,6 +5,7 @@
 //! identity and input give the same bits on gfx1151, and the tests check them against the oracle with a tolerance.
 //! The limits need no ROCm, so a build without `hip` can plan the engine.
 
+pub mod canary;
 #[cfg(feature = "hip")]
 pub mod engine;
 #[cfg(feature = "hip")]

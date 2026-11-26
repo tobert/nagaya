@@ -6,6 +6,7 @@
 //! (`tools/beatthis_golden.sh`).
 
 pub mod audio;
+pub mod canary;
 pub mod chunks;
 pub mod error;
 pub mod mel;

@@ -1889,9 +1889,25 @@ The nagaya runs the canary again before the engine is ready, with no tolerance. 
 nagaya exit with code 3, "do not restart" (10.4). After start, a mismatch marks the engine fatal (8.2), and the
 process continues with its other engines.
 
-Built for the Qwen3.8 engine only. The engine runs its canary at each load and compares it with a table of records.
-Any other engine gives an empty `canary_hash` and runs no canary. The process runs no canary through the `Engine`
-trait.
+Built for the Qwen3.8 engine and the two Beat This! engines (11.19). Each runs its canary at each load and compares it
+with a table of records. Any other engine gives an empty `canary_hash` and runs no canary. The process runs no canary
+through the `Engine` trait.
+
+**The canary of the Beat This! engines.** Decided 2026-11-26.
+
+- The content is in `nagaya-family-beatthis::canary`: two chunks of log-mel rows, of 64 and 1,500 frames, from a
+  linear congruential generator in integers, so the input needs no math function of a machine. 64 frames is shorter
+  than a tile of the GPU kernels and than one part of the split attention; 1,500 frames is a whole chunk.
+- The hash is the SHA-256 of a tag, then for each chunk its frames (u32) and each head output (f32), little-endian,
+  with no change to a value.
+- The records are a table in each engine crate (`src/canary.rs`), keyed by the SHA-256 of the weights file. The CPU
+  engine has one table for every machine, because its bits do not change with the machine or the instruction set
+  (3.2c); a test runs the canary at SSE, AVX2 and AVX-512. The gfx1151 engine has the table of its target.
+- A checkpoint with no record, or other bits, does not open: exit 3 at start (10.4). The message names the
+  checkpoint and the measured hash, and gives the line for the table. A test of each crate prints that line.
+- The identity takes `canary_hash` from the table, and the source fingerprint goes to `build`, so a new build with
+  the same bits keeps its identity digest (12.1).
+- The canary adds about 0.3 s to a load on the CPU (8 threads) and about 50 ms on gfx1151.
 
 The canary adds time to each load. Over 5 processes for each path, it takes about 1.9 s on the fast path and about
 4.2 s on the exact path. A load takes about 28 s.
@@ -5162,8 +5178,7 @@ Beat This! (CPJKU, ISMIR 2024; MIT for code and weights).
   path of a checkpoint that `tools/beatthis_golden.sh` converted to safetensors (`final0` or `small0`). The
   checkpoint's `hyper_parameters` give the plan (`nagaya-family-beatthis::plan`).
 - **Bits.** The engine's bits are its own (8.5): the same identity and audio give the same bits, for each count of
-  threads. The tests pin the logits of `small0` on a 10 s clip. The engine identity digests the weights file and the
-  build. **Open:** the canary of 8.1 for this engine.
+  threads. The tests pin the logits of `small0` on a 10 s clip, and the canary of 8.1 checks the bits at each load.
 - **Limits.** `max_quantum_ms` is 10,000. Reason: a chunk of `final0` takes 1.4 s on 16 threads in a build of the
   tests. The bound of 600 s of audio gives at most 21 quanta, so an interactive request holds the CPU group for
   about 30 s at most.

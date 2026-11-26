@@ -1285,6 +1285,7 @@ dependencies = [
  "libm",
  "safetensors",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -1313,6 +1314,7 @@ dependencies = [
  "safetensors",
  "serde_json",
  "sha2",
+ "tempfile",
 ]
 
 [[package]]
