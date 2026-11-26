@@ -264,6 +264,13 @@ fn the_cpu_group_runs_on_a_thread_named_nagaya_cpu() {
         .map(|n| n.trim().to_owned())
         .collect();
     assert!(names.iter().any(|n| n == "nagaya-cpu"), "{names:?}");
+    // The open of the engine starts the 4 workers of `[cpu] threads` (spec 3.2c).
+    for i in 0..4 {
+        assert!(
+            names.iter().any(|n| *n == format!("nagaya-cpu-{i}")),
+            "no worker {i}: {names:?}"
+        );
+    }
     assert!(
         !names.iter().any(|n| n.starts_with("nagaya-group-")),
         "the only group is the CPU group: {names:?}"

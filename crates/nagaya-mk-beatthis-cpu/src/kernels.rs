@@ -10,6 +10,7 @@ use std::f32::consts::FRAC_1_SQRT_2;
 use nagaya_family_beatthis::plan::Axis;
 
 use crate::lanes::F4;
+use crate::pool;
 
 /// `sum of a[i] * b[i]`: lane `i % 8` holds the terms of its indexes in order, and the lanes join as
 /// `((l0 + l1) + (l2 + l3)) + ((l4 + l5) + (l6 + l7))`.
@@ -48,8 +49,29 @@ fn join(l: [f32; 8]) -> f32 {
     ((l[0] + l[1]) + (l[2] + l[3])) + ((l[4] + l[5]) + (l[6] + l[7]))
 }
 
-/// Splits `out` into rows of `width` values, and gives each worker a run of whole rows. `f(first_row, rows)` writes
-/// the rows from `first_row`. With one thread it runs on the caller's thread.
+/// Starts the `threads` workers of this thread (`pool`), so that the first task does not wait for them. With one
+/// thread there are no workers.
+pub fn start_workers(threads: usize) {
+    if threads > 1 {
+        pool::start(threads);
+    }
+}
+
+/// The output of a job, shared by the workers. Each worker makes a slice of its own rows from it.
+struct Out(*mut f32);
+
+// SAFETY: the workers of `split` write rows that do not overlap.
+unsafe impl Sync for Out {}
+
+impl Out {
+    /// A method, so that a closure takes all of `Out` (which is `Sync`), not its field.
+    fn at(&self, i: usize) -> *mut f32 {
+        self.0.wrapping_add(i)
+    }
+}
+
+/// Splits `out` into rows of `width` values, and gives each worker of `pool` a run of whole rows. `f(first_row,
+/// rows)` writes the rows from `first_row`. With one thread it runs on the caller's thread.
 fn split<F>(out: &mut [f32], width: usize, threads: usize, f: F)
 where
     F: Fn(usize, &mut [f32]) + Sync,
@@ -59,17 +81,24 @@ where
         "the output is not whole rows of {width}"
     );
     let rows = out.len() / width;
-    let threads = threads.clamp(1, rows.max(1));
-    if threads == 1 {
+    let threads = threads.max(1);
+    if threads == 1 || rows <= 1 {
         f(0, out);
         return;
     }
     let per = rows.div_ceil(threads);
-    std::thread::scope(|s| {
-        for (n, chunk) in out.chunks_mut(per * width).enumerate() {
-            let f = &f;
-            s.spawn(move || f(n * per, chunk));
+    let len = out.len();
+    let base = Out(out.as_mut_ptr());
+    pool::run(threads, &|i| {
+        let start = (i * per * width).min(len);
+        let end = ((i + 1) * per * width).min(len);
+        if start == end {
+            return;
         }
+        // SAFETY: the runs [start, end) of the workers do not overlap and are in `out`, and `out` is borrowed
+        // mutably until `pool::run` returns, after each worker ends.
+        let chunk = unsafe { std::slice::from_raw_parts_mut(base.at(start), end - start) };
+        f(i * per, chunk);
     });
 }
 

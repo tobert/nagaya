@@ -6,6 +6,7 @@
 pub mod engine;
 pub mod kernels;
 mod lanes;
+mod pool;
 
 use nagaya_family_beatthis::plan::{Mark, Plan, Task};
 

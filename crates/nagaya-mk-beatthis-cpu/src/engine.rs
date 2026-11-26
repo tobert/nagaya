@@ -108,6 +108,8 @@ impl BeatThisEngine {
         let tensors = Tensors::parse(&bytes).map_err(|e| e.to_string())?;
         let weights = weights::prepare(&plan::build(&config, CHUNK).weights, &tensors).map_err(|e| e.to_string())?;
         let digest = format!("sha256:{:x}", Sha256::digest(&bytes));
+        // The workers of the kernels start here, on the thread of the open (the group thread), and get its mask.
+        crate::kernels::start_workers(threads.max(1) as usize);
         Ok(Self {
             path: path.to_owned(),
             config,
