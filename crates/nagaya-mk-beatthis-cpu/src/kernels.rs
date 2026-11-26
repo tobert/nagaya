@@ -9,6 +9,9 @@ use std::f32::consts::FRAC_1_SQRT_2;
 
 use nagaya_family_beatthis::plan::Axis;
 
+use crate::lanes::F4;
+use crate::pool;
+
 /// `sum of a[i] * b[i]`: lane `i % 8` holds the terms of its indexes in order, and the lanes join as
 /// `((l0 + l1) + (l2 + l3)) + ((l4 + l5) + (l6 + l7))`.
 pub fn dot(a: &[f32], b: &[f32]) -> f32 {
@@ -46,8 +49,29 @@ fn join(l: [f32; 8]) -> f32 {
     ((l[0] + l[1]) + (l[2] + l[3])) + ((l[4] + l[5]) + (l[6] + l[7]))
 }
 
-/// Splits `out` into rows of `width` values, and gives each worker a run of whole rows. `f(first_row, rows)` writes
-/// the rows from `first_row`. With one thread it runs on the caller's thread.
+/// Starts the `threads` workers of this thread (`pool`), so that the first task does not wait for them. With one
+/// thread there are no workers.
+pub fn start_workers(threads: usize) {
+    if threads > 1 {
+        pool::start(threads);
+    }
+}
+
+/// The output of a job, shared by the workers. Each worker makes a slice of its own rows from it.
+struct Out(*mut f32);
+
+// SAFETY: the workers of `split` write rows that do not overlap.
+unsafe impl Sync for Out {}
+
+impl Out {
+    /// A method, so that a closure takes all of `Out` (which is `Sync`), not its field.
+    fn at(&self, i: usize) -> *mut f32 {
+        self.0.wrapping_add(i)
+    }
+}
+
+/// Splits `out` into rows of `width` values, and gives each worker of `pool` a run of whole rows. `f(first_row,
+/// rows)` writes the rows from `first_row`. With one thread it runs on the caller's thread.
 fn split<F>(out: &mut [f32], width: usize, threads: usize, f: F)
 where
     F: Fn(usize, &mut [f32]) + Sync,
@@ -57,17 +81,24 @@ where
         "the output is not whole rows of {width}"
     );
     let rows = out.len() / width;
-    let threads = threads.clamp(1, rows.max(1));
-    if threads == 1 {
+    let threads = threads.max(1);
+    if threads == 1 || rows <= 1 {
         f(0, out);
         return;
     }
     let per = rows.div_ceil(threads);
-    std::thread::scope(|s| {
-        for (n, chunk) in out.chunks_mut(per * width).enumerate() {
-            let f = &f;
-            s.spawn(move || f(n * per, chunk));
+    let len = out.len();
+    let base = Out(out.as_mut_ptr());
+    pool::run(threads, &|i| {
+        let start = (i * per * width).min(len);
+        let end = ((i + 1) * per * width).min(len);
+        if start == end {
+            return;
         }
+        // SAFETY: the runs [start, end) of the workers do not overlap and are in `out`, and `out` is borrowed
+        // mutably until `pool::run` returns, after each worker ends.
+        let chunk = unsafe { std::slice::from_raw_parts_mut(base.at(start), end - start) };
+        f(i * per, chunk);
     });
 }
 
@@ -161,19 +192,80 @@ pub fn rms_norm(x: &[f32], y: &mut [f32], dim: usize, gamma: &[f32], threads: us
     });
 }
 
-/// `y[r, o] = dot(weight[o], x[r]) + bias[o]`.
+/// The dots of `R` rows of x against `O` rows of the weight, each with the lanes and the join of `dot`. The block
+/// loads each chunk of 8 values once for `R * O` dots, and keeps `R * O` sums of 8 lanes apart, so that the adds do
+/// not wait on each other.
+#[inline(always)]
+#[allow(clippy::needless_range_loop)]
+fn dots<const R: usize, const O: usize>(xs: [&[f32]; R], ws: [&[f32]; O]) -> [[f32; O]; R] {
+    let din = xs[0].len();
+    // l[r][o][h]: lanes 4h to 4h + 3 of the dot of row r and output o.
+    let mut l = [[[F4::zero(); 2]; O]; R];
+    let chunks = din / 8;
+    for c in 0..chunks {
+        for h in 0..2 {
+            let xc: [F4; R] = std::array::from_fn(|r| F4::at(xs[r], c * 8 + 4 * h));
+            let wc: [F4; O] = std::array::from_fn(|o| F4::at(ws[o], c * 8 + 4 * h));
+            for r in 0..R {
+                for o in 0..O {
+                    l[r][o][h] = l[r][o][h].add(xc[r].mul(wc[o]));
+                }
+            }
+        }
+    }
+    std::array::from_fn(|r| {
+        std::array::from_fn(|o| {
+            let (lo, hi) = (l[r][o][0].array(), l[r][o][1].array());
+            let mut lanes = [lo[0], lo[1], lo[2], lo[3], hi[0], hi[1], hi[2], hi[3]];
+            for k in 0..din % 8 {
+                let i = chunks * 8 + k;
+                lanes[k] += xs[r][i] * ws[o][i];
+            }
+            join(lanes)
+        })
+    })
+}
+
+/// The rows of x in a block of `linear`, and the outputs in a block.
+const LINEAR_ROWS: usize = 3;
+const LINEAR_OUTS: usize = 2;
+
+/// `y[r, o] = dot(weight[o], x[r]) + bias[o]`. A worker takes a run of whole rows, and computes them in blocks of
+/// `LINEAR_ROWS` rows by `LINEAR_OUTS` outputs (`dots`). Each value is one `dot`, so the blocks do not change its bits.
 pub fn linear(x: &[f32], y: &mut [f32], din: usize, dout: usize, weight: &[f32], bias: Option<&[f32]>, threads: usize) {
     assert_eq!(weight.len(), dout * din);
     assert_eq!(x.len() / din, y.len() / dout, "x and y have different rows");
+    let put = |v: f32, o: usize| match bias {
+        Some(b) => v + b[o],
+        None => v,
+    };
     split(y, dout, threads, |first, rows| {
-        for (k, row) in rows.chunks_exact_mut(dout).enumerate() {
-            let xr = &x[(first + k) * din..][..din];
-            for (o, v) in row.iter_mut().enumerate() {
-                let d = dot(&weight[o * din..][..din], xr);
-                *v = match bias {
-                    Some(b) => d + b[o],
-                    None => d,
-                };
+        let n = rows.len() / dout;
+        let xr = |r: usize| &x[(first + r) * din..][..din];
+        let wr = |o: usize| &weight[o * din..][..din];
+        let full = n - n % LINEAR_ROWS;
+        let outs = dout - dout % LINEAR_OUTS;
+        for o0 in (0..outs).step_by(LINEAR_OUTS) {
+            let ws: [&[f32]; LINEAR_OUTS] = std::array::from_fn(|o| wr(o0 + o));
+            for r0 in (0..full).step_by(LINEAR_ROWS) {
+                let v: [[f32; LINEAR_OUTS]; LINEAR_ROWS] = dots(std::array::from_fn(|r| xr(r0 + r)), ws);
+                for (r, vr) in v.iter().enumerate() {
+                    for (o, &vo) in vr.iter().enumerate() {
+                        rows[(r0 + r) * dout + o0 + o] = put(vo, o0 + o);
+                    }
+                }
+            }
+            for r in full..n {
+                let [v] = dots([xr(r)], ws);
+                for (o, &vo) in v.iter().enumerate() {
+                    rows[r * dout + o0 + o] = put(vo, o0 + o);
+                }
+            }
+        }
+        for o in outs..dout {
+            for r in 0..n {
+                let [[v]] = dots([xr(r)], [wr(o)]);
+                rows[r * dout + o] = put(v, o);
             }
         }
     });
@@ -196,9 +288,100 @@ pub fn add_into(acc: &mut [f32], x: &[f32], threads: usize) {
     }
 }
 
-/// The attention of `Task::Attention`. A first pass rotates q and k of each row by its position. A second pass
-/// computes each output row whole: the scores of its sequence, `exp(s - max) / sum` in the lanes of `dot`, the sum of
-/// `p * v` over the tokens in order, and the gate.
+/// `x[i] = expf(x[i] - shift)`, with the bits of `libm::expf`: 4 values at once in `F4::exp`.
+pub fn exps(x: &mut [f32], shift: f32) {
+    let (body, tail) = x.as_chunks_mut::<4>();
+    let s = F4::splat(shift);
+    for c in body {
+        F4::load(c).sub(s).exp().store(c);
+    }
+    for v in tail {
+        *v = libm::expf(*v - shift);
+    }
+}
+
+/// The tokens of one block of the scores: `scores` computes the scores of this many tokens at once.
+const TOKENS: usize = 4;
+
+/// `out[t] = dot(q, k_t) * scale` for each token `t`, from `kt`, the keys in blocks of `TOKENS` tokens: value `i` of
+/// token `t` is at `kt[(t / TOKENS) * hd * TOKENS + i * TOKENS + t % TOKENS]`. It keeps the lanes of `dot` for each token (one `F4` of `TOKENS` tokens for each lane), so each
+/// score has the bits of `dot`. `stride` is a multiple of `TOKENS`, and the tokens past the end of `out` are padding.
+fn scores(q: &[f32], kt: &[f32], stride: usize, scale: f32, out: &mut [f32]) {
+    let hd = q.len();
+    debug_assert!(stride.is_multiple_of(TOKENS) && out.len() <= stride && kt.len() == hd * stride);
+    let scale = F4::splat(scale);
+    for t0 in (0..out.len()).step_by(TOKENS) {
+        // l[k]: lane k of the dots of the tokens t0 to t0 + 3.
+        let mut l = [F4::zero(); 8];
+        let block = &kt[t0 * hd..][..TOKENS * hd];
+        let term = |i: usize| F4::splat(q[i]).mul(F4::at(block, i * TOKENS));
+        let chunks = hd / 8;
+        for c in 0..chunks {
+            for (k, lane) in l.iter_mut().enumerate() {
+                *lane = lane.add(term(c * 8 + k));
+            }
+        }
+        for (k, lane) in l.iter_mut().enumerate().take(hd % 8) {
+            *lane = lane.add(term(chunks * 8 + k));
+        }
+        let j = ((l[0].add(l[1])).add(l[2].add(l[3]))).add((l[4].add(l[5])).add(l[6].add(l[7])));
+        let v = j.mul(scale).array();
+        let n = TOKENS.min(out.len() - t0);
+        out[t0..t0 + n].copy_from_slice(&v[..n]);
+    }
+}
+
+/// `o[d] = sum over t of p[t] * v[t * hd + d]`, the terms in the order of t, from `o[d] = 0`.
+fn weighted_sum(p: &[f32], v: &[f32], o: &mut [f32]) {
+    let hd = o.len();
+    let mut d0 = 0;
+    // Blocks of 32 values in 8 `F4`, then of 4 values, then single values. Each value is its own sum.
+    while d0 + 32 <= hd {
+        let mut acc = [F4::zero(); 8];
+        for (t, &w) in p.iter().enumerate() {
+            let w = F4::splat(w);
+            for (j, a) in acc.iter_mut().enumerate() {
+                *a = a.add(w.mul(F4::at(v, t * hd + d0 + 4 * j)));
+            }
+        }
+        for (j, a) in acc.iter().enumerate() {
+            o[d0 + 4 * j..][..4].copy_from_slice(&a.array());
+        }
+        d0 += 32;
+    }
+    while d0 + 4 <= hd {
+        let mut acc = F4::zero();
+        for (t, &w) in p.iter().enumerate() {
+            acc = acc.add(F4::splat(w).mul(F4::at(v, t * hd + d0)));
+        }
+        o[d0..][..4].copy_from_slice(&acc.array());
+        d0 += 4;
+    }
+    for d in d0..hd {
+        let mut acc = 0.0f32;
+        for (t, &w) in p.iter().enumerate() {
+            acc += w * v[t * hd + d];
+        }
+        o[d] = acc;
+    }
+}
+
+/// Rotates the pairs of `src` by the angles of `cs` (cos, sin), into `dst[j * step]` for value `j`.
+fn rotate(src: &[f32], cs: &[(f32, f32)], dst: &mut [f32], step: usize) {
+    for (i, &(c, s)) in cs.iter().enumerate() {
+        let (x0, x1) = (src[2 * i], src[2 * i + 1]);
+        dst[2 * i * step] = x0 * c + -x1 * s;
+        dst[(2 * i + 1) * step] = x1 * c + x0 * s;
+    }
+}
+
+/// The attention of `Task::Attention`. Each row of the output is computed whole, by one worker: the scores of its
+/// sequence (each a `dot` of the rotated q and k), `exp(s - max) / sum` in the lanes of `dot`, the sum of `p * v` over
+/// the tokens in order, and the gate.
+///
+/// A worker takes a run of the rows in the order (sequence, head, position). For each (sequence, head) that it meets,
+/// it rotates the keys into blocks of `TOKENS` tokens (`scores`) and copies the values, so that the scores and the
+/// sum of `p * v` of a query read memory in order. The rows go to a scratch buffer in that order, and a last pass puts them in the order of the output.
 #[allow(clippy::too_many_arguments)]
 pub fn attention(
     qkv: &[f32],
@@ -218,71 +401,82 @@ pub fn attention(
     assert_eq!(gates.len(), rows * heads);
     assert_eq!(out.len(), rows * width);
     assert_eq!(freqs.len(), hd / 2);
-    let position = |r: usize| match along {
-        Axis::A => r / b,
-        Axis::B => r % b,
-    };
-    // q and k of each row, rotated: row r holds q (width values), then k (width values).
-    let mut qk = vec![0.0f32; rows * 2 * width];
-    split(&mut qk, 2 * width, threads, |first, chunk| {
-        for (n, row) in chunk.chunks_exact_mut(2 * width).enumerate() {
-            let r = first + n;
-            let p = position(r) as f32;
-            let src = &qkv[r * 3 * width..][..2 * width];
-            for part in 0..2 {
-                for h in 0..heads {
-                    let base = part * width + h * hd;
-                    for i in 0..hd / 2 {
-                        let angle = p * freqs[i];
-                        let (c, s) = (libm::cosf(angle), libm::sinf(angle));
-                        let (x0, x1) = (src[base + 2 * i], src[base + 2 * i + 1]);
-                        row[base + 2 * i] = x0 * c + -x1 * s;
-                        row[base + 2 * i + 1] = x1 * c + x0 * s;
-                    }
-                }
-            }
-        }
-    });
     let len = match along {
         Axis::A => a,
         Axis::B => b,
     };
-    let token = |r: usize, pos: usize| match along {
-        Axis::A => pos * b + r % b,
-        Axis::B => (r / b) * b + pos,
+    // The row of the token at `pos` in sequence `s`.
+    let token = |s: usize, pos: usize| match along {
+        Axis::A => pos * b + s,
+        Axis::B => s * b + pos,
     };
+    // cos and sin of `pos * freqs[i]` at `table[pos * hd / 2 + i]`, as the rotation of each row needs them.
+    let half = hd / 2;
+    let table: Vec<(f32, f32)> = (0..len * half)
+        .map(|n| {
+            let angle = (n / half) as f32 * freqs[n % half];
+            (libm::cosf(angle), libm::sinf(angle))
+        })
+        .collect();
+    let stride = len.next_multiple_of(TOKENS);
     let scale = 1.0 / (hd as f32).sqrt();
+    // The rows in the order (sequence, head, position), `hd` values each.
+    let mut ordered = vec![0.0f32; rows * width];
+    split(&mut ordered, hd, threads, |first, chunk| {
+        let mut kt = vec![0.0f32; hd * stride];
+        let mut v = vec![0.0f32; len * hd];
+        let mut q = vec![0.0f32; hd];
+        let mut p = vec![0.0f32; len];
+        let mut loaded = usize::MAX;
+        for (n, o) in chunk.chunks_exact_mut(hd).enumerate() {
+            let unit = (first + n) / len;
+            let pos = (first + n) % len;
+            let (s, h) = (unit / heads, unit % heads);
+            if unit != loaded {
+                for t in 0..len {
+                    let row = &qkv[token(s, t) * 3 * width..][..3 * width];
+                    rotate(
+                        &row[width + h * hd..][..hd],
+                        &table[t * half..][..half],
+                        &mut kt[(t / TOKENS) * hd * TOKENS + t % TOKENS..],
+                        TOKENS,
+                    );
+                    v[t * hd..][..hd].copy_from_slice(&row[2 * width + h * hd..][..hd]);
+                }
+                loaded = unit;
+            }
+            let r = token(s, pos);
+            rotate(
+                &qkv[r * 3 * width + h * hd..][..hd],
+                &table[pos * half..][..half],
+                &mut q,
+                1,
+            );
+            scores(&q, &kt, stride, scale, &mut p);
+            let max = p.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            exps(&mut p, max);
+            let total = sum(&p);
+            for x in p.iter_mut() {
+                *x /= total;
+            }
+            weighted_sum(&p, &v, o);
+            let g = gates[r * heads + h];
+            let gate = 1.0 / (1.0 + libm::expf(-g));
+            for x in o.iter_mut() {
+                *x *= gate;
+            }
+        }
+    });
     split(out, width, threads, |first, chunk| {
-        let mut scores = vec![0.0f32; len];
         for (n, row) in chunk.chunks_exact_mut(width).enumerate() {
             let r = first + n;
+            let (s, pos) = match along {
+                Axis::A => (r % b, r / b),
+                Axis::B => (r / b, r % b),
+            };
             for h in 0..heads {
-                let q = &qk[r * 2 * width + h * hd..][..hd];
-                for (pos, s) in scores.iter_mut().enumerate() {
-                    let k = &qk[token(r, pos) * 2 * width + width + h * hd..][..hd];
-                    *s = dot(q, k) * scale;
-                }
-                let max = scores.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-                for s in scores.iter_mut() {
-                    *s = libm::expf(*s - max);
-                }
-                let total = sum(&scores);
-                for s in scores.iter_mut() {
-                    *s /= total;
-                }
-                let o = &mut row[h * hd..][..hd];
-                o.fill(0.0);
-                for (pos, &p) in scores.iter().enumerate() {
-                    let v = &qkv[token(r, pos) * 3 * width + 2 * width + h * hd..][..hd];
-                    for d in 0..hd {
-                        o[d] += p * v[d];
-                    }
-                }
-                let g = gates[r * heads + h];
-                let gate = 1.0 / (1.0 + libm::expf(-g));
-                for v in o.iter_mut() {
-                    *v *= gate;
-                }
+                let src = &ordered[((s * heads + h) * len + pos) * hd..][..hd];
+                row[h * hd..][..hd].copy_from_slice(src);
             }
         }
     });

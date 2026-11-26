@@ -178,4 +178,23 @@ fn the_bits_of_small0_are_pinned() {
     );
 }
 
+/// The pin of final0 on the 30 s case: two chunks of 1500 frames, so it holds the long attention over frames too.
+#[test]
+fn the_bits_of_final0_are_pinned() {
+    let Some(g) = common::golden() else { return };
+    let Some(m) = model("final0") else { return };
+    let (wave, _) = g.f32("click120_44.wave");
+    let (beat, down) = piece(&m, &wave, 16);
+    let mut h = blake3::Hasher::new();
+    for v in beat.iter().chain(&down) {
+        h.update(&v.to_le_bytes());
+    }
+    assert_eq!(
+        h.finalize().to_hex().to_string(),
+        PIN_FINAL0,
+        "the logits of final0 moved"
+    );
+}
+
 const PIN_SMALL0: &str = "258ef4d80827179d3ec83cec4dc4626af06347721ca7a537da618dd7daac7a57";
+const PIN_FINAL0: &str = "eee812ce9da32162041fd3eee87fbfab2a381383f2f274142ceaeade3de88861";

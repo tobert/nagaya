@@ -596,9 +596,10 @@ groups, the pause and the cores. The rules marked **Proposed** are not decided y
 - **The threads.** The group thread is `nagaya-cpu`. At the first open of a CPU engine, the group starts `threads`
   worker threads, `nagaya-cpu-<index>`. One quantum can use every worker. The scheduler runs one quantum of the group
   at a time (5.6), so two quanta never share the workers. **Proposed:** the first CPU engine gets the budget as a
-  count in `open` (engine-abi "Beats"). Its kernels start that many threads for each task, and the threads end
-  with the task. They inherit the mask of the group thread, the pool set. Reason: the simplest form that works. A
-  pool of persistent workers named `nagaya-cpu-<index>` comes when a measurement shows the cost of the starts.
+  count in `open` (engine-abi "Beats"). Its `open` starts that many persistent workers `nagaya-cpu-<index>` on the
+  group thread, and its kernels keep them while the group thread lives. They inherit the mask of the group thread,
+  the pool set. A worker spins for some tens of microseconds after a task, and then sleeps. Reason: a start of new
+  threads for each task cost about 25 ms of a chunk of 160 ms (final0, 500 frames, 8 threads), measured 2026-11-26.
 - **The cores.** The group thread and its workers pin to the pool set (3.2a), with the normal scheduling policy. No
   CPUs are kept apart for the group. Reason: idle cores kept apart do no work. A measurement of contention with the
   group threads and the CPU pool can change this rule.
