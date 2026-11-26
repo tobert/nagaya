@@ -1,4 +1,4 @@
-// The ops of the embedding engine (EmbeddingGemma 2, milestone 19). megakernel.cl includes this file inside the loop of
+// The ops of the embedding engine (EmbeddingGemma 2). megakernel.cl includes this file inside the loop of
 // mk_persistent_interpreter when MK_EMBEDDINGGEMMA2 is defined, so these branches see its locals, as the ops of
 // qwen3tts_ops.cl do. The embedding binary also holds the speech ops, but its OP_GEGLU is GeGLU with gelu_tanh.
 //

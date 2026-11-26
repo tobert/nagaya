@@ -95,6 +95,12 @@ See [`docs/deploy.md`](docs/deploy.md) for systemd user unit installation, boots
 | `deploy/` | Example configs, placement profiles, and systemd user units for Strix Halo, B70 pair, and DGX Spark |
 | `tools/` | Web UI, swarm driver, Python reference oracles, and compiler stubs (`ocloc-stub`, `nvcc-stub`) |
 
+**Where to start reading the code:**
+1. [`crates/nagaya-abi/src/lib.rs`](crates/nagaya-abi/src/lib.rs) — The `Engine` trait and core ABI types.
+2. [`crates/nagaya-ledger/src/lib.rs`](crates/nagaya-ledger/src/lib.rs) & [`crates/nagaya-sched/src/lib.rs`](crates/nagaya-sched/src/lib.rs) — Pure-Rust memory admission and quantum scheduling.
+3. [`crates/nagaya/src/main.rs`](crates/nagaya/src/main.rs) — Process startup, arena restoration, telemetry, and lifecycle.
+4. [`crates/nagaya-mk-bmg/kernels/megakernel.cl`](crates/nagaya-mk-bmg/kernels/megakernel.cl) or [`crates/nagaya-mk-cuda/kernels/megakernel.cu`](crates/nagaya-mk-cuda/kernels/megakernel.cu) — Persistent task-ring megakernel interpreters.
+
 ## Status & security
 
 nagaya is an active research project running daily on a three-machine home lab (AMD Strix Halo, dual Intel Arc Pro B70, NVIDIA DGX Spark). The council v2 endpoints track [gogi](https://github.com/tobert/gogi); internal control routes under `/nagaya/v1` may change without notice.
@@ -110,3 +116,7 @@ nagaya is an active research project running daily on a three-machine home lab (
 - [`docs/lab.md`](docs/lab.md) — Interpretability and research routes: control vectors, projections, lenses, traces, and layer loops.
 - [`docs/new-engine.md`](docs/new-engine.md) — Checklist for adding a new engine, model family, card, or machine.
 - [`AGENTS.md`](AGENTS.md) — Contributor and coding-agent guide: workspace rules, test suites, GPU test windows, and environment variables.
+
+## License
+
+Licensed under the [MIT License](LICENSE).

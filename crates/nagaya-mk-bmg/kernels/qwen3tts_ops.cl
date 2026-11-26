@@ -1,4 +1,4 @@
-// The ops of the speech engine (Qwen3-TTS 12 Hz, milestone 17). megakernel.cl includes this file inside the loop of
+// The ops of the speech engine (Qwen3-TTS 12 Hz). megakernel.cl includes this file inside the loop of
 // mk_persistent_interpreter when MK_QWEN3TTS is defined, so these branches see its locals: task, op, flags,
 // accumulate, the work-group and subgroup ids, and the local arrays. The Gemma 4 binary does not hold them.
 //

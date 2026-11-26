@@ -1,4 +1,4 @@
-// The lab ops of the Inkling 2 binary (milestone 35 step 8): opcodes 190 to 199. inkling2_ops.cl includes this file
+// The lab ops of the Inkling 2 binary: opcodes 190 to 199. inkling2_ops.cl includes this file
 // inside the task loop of megakernel.cl, so each op sees the locals of the loop. The host form of each op is in
 // crates/nagaya-mk-inkling2-bmg/src/host/ops.rs.
 

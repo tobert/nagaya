@@ -1,4 +1,4 @@
-// The ops of the LFM3 vision tower (milestone 24 step 7). megakernel.cl includes this file inside the loop of
+// The ops of the LFM3 vision tower. megakernel.cl includes this file inside the loop of
 // mk_persistent_interpreter when MK_LFM3 is defined, beside lfm3_ops.cl, so these branches see its locals. The tower
 // also uses OP_MATMUL, OP_RMSNORM, OP_GEGLU (SwiGLU in this binary), OP_LAYERNORM, OP_BIAS and OP_GELU. Its attention
 // is OP_VISION_ATTN. OP_BIATTN stays in the binary: the gate of OP_VISION_ATTN compares the two.

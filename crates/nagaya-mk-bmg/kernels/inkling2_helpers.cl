@@ -158,7 +158,7 @@ inline void inkling2_xmx_down(__global const uchar* slab, uint e, uint rows, uin
     INKLING2_XMX(1, 4)
 }
 
-// The row path of the expert ops (milestone 36 item 1) takes a block of at most INKLING2_ROW_TOKENS tokens. Each
+// The row path of the expert ops takes a block of at most INKLING2_ROW_TOKENS tokens. Each
 // token picks an expert once, so an expert then has at most INKLING2_ROW_TOKENS entries.
 #define INKLING2_ROW_TOKENS 8
 // The parts of the columns of a row on the row path: subgroups of one work-group that share one tile. Each part is

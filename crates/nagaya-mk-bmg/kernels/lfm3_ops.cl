@@ -1,4 +1,4 @@
-// The ops of the LFM3 engine (milestone 24 step 5). megakernel.cl includes this file inside the loop of
+// The ops of the LFM3 engine. megakernel.cl includes this file inside the loop of
 // mk_persistent_interpreter when MK_LFM3 is defined, so these branches see its locals, as the ops of qwen3tts_ops.cl do.
 // The LFM3 binary also holds the speech ops: its OP_GEGLU is SwiGLU, and OP_RMSNORM takes eps and a partial rotation.
 //

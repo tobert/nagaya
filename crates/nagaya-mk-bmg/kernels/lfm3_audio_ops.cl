@@ -1,4 +1,4 @@
-// The ops of the audio encoder of LFM3-Omni-2B (milestone 24 step 7). megakernel.cl includes this file inside the loop
+// The ops of the audio encoder of LFM3-Omni-2B. megakernel.cl includes this file inside the loop
 // of mk_persistent_interpreter when MK_LFM3 is defined, after lfm3_ops.cl, so these branches see its locals.
 // The opcodes 110 to 119 belong to the audio encoder; the opcodes must match src/protocol.rs.
 //

@@ -1,4 +1,4 @@
-// The ops of the image engine (SDXL, milestone 18 step 7). megakernel.cl includes this file inside the loop of
+// The ops of the image engine (SDXL). megakernel.cl includes this file inside the loop of
 // mk_persistent_interpreter when MK_SDXL is defined, so these branches see its locals: task, op, flags, accumulate,
 // the work-group and subgroup ids, and the local arrays. The image binary also defines MK_QWEN3TTS, so it has the
 // ops of qwen3tts_ops.cl, such as OP_GELU, OP_SILU_MUL, OP_BIAS and OP_LAYERNORM. The other binaries hold none of these.

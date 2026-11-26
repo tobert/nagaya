@@ -1,11 +1,27 @@
 # nagaya spec v0 (draft)
 
-This spec says what the nagaya is and what it does, one rule at a time. It is written in Simplified Technical
-English (`AGENTS.md`).
+This spec defines what the nagaya is and what it does, one rule at a time.
 
-- `docs/ontology.md` defines each term once.
-- `docs/engine-abi.md` defines the calls and the decisions D1-D11. The spec refers to them by number.
-- `docs/lab.md` defines the lab routes, which look inside a model.
+- [`docs/ontology.md`](ontology.md) defines each term once.
+- [`docs/engine-abi.md`](engine-abi.md) defines the engine trait and decisions D1–D11.
+- [`docs/lab.md`](lab.md) defines the lab routes for model inspection and steering.
+
+## Contents
+
+1. [Scope](#1-scope)
+2. [Machines, gossip and placement](#2-machines-gossip-and-placement)
+3. [Process](#3-process)
+4. [Ledger](#4-ledger)
+5. [Scheduling](#5-scheduling)
+6. [State and the store](#6-state-and-the-store)
+7. [IO](#7-io)
+8. [Correctness at runtime](#8-correctness-at-runtime)
+9. [Observability](#9-observability)
+10. [Lifecycle](#10-lifecycle)
+11. [Client API](#11-client-api)
+12. [Identity](#12-identity)
+13. [Taps, lenses and composition](#13-taps-lenses-and-composition)
+14. [Open questions](#15-open-questions)
 
 When this spec and another doc do not agree, correct one of them. Neither one wins without a decision.
 

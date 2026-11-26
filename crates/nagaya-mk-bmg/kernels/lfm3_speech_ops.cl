@@ -1,4 +1,4 @@
-// The speech ops of the LFM3 engine (milestone 24 step 8): the attention of the depth decoder, and the polar form
+// The speech ops of the LFM3 engine: the attention of the depth decoder, and the polar form
 // and the inverse FFT of the LiquidCodec decoder. megakernel.cl includes this file inside the loop of
 // mk_persistent_interpreter when MK_LFM3 is defined, so these branches see its locals, as the ops of lfm3_ops.cl do.
 //

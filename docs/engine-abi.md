@@ -13,6 +13,18 @@ engine does not have half of the calls of the `Context` model of the first Qwen3
 
 v0 covers three kinds of engine: inference, image batch, and training.
 
+## Contents
+
+- [Shape](#shape)
+- [Core (every engine)](#core-every-engine)
+- [Capabilities (declared in `limits()`)](#capabilities-declared-in-limits)
+- [v0 Rust shapes](#v0-rust-shapes)
+- [How the Qwen3.8 engine maps](#how-the-qwen38-engine-maps)
+- [How the Gemma 4 engine maps](#how-the-gemma-4-engine-maps)
+- [Decisions (D1–D11)](#decisions)
+- [Training](#training) · [Image](#image) · [Embedding](#embedding) · [Speech](#speech) · [LFM3](#lfm3) · [Control vectors](#control-vectors) · [Layer loops](#layer-loops) · [Inkling 2](#inkling-2)
+- [Not covered yet](#not-covered-yet)
+
 ## Shape
 
 The nagaya is Rust. An engine is a Rust type that implements the `Engine` trait. Some engines use another language
