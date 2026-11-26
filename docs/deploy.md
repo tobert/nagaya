@@ -151,8 +151,28 @@ tailscale serve --bg --https=443 http://127.0.0.1:8096
   config persists in tailscaled through a reboot, so it needs no unit.
 - The page is then at `https://<machine>.<tailnet>.ts.net/`. `tailscale serve status` shows it.
 - The login gates the web app only. The nagaya ports still have no authentication, so limit who reaches them with
-  tailnet ACLs.
-- The app logs to the journal: `journalctl --user -u nagaya-web.service`.
+  tailnet ACLs (below).
+- The app logs to the journal: `journalctl --user -u nagaya-web.service`. Restart it with
+  `systemctl --user restart nagaya-web.service`.
+
+### Tailnet ACLs
+
+Tag each nagaya machine `tag:nagaya`, then grant in the tailnet policy file: users reach the web app on 443, and only
+the nagaya machines reach HTTP and gossip. The web app's calls to the other nagayas come from its machine, so they fall
+under the second grant. The ports are those of the examples; use yours.
+
+```json
+{
+  "tagOwners": { "tag:nagaya": ["autogroup:admin"] },
+  "grants": [
+    { "src": ["autogroup:member"], "dst": ["tag:nagaya"], "ip": ["tcp:443"] },
+    { "src": ["tag:nagaya"], "dst": ["tag:nagaya"], "ip": ["tcp:8090-8092", "udp:8090-8092"] }
+  ]
+}
+```
+
+A client that calls council v2 directly, such as `tools/swarm/` or a gogi client, needs a grant to the HTTP port too.
+Add its user or tag to the `src` of a third grant with `tcp:<http port>`.
 
 ## Check a start
 

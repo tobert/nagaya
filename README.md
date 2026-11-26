@@ -82,6 +82,7 @@ See [`docs/deploy.md`](docs/deploy.md) for systemd user unit installation, boots
   ```sh
   python3 tools/nagaya_web.py --seed http://192.0.2.10:8091
   ```
+  To share it on a tailnet with a login, run it as `deploy/nagaya-web.service` behind `tailscale serve`; see [`docs/deploy.md`, "The web app"](docs/deploy.md#the-web-app).
 - **Swarm driver (`tools/swarm/`):** Recipe-driven batch and multi-context execution driver against council v2.
 
 ## Repository layout
