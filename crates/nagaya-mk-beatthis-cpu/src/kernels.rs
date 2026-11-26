@@ -11,7 +11,7 @@ use std::f32::consts::FRAC_1_SQRT_2;
 use nagaya_family_beatthis::plan::Axis;
 
 use crate::isa::{self, leveled};
-use crate::lanes::{F4, Isa, join};
+use crate::lanes::{self, Isa, Vf, join};
 use crate::pool;
 
 /// `sum of a[i] * b[i]`: lane `i % 8` holds the terms of its indexes in order, and the lanes join as
@@ -308,33 +308,45 @@ pub fn add_into(acc: &mut [f32], x: &[f32], threads: usize) {
     }
 }
 
-/// `x[i] = expf(x[i] - shift)`, with the bits of `libm::expf`: 4 values at once in `F4::exp`.
+/// `x[i] = expf(x[i] - shift)`, with the bits of `libm::expf`: `lanes::exp` on the vectors of the level.
 pub fn exps(x: &mut [f32], shift: f32) {
-    let (body, tail) = x.as_chunks_mut::<4>();
-    let s = F4::splat(shift);
-    for c in body {
-        F4::load(c).sub(s).exp().store(c);
+    exps_at(isa::level(), x, shift);
+}
+
+leveled! {
+    fn exps_at(x: &mut [f32], shift: f32) = exps_of;
+}
+
+#[inline(always)]
+fn exps_of<I: Isa>(x: &mut [f32], shift: f32) {
+    let n = I::V::N;
+    let body = x.len() - x.len() % n;
+    let s = I::V::splat(shift);
+    for i in (0..body).step_by(n) {
+        lanes::exp(I::V::at(x, i).sub(s)).put(x, i);
     }
-    for v in tail {
+    for v in &mut x[body..] {
         *v = libm::expf(*v - shift);
     }
 }
 
-/// The tokens of one block of the scores: `scores` computes the scores of this many tokens at once.
-const TOKENS: usize = 4;
+/// The tokens of one block of the keys (`scores`). A vector of each level holds at most this many tokens.
+const TOKENS: usize = 16;
 
 /// `out[t] = dot(q, k_t) * scale` for each token `t`, from `kt`, the keys in blocks of `TOKENS` tokens: value `i` of
-/// token `t` is at `kt[(t / TOKENS) * hd * TOKENS + i * TOKENS + t % TOKENS]`. It keeps the lanes of `dot` for each token (one `F4` of `TOKENS` tokens for each lane), so each
-/// score has the bits of `dot`. `stride` is a multiple of `TOKENS`, and the tokens past the end of `out` are padding.
-fn scores(q: &[f32], kt: &[f32], stride: usize, scale: f32, out: &mut [f32]) {
+/// token `t` is at `kt[(t / TOKENS) * hd * TOKENS + i * TOKENS + t % TOKENS]`. It keeps the 8 lanes of `dot` for
+/// each token, one vector of tokens for each lane, so each score has the bits of `dot`. The tokens past the end of
+/// `out` are padding.
+#[inline(always)]
+fn scores<V: Vf>(q: &[f32], kt: &[f32], scale: f32, out: &mut [f32]) {
     let hd = q.len();
-    debug_assert!(stride.is_multiple_of(TOKENS) && out.len() <= stride && kt.len() == hd * stride);
-    let scale = F4::splat(scale);
-    for t0 in (0..out.len()).step_by(TOKENS) {
-        // l[k]: lane k of the dots of the tokens t0 to t0 + 3.
-        let mut l = [F4::zero(); 8];
-        let block = &kt[t0 * hd..][..TOKENS * hd];
-        let term = |i: usize| F4::splat(q[i]).mul(F4::at(block, i * TOKENS));
+    let scale = V::splat(scale);
+    let mut tmp = [0.0f32; TOKENS];
+    for t0 in (0..out.len()).step_by(V::N) {
+        // l[k]: lane k of the dots of the tokens t0 to t0 + N - 1.
+        let mut l = [V::zero(); 8];
+        let block = &kt[(t0 / TOKENS) * hd * TOKENS + t0 % TOKENS..];
+        let term = |i: usize| V::splat(q[i]).mul(V::at(block, i * TOKENS));
         let chunks = hd / 8;
         for c in 0..chunks {
             for (k, lane) in l.iter_mut().enumerate() {
@@ -345,46 +357,66 @@ fn scores(q: &[f32], kt: &[f32], stride: usize, scale: f32, out: &mut [f32]) {
             *lane = lane.add(term(chunks * 8 + k));
         }
         let j = ((l[0].add(l[1])).add(l[2].add(l[3]))).add((l[4].add(l[5])).add(l[6].add(l[7])));
-        let v = j.mul(scale).array();
-        let n = TOKENS.min(out.len() - t0);
-        out[t0..t0 + n].copy_from_slice(&v[..n]);
+        j.mul(scale).put(&mut tmp, 0);
+        let n = V::N.min(out.len() - t0);
+        out[t0..t0 + n].copy_from_slice(&tmp[..n]);
     }
 }
 
-/// `o[d] = sum over t of p[t] * v[t * hd + d]`, the terms in the order of t, from `o[d] = 0`.
-fn weighted_sum(p: &[f32], v: &[f32], o: &mut [f32]) {
-    let hd = o.len();
+/// `o[g][d] = sum over t of p[g][t] * v[t * hd + d]` for `G` queries, the terms in the order of t, from 0. Each
+/// value is its own sum. A pass over the tokens computes `B` vectors of values for each of the `G` queries, so it
+/// keeps `G * B` sums apart and the adds do not wait on each other; then passes of 1 vector, then single values.
+#[inline(always)]
+#[allow(clippy::needless_range_loop)]
+fn weighted_sum<V: Vf, const G: usize, const B: usize>(p: [&[f32]; G], v: &[f32], o: &mut [&mut [f32]; G]) {
+    let hd = o[0].len();
+    let n = V::N;
     let mut d0 = 0;
-    // Blocks of 32 values in 8 `F4`, then of 4 values, then single values. Each value is its own sum.
-    while d0 + 32 <= hd {
-        let mut acc = [F4::zero(); 8];
-        for (t, &w) in p.iter().enumerate() {
-            let w = F4::splat(w);
-            for (j, a) in acc.iter_mut().enumerate() {
-                *a = a.add(w.mul(F4::at(v, t * hd + d0 + 4 * j)));
+    while d0 + B * n <= hd {
+        let mut acc = [[V::zero(); B]; G];
+        for t in 0..p[0].len() {
+            let vs: [V; B] = std::array::from_fn(|j| V::at(v, t * hd + d0 + n * j));
+            for (g, a) in acc.iter_mut().enumerate() {
+                let w = V::splat(p[g][t]);
+                for (aj, vj) in a.iter_mut().zip(&vs) {
+                    *aj = aj.add(w.mul(*vj));
+                }
             }
         }
-        for (j, a) in acc.iter().enumerate() {
-            o[d0 + 4 * j..][..4].copy_from_slice(&a.array());
+        for (g, a) in acc.iter().enumerate() {
+            for (j, aj) in a.iter().enumerate() {
+                aj.put(o[g], d0 + n * j);
+            }
         }
-        d0 += 32;
+        d0 += B * n;
     }
-    while d0 + 4 <= hd {
-        let mut acc = F4::zero();
-        for (t, &w) in p.iter().enumerate() {
-            acc = acc.add(F4::splat(w).mul(F4::at(v, t * hd + d0)));
+    while d0 + n <= hd {
+        let mut acc = [V::zero(); G];
+        for t in 0..p[0].len() {
+            let vt = V::at(v, t * hd + d0);
+            for (g, a) in acc.iter_mut().enumerate() {
+                *a = a.add(V::splat(p[g][t]).mul(vt));
+            }
         }
-        o[d0..][..4].copy_from_slice(&acc.array());
-        d0 += 4;
+        for (g, a) in acc.iter().enumerate() {
+            a.put(o[g], d0);
+        }
+        d0 += n;
     }
     for d in d0..hd {
-        let mut acc = 0.0f32;
-        for (t, &w) in p.iter().enumerate() {
-            acc += w * v[t * hd + d];
+        for g in 0..G {
+            let mut acc = 0.0f32;
+            for (t, &w) in p[g].iter().enumerate() {
+                acc += w * v[t * hd + d];
+            }
+            o[g][d] = acc;
         }
-        o[d] = acc;
     }
 }
+
+/// The queries that `attention` takes at once in `weighted_sum`, and the vectors of values of each pass.
+const QUERIES: usize = 4;
+const PASS: usize = 2;
 
 /// Rotates the pairs of `src` by the angles of `cs` (cos, sin), into `dst[j * step]` for value `j`.
 fn rotate(src: &[f32], cs: &[(f32, f32)], dst: &mut [f32], step: usize) {
@@ -392,6 +424,106 @@ fn rotate(src: &[f32], cs: &[(f32, f32)], dst: &mut [f32], step: usize) {
         let (x0, x1) = (src[2 * i], src[2 * i + 1]);
         dst[2 * i * step] = x0 * c + -x1 * s;
         dst[(2 * i + 1) * step] = x1 * c + x0 * s;
+    }
+}
+
+/// The inputs of the workers of `attention`.
+struct Attend<'a> {
+    qkv: &'a [f32],
+    gates: &'a [f32],
+    /// cos and sin of `pos * freqs[i]` at `table[pos * hd / 2 + i]`.
+    table: &'a [(f32, f32)],
+    b: usize,
+    along: Axis,
+    len: usize,
+    heads: usize,
+    hd: usize,
+    scale: f32,
+}
+
+impl Attend<'_> {
+    /// The row of the token at `pos` in sequence `s`.
+    fn token(&self, s: usize, pos: usize) -> usize {
+        match self.along {
+            Axis::A => pos * self.b + s,
+            Axis::B => s * self.b + pos,
+        }
+    }
+}
+
+leveled! {
+    /// The rows of one worker of `attention`, from row `first` in the order (sequence, head, position).
+    fn attend(job: &Attend, first: usize, chunk: &mut [f32]) = attend_of;
+}
+
+#[inline(always)]
+fn attend_of<I: Isa>(job: &Attend, first: usize, chunk: &mut [f32]) {
+    let (len, heads, hd) = (job.len, job.heads, job.hd);
+    let width = heads * hd;
+    let half = hd / 2;
+    let mut kt = vec![0.0f32; hd * len.next_multiple_of(TOKENS)];
+    let mut v = vec![0.0f32; len * hd];
+    let mut q = vec![0.0f32; hd];
+    let mut p = vec![0.0f32; QUERIES * len];
+    let mut loaded = usize::MAX;
+    let rows = chunk.len() / hd;
+    let mut n = 0;
+    while n < rows {
+        let unit = (first + n) / len;
+        let pos = (first + n) % len;
+        let (s, h) = (unit / heads, unit % heads);
+        if unit != loaded {
+            for t in 0..len {
+                let row = &job.qkv[job.token(s, t) * 3 * width..][..3 * width];
+                rotate(
+                    &row[width + h * hd..][..hd],
+                    &job.table[t * half..][..half],
+                    &mut kt[(t / TOKENS) * hd * TOKENS + t % TOKENS..],
+                    TOKENS,
+                );
+                v[t * hd..][..hd].copy_from_slice(&row[2 * width + h * hd..][..hd]);
+            }
+            loaded = unit;
+        }
+        // The queries of this group: in one (sequence, head), and in this chunk.
+        let group = QUERIES.min(rows - n).min(len - pos);
+        for (g, pg) in p.chunks_exact_mut(len).take(group).enumerate() {
+            let r = job.token(s, pos + g);
+            rotate(
+                &job.qkv[r * 3 * width + h * hd..][..hd],
+                &job.table[(pos + g) * half..][..half],
+                &mut q,
+                1,
+            );
+            scores::<I::V>(&q, &kt, job.scale, pg);
+            let max = pg.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            exps_of::<I>(pg, max);
+            let total = sum(pg);
+            for x in pg.iter_mut() {
+                *x /= total;
+            }
+        }
+        let os = &mut chunk[n * hd..(n + group) * hd];
+        if group == QUERIES {
+            let mut o: [&mut [f32]; QUERIES] = {
+                let mut it = os.chunks_exact_mut(hd);
+                std::array::from_fn(|_| it.next().unwrap())
+            };
+            let ps: [&[f32]; QUERIES] = std::array::from_fn(|g| &p[g * len..][..len]);
+            weighted_sum::<I::V, QUERIES, PASS>(ps, &v, &mut o);
+        } else {
+            for (g, o) in os.chunks_exact_mut(hd).enumerate() {
+                weighted_sum::<I::V, 1, 8>([&p[g * len..][..len]], &v, &mut [o]);
+            }
+        }
+        for (g, o) in os.chunks_exact_mut(hd).enumerate() {
+            let r = job.token(s, pos + g);
+            let gate = 1.0 / (1.0 + libm::expf(-job.gates[r * heads + h]));
+            for x in o.iter_mut() {
+                *x *= gate;
+            }
+        }
+        n += group;
     }
 }
 
@@ -425,11 +557,6 @@ pub fn attention(
         Axis::A => a,
         Axis::B => b,
     };
-    // The row of the token at `pos` in sequence `s`.
-    let token = |s: usize, pos: usize| match along {
-        Axis::A => pos * b + s,
-        Axis::B => s * b + pos,
-    };
     // cos and sin of `pos * freqs[i]` at `table[pos * hd / 2 + i]`, as the rotation of each row needs them.
     let half = hd / 2;
     let table: Vec<(f32, f32)> = (0..len * half)
@@ -438,54 +565,22 @@ pub fn attention(
             (libm::cosf(angle), libm::sinf(angle))
         })
         .collect();
-    let stride = len.next_multiple_of(TOKENS);
-    let scale = 1.0 / (hd as f32).sqrt();
+    let job = Attend {
+        qkv,
+        gates,
+        table: &table,
+        b,
+        along,
+        len,
+        heads,
+        hd,
+        scale: 1.0 / (hd as f32).sqrt(),
+    };
+    let level = isa::level();
     // The rows in the order (sequence, head, position), `hd` values each.
     let mut ordered = vec![0.0f32; rows * width];
     split(&mut ordered, hd, threads, |first, chunk| {
-        let mut kt = vec![0.0f32; hd * stride];
-        let mut v = vec![0.0f32; len * hd];
-        let mut q = vec![0.0f32; hd];
-        let mut p = vec![0.0f32; len];
-        let mut loaded = usize::MAX;
-        for (n, o) in chunk.chunks_exact_mut(hd).enumerate() {
-            let unit = (first + n) / len;
-            let pos = (first + n) % len;
-            let (s, h) = (unit / heads, unit % heads);
-            if unit != loaded {
-                for t in 0..len {
-                    let row = &qkv[token(s, t) * 3 * width..][..3 * width];
-                    rotate(
-                        &row[width + h * hd..][..hd],
-                        &table[t * half..][..half],
-                        &mut kt[(t / TOKENS) * hd * TOKENS + t % TOKENS..],
-                        TOKENS,
-                    );
-                    v[t * hd..][..hd].copy_from_slice(&row[2 * width + h * hd..][..hd]);
-                }
-                loaded = unit;
-            }
-            let r = token(s, pos);
-            rotate(
-                &qkv[r * 3 * width + h * hd..][..hd],
-                &table[pos * half..][..half],
-                &mut q,
-                1,
-            );
-            scores(&q, &kt, stride, scale, &mut p);
-            let max = p.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-            exps(&mut p, max);
-            let total = sum(&p);
-            for x in p.iter_mut() {
-                *x /= total;
-            }
-            weighted_sum(&p, &v, o);
-            let g = gates[r * heads + h];
-            let gate = 1.0 / (1.0 + libm::expf(-g));
-            for x in o.iter_mut() {
-                *x *= gate;
-            }
-        }
+        attend(level, &job, first, chunk)
     });
     split(out, width, threads, |first, chunk| {
         for (n, row) in chunk.chunks_exact_mut(width).enumerate() {
