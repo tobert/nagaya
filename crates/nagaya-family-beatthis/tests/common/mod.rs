@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use safetensors::{Dtype, SafeTensors};
 
 pub const GOLDEN_VARIABLE: &str = "BEATTHIS_GOLDEN_DIR";
+pub const MODEL_VARIABLE: &str = "BEATTHIS_MODEL_DIR";
 pub const REQUIRE_VARIABLE: &str = "NAGAYA_REQUIRE_MODELS";
 const HOW: &str = "run tools/beatthis_golden.sh and set BEATTHIS_GOLDEN_DIR to its output folder";
 
@@ -96,4 +97,21 @@ impl Golden {
 pub fn max_abs(a: &[f64], b: &[f64]) -> f64 {
     assert_eq!(a.len(), b.len(), "the lengths differ");
     a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0, f64::max)
+}
+
+/// The bytes of a converted checkpoint (`final0` or `small0`) in `BEATTHIS_MODEL_DIR`, or `None` when it is absent.
+pub fn weights(model: &str) -> Option<Vec<u8>> {
+    let Some(dir) = std::env::var_os(MODEL_VARIABLE).map(PathBuf::from) else {
+        skip(format!("{MODEL_VARIABLE} is not set"));
+        return None;
+    };
+    let file = dir.join(format!("{model}.safetensors"));
+    match std::fs::read(&file) {
+        Ok(b) => Some(b),
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            skip(format!("{} does not exist", file.display()));
+            None
+        }
+        Err(e) => panic!("cannot read {}: {e}", file.display()),
+    }
 }

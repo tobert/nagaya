@@ -10,5 +10,6 @@ pub mod chunks;
 pub mod error;
 pub mod mel;
 pub mod peaks;
+pub mod plan;
 
 pub use error::Error;

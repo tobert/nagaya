@@ -11,6 +11,8 @@ pub enum Error {
     Format { bits: u16, float: bool },
     /// The input has too few samples for the reflect padding of the spectrum.
     TooShort { samples: usize, minimum: usize },
+    /// The hyper_parameters of a checkpoint are missing, not JSON, or name a model that this family does not build.
+    Config(String),
 }
 
 impl fmt::Display for Error {
@@ -27,6 +29,11 @@ impl fmt::Display for Error {
                 "the audio has {bits}-bit {} samples, and Beat This! takes 16-bit integer or 32-bit float samples. \
                  Convert it on the client.",
                 if *float { "float" } else { "integer" }
+            ),
+            Error::Config(m) => write!(
+                f,
+                "the checkpoint's hyper_parameters are not usable: {m}. Convert a Beat This! checkpoint with \
+                 tools/beatthis_golden.sh."
             ),
             Error::TooShort { samples, minimum } => write!(
                 f,
