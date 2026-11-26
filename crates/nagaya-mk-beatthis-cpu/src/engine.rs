@@ -18,14 +18,6 @@ use sha2::{Digest, Sha256};
 /// SSE, in a release build on `gfx1151host` (Zen 5), measured 2026-11-26 (spec 11.19).
 pub const MAX_QUANTUM_MS: u32 = 10_000;
 
-/// The host bytes of the engine: its prepared weights, the buffers of a plan of one whole chunk, and the largest
-/// scratch of a task (`host_bytes_for`) with a worker for each CPU of the machine, the most that `[cpu] threads`
-/// can give (spec 3.2c). The weights are the same for each chunk length, and a shorter chunk needs fewer bytes.
-pub fn host_bytes(config: &Config) -> u64 {
-    let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
-    host_bytes_for(config, cpus)
-}
-
 /// The host bytes of the engine on `threads` workers: the weights, the buffers of a plan of one whole chunk, and the
 /// largest scratch of a task. An attention has its rows in their order of work, a table of cos and sin, and keys,
 /// values and scores for each worker (`kernels::attention_scratch`). A conv has a copy of its kernel. `SMALL` holds
@@ -64,8 +56,11 @@ pub fn host_bytes_for(config: &Config, threads: usize) -> u64 {
 /// The bytes of the small allocations of a run: the list of the buffers and the like.
 const SMALL: u64 = 4096;
 
-/// The limits of the engine for a checkpoint of `config`. It runs in the CPU group, so it names no device.
-pub fn limits(config: &Config) -> Limits {
+/// The limits of the engine for a checkpoint of `config` on `threads` workers (`[cpu] threads`, spec 3.2c). It runs in
+/// the CPU group, so it names no device. The bytes come from the thread budget alone, never from the CPUs of the
+/// calling thread: the plan runs on a control thread and the open on the group thread, which the process pins to other
+/// CPU sets (spec 3.2a), and the two must declare the same limits.
+pub fn limits(config: &Config, threads: usize) -> Limits {
     Limits {
         capabilities: vec![Capability::Beats, Capability::Close],
         parts: Vec::new(),
@@ -82,7 +77,7 @@ pub fn limits(config: &Config) -> Limits {
             mandatory: vec![MandatoryTerm {
                 name: "weights-and-scratch".to_owned(),
                 tier: Tier::Host,
-                bytes: host_bytes(config),
+                bytes: host_bytes_for(config, threads),
                 lifetime: Lifetime::Engine,
                 kinds: Vec::new(),
             }],
@@ -222,7 +217,7 @@ impl Engine for BeatThisEngine {
     }
 
     fn limits(&self) -> Limits {
-        limits(&self.config)
+        limits(&self.config, self.threads)
     }
 
     /// A beats engine takes no pass (engine-abi "Beats").

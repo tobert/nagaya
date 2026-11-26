@@ -438,7 +438,7 @@ impl nagaya_abi::Engine for Fake {
             head_dim: 32,
             ff_mult: 4,
         };
-        nagaya_mk_beatthis_cpu::engine::limits(&config)
+        nagaya_mk_beatthis_cpu::engine::limits(&config, 1)
     }
 
     fn pass(
@@ -475,6 +475,10 @@ impl nagaya::admission::Factory for FakeFactory {
         _: &[nagaya::admission::GroupDevice],
     ) -> Result<Box<dyn nagaya_abi::Engine>, nagaya::admission::OpenError> {
         unreachable!("a CPU engine opens with open_cpu")
+    }
+
+    fn plan_cpu(&self, _: &toml::Table, _threads: u32) -> Result<nagaya_abi::Limits, nagaya::admission::PlanError> {
+        Ok(nagaya_abi::Engine::limits(&Fake { extra: 0 }))
     }
 
     fn open_cpu(
@@ -543,4 +547,46 @@ fn outputs_of_the_wrong_size_are_a_500() {
         body["error"]["message"].as_str().unwrap().contains("finite values"),
         "{body}"
     );
+}
+
+/// The plan of an engine runs on a control thread and its open on the group thread, and the process pins the two to
+/// other CPU sets (spec 3.2a). The memory that the engine declares must not depend on the CPUs of the calling thread.
+/// On 2026-11-26 a declaration that counted `available_parallelism` gave other bytes at the plan and after the open,
+/// and the service did not start; the tests had run with no CPU sets, so every thread saw every CPU.
+#[test]
+fn the_engine_opens_when_the_process_pins_its_threads() {
+    let Some(_) = golden::weights("small0") else { return };
+    let dir_of_models = std::path::PathBuf::from(std::env::var_os(golden::MODEL_VARIABLE).unwrap());
+    let weights = dir_of_models.join("small0.safetensors").display().to_string();
+    let online: Vec<u32> = (0..std::thread::available_parallelism().unwrap().get() as u32).collect();
+    if online.len() < 4 {
+        eprintln!("skipped: the machine has fewer than 4 CPUs to split");
+        return;
+    }
+    let sets = nagaya::cpu_sets::CpuSets {
+        housekeeping: online[..2].to_vec(),
+        pool: online[2..].to_vec(),
+        devices: vec![],
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let mut registry = Registry::new();
+    registry.register(nagaya::beatthis::KIND, Box::new(nagaya::beatthis::BeatThisFactory));
+    let profile = cpu_profile(nagaya::beatthis::KIND, &weights, 2);
+    let mut process = Start::new(
+        profile,
+        registry,
+        Inventory {
+            devices: vec![],
+            host_bytes: 8 << 30,
+        },
+    )
+    .store(dir.path())
+    .cpu_sets(sets)
+    .heartbeat(Duration::from_millis(50))
+    .timeout(Duration::from_secs(30))
+    .start()
+    .unwrap();
+    process
+        .wait_opens(Duration::from_secs(60))
+        .expect("the engine opens with pinned threads");
 }

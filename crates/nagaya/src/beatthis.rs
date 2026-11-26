@@ -31,19 +31,12 @@ pub fn weights(table: &toml::Table) -> Result<PathBuf, PlanError> {
     })
 }
 
-/// The limits of the engine. It reads the header of the weights file, and no weight bytes (spec 2.4).
-pub fn plan(table: &toml::Table, devices: &[GroupDevice]) -> Result<Limits, PlanError> {
-    if !devices.is_empty() {
-        return Err(PlanError {
-            message: format!(
-                "the engine `{KIND}` runs in the CPU group, and its profile names {} devices: write `devices = []`",
-                devices.len()
-            ),
-        });
-    }
+/// The limits of the engine on `threads` workers. It reads the header of the weights file, and no weight bytes
+/// (spec 2.4).
+pub fn plan_cpu(table: &toml::Table, threads: u32) -> Result<Limits, PlanError> {
     let path = weights(table)?;
     let config = engine::config_of(&path).map_err(|message| PlanError { message })?;
-    Ok(engine::limits(&config))
+    Ok(engine::limits(&config, threads as usize))
 }
 
 /// The factory of the Beat This! engine.
@@ -62,8 +55,18 @@ impl Factory for BeatThisFactory {
         Some(vec![engine.to_owned()])
     }
 
-    fn plan(&self, table: &toml::Table, devices: &[GroupDevice]) -> Result<Limits, PlanError> {
-        plan(table, devices)
+    /// The process plans an engine of the CPU group with `plan_cpu`, so a call here names devices.
+    fn plan(&self, _table: &toml::Table, devices: &[GroupDevice]) -> Result<Limits, PlanError> {
+        Err(PlanError {
+            message: format!(
+                "the engine `{KIND}` runs in the CPU group, and its profile names {} devices: write `devices = []`",
+                devices.len()
+            ),
+        })
+    }
+
+    fn plan_cpu(&self, table: &toml::Table, threads: u32) -> Result<Limits, PlanError> {
+        plan_cpu(table, threads)
     }
 
     /// The process opens an engine of the CPU group with `open_cpu`, so a call here is a profile with devices, which
@@ -120,7 +123,9 @@ mod tests {
             pci_address: "0000:00:00.0".into(),
             memory_bytes: 1,
         };
-        let e = plan(&table("weights = \"/m/x\""), &[device]).unwrap_err();
+        let e = BeatThisFactory
+            .plan(&table("weights = \"/m/x\""), &[device])
+            .unwrap_err();
         assert!(
             e.message.contains("runs in the CPU group") && e.message.contains("devices = []"),
             "{}",

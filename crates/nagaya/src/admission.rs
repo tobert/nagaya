@@ -132,6 +132,17 @@ pub trait Factory {
     /// Open the engine on the calling thread. The process calls this on the group thread.
     fn open(&self, config: &toml::Table, devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError>;
 
+    /// Give the limits of an engine of the CPU group (spec 3.2c) for a config and the thread budget of `[cpu] threads`.
+    /// The process calls it, not `plan`, for an engine with `devices = []`. A kind that does not run in the CPU group
+    /// refuses.
+    fn plan_cpu(&self, _config: &toml::Table, threads: u32) -> Result<Limits, PlanError> {
+        Err(PlanError {
+            message: format!(
+                "this engine kind does not run in the CPU group ({threads} threads); give it devices in the profile"
+            ),
+        })
+    }
+
     /// Open an engine of the CPU group (spec 3.2c) on the calling thread, with the thread budget of `[cpu] threads`.
     /// The process calls it, not `open`, for an engine with `devices = []`. A kind that does not run in the CPU group
     /// refuses.
@@ -813,12 +824,21 @@ pub fn plan_all(
             kind: engine.kind.clone(),
         })?;
         let devices = group_devices(engine, inventory).map_err(AdmitError::Device)?;
-        let limits = factory
-            .plan(&engine.config, &devices)
-            .map_err(|error| AdmitError::Plan {
-                engine: engine.name.clone(),
-                message: error.to_string(),
-            })?;
+        // An engine of the CPU group plans with its thread budget (spec 3.2c). The profile has a `[cpu]` table
+        // whenever it has an engine with no devices (profile.rs), so the budget is there.
+        let planned_limits = if engine.devices.is_empty() {
+            let threads = profile
+                .cpu
+                .expect("a profile with a CPU engine has a [cpu] table")
+                .threads;
+            factory.plan_cpu(&engine.config, threads)
+        } else {
+            factory.plan(&engine.config, &devices)
+        };
+        let limits = planned_limits.map_err(|error| AdmitError::Plan {
+            engine: engine.name.clone(),
+            message: error.to_string(),
+        })?;
         // The scheduler asserts this value, so a zero is refused here, before any thread starts. A speech, image,
         // embedding or beats engine takes no pass (engine-abi "Speech", "The image capability", "Embedding",
         // "Beats"), so it declares no segment.
