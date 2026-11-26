@@ -85,6 +85,7 @@ fn conv_gives_the_bits_of_the_reference() {
             (9, 32, 32, 64, 2, 3, 2),
             (7, 8, 13, 5, 2, 3, 2),
             (1, 4, 9, 3, 2, 3, 2),
+            (6, 8, 13, 37, 2, 3, 2),
         ] {
             let f_out = (f_in - kf) / stride + 1;
             let x = values(frames * f_in * cin, 4);

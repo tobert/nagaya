@@ -115,6 +115,10 @@ pub fn affine(x: &[f32], y: &mut [f32], cols: usize, scale: &[f32], shift: &[f32
 
 /// The convolution of `Task::Conv`. The sum of a value runs over `(i, j)` in order, each term a `dot` over the input
 /// channels. A tap past the first or the last frame reads zeros, so it adds nothing and is left out.
+///
+/// The workers compute a vector of output channels at once: a copy of the kernel holds the output channels last, and
+/// each output channel keeps the 8 lanes of its `dot` in its lane of 8 vectors. So each value has the bits of the
+/// scalar form at each level.
 #[allow(clippy::too_many_arguments)]
 pub fn conv(
     x: &[f32],
@@ -133,28 +137,100 @@ pub fn conv(
     assert_eq!(x.len(), frames * f_in * cin);
     assert_eq!(y.len(), frames * f_out * cout);
     assert_eq!(kernel.len(), cout * kf * kt * cin);
-    let half = (kt / 2) as isize;
-    // One row of the split is one frame and one output frequency: `cout` values.
-    split(y, cout, threads, |first, rows| {
-        for (k, row) in rows.chunks_exact_mut(cout).enumerate() {
-            let (t, o) = ((first + k) / f_out, (first + k) % f_out);
-            for (co, v) in row.iter_mut().enumerate() {
-                let mut acc = 0.0f32;
-                for i in 0..kf {
-                    for j in 0..kt {
-                        let tt = t as isize + j as isize - half;
-                        if tt < 0 || tt >= frames as isize {
-                            continue;
-                        }
-                        let xs = &x[(tt as usize * f_in + o * stride + i) * cin..][..cin];
-                        let ks = &kernel[((co * kf + i) * kt + j) * cin..][..cin];
-                        acc += dot(ks, xs);
-                    }
-                }
-                *v = acc;
+    // The kernel with the output channels last: value (co, i, j, ci) at ((i * kt + j) * cin + ci) * cout + co.
+    let mut last = vec![0.0f32; kernel.len()];
+    for co in 0..cout {
+        for tap in 0..kf * kt {
+            for ci in 0..cin {
+                last[(tap * cin + ci) * cout + co] = kernel[(co * kf * kt + tap) * cin + ci];
             }
         }
-    });
+    }
+    let job = Conv {
+        x,
+        frames,
+        f_in,
+        f_out,
+        cin,
+        cout,
+        kf,
+        kt,
+        stride,
+        kernel,
+        last: &last,
+    };
+    let level = isa::level();
+    // One row of the split is one frame and one output frequency: `cout` values.
+    split(y, cout, threads, |first, rows| conv_rows(level, &job, first, rows));
+}
+
+/// The inputs of the workers of `conv`.
+struct Conv<'a> {
+    x: &'a [f32],
+    frames: usize,
+    f_in: usize,
+    f_out: usize,
+    cin: usize,
+    cout: usize,
+    kf: usize,
+    kt: usize,
+    stride: usize,
+    kernel: &'a [f32],
+    last: &'a [f32],
+}
+
+leveled! {
+    /// The rows of one worker of `conv`, from row `first`.
+    fn conv_rows(job: &Conv, first: usize, rows: &mut [f32]) = conv_rows_of;
+}
+
+#[inline(always)]
+fn conv_rows_of<I: Isa>(job: &Conv, first: usize, rows: &mut [f32]) {
+    let (cin, cout, kt) = (job.cin, job.cout, job.kt);
+    let n = I::V::N;
+    let half = (kt / 2) as isize;
+    let blocks = cout - cout % n;
+    for (k, row) in rows.chunks_exact_mut(cout).enumerate() {
+        let (t, o) = ((first + k) / job.f_out, (first + k) % job.f_out);
+        // The taps (i, j) in order, with the input channels of each; a tap past the frames is left out.
+        let taps = (0..job.kf * kt).filter_map(|tap| {
+            let (i, j) = (tap / kt, tap % kt);
+            let tt = t as isize + j as isize - half;
+            (tt >= 0 && tt < job.frames as isize).then(|| {
+                (
+                    tap,
+                    &job.x[(tt as usize * job.f_in + o * job.stride + i) * cin..][..cin],
+                )
+            })
+        });
+        for co0 in (0..blocks).step_by(n) {
+            let mut acc = I::V::zero();
+            for (tap, xs) in taps.clone() {
+                let ks = &job.last[tap * cin * cout + co0..];
+                let term = |ci: usize| I::V::splat(xs[ci]).mul(I::V::at(ks, ci * cout));
+                let mut l = [I::V::zero(); 8];
+                let chunks = cin / 8;
+                for c in 0..chunks {
+                    for (lane, lv) in l.iter_mut().enumerate() {
+                        *lv = lv.add(term(c * 8 + lane));
+                    }
+                }
+                for (lane, lv) in l.iter_mut().enumerate().take(cin % 8) {
+                    *lv = lv.add(term(chunks * 8 + lane));
+                }
+                let d = ((l[0].add(l[1])).add(l[2].add(l[3]))).add((l[4].add(l[5])).add(l[6].add(l[7])));
+                acc = acc.add(d);
+            }
+            acc.put(row, co0);
+        }
+        for co in blocks..cout {
+            let mut acc = 0.0f32;
+            for (tap, xs) in taps.clone() {
+                acc += dot(&job.kernel[(co * job.kf * kt + tap) * cin..][..cin], xs);
+            }
+            row[co] = acc;
+        }
+    }
 }
 
 /// `x = x * 0.5 * (1 + erf(x / sqrt(2)))`, in place: torch's exact GELU, in its order of operations.
