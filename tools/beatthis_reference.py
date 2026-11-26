@@ -18,7 +18,7 @@ import numpy
 import torch
 from safetensors.numpy import save_file
 
-from beat_this.inference import load_checkpoint, load_model, split_piece, split_predict_aggregate
+from beat_this.inference import aggregate_prediction, load_checkpoint, load_model, split_piece, split_predict_aggregate
 from beat_this.model.postprocessor import Postprocessor
 from beat_this.preprocessing import LogMelSpect
 from beat_this.utils import replace_state_dict_key
@@ -80,6 +80,31 @@ def predict(model, spect):
     chunks, starts = split_piece(spect, CHUNK, border_size=BORDER, avoid_short_end=True)
     p = split_predict_aggregate(spect, CHUNK, BORDER, "keep_first", model)
     return p["beat"], p["downbeat"], [int(s) for s in starts], [int(c.shape[0]) for c in chunks]
+
+
+# Lengths in frames around the edges of the chunk rule: one frame, a live window, one chunk less and more than its
+# borders, two and three chunks, and the length where the last chunk moves left by one frame.
+JOIN_FRAMES = [1, 26, 263, 501, 1487, 1488, 1489, 1493, 1494, 1495, 1500, 1501, 2976, 2977, 2989, 3501]
+
+
+def join_oracle(golden, info):
+    """Runs upstream's split and keep_first join on fake predictions, with no model.
+
+    The fake beat logit at chunk position i of chunk c is 10000 * c + (start + i), its global frame. Thus the joined
+    row names, at each frame, the chunk that wins and the frame that it read. The downbeat logit is its negative.
+    """
+    info["join"] = {}
+    for t in JOIN_FRAMES:
+        spect = torch.zeros(t, 128)
+        chunks, starts = split_piece(spect, CHUNK, border_size=BORDER, avoid_short_end=True)
+        preds = []
+        for c, (chunk, start) in enumerate(zip(chunks, starts)):
+            tag = torch.arange(chunk.shape[0], dtype=torch.float32) + float(start) + 10000.0 * c
+            preds.append({"beat": tag, "downbeat": -tag})
+        beat, down = aggregate_prediction(preds, starts, t, CHUNK, BORDER, "keep_first", "cpu")
+        golden[f"join.{t}.beat"] = beat.numpy()
+        golden[f"join.{t}.downbeat"] = down.numpy()
+        info["join"][str(t)] = {"starts": [int(x) for x in starts], "sizes": [int(c.shape[0]) for c in chunks]}
 
 
 def parts_hooks(model, store):
@@ -144,10 +169,17 @@ def main():
 
     golden, info = {}, {"models": {}, "cases": {}}
     spect_f32 = LogMelSpect(device="cpu")
-    spect_f64 = LogMelSpect(device="cpu").double()
+    # A cast of the f32 module keeps its f32 window and filters. Built with f64 as the default dtype, torchaudio makes
+    # the window and the filters in f64 too, so this is the exact form that an engine in f64 can match.
+    torch.set_default_dtype(torch.float64)
+    spect_f64 = LogMelSpect(device="cpu")
+    torch.set_default_dtype(torch.float32)
     golden["mel.window"] = spect_f32.spect_class.spectrogram.window.numpy()
     golden["mel.filterbank"] = spect_f32.spect_class.mel_scale.fb.numpy()  # [513, 128]
+    golden["mel.window64"] = spect_f64.spect_class.spectrogram.window.numpy()
+    golden["mel.filterbank64"] = spect_f64.spect_class.mel_scale.fb.numpy()
 
+    join_oracle(golden, info)
     post = Postprocessor(type="minimal", fps=FPS)
     for name in MODELS:
         ckpt = os.path.join(a.ckpt_dir, f"beat_this-{name}.ckpt")
@@ -161,6 +193,7 @@ def main():
             spect = spect_f32(x)
             spect64 = spect_f64(x.double())
         golden[f"{case}.spect"] = spect.numpy()
+        golden[f"{case}.spect64"] = spect64.numpy()
         c = {
             "description": desc,
             "samples": len(wave),
@@ -181,6 +214,17 @@ def main():
                 return_complex=True,
             )
             golden["parts.stft_mag"] = stft.abs().T.contiguous().numpy()  # [T, 513]
+            x64 = x.double()
+            stft64 = torch.stft(
+                torch.nn.functional.pad(x64[None], (512, 512), mode="reflect")[0],
+                1024,
+                441,
+                window=spect_f64.spect_class.spectrogram.window,
+                center=False,
+                normalized=True,
+                return_complex=True,
+            )
+            golden["parts.stft_mag64"] = stft64.abs().T.contiguous().numpy()
         for name in MODELS:
             ckpt = os.path.join(a.ckpt_dir, f"beat_this-{name}.ckpt")
             model = load_model(ckpt, "cpu")

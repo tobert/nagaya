@@ -19,13 +19,18 @@
 # golden.safetensors:
 #   mel.window                [1024]        the periodic Hann window
 #   mel.filterbank            [513, 128]    the Slaney mel filters of torchaudio, 30 Hz to 11 kHz
+#   mel.window64, mel.filterbank64  f64    the same, made by torchaudio with f64 as the default dtype
 #   <case>.wave               [N]           the input samples
 #   <case>.spect              [T, 128]      log1p(1000 * mel), T = N / 441 + 1 frames
+#   <case>.spect64            [T, 128] f64  the same from the f64 window and filters: the gate of an f64 engine
 #   <model>.<case>.beat       [T]           beat logits after the sum head, chunks joined keep_first
 #   <model>.<case>.downbeat   [T]           downbeat logits
 #   <model>.<case>.beats_s    [B]  f64      beat times in seconds, minimal postprocess
 #   <model>.<case>.downbeats_s [D] f64      downbeat times in seconds, each moved onto a beat
+#   join.<T>.beat, .downbeat  [T]           upstream's split and keep_first join of fake logits for T frames: the
+#                                           value at a frame is 10000 * chunk + the global frame that it read
 #   parts.stft_mag            [T, 513]      |STFT| of click120_44, reflect pad 512, divided by sqrt(1024)
+#   parts.stft_mag64          [T, 513] f64  the same in f64
 #   parts.stem                [32, 32, T']  final0, click120_44, chunk 0, after the stem (channels, freqs, frames)
 #   parts.block{0,1,2}        [C, F, T']    after each frontend block: 64x16, 128x8, 256x4
 #   parts.linear              [T', 512]     after the projection to the transformer
