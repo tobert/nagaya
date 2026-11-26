@@ -26,6 +26,7 @@ members = [
     "crates/nagaya-text-lfm3",
     "crates/nagaya-text-inkling2",
     "crates/nagaya-family-beatthis",
+    "crates/nagaya-mk-beatthis-cpu",
     "crates/nagaya-council",
     "crates/nagaya-text-toy",
     "crates/nagaya-telemetry",
@@ -53,6 +54,13 @@ debug = false
 opt-level = 3
 
 [profile.dev.package.nagaya-mk-inkling2-sm121]
+opt-level = 3
+
+# The CPU interpreter of Beat This! runs whole chunks of the model in its tests: about 130 GFLOP for 30 s of final0.
+[profile.dev.package.nagaya-mk-beatthis-cpu]
+opt-level = 3
+
+[profile.dev.package.libm]
 opt-level = 3
 
 # The CUDA interpreter repacks the weights on the host at each load. With no optimization a GPU test binary waits

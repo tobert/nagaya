@@ -1,0 +1,14 @@
+[package]
+name = "nagaya-mk-beatthis-cpu"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# exp, erf, sin and cos in pure Rust (a port of musl), so the bits do not depend on the libm of the machine.
+libm = "0.2.16"
+nagaya-family-beatthis = { path = "../nagaya-family-beatthis" }
+
+[dev-dependencies]
+blake3 = "1.8.5"
+safetensors = "0.8.0"
+serde_json = { version = "1.0.154", features = ["float_roundtrip", "preserve_order"] }
