@@ -3,6 +3,7 @@
 //! It runs a plan of `nagaya_family_beatthis::plan` task by task with the kernels of `kernels`. A GPU port of the
 //! model runs the same plan with its own kernels, so this crate is also the reference of each port.
 
+pub mod engine;
 pub mod kernels;
 
 use nagaya_family_beatthis::plan::{Mark, Plan, Task};

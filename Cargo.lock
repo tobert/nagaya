@@ -1195,6 +1195,7 @@ dependencies = [
  "gogi-fake",
  "gogi-proto",
  "gogi-toy",
+ "hound",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -1203,7 +1204,9 @@ dependencies = [
  "nagaya",
  "nagaya-abi",
  "nagaya-council",
+ "nagaya-family-beatthis",
  "nagaya-ledger",
+ "nagaya-mk-beatthis-cpu",
  "nagaya-mk-bmg",
  "nagaya-mk-embeddinggemma2-bmg",
  "nagaya-mk-gemma4-bmg",
@@ -1304,9 +1307,11 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "libm",
+ "nagaya-abi",
  "nagaya-family-beatthis",
  "safetensors",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

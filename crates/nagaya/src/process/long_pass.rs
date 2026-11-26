@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use nagaya_abi::{
-    Arena, Control, Coverage, DeviceId, Embedding, Engine, Identity, Image, Limits, Parts, PassError, PassErrorKind,
-    PassOut, PassStatus, Seal, Segment, Slots, Speech, SpeechFrames, Stages, Tap,
+    Arena, Beats, Control, Coverage, DeviceId, Embedding, Engine, Identity, Image, Limits, Parts, PassError,
+    PassErrorKind, PassOut, PassStatus, Seal, Segment, Slots, Speech, SpeechFrames, Stages, Tap,
 };
 use serde::Serialize;
 
@@ -352,6 +352,10 @@ impl Engine for Watched {
 
     fn control(&mut self) -> Option<&mut dyn Control> {
         self.inner.control()
+    }
+
+    fn beats(&mut self) -> Option<&mut dyn Beats> {
+        self.inner.beats()
     }
 }
 

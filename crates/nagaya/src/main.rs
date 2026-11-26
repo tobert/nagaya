@@ -342,6 +342,7 @@ fn serve(
                 services
             })
             .with_embeddings(nagaya::embeddinggemma2::embedding_services(&served_profile, &ports)?)
+            .with_beats(nagaya::beats::services(&served_profile, &ports)?)
             .with_loads(ports.clone())
             .with_profile(profile_calls.clone())
             .with_cluster(Arc::clone(&cluster)))
@@ -604,7 +605,8 @@ fn engine_registry() -> Result<nagaya::admission::Registry, Refusal> {
     if registry.is_empty() {
         return Err(Refusal {
             code: ExitCode::RefusedStart,
-            message: "this build has no engine; build with the feature `hip` for the Qwen3.8 engine, or `xe` for the Gemma 4 engine".to_owned(),
+            message: "this build has no engine kind; each build has `mk-beatthis-cpu`, so the registry is broken"
+                .to_owned(),
         });
     }
     Ok(registry)

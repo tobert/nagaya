@@ -6,7 +6,12 @@ edition = "2024"
 [dependencies]
 # exp, erf, sin and cos in pure Rust (a port of musl), so the bits do not depend on the libm of the machine.
 libm = "0.2.16"
+nagaya-abi = { path = "../nagaya-abi" }
 nagaya-family-beatthis = { path = "../nagaya-family-beatthis" }
+sha2 = "0.10.9"
+
+[build-dependencies]
+sha2 = "0.10.9"
 
 [dev-dependencies]
 blake3 = "1.8.5"

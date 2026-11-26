@@ -236,5 +236,6 @@ fn kind_label(kind: Kind) -> &'static str {
         Kind::Copy => "copy",
         Kind::Step => "step",
         Kind::Train => "train",
+        Kind::Beats => "beats",
     }
 }

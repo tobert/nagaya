@@ -58,6 +58,34 @@ impl<'a> Tensors<'a> {
     }
 }
 
+/// The `hyper_parameters` of a converted checkpoint from its header alone: the 8 bytes of the header's length, then
+/// the header. It reads no weight bytes, so a plan can run before an open (spec 2.4).
+pub fn read_hyper_parameters(path: &std::path::Path) -> Result<String, Error> {
+    use std::io::Read;
+    let fail = |why: String| Error::Config(format!("{}: {why}", path.display()));
+    let mut f = std::fs::File::open(path).map_err(|e| fail(format!("cannot open it: {e}")))?;
+    let mut len = [0u8; 8];
+    f.read_exact(&mut len)
+        .map_err(|e| fail(format!("cannot read the header length: {e}")))?;
+    let len = u64::from_le_bytes(len);
+    // safetensors refuses a header past 100 MB; this one is a few kB.
+    if len > 100_000_000 {
+        return Err(fail(format!(
+            "the header claims {len} bytes, so it is not a safetensors file"
+        )));
+    }
+    let mut header = vec![0u8; len as usize];
+    f.read_exact(&mut header)
+        .map_err(|e| fail(format!("cannot read the header: {e}")))?;
+    let v: serde_json::Value =
+        serde_json::from_slice(&header).map_err(|e| fail(format!("the header is not JSON: {e}")))?;
+    v.get("__metadata__")
+        .and_then(|m| m.get("hyper_parameters"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| fail("the header has no hyper_parameters in its metadata".into()))
+}
+
 /// `weight / sqrt(running_var + eps)` and `bias - running_mean * that`, in f64, each rounded once to f32.
 fn batch_norm(t: &Tensors, prefix: &str, channels: usize) -> Result<(Vec<f32>, Vec<f32>), Error> {
     let get = |p: &str| t.f32(&format!("{prefix}.{p}"), &[channels]);

@@ -57,7 +57,7 @@ You need a current Rust toolchain. A default build compiles the workspace with n
 cargo build --release -p nagaya
 ```
 
-That binary has no GPU engines enabled (it exits with code 3 if started without an engine feature). Enable the feature for your hardware:
+That binary has no GPU engines enabled. It can serve only the CPU engine `mk-beatthis-cpu` (beat tracking, see `docs/spec.md` 11.19). Enable the feature for your hardware:
 
 | Feature | Enables | Build requirements |
 |---|---|---|

@@ -832,6 +832,13 @@ pub enum StartError {
     },
     /// The profile names no store NVMe budget (spec 4.1 rule).
     NoStoreBudget,
+    /// `[cpu] threads` is more than the CPUs of the pool set (spec 3.2c).
+    CpuThreads {
+        /// The threads of the profile.
+        threads: u32,
+        /// The CPUs of the pool set.
+        pool: usize,
+    },
 }
 
 impl std::fmt::Display for StartError {
@@ -847,6 +854,10 @@ impl std::fmt::Display for StartError {
                     "the placement profile has no `store.nvme` budget; name it in the profile"
                 )
             }
+            StartError::CpuThreads { threads, pool } => write!(
+                formatter,
+                "`[cpu] threads` is {threads}, and the pool set has {pool} CPUs; set at most {pool} (spec 3.2c)"
+            ),
         }
     }
 }
@@ -855,7 +866,7 @@ impl std::error::Error for StartError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             StartError::Admit(error) => Some(error),
-            StartError::Store { .. } | StartError::NoStoreBudget => None,
+            StartError::Store { .. } | StartError::NoStoreBudget | StartError::CpuThreads { .. } => None,
         }
     }
 }
@@ -960,6 +971,14 @@ impl Start {
             heartbeat < timeout,
             "the heartbeat must be shorter than the watchdog timeout"
         );
+        if let (Some(cpu), Some(sets)) = (profile.cpu, cpu_sets.as_ref())
+            && cpu.threads as usize > sets.pool.len()
+        {
+            return Err(StartError::CpuThreads {
+                threads: cpu.threads,
+                pool: sets.pool.len(),
+            });
+        }
         let registry = Arc::new(registry);
         let inventory = Arc::new(inventory);
         let (events_tx, events) = mpsc::channel();
@@ -1187,7 +1206,13 @@ impl Start {
                 timeout,
                 interval: heartbeat,
             };
-            let handle = spawn_named(format!("nagaya-group-{index}"), move || {
+            // The CPU group's thread has its own name (spec 3.2c).
+            let thread_name = if group.devices.is_empty() {
+                "nagaya-cpu".to_owned()
+            } else {
+                format!("nagaya-group-{index}")
+            };
+            let handle = spawn_named(thread_name, move || {
                 guard("group", &group_guard, || {
                     pin("group", group_cpus.as_deref());
                     let links = GroupLinks {
@@ -1253,6 +1278,8 @@ struct GroupJob {
     arena_parts: Vec<ArenaPart>,
     /// The stored fds of the engine that systemd passed back.
     stored: Vec<(FdName, std::os::fd::OwnedFd)>,
+    /// The thread budget of an engine of the CPU group (spec 3.2c), and `None` for an engine with devices.
+    cpu_threads: Option<u32>,
 }
 
 impl GroupJob {
@@ -1265,6 +1292,7 @@ impl GroupJob {
             factory: Arc::clone(&self.factory),
             arena_parts: self.arena_parts.clone(),
             stored: Vec::new(),
+            cpu_threads: self.cpu_threads,
         }
     }
 }
@@ -1295,6 +1323,11 @@ fn group_jobs(
                 factory,
                 arena_parts: admitted.engines[index].arena_parts.clone(),
                 stored: stored.remove(&placement.name).unwrap_or_default(),
+                cpu_threads: placement
+                    .devices
+                    .is_empty()
+                    .then(|| profile.cpu.map(|cpu| cpu.threads))
+                    .flatten(),
             }
         })
         .collect()

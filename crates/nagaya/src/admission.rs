@@ -132,6 +132,18 @@ pub trait Factory {
     /// Open the engine on the calling thread. The process calls this on the group thread.
     fn open(&self, config: &toml::Table, devices: &[GroupDevice]) -> Result<Box<dyn Engine>, OpenError>;
 
+    /// Open an engine of the CPU group (spec 3.2c) on the calling thread, with the thread budget of `[cpu] threads`.
+    /// The process calls it, not `open`, for an engine with `devices = []`. A kind that does not run in the CPU group
+    /// refuses.
+    fn open_cpu(&self, _config: &toml::Table, threads: u32) -> Result<Box<dyn Engine>, OpenError> {
+        Err(OpenError {
+            kind: OpenErrorKind::Other,
+            message: format!(
+                "this engine kind does not run in the CPU group ({threads} threads); give it devices in the profile"
+            ),
+        })
+    }
+
     /// Give the identity and the limits that an open of this config on `devices` would report, with no load. The
     /// process serves a text engine on demand from them before it loads (spec 11.1). An open that reports other
     /// facts is an error. A kind that cannot tell them gives none, and its engine on demand is not a text model.
@@ -215,8 +227,9 @@ impl Registry {
     /// `hip`, the Gemma 4, Qwen3-TTS, SDXL, EmbeddingGemma 2, LFM3 and Inkling 2 engines with the feature `xe`, and the fake
     /// kinds with the feature `fake`.
     pub fn compiled_in() -> Self {
-        #[allow(unused_mut)]
         let mut registry = Self::new();
+        // The CPU group needs no GPU feature (spec 3.2c).
+        registry.register(crate::beatthis::KIND, Box::new(crate::beatthis::BeatThisFactory));
         #[cfg(feature = "hip")]
         registry.register(crate::qwen38::KIND, Box::new(crate::qwen38::Qwen38Factory));
         #[cfg(feature = "hip")]
@@ -801,12 +814,17 @@ pub fn plan_all(
                 engine: engine.name.clone(),
                 message: error.to_string(),
             })?;
-        // The scheduler asserts this value, so a zero is refused here, before any thread starts. A speech, image or
-        // embedding engine takes no pass (engine-abi "Speech", "The image capability", "Embedding"), so it declares no
-        // segment.
-        let passes = ![Capability::Speech, Capability::Image, Capability::Embedding]
-            .iter()
-            .any(|capability| limits.capabilities.contains(capability));
+        // The scheduler asserts this value, so a zero is refused here, before any thread starts. A speech, image,
+        // embedding or beats engine takes no pass (engine-abi "Speech", "The image capability", "Embedding",
+        // "Beats"), so it declares no segment.
+        let passes = ![
+            Capability::Speech,
+            Capability::Image,
+            Capability::Embedding,
+            Capability::Beats,
+        ]
+        .iter()
+        .any(|capability| limits.capabilities.contains(capability));
         if limits.max_segments == 0 && passes {
             return Err(AdmitError::Limits {
                 engine: engine.name.clone(),
@@ -955,13 +973,18 @@ fn check_residency(profile: &PlacementProfile, planned: &[AdmittedEngine]) -> Re
         if placement.residency != Residency::OnDemand {
             continue;
         }
-        // An image, speech or embedding engine builds its service from the profile, so its served model exists on
+        // An image, speech, embedding or beats engine builds its service from the profile, so its served model exists on
         // demand (spec 3.3a, "Council models on demand"). A text service attaches only to an engine that opens at the
         // start.
         let capabilities = &planned[index].limits.capabilities;
-        let from_profile = [Capability::Image, Capability::Speech, Capability::Embedding]
-            .iter()
-            .any(|capability| capabilities.contains(capability));
+        let from_profile = [
+            Capability::Image,
+            Capability::Speech,
+            Capability::Embedding,
+            Capability::Beats,
+        ]
+        .iter()
+        .any(|capability| capabilities.contains(capability));
         if !placement.family.is_empty() && !from_profile {
             return Err(fail(
                 name,

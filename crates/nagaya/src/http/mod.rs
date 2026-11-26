@@ -4,6 +4,7 @@
 //! `model`, and runs the blocking call of the [`Service`] on a call thread. The control runtime never runs a service
 //! call (spec 3.2). Every response carries a `request-id` header, and every error body carries the same id (11.5).
 
+mod beats;
 mod cluster;
 mod compose;
 mod devices;
@@ -119,6 +120,8 @@ pub struct Council {
     images: Vec<Arc<crate::image::ImageService>>,
     /// The embedding services (spec 11.10).
     embeddings: Vec<Arc<crate::embedding::EmbeddingService>>,
+    /// The beats services (spec 11.19).
+    beats: Vec<Arc<crate::beats::BeatsService>>,
     /// The objects and keeps, when the profile names an `objects` budget (spec 6.15).
     objects: Option<Arc<Mutex<nagaya_store::objects::ObjectStore>>>,
     /// `object_bytes` and `keep_bytes` of the object store. They are fixed at its open, so identity takes no lock.
@@ -159,6 +162,7 @@ impl Council {
             speech: Vec::new(),
             images: Vec::new(),
             embeddings: Vec::new(),
+            beats: Vec::new(),
             objects: None,
             object_limits: None,
             pending: pending::PendingIds::default(),
@@ -207,6 +211,12 @@ impl Council {
     /// Serve these embedding services as council served models (spec 11.10).
     pub fn with_embeddings(mut self, services: Vec<crate::embedding::EmbeddingService>) -> Self {
         self.embeddings = services.into_iter().map(Arc::new).collect();
+        self
+    }
+
+    /// Serve these beats services under `/nagaya/v1/analysis/beats` (spec 11.19).
+    pub fn with_beats(mut self, services: Vec<crate::beats::BeatsService>) -> Self {
+        self.beats = services.into_iter().map(Arc::new).collect();
         self
     }
 
@@ -373,6 +383,11 @@ impl Council {
         self.images.iter().find(|service| service.model() == model).cloned()
     }
 
+    /// The beats service of a served beats model (spec 11.19).
+    pub fn beats_service(&self, model: &str) -> Option<Arc<crate::beats::BeatsService>> {
+        self.beats.iter().find(|service| service.model() == model).cloned()
+    }
+
     /// The embedding service of a served embedding model.
     pub fn embedding_service(&self, model: &str) -> Option<Arc<crate::embedding::EmbeddingService>> {
         self.embeddings.iter().find(|service| service.model() == model).cloned()
@@ -436,8 +451,9 @@ impl Council {
                     identity.capabilities.insert(0, Capability::Pins);
                 }
             }
-            // The text routes forward when no local family has the model (spec 11.4f, 11.1a).
-            identity.extensions = if identity.models.is_empty() {
+            // The text routes forward when no local family has the model (spec 11.4f, 11.1a). A beats service serves
+            // a route under the prefix too (spec 11.19).
+            identity.extensions = if identity.models.is_empty() && self.beats.is_empty() {
                 Vec::new()
             } else {
                 vec![extensions::PREFIX.to_owned()]
@@ -494,8 +510,9 @@ impl Council {
             .into_iter()
             .flatten()
             .collect(),
-            // The text routes need a family, so a process that serves no model lists no prefix (spec 11.4f).
-            extensions: if pins {
+            // The text routes need a family, so a process that serves no model lists no prefix, but a beats service
+            // serves its own route under it (spec 11.4f, 11.19).
+            extensions: if pins || !self.beats.is_empty() {
                 vec![extensions::PREFIX.to_owned()]
             } else {
                 Vec::new()

@@ -3,6 +3,8 @@
 pub mod admission;
 pub mod affinity;
 pub mod arena;
+pub mod beats;
+pub mod beatthis;
 pub mod bootstrap;
 pub mod cluster;
 pub mod council;

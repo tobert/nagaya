@@ -80,7 +80,8 @@ PATH=/usr/local/cuda/bin:$PATH nice -n 10 cargo build --release -p nagaya --feat
   `sm_121a`, and the build needs the CUDA Driver API library `libcuda`. The run needs no `nvcc`.
 - The feature `video` lets `lfm3-omni` read video parts with ffmpeg's libraries (spec 11.11). The machine needs
   ffmpeg and libclang.
-- A build without an engine feature has no engine. It exits 3 with the message "this build has no engine".
+- A build without an engine feature has one engine kind, `mk-beatthis-cpu`, which runs in the CPU group (spec 3.2c,
+  11.19). It needs no GPU.
 - The release profile needs no setting beyond the default (`opt-level = 3`).
 
 A restart runs the file in `target/release` as it is. Build it again before each restart, or the unit runs the old

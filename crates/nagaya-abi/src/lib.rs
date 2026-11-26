@@ -241,6 +241,8 @@ pub enum Kind {
     Step,
     /// A training micro-batch.
     Train,
+    /// A chunk of a beat tracker (engine-abi "Beats").
+    Beats,
 }
 
 /// One mandatory memory term.
@@ -363,6 +365,8 @@ pub enum Capability {
     Image,
     /// Embeddings: `embed` (engine-abi "Embedding").
     Embedding,
+    /// Beats: `beats` (engine-abi "Beats").
+    Beats,
     /// Speech from the last row of a text pass: `frame`, `codec` and `codec_clear` (engine-abi "LFM3").
     SpeechFrames,
     /// Control vectors: `control_write` and `segment.control` (engine-abi "Control vectors").
@@ -1599,6 +1603,17 @@ pub trait Embedding {
     fn embed(&mut self, ids: &[u32]) -> Result<Vec<f32>, PassError>;
 }
 
+/// The beats capability (engine-abi "Beats"). The engine never takes audio: the family makes the log-mel rows (D2).
+pub trait Beats {
+    /// The most frames of one call. It keeps a call within `max_quantum_ms`.
+    fn beats_max_frames(&self) -> u32;
+
+    /// Run one chunk of `frames` rows of 128 log-mel values, and give `frames` rows of 2 values: the beat and
+    /// downbeat outputs of the model's last linear. It is one quantum of kind `beats`, and it holds nothing after it
+    /// ends.
+    fn beats(&mut self, rows: &[f32], frames: u32) -> Result<Vec<f32>, PassError>;
+}
+
 /// The core trait that every engine implements.
 pub trait Engine {
     /// The identity of the engine and its weights.
@@ -1674,6 +1689,11 @@ pub trait Engine {
 
     /// The control capability, when the engine has it (engine-abi "Control vectors").
     fn control(&mut self) -> Option<&mut dyn Control> {
+        None
+    }
+
+    /// The beats capability, when the engine has it (engine-abi "Beats").
+    fn beats(&mut self) -> Option<&mut dyn Beats> {
         None
     }
 }

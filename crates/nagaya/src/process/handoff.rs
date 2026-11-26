@@ -152,7 +152,10 @@ pub(super) fn open(
             drop::<OwnedFd>(fd);
         }
     }
-    let mut engine = job.factory.open(&job.placement.config, &job.devices)?;
+    let mut engine = match job.cpu_threads {
+        Some(threads) => job.factory.open_cpu(&job.placement.config, threads)?,
+        None => job.factory.open(&job.placement.config, &job.devices)?,
+    };
     if expected.is_empty() {
         return Ok((engine, None));
     }

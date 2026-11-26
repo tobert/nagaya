@@ -50,6 +50,8 @@ nagaya-mk-sdxl-bmg = { version = "0.1.0", path = "../nagaya-mk-sdxl-bmg" }
 nagaya-text-sdxl = { version = "0.1.0", path = "../nagaya-text-sdxl" }
 nagaya-mk-qwenimage21-gfx1151 = { version = "0.1.0", path = "../nagaya-mk-qwenimage21-gfx1151" }
 nagaya-text-qwenimage21 = { version = "0.1.0", path = "../nagaya-text-qwenimage21" }
+nagaya-family-beatthis = { version = "0.1.0", path = "../nagaya-family-beatthis" }
+nagaya-mk-beatthis-cpu = { version = "0.1.0", path = "../nagaya-mk-beatthis-cpu" }
 nagaya-mk-embeddinggemma2-bmg = { version = "0.1.0", path = "../nagaya-mk-embeddinggemma2-bmg" }
 nagaya-text-embeddinggemma2 = { version = "0.1.0", path = "../nagaya-text-embeddinggemma2" }
 nagaya-mk-lfm3-bmg = { version = "0.1.0", path = "../nagaya-mk-lfm3-bmg" }
@@ -86,6 +88,8 @@ nagaya-text-qwen38 = { path = "../nagaya-text-qwen38" }
 # The tests turn on the `fake` feature of this crate. A dev-dependency on the crate itself does this.
 nagaya = { path = ".", features = ["fake"] }
 tempfile = "3"
+# The WAV objects of the beats route tests.
+hound = "3.5.1"
 # The tests of the lab route `trace` read its object.
 safetensors = "0.8.0"
 nagaya-store = { path = "../nagaya-store", features = ["testing"] }

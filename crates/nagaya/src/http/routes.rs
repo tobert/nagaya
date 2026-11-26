@@ -50,6 +50,7 @@ pub fn routes() -> Router<Arc<Council>> {
         .route("/council/v2/embeddings", post(embeddings))
         .route("/council/v2/control-vectors", post(control_vectors))
         .merge(super::extensions::routes())
+        .merge(super::beats::routes())
         .merge(super::objects::routes())
         .merge(super::loads::routes())
         .merge(super::devices::routes())
