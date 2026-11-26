@@ -7,6 +7,7 @@
 //               (OpenCL C);
 //   BT_G        the qualifier of a pointer to global memory: empty (HIP, CUDA) or `__global` (OpenCL C);
 //   bt_expf, bt_erff, bt_sinf, bt_cosf, bt_sqrtf   the f32 math functions of the target;
+//   bt_fma(a, b, c)  a * b + c with one rounding, as IEEE 754 fusedMultiplyAdd: fmaf (HIP, CUDA) or fma (OpenCL C);
 //   BT_HOSTDEV  the qualifier of a function that the host calls too: `__host__ __device__ static inline` (HIP,
 //               CUDA) or `static inline` (OpenCL C);
 //   BT_L        the qualifier of a pointer to the shared memory of a workgroup: empty (HIP, CUDA) or `__local`;
@@ -14,7 +15,7 @@
 // The functions named `_tile` run on a whole workgroup. The kernel declares their shared arrays and passes them in,
 // as OpenCL C asks, and passes the workgroup's ids, so no function here reads a thread id.
 // The build must not contract a multiply and an add (`-ffp-contract=off`), so the bits are those of this source on
-// one target. Each target has its own bits (spec 8.5): its math functions are its own.
+// one target: a multiply and an add fuse only where the source writes bt_fma, which rounds once on every target. Each target has its own bits (spec 8.5): its math functions are its own.
 //
 // Layout and meaning: `docs/spec.md` 11.19 and the doc of each Task kind in nagaya-family-beatthis/src/plan.rs.
 
@@ -183,7 +184,7 @@ BT_FN void bt_linear_tile(const BT_G float* x, BT_G float* y, long rows, int din
             float wv[4] = {wk[0], wk[1], wk[2], wk[3]};
             for (int i = 0; i < 4; i++) {
                 for (int j = 0; j < 4; j++) {
-                    acc[i][j] += xv[i] * wv[j];
+                    acc[i][j] = bt_fma(xv[i], wv[j], acc[i][j]);
                 }
             }
         }
@@ -259,7 +260,7 @@ BT_FN void bt_conv_tile(const BT_G float* x, BT_G float* y, int frames, int f_in
             }
             for (int i = 0; i < 4; i++) {
                 for (int j = 0; j < 4; j++) {
-                    acc[i][j] += xv[i] * wv[j];
+                    acc[i][j] = bt_fma(xv[i], wv[j], acc[i][j]);
                 }
             }
         }
@@ -350,14 +351,14 @@ BT_FN void bt_attention_tile(const BT_G float* qkv, const BT_G float* qk, BT_G f
                 for (int u = 0; u < BT_ATT_Q; u++) {
                     float l0 = 0.0f, l1 = 0.0f, l2 = 0.0f, l3 = 0.0f, l4 = 0.0f, l5 = 0.0f, l6 = 0.0f, l7 = 0.0f;
                     for (int d = 0; d < BT_ATT_HD; d += 8) {
-                        l0 += q[u][d] * kj[d];
-                        l1 += q[u][d + 1] * kj[d + 1];
-                        l2 += q[u][d + 2] * kj[d + 2];
-                        l3 += q[u][d + 3] * kj[d + 3];
-                        l4 += q[u][d + 4] * kj[d + 4];
-                        l5 += q[u][d + 5] * kj[d + 5];
-                        l6 += q[u][d + 6] * kj[d + 6];
-                        l7 += q[u][d + 7] * kj[d + 7];
+                        l0 = bt_fma(q[u][d], kj[d], l0);
+                        l1 = bt_fma(q[u][d + 1], kj[d + 1], l1);
+                        l2 = bt_fma(q[u][d + 2], kj[d + 2], l2);
+                        l3 = bt_fma(q[u][d + 3], kj[d + 3], l3);
+                        l4 = bt_fma(q[u][d + 4], kj[d + 4], l4);
+                        l5 = bt_fma(q[u][d + 5], kj[d + 5], l5);
+                        l6 = bt_fma(q[u][d + 6], kj[d + 6], l6);
+                        l7 = bt_fma(q[u][d + 7], kj[d + 7], l7);
                     }
                     sc[u][jj] = (((l0 + l1) + (l2 + l3)) + ((l4 + l5) + (l6 + l7))) * scale;
                 }
@@ -382,7 +383,7 @@ BT_FN void bt_attention_tile(const BT_G float* qkv, const BT_G float* qk, BT_G f
                     float e = bt_expf(sc[u][jj] - m[u]);
                     l[u] += e;
                     for (int d = 0; d < BT_ATT_HD; d++) {
-                        acc[u][d] += e * vj[d];
+                        acc[u][d] = bt_fma(e, vj[d], acc[u][d]);
                     }
                 }
             }

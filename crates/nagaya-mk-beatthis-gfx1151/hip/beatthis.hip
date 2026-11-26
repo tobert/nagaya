@@ -11,6 +11,7 @@
 #define bt_sinf sinf
 #define bt_cosf cosf
 #define bt_sqrtf sqrtf
+#define bt_fma(a, b, c) fmaf(a, b, c)
 #define BT_L
 #define BT_BARRIER() __syncthreads()
 #include "beatthis_ops.h"
