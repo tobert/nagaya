@@ -141,6 +141,8 @@ pub enum TaskKind {
     GateUp3,
     Proj,
     Attn,
+    /// The block-form matmul of `wo` before `OutMix`, in a block of 33 rows or more only (`run.rs`).
+    OutMatmul,
     OutMix,
     GateDownE,
     GateUpE,

@@ -8,7 +8,7 @@
 //! The quantization of `h_e` for the experts is not part of this op. A row of `h_e` is complete only after the finisher of
 //! the task, so a quantizer task (`OP_QUANT_NVFP4`) or the prologue of `ROUTE` does it.
 
-use crate::protocol::{FLAG_ACCUMULATE, FLAG_NORM, MkTaskDescriptor, MkTaskTable, OP_OUT_MIX};
+use crate::protocol::{FLAG_ACCUMULATE, FLAG_BLOCK_FORM, FLAG_NORM, MkTaskDescriptor, MkTaskTable, OP_OUT_MIX};
 use crate::protocol::{
     OUT_MIX_TABLE_CONV, OUT_MIX_TABLE_NORM, OUT_MIX_TABLE_OUT, OUT_MIX_TABLE_QUERY, OUT_MIX_TABLE_STACK_RF,
     OUT_MIX_TABLE_STATE,
@@ -34,6 +34,17 @@ pub const SPREAD_MIN_ROWS: usize = 2;
 
 /// The finisher items after the 576 items of the matmul, for a task of `rows` rows that spreads the finisher: item
 /// `576 + j` runs the rows `j * FINISH_ROWS` up to `(j + 1) * FINISH_ROWS`.
+/// Proposed: a task of this many rows or more runs its matmul in an earlier block-form task (`FLAG_BLOCK_FORM` on both
+/// tasks, see `OutMixShape::split`). Measured on the GB10 (layer 5, release-equivalent cubins): the split form takes 106 us
+/// at 33 rows against 143 us for the fused op, and 103 us at 16 rows against 80 us. Fewer rows keep the fused op.
+pub const SPLIT_MIN_ROWS: usize = 33;
+
+/// The floats from the start of the scratch to the raw sums `[row][2304]` that the split form shares between its two
+/// tasks (the place of the raw sums in the fused op): the counters and the partials of the 576 items.
+pub fn raw_offset_floats(rows: usize) -> usize {
+    COUNTERS + shape().items() * rows * COLUMN_TILE
+}
+
 pub fn finisher_items(rows: usize) -> usize {
     rows.div_ceil(FINISH_ROWS)
 }
@@ -90,6 +101,11 @@ pub struct OutMixShape {
     /// Run the finisher in items after the matmul, over all the blocks, and not in the one item that arrives last. The
     /// bits are the same. `new` sets it for `SPREAD_MIN_ROWS` rows or more.
     pub spread: bool,
+    /// The split form: a block-form `OP_MATMUL_BF16` task writes the raw sums of `wo` (`matmul_descriptor`), and this
+    /// task has only the convolution, the state and the finisher items (`FLAG_BLOCK_FORM` on `OP_OUT_MIX` means this).
+    /// The bits are those of the fused op. It needs the spread finisher. `new` leaves it off: the pass chooses it with
+    /// `with_split(rows >= SPLIT_MIN_ROWS)`.
+    pub split: bool,
 }
 
 impl OutMixShape {
@@ -112,6 +128,7 @@ impl OutMixShape {
             accumulate,
             norm,
             spread: rows >= SPREAD_MIN_ROWS,
+            split: false,
         })
     }
 
@@ -121,9 +138,37 @@ impl OutMixShape {
         self
     }
 
-    /// The items of the task: the 576 of the matmul and, if the finisher spreads, its items.
+    /// The same task in the split form or not. The split form spreads the finisher.
+    pub fn with_split(mut self, split: bool) -> Self {
+        self.split = split;
+        self.spread |= split;
+        self
+    }
+
+    /// The items of the task: the 576 of the matmul (the 144 tiles of the convolution in the split form) and, if the
+    /// finisher spreads, its items.
     pub fn items(&self) -> usize {
-        shape().items() + if self.spread { finisher_items(self.rows) } else { 0 }
+        let first = if self.split { TILES } else { shape().items() };
+        first
+            + if self.spread || self.split {
+                finisher_items(self.rows)
+            } else {
+                0
+            }
+    }
+
+    /// The descriptor of the block-form matmul task of the split form: `wo` on the attention output, to the raw sums in
+    /// the scratch of this task. It is an `OP_MATMUL_BF16` task in the block form, and the builder sets its waits.
+    pub fn matmul_descriptor(&self, buffers: &OutMixBuffers) -> Result<MkTaskDescriptor, String> {
+        if !self.split {
+            return Err("only the split form of OP_OUT_MIX has a matmul task. Call with_split(true)".to_string());
+        }
+        shape().descriptor_block(
+            self.rows,
+            buffers.attn,
+            buffers.packed,
+            buffers.scratch + 4 * raw_offset_floats(self.rows) as u64,
+        )
     }
 
     /// The descriptor of the task. `scale` is the scale of a score, `2304^-0.5`.
@@ -137,6 +182,13 @@ impl OutMixShape {
         desc.opcode = OP_OUT_MIX;
         desc.items = u32::try_from(self.items()).expect("the items of OP_OUT_MIX fit in 32 bits");
         desc.flags = if self.accumulate { FLAG_ACCUMULATE } else { 0 } | if self.norm { FLAG_NORM } else { 0 };
+        if self.split {
+            // No matmul in this task: the raw sums are in the scratch, and the 144 tiles run the convolution.
+            desc.flags |= FLAG_BLOCK_FORM;
+            desc.a = buffers.scratch + 4 * raw_offset_floats(self.rows) as u64;
+            desc.b = 0;
+            desc.item_bytes = 0;
+        }
         desc.d = buffers.table;
         desc.e = buffers.x;
         desc.layer = self.depth as u32;
@@ -244,6 +296,53 @@ mod tests {
         assert_eq!(d.items, 832);
         // The partials and the raw sums are those of the 576 items of the matmul.
         assert_eq!(d.scale_bytes as usize, scratch_floats(512));
+    }
+
+    #[test]
+    fn the_split_form_has_a_block_form_matmul_task_and_144_tiles_of_convolution() {
+        let at = |rows: usize| {
+            OutMixShape::new(rows, 3, false, true)
+                .unwrap()
+                .with_split(rows >= SPLIT_MIN_ROWS)
+        };
+        assert!(!at(SPLIT_MIN_ROWS - 1).split && at(SPLIT_MIN_ROWS).split);
+        assert!(
+            !OutMixShape::new(512, 3, false, true).unwrap().split,
+            "new keeps the fused op"
+        );
+        assert_eq!(at(512).items(), 144 + 256);
+        assert_eq!(at(64).items(), 144 + 32);
+        assert_eq!(at(1).with_split(true).items(), 144 + 1);
+        assert!(at(1).with_split(true).spread);
+        let b = OutMixBuffers {
+            attn: 0x1000,
+            packed: 0x2000,
+            r: 0x3000,
+            x: 0,
+            scratch: 0x40000,
+            table: 0x6000,
+        };
+        let s = at(512);
+        let d = s.descriptor(&b).unwrap();
+        let raw = 0x40000 + 4 * (160 + 576 * 512 * 16) as u64;
+        assert_eq!(
+            (d.opcode, d.items, d.a, d.b, d.item_bytes),
+            (OP_OUT_MIX, 400, raw, 0, 0)
+        );
+        assert_eq!(d.flags, FLAG_BLOCK_FORM | FLAG_NORM);
+        assert_eq!(d.scale_bytes as usize, scratch_floats(512));
+        let m = s.matmul_descriptor(&b).unwrap();
+        assert_eq!(
+            (m.opcode, m.a, m.b, m.c),
+            (crate::protocol::OP_MATMUL_BF16, 0x1000, 0x2000, raw)
+        );
+        assert_eq!(
+            (m.flags, m.items, m.n, m.k, m.rows),
+            (FLAG_BLOCK_FORM, 18 * 16, 2304, 3072, 512)
+        );
+        // The raw sums sit inside the scratch that the fused op needs.
+        assert!(raw_offset_floats(512) + 2304 * 512 <= scratch_floats(512));
+        assert!(at(8).matmul_descriptor(&b).unwrap_err().contains("with_split"));
     }
 
     #[test]

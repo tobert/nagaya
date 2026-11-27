@@ -24,7 +24,7 @@ const VARIABLE: &str = "NAGAYA_OUT_MIX_VARIANT";
 const TEST: &str = "a_task_that_the_op_cannot_run_traps_and_a_good_task_runs";
 
 /// The variants: a name, and what it is expected to do.
-const VARIANTS: [(&str, bool); 15] = [
+const VARIANTS: [(&str, bool); 19] = [
     ("none", true),
     ("scratch", false),
     ("rows", false),
@@ -40,6 +40,10 @@ const VARIANTS: [(&str, bool); 15] = [
     ("serial_finisher", true),
     ("items_short", false),
     ("items_long", false),
+    ("split", true),
+    ("split_items", false),
+    ("split_b", false),
+    ("split_a", false),
 ];
 
 /// The child: launch one task, and exit with 0 when the launch did what the variant expects.
@@ -72,6 +76,9 @@ fn child(variant: &str) {
         query: zeros(2304 * 4),
     };
     let mut shape = OutMixShape::new(rows, 2, false, true).unwrap();
+    if variant.starts_with("split") {
+        shape = shape.with_split(true);
+    }
     let mut x_ptr = 0;
     match variant {
         "accumulate_no_x" => shape.accumulate = true,
@@ -117,6 +124,10 @@ fn child(variant: &str) {
         "serial_finisher" => desc.items = 576,
         "items_short" => desc.items = 583,
         "items_long" => desc.items = 585,
+        // The split form of 16 rows has 144 + 8 items, the raw sums at `f`'s raw offset, and no weight.
+        "split_items" => desc.items += 1,
+        "split_b" => desc.b = 16,
+        "split_a" => desc.a += 16,
         "depth_low" => desc.layer = 1,
         "depth_high" => desc.layer = 6,
         "flag" => desc.flags |= FLAG_SOFTCAP_30,

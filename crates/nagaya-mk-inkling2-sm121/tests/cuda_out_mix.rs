@@ -233,6 +233,46 @@ impl<'d> Rig<'d> {
         task
     }
 
+    /// The two tasks of the split form: the block-form matmul of `wo` into the raw sums, then the rest.
+    fn tasks_split(&self, rows: usize) -> [Task; 2] {
+        let shape = OutMixShape::new(rows, self.case.planes + 1, self.case.accumulate, true)
+            .unwrap()
+            .with_split(true);
+        let buffers = OutMixBuffers {
+            attn: self.attn,
+            packed: self.packed,
+            r: self.r,
+            x: if self.case.accumulate { self.x } else { 0 },
+            scratch: self.ring.scratch(),
+            table: self.table,
+        };
+        let raw = self.ring.scratch() + 4 * outmix::raw_offset_floats(rows) as u64;
+        let matmul = Task::with_items(shape.matmul_descriptor(&buffers).unwrap())
+            .reads(self.attn, rows * K * 4)
+            .reads(self.packed, outmix::shape().packed_bytes())
+            .writes(raw, rows * WIDTH * 4);
+        let mut rest = Task::with_items(shape.descriptor(&buffers).unwrap())
+            .reads(raw, rows * WIDTH * 4)
+            .writes(self.r, rows * WIDTH * 4)
+            .writes(self.out, out_floats(rows) * 4)
+            .writes(self.ring.scratch(), scratch_floats(rows) * 4);
+        if self.case.accumulate {
+            rest = rest.reads(self.x, rows * WIDTH * 4);
+        }
+        [matmul, rest]
+    }
+
+    /// One launch of the split form (two tasks in one ring).
+    fn run_split(&mut self, inputs: &Inputs, rows: usize, grid: u32) -> Out {
+        self.prepare(inputs, rows);
+        self.ring.zero_device().unwrap();
+        let tasks = self.tasks_split(rows);
+        self.ring.set(&tasks);
+        run_with_watchdog(&self.ring, grid, 288, self.shared);
+        assert!(self.ring.read_scoreboard().is_ok());
+        self.collect(rows)
+    }
+
     /// One launch of a block of `rows` rows, with the state and the rows of `inputs`.
     fn run(&mut self, inputs: &Inputs, rows: usize, grid: u32) -> Out {
         let spread = rows >= outmix::SPREAD_MIN_ROWS;
@@ -572,6 +612,36 @@ fn assert_same(label: &str, got: &Out, want: &Out) {
 }
 
 #[test]
+fn the_split_form_has_the_bits_of_the_fused_op() {
+    // The raw sums come from the block-form matmul, so they must keep the bits of the decode form, and r, e, h_e, rf and
+    // the state must equal the fused op for every row, at each grid, at the row counts of the decode and of the block form.
+    let Some(ck) = checkpoint("cuda_out_mix") else { return };
+    let dev = open();
+    for case in CASES {
+        let layer = load_layer(ck, case.layer);
+        let max = 512;
+        let inputs = make_inputs(&case, max, 1300 + case.layer as u64);
+        let mut rig = Rig::new(&dev, &layer, case, &inputs, max, false);
+        for rows in [1usize, 2, 7, 16, 17, 33, 64, 65, 100, 129, 512] {
+            let fused = rig.run_spread(&inputs, rows, 48, true);
+            for grid in GRIDS {
+                let split = rig.run_split(&inputs, rows, grid);
+                assert_same(
+                    &format!("layer {}, {rows} rows, grid {grid}", case.layer),
+                    &split,
+                    &fused,
+                );
+            }
+        }
+        eprintln!(
+            "cuda_out_mix layer {}: the split form equals the fused op, bit for bit, at 11 row counts and grids {GRIDS:?}",
+            case.layer
+        );
+        rig.free();
+    }
+}
+
+#[test]
 fn a_task_that_follows_another_reuses_the_counters_and_keeps_the_bits() {
     // The counters of the tiles and of the finisher items start at 0 and the op sets them back. The second task of a
     // ring reuses them. Its rows must equal the rows of the same task launched alone, after a zeroed scratch, with the
@@ -801,7 +871,7 @@ fn the_speed_of_the_task() {
     for case in [CASES[0], CASES[1]] {
         let layer = load_layer(ck, case.layer);
         let bytes = outmix::shape().packed_bytes();
-        for rows in [1usize, 2, 4, 8, 16, 512] {
+        for rows in [1usize, 2, 4, 8, 16, 33, 64, 65, 129, 512] {
             let inputs = make_inputs(&case, rows, 400);
             let mut rig = Rig::new(&dev, &layer, case, &inputs, rows, true);
             let tasks = 6;
@@ -841,6 +911,31 @@ fn the_speed_of_the_task() {
                         f64::from(spin[2]) / 1e3
                     );
                 }
+            }
+            // The split form (two tasks): from the first wait that ended in the matmul to the last end of the rest.
+            {
+                let list: Vec<Task> = (0..tasks).flat_map(|_| rig.tasks_split(rows)).collect();
+                rig.ring.set(&list);
+                run_with_watchdog(&rig.ring, blocks as u32, 288, rig.shared);
+                let profile = rig.ring.read_profile().unwrap();
+                let slots = |t: usize| {
+                    let at = rig.ring.ring_index(t);
+                    &profile[at * blocks * PROFILE_WORDS..(at + 1) * blocks * PROFILE_WORDS]
+                };
+                let spans: Vec<u64> = (1..tasks)
+                    .map(|t| {
+                        let begin = slots(2 * t).chunks(PROFILE_WORDS).map(|s| s[1]).min().unwrap();
+                        let end = slots(2 * t + 1).chunks(PROFILE_WORDS).map(|s| s[2]).max().unwrap();
+                        end - begin
+                    })
+                    .collect();
+                eprintln!(
+                    "cuda_out_mix finisher: layer {} {rows:>3} rows, finisher rows {}, split: {:>8.1} us (best {:>8.1} us)",
+                    case.layer,
+                    outmix::FINISH_ROWS,
+                    median(spans.clone()) as f64 / 1e3,
+                    *spans.iter().min().unwrap() as f64 / 1e3
+                );
             }
             let list: Vec<Task> = (0..tasks).map(|_| rig.task(rows)).collect();
             rig.ring.set(&list);

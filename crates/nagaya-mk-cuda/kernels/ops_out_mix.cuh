@@ -115,17 +115,25 @@ __device__ __forceinline__ void om_finish_row(const MkTaskDescriptor& task, cons
     worker_sync();
 }
 
+// The raw sums of the task: after the counters and the 576 partials of its rows (the place that the fused op uses). In
+// the split form an earlier block-form matmul writes them here, `[row][2304]`.
+__device__ __forceinline__ uint64_t om_raw_address(const MkTaskDescriptor& task) {
+    return task.f + (OM_COUNTERS + static_cast<uint64_t>(OM_TILE_ITEMS) * task.rows * MM_TILE) * 4;
+}
+
 __device__ __forceinline__ void om_check(const MkTaskDescriptor& task, const MkTaskTable* table) {
     const bool accumulate = (task.flags & FLAG_ACCUMULATE) != 0;
     const bool norm = (task.flags & FLAG_NORM) != 0;
+    const bool split = (task.flags & FLAG_BLOCK_FORM) != 0;
     const uint32_t rows = task.rows;
+    const uint32_t finisher_items = (rows + MK_OUT_MIX_FINISH_ROWS - 1) / MK_OUT_MIX_FINISH_ROWS;
     if (worker_count() != MK_WORKERS || table == nullptr || rows == 0 || rows > MM_MAX_ROWS || task.n != OM_WIDTH ||
         task.k != OM_K || task.kt != 768 || task.group_items != 4 ||
-        (task.items != OM_TILE_ITEMS &&
-         task.items != OM_TILE_ITEMS + (rows + MK_OUT_MIX_FINISH_ROWS - 1) / MK_OUT_MIX_FINISH_ROWS) ||
-        task.item_bytes != MM_TILE * 768 * 2 || dynamic_smem_bytes() < MM_SMEM_BYTES || task.layer < 2 ||
-        task.layer > RW_MAX_STACK || (task.flags & ~(FLAG_ACCUMULATE | FLAG_NORM)) != 0 || (task.a & 7) != 0 ||
-        (task.b & 15) != 0 || (task.c & 15) != 0 || (task.f & 15) != 0 || task.a == 0 || task.c == 0 || task.f == 0 ||
+        !(split ? task.items == OM_TILES + finisher_items && finisher_items != 0
+                : (task.items == OM_TILE_ITEMS || task.items == OM_TILE_ITEMS + finisher_items)) ||
+        task.item_bytes != (split ? 0 : MM_TILE * 768 * 2) || dynamic_smem_bytes() < MM_SMEM_BYTES || task.layer < 2 ||
+        task.layer > RW_MAX_STACK || (task.flags & ~(FLAG_ACCUMULATE | FLAG_NORM | FLAG_BLOCK_FORM)) != 0 ||
+        (task.a & 7) != 0 || (split ? task.b != 0 || task.a != om_raw_address(task) : (task.b & 15) != 0) || (task.c & 15) != 0 || (task.f & 15) != 0 || task.a == 0 || task.c == 0 || task.f == 0 ||
         accumulate != (task.e != 0) || (task.e & 15) != 0 || !(task.p0 > 0.0f) ||
         om_scratch_floats(rows) > task.scale_bytes) {
         __trap();
@@ -192,23 +200,28 @@ __device__ __forceinline__ bool om_tile_item(const MkTaskDescriptor& task, const
     if (seen != 0) {
         __trap();
     }
+    const bool split = (task.flags & FLAG_BLOCK_FORM) != 0;
     OM_STAMP(0);
-    mm_item_partials(task, item, reinterpret_cast<const float*>(task.a), reinterpret_cast<const float*>(no_norm),
-                     reinterpret_cast<const uint16_t*>(no_norm), reinterpret_cast<float*>(task.f) + OM_COUNTERS,
-                     OM_TILE_ITEMS);
+    if (!split) {
+        mm_item_partials(task, item, reinterpret_cast<const float*>(task.a), reinterpret_cast<const float*>(no_norm),
+                         reinterpret_cast<const uint16_t*>(no_norm), reinterpret_cast<float*>(task.f) + OM_COUNTERS,
+                         OM_TILE_ITEMS);
+    }
     OM_STAMP(1);
     const uint32_t rows = task.rows;
-    const uint32_t tile = item / 4;
+    const uint32_t tile = split ? item : item / 4;
     const uint64_t partial_floats = static_cast<uint64_t>(rows) * MM_TILE;
     uint32_t* counters = reinterpret_cast<uint32_t*>(task.f);
     float* partials = reinterpret_cast<float*>(task.f) + OM_COUNTERS;
     float* raw = partials + static_cast<uint64_t>(OM_TILE_ITEMS) * partial_floats;
     uint32_t* flag = reinterpret_cast<uint32_t*>(mk_smem + MM_TREE_FLOATS * 4);
-    if (worker_id() == 0) {
+    if (!split && worker_id() == 0) {
         *flag = merge_arrive(counters + tile, 4) ? 1u : 0u;
     }
-    worker_sync();
-    if (*flag == 0) {
+    if (!split) {
+        worker_sync();
+    }
+    if (!split && *flag == 0) {
 #ifdef MK_PROFILE
         om_prof_add(counters, 150, 0, 1);
         if (worker_id() == 0) {
@@ -220,12 +233,18 @@ __device__ __forceinline__ bool om_tile_item(const MkTaskDescriptor& task, const
         return false;
     }
 
-    // 1. The merge of the 4 slices: the raw sums of the tile, `[row][16]`.
+    // 1. The merge of the 4 slices: the raw sums of the tile, `[row][16]`. The split form has the raw sums of all tiles
+    // from the matmul task, `[row][2304]`, and has no merge. `rb` is the first value of the tile and `stride` the floats
+    // from a row to the next; the order of the values is the same in both forms.
     float* tile_raw = raw + static_cast<uint64_t>(tile) * partial_floats;
-    for (uint64_t i = worker_id(); i < partial_floats; i += MK_WORKERS) {
-        __stcg(tile_raw + i, mm_merged_sum(partials, tile, 4, partial_floats, i));
+    if (!split) {
+        for (uint64_t i = worker_id(); i < partial_floats; i += MK_WORKERS) {
+            __stcg(tile_raw + i, mm_merged_sum(partials, tile, 4, partial_floats, i));
+        }
+        worker_sync();
     }
-    worker_sync();
+    const float* rb = split ? raw + static_cast<uint64_t>(tile) * MM_TILE : tile_raw;
+    const uint64_t stride = split ? OM_WIDTH : MM_TILE;
     OM_STAMP(2);
 
     // 2. The convolution, the residual and the conv state.
@@ -236,13 +255,14 @@ __device__ __forceinline__ bool om_tile_item(const MkTaskDescriptor& task, const
     const bool accumulate = (task.flags & FLAG_ACCUMULATE) != 0;
     for (uint64_t i = worker_id(); i < partial_floats; i += MK_WORKERS) {
         const uint32_t t = static_cast<uint32_t>(i / MM_TILE);
-        const uint32_t channel = tile * MM_TILE + static_cast<uint32_t>(i % MM_TILE);
-        const float x = __ldcg(tile_raw + i);
+        const uint32_t c = static_cast<uint32_t>(i % MM_TILE);
+        const uint32_t channel = tile * MM_TILE + c;
+        const float x = __ldcg(rb + t * stride + c);
         // The rows at the lags 1, 2 and 3: a row of the block, or a row of the state.
         float p[3];
 #pragma unroll
         for (uint32_t lag = 1; lag <= 3; ++lag) {
-            p[lag - 1] = t >= lag ? __ldcg(tile_raw + i - static_cast<uint64_t>(lag) * MM_TILE)
+            p[lag - 1] = t >= lag ? __ldcg(rb + (t - lag) * stride + c)
                                   : __ldcg(state + static_cast<uint64_t>(3 + t - lag) * OM_WIDTH + channel);
         }
         float w[4];
@@ -270,7 +290,7 @@ __device__ __forceinline__ bool om_tile_item(const MkTaskDescriptor& task, const
         float keep = 0.0f;
         if (mine) {
             keep = index < 3 ? __ldcg(state + index * OM_WIDTH + tile * MM_TILE + c)
-                             : __ldcg(tile_raw + static_cast<uint64_t>(index - 3) * MM_TILE + c);
+                             : __ldcg(rb + static_cast<uint64_t>(index - 3) * stride + c);
         }
         worker_sync();
         if (mine) {
@@ -291,7 +311,7 @@ __device__ __forceinline__ bool om_tile_item(const MkTaskDescriptor& task, const
 #endif
     // 3. The arrival at the counter of the tiles.
     if (task.items != OM_TILE_ITEMS) {
-        // The finisher items follow. The barrier orders the stores of all workers (`r` and the state) before the release add
+        // The finisher items follow (the split form has no other form). The barrier orders the stores of all workers (`r` and the state) before the release add
         // of worker 0, which publishes them to the finisher items.
         worker_sync();
         if (worker_id() == 0) {
@@ -300,6 +320,11 @@ __device__ __forceinline__ bool om_tile_item(const MkTaskDescriptor& task, const
         return false;
     }
     return rw_finisher_arrive(counters + OM_TILES, OM_TILES, flag);
+}
+
+// The items that come before the finisher items.
+__device__ __forceinline__ uint32_t om_tile_items(const MkTaskDescriptor& task) {
+    return (task.flags & FLAG_BLOCK_FORM) != 0 ? OM_TILES : OM_TILE_ITEMS;
 }
 
 // A finisher item: it waits for the 144 tiles, runs its rows and counts itself done.
@@ -338,15 +363,15 @@ __device__ __forceinline__ void om_finisher_item(const MkTaskDescriptor& task, c
     // store is a plain relaxed store, not a `merge_arrive`, and it is safe by the rule of `merge_arrive`: every other
     // finisher item has read the counter already (it arrived after its wait), and this thread signals the task after
     // the store (`run_items`), so the next task that reuses the counter waits on a signal that follows the reset.
-    if (worker_id() == 0 && merge_arrive(counters + OM_FINISHED, task.items - OM_TILE_ITEMS)) {
+    if (worker_id() == 0 && merge_arrive(counters + OM_FINISHED, task.items - om_tile_items(task))) {
         asm volatile("st.relaxed.gpu.global.u32 [%0], %1;" ::"l"(counters + OM_TILES), "r"(0u) : "memory");
     }
 }
 
 __device__ __forceinline__ void op_out_mix(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
     om_check(task, table);
-    if (item >= OM_TILE_ITEMS) {
-        om_finisher_item(task, table, item - OM_TILE_ITEMS);
+    if (item >= om_tile_items(task)) {
+        om_finisher_item(task, table, item - om_tile_items(task));
         return;
     }
     if (!om_tile_item(task, table, item)) {

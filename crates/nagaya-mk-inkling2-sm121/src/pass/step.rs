@@ -67,6 +67,7 @@ fn kind_name(kind: TaskKind) -> &'static str {
         TaskKind::GateUp3 => "GATE_UP",
         TaskKind::Proj => "PROJ",
         TaskKind::Attn => "ATTN",
+        TaskKind::OutMatmul => "OUT_MATMUL",
         TaskKind::OutMix => "OUT_MIX",
         TaskKind::GateDownE => "GATE_DOWN_e",
         TaskKind::GateUpE => "GATE_UP_e",
@@ -87,6 +88,7 @@ fn weight_bytes(kind: TaskKind, plan: &RunPlan) -> usize {
     };
     match kind {
         TaskKind::Mix | TaskKind::Attn | TaskKind::Quant => 0,
+        TaskKind::OutMatmul => HIDDEN * 3072 * 2,
         TaskKind::GateDown3 => 3 * 64 * 2 * HIDDEN * 2,
         TaskKind::GateUp3 => 3 * 2 * HIDDEN * 64 * 2,
         TaskKind::GateDownE => 64 * 2 * HIDDEN * 2,

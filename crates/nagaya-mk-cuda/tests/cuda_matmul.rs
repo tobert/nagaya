@@ -846,6 +846,34 @@ fn the_block_form_equals_the_decode_form_and_the_host_model() {
     }
 }
 
+/// `wo` (N 2304, K 3072) is the matmul of `OP_OUT_MIX` when a big block splits it into a block-form matmul and the rest.
+/// The raw sums must keep the bits of the decode form (the fused op) at every count of rows, including the counts below
+/// 17, and at every grid.
+#[test]
+fn the_block_form_of_wo_equals_the_decode_form_at_1_to_512_rows_and_every_grid() {
+    let Some(matrices) = matrices() else { return };
+    let dev = open();
+    let m = matrices.iter().find(|m| m.name == "wo_ud").expect("wo is in the list");
+    let x = make_x(512, m.shape.k, 21);
+    let mut decode = Rig::with_rows(&dev, m, &x, 1, false, 512);
+    let mut block = Rig::with_rows(&dev, m, &x, 1, false, 512);
+    block.block = true;
+    for rows in [1usize, 2, 7, 16, 17, 33, 64, 65, 100, 129, 512] {
+        let want = decode.run(rows, 0, 48);
+        for grid in GRIDS {
+            let got = block.run(rows, 0, grid);
+            assert_eq!(
+                bits(&got),
+                bits(&want),
+                "wo: {rows} rows at grid {grid}: the block form differs from the decode form"
+            );
+        }
+    }
+    eprintln!("cuda_matmul block: wo equals the decode form at 11 row counts and grids {GRIDS:?}");
+    decode.free();
+    block.free();
+}
+
 #[test]
 fn the_bits_of_a_block_form_row_do_not_depend_on_the_count_of_rows_or_the_grid() {
     let Some(matrices) = matrices() else { return };
