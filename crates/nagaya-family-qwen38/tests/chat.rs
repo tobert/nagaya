@@ -4,9 +4,9 @@
 mod common;
 
 use common::{JsonExt, fixture, gguf_path};
-use nagaya_text_qwen38::gguf::{Metadata, Value};
-use nagaya_text_qwen38::json::Json;
-use nagaya_text_qwen38::{ChatTemplate, Error, Qwen38, RenderOptions};
+use nagaya_family_qwen38::gguf::{Metadata, Value};
+use nagaya_family_qwen38::json::Json;
+use nagaya_family_qwen38::{ChatTemplate, Error, Qwen38, RenderOptions};
 use sha2::Digest;
 use std::sync::OnceLock;
 

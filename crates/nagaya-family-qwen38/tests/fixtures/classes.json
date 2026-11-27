@@ -1,5 +1,5 @@
 {
-"header": {"generator": "crates/nagaya-text-qwen38/tools/make_fixtures.py", "gguf": "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf", "jinja2": "3.1.6", "n_merges": 247587, "n_tokens": 248320, "python": "3.14.8", "reference_sha": "7694c94b9dc34b54", "regex": "2026.9.10", "source_files": ["tools/qwen38_reference/tokenizer.py", "tools/qwen38_reference/template.py", "tools/qwen38_reference/common.py", "tools/qwen38_reference/chatfmt.py"], "template_sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce", "unidata": "16.0.0"},
+"header": {"generator": "crates/nagaya-family-qwen38/tools/make_fixtures.py", "gguf": "Qwen3.8-Flash-Next-UD-IQ4_XS-00001-of-00003.gguf", "jinja2": "3.1.6", "n_merges": 247587, "n_tokens": 248320, "python": "3.14.8", "reference_sha": "7694c94b9dc34b54", "regex": "2026.9.10", "source_files": ["tools/qwen38_reference/tokenizer.py", "tools/qwen38_reference/template.py", "tools/qwen38_reference/common.py", "tools/qwen38_reference/chatfmt.py"], "template_sha256": "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce", "unidata": "16.0.0"},
 "L": [
 [65,90],
 [97,122],

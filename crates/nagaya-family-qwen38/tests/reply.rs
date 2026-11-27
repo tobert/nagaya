@@ -4,8 +4,8 @@
 mod common;
 
 use common::{JsonExt, fixture, tokenizer};
-use nagaya_text_qwen38::json::Json;
-use nagaya_text_qwen38::reply::{Ending, Finish, Phase, Reply, ReplyParser, TokenEvent, ToolCall};
+use nagaya_family_qwen38::json::Json;
+use nagaya_family_qwen38::reply::{Ending, Finish, Phase, Reply, ReplyParser, TokenEvent, ToolCall};
 
 fn phase_of(name: &str) -> Phase {
     match name {
@@ -225,7 +225,7 @@ fn the_released_text_follows_the_piece_rule_of_gogi() {
     if common::absent() {
         return;
     }
-    use nagaya_text_qwen38::pystr::strip;
+    use nagaya_family_qwen38::pystr::strip;
     let (f, cases) = cases();
     for case in &cases {
         let name = case.get("name").str();

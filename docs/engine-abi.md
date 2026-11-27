@@ -461,7 +461,7 @@ The binding makes these choices. Each is the simplest choice that fits the ABI.
 - **`tokenizer_hash` is a hash of the GGUF tokenizer.** The Qwen3.8 engine loads no tokenizer file. The binding hashes
   the tokenizer keys of the GGUF metadata, and the family library computes the same hash from the same keys (spec 11.3).
   Thus a change of the tokenizer changes the recipe. The hash is `sha256:` and 64 hex
-  digits, made by `nagaya-text-qwen38` (`hash.rs`). It covers `tokenizer.ggml.model`, `.pre`, `.tokens`,
+  digits, made by `nagaya-family-qwen38` (`hash.rs`). It covers `tokenizer.ggml.model`, `.pre`, `.tokens`,
   `.token_type` and `.merges`, and the bos, eos, eot, padding and unknown token ids when they exist. The template is
   apart: it is the identity's `template`.
 - **The template is the GGUF's text.** The identity's `template` is the text of `tokenizer.chat_template` in the

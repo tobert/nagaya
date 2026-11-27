@@ -206,7 +206,7 @@ def main() -> None:
 
     header = {
         "author": "written by Claude Sonnet 5.5 for this tool, 2026-10-20",
-        "generator": "crates/nagaya-text-qwen38/tools/make_council_fixture.py",
+        "generator": "crates/nagaya-family-qwen38/tools/make_council_fixture.py",
         "reference_sha": qwen38_reference.digest(),
         "source_files": [qwen38_reference.source(name) for name in ("common.py", "template.py", "tokenizer.py")],
         "gguf": args.gguf.name,

@@ -2,7 +2,7 @@
 //! and the fake engine (spec 11.4b to 11.4d). A missing file fails the tests. They never skip.
 
 mod council_support;
-#[path = "../../nagaya-text-qwen38/tests/common/model.rs"]
+#[path = "../../nagaya-family-qwen38/tests/common/model.rs"]
 mod qwen_model;
 
 use qwen_model::gguf_path;
@@ -15,7 +15,7 @@ use council_support::{Fixture, TermFactory, roomy_slots};
 use nagaya::council::ServiceConfig;
 use nagaya::http::{Council, Served, router};
 use nagaya_council::family::Family;
-use nagaya_text_qwen38::{Qwen38, Qwen38Family, Tokenizer};
+use nagaya_family_qwen38::{Qwen38, Qwen38Family, Tokenizer};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -225,11 +225,11 @@ fn the_text_of_a_render_is_the_text_that_the_chat_template_made() {
             json!({"model": MODEL, "context": context, "generation_prompt": prompt}),
         );
         assert_eq!(status, StatusCode::OK, "{body}");
-        let messages = nagaya_text_qwen38::json::Json::parse(
+        let messages = nagaya_family_qwen38::json::Json::parse(
             &json!([{"role": "system", "content": "Be brief."}, {"role": "user", "content": content}]).to_string(),
         )
         .unwrap();
-        let options = nagaya_text_qwen38::template::RenderOptions {
+        let options = nagaya_family_qwen38::template::RenderOptions {
             thinking: false,
             generation_prompt: prompt,
             reasoning_effort: Some("medium".to_owned()),

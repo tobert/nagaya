@@ -4,7 +4,7 @@
 //! record and the SHA-256 of its dequant. `tools/mk_dequant_digests.cpp` wrote it, with the reference's `gguf.cpp` and
 //! `dequant.cpp` as they were copied from the reference. The tool and the C++ copy are in
 //! commit `7d474c2`. A machine with no copy of the shards skips these tests
-//! (`nagaya-text-qwen38/tests/common/model.rs`).
+//! (`nagaya-family-qwen38/tests/common/model.rs`).
 
 use std::path::PathBuf;
 
@@ -15,7 +15,7 @@ use crate::gguf::Model;
 #[cfg(not(target_endian = "little"))]
 compile_error!("the fixture hashes little-endian f32 bytes");
 
-#[path = "../../nagaya-text-qwen38/tests/common/model.rs"]
+#[path = "../../nagaya-family-qwen38/tests/common/model.rs"]
 mod model_file;
 
 /// The fixture that the reference's C++ copy wrote.

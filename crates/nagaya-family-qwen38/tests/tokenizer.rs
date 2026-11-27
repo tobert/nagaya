@@ -3,9 +3,9 @@
 mod common;
 
 use common::{JsonExt, fixture, tokenizer};
-use nagaya_text_qwen38::Error;
-use nagaya_text_qwen38::json::Json;
-use nagaya_text_qwen38::tokenizer::pretokenize;
+use nagaya_family_qwen38::Error;
+use nagaya_family_qwen38::json::Json;
+use nagaya_family_qwen38::tokenizer::pretokenize;
 use std::sync::OnceLock;
 
 fn tokenizer_fixture() -> &'static Json {

@@ -192,10 +192,10 @@ fn the_binding_opens_the_engine_and_declares_its_parts() {
     // The identity holds the hash of the tokenizer keys in the first shard, as the text library computes it.
     let shards = std::env::var("QWEN38_SHARDS").expect("QWEN38_SHARDS");
     let first = shards.split(':').next().expect("a first shard");
-    let metadata = nagaya_text_qwen38::gguf::Metadata::open(std::path::Path::new(first)).expect("the first shard");
+    let metadata = nagaya_family_qwen38::gguf::Metadata::open(std::path::Path::new(first)).expect("the first shard");
     assert_eq!(
         identity.tokenizer_hash,
-        nagaya_text_qwen38::tokenizer_hash(&metadata).expect("a tokenizer hash")
+        nagaya_family_qwen38::tokenizer_hash(&metadata).expect("a tokenizer hash")
     );
     assert_eq!(
         identity.tokenizer_hash,
@@ -203,7 +203,7 @@ fn the_binding_opens_the_engine_and_declares_its_parts() {
     );
     // The template is the text of `tokenizer.chat_template` in the first shard.
     match metadata.get("tokenizer.chat_template") {
-        Some(nagaya_text_qwen38::gguf::Value::Str(text)) => {
+        Some(nagaya_family_qwen38::gguf::Value::Str(text)) => {
             assert!(!text.is_empty());
             assert_eq!(&identity.template, text);
         }

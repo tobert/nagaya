@@ -3,7 +3,7 @@
 //!
 //! The reader is a port of the reference's `src/gguf/gguf.cpp`. It keeps the reference's
 //! checks: a file that does not hold what it promises is an error that names the file and the byte. The family library
-//! parses the metadata values (`nagaya_text_qwen38::gguf::Metadata`), so the workspace has one parser of GGUF values.
+//! parses the metadata values (`nagaya_family_qwen38::gguf::Metadata`), so the workspace has one parser of GGUF values.
 //!
 //! The reader also gives the spot digest of the weight shards. The reference's `weight_hash` is a spot check: it hashes
 //! each shard's size and every byte before the tensor data. The spec labels it a spot check until we have a logical
@@ -16,7 +16,7 @@ use std::io::Read;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 
-use nagaya_text_qwen38::gguf::{Metadata, Value};
+use nagaya_family_qwen38::gguf::{Metadata, Value};
 use sha2::{Digest, Sha256};
 
 use crate::dequant::GgmlType;
@@ -609,18 +609,18 @@ pub(crate) struct TextKeys {
 
 /// The tokenizer hash and the chat template in a shard's GGUF metadata, for the engine identity.
 ///
-/// The text library computes the hash (`nagaya_text_qwen38::tokenizer_hash`), so the identity and the library
+/// The text library computes the hash (`nagaya_family_qwen38::tokenizer_hash`), so the identity and the library
 /// agree. The metadata is in the first shard. The hash covers these keys of the file: `tokenizer.ggml.model`, `.pre`,
 /// `.tokens`, `.token_type` and `.merges`, which the file must hold, and `.bos_token_id`, `.eos_token_id`,
 /// `.eot_token_id`, `.padding_token_id` and `.unknown_token_id`, which it may hold. The template is the text of
 /// `tokenizer.chat_template`, as the text library reads it. The file must hold it as a string.
 pub(crate) fn text_keys(shard: &Path) -> Result<TextKeys, String> {
-    let metadata = nagaya_text_qwen38::gguf::Metadata::open(shard)
+    let metadata = nagaya_family_qwen38::gguf::Metadata::open(shard)
         .map_err(|error| format!("the tokenizer of {} is not readable: {error}", shard.display()))?;
-    let tokenizer_hash = nagaya_text_qwen38::tokenizer_hash(&metadata)
+    let tokenizer_hash = nagaya_family_qwen38::tokenizer_hash(&metadata)
         .map_err(|error| format!("the tokenizer hash of {} is not available: {error}", shard.display()))?;
     let template = match metadata.get("tokenizer.chat_template") {
-        Some(nagaya_text_qwen38::gguf::Value::Str(text)) => text.clone(),
+        Some(nagaya_family_qwen38::gguf::Value::Str(text)) => text.clone(),
         Some(_) => {
             return Err(format!(
                 "the key tokenizer.chat_template of {} is not a string. Use a GGUF made for this family.",
@@ -843,8 +843,8 @@ mod tests {
         let path = directory.path().join("tokenizer.gguf");
         write_tokenizer_gguf(&path, None);
         let from_mk = text_keys(&path).unwrap().tokenizer_hash;
-        let metadata = nagaya_text_qwen38::gguf::Metadata::open(&path).unwrap();
-        assert_eq!(from_mk, nagaya_text_qwen38::tokenizer_hash(&metadata).unwrap());
+        let metadata = nagaya_family_qwen38::gguf::Metadata::open(&path).unwrap();
+        assert_eq!(from_mk, nagaya_family_qwen38::tokenizer_hash(&metadata).unwrap());
         assert_eq!(from_mk, FIXTURE_HASH);
     }
 

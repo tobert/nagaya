@@ -1,7 +1,7 @@
 //! Helpers that the integration tests share.
 #![allow(dead_code)]
 
-use nagaya_text_qwen38::json::Json;
+use nagaya_family_qwen38::json::Json;
 use std::path::PathBuf;
 
 pub mod model;
@@ -68,10 +68,10 @@ impl JsonExt for Json {
 }
 
 /// The tokenizer of the model file, built once for each test binary.
-pub fn tokenizer() -> &'static nagaya_text_qwen38::Tokenizer {
-    static TOKENIZER: std::sync::OnceLock<nagaya_text_qwen38::Tokenizer> = std::sync::OnceLock::new();
+pub fn tokenizer() -> &'static nagaya_family_qwen38::Tokenizer {
+    static TOKENIZER: std::sync::OnceLock<nagaya_family_qwen38::Tokenizer> = std::sync::OnceLock::new();
     TOKENIZER.get_or_init(|| {
-        nagaya_text_qwen38::Tokenizer::from_gguf(&gguf_path())
+        nagaya_family_qwen38::Tokenizer::from_gguf(&gguf_path())
             .unwrap_or_else(|e| panic!("cannot build the tokenizer: {e}"))
     })
 }
@@ -96,7 +96,7 @@ pub fn small_metadata(
     tokens: &[(&str, i32)],
     types: Option<&[i32]>,
     merges: &[&str],
-) -> nagaya_text_qwen38::gguf::Metadata {
+) -> nagaya_family_qwen38::gguf::Metadata {
     let types: Vec<i32> = types
         .map(|t| t.to_vec())
         .unwrap_or_else(|| tokens.iter().map(|t| t.1).collect());
@@ -114,7 +114,7 @@ pub fn small_metadata_with_types(
     kind_type: u32,
     kind_values: &[Vec<u8>],
     merges: &[&str],
-) -> nagaya_text_qwen38::gguf::Metadata {
+) -> nagaya_family_qwen38::gguf::Metadata {
     let mut texts = 8u32.to_le_bytes().to_vec();
     texts.extend_from_slice(&(tokens.len() as u64).to_le_bytes());
     for t in tokens {
@@ -139,5 +139,5 @@ pub fn small_metadata_with_types(
     file.extend(gguf_entry("tokenizer.ggml.tokens", 9, &texts));
     file.extend(gguf_entry("tokenizer.ggml.token_type", 9, &kinds));
     file.extend(gguf_entry("tokenizer.ggml.merges", 9, &merge_list));
-    nagaya_text_qwen38::gguf::Metadata::read(file.as_slice(), file.len() as u64).expect("a built file")
+    nagaya_family_qwen38::gguf::Metadata::read(file.as_slice(), file.len() as u64).expect("a built file")
 }

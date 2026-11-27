@@ -5,8 +5,8 @@
 
 mod common;
 
-use nagaya_text_qwen38::gguf::Metadata;
-use nagaya_text_qwen38::{Error, tokenizer_hash};
+use nagaya_family_qwen38::gguf::Metadata;
+use nagaya_family_qwen38::{Error, tokenizer_hash};
 
 /// One metadata entry for the in-memory file.
 enum Entry<'a> {

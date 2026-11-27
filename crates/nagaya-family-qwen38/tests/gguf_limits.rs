@@ -3,8 +3,8 @@
 //! A damaged file can claim any length. These tests give the reader a small stream and a large declared length, and
 //! they watch the largest single allocation that the reading thread asks for.
 
-use nagaya_text_qwen38::Error;
-use nagaya_text_qwen38::gguf::Metadata;
+use nagaya_family_qwen38::Error;
+use nagaya_family_qwen38::gguf::Metadata;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::time::Instant;
@@ -118,7 +118,7 @@ fn an_array_that_the_file_fills_reads_and_takes_memory_in_proportion() {
     f.resize(f.len() + 100_000, 7);
     let (result, largest) = watched(|| Metadata::read(f.as_slice(), f.len() as u64));
     let m = result.unwrap();
-    assert!(matches!(m.get("a"), Some(nagaya_text_qwen38::gguf::Value::Array(a)) if a.len() == 100_000));
+    assert!(matches!(m.get("a"), Some(nagaya_family_qwen38::gguf::Value::Array(a)) if a.len() == 100_000));
     assert!(
         largest <= 8 << 20,
         "the reader asked for one allocation of {largest} bytes"
@@ -157,7 +157,7 @@ fn a_string_below_the_cap_still_reads() {
     f.extend_from_slice(&8u32.to_le_bytes());
     f.extend(string(&text));
     let m = Metadata::read(f.as_slice(), f.len() as u64).unwrap();
-    assert_eq!(m.get("s"), Some(&nagaya_text_qwen38::gguf::Value::Str(text)));
+    assert_eq!(m.get("s"), Some(&nagaya_family_qwen38::gguf::Value::Str(text)));
 }
 
 #[test]

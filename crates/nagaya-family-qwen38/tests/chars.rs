@@ -3,8 +3,8 @@
 mod common;
 
 use common::{JsonExt, fixture};
-use nagaya_text_qwen38::chars;
-use nagaya_text_qwen38::json::Json;
+use nagaya_family_qwen38::chars;
+use nagaya_family_qwen38::json::Json;
 
 type Class = fn(char) -> bool;
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write the fixtures of nagaya-text-qwen38 from the reference's Python front-end.
+"""Write the fixtures of nagaya-family-qwen38 from the reference's Python front-end.
 
 The fixtures are the outputs of `tokenizer.py`, `template.py`, `common.py` and `chatfmt.py` (Utf8Stream) of
 `tools/qwen38_reference`. The script runs no server and uses no GPU. It reads the reference and the first GGUF shard:
@@ -363,7 +363,7 @@ def main() -> None:
         "regex": regex.__version__,
         "unidata": __import__("unicodedata").unidata_version,
         "jinja2": jinja2.__version__,
-        "generator": "crates/nagaya-text-qwen38/tools/make_fixtures.py",
+        "generator": "crates/nagaya-family-qwen38/tools/make_fixtures.py",
     }
 
     # -------------------------------------------------------------- tokenizer.json
