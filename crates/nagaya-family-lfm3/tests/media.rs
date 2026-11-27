@@ -8,7 +8,7 @@
 mod common;
 
 use common::model::{fixture, fixture_path, golden, golden_path};
-use nagaya_text_lfm3::media::{self, MediaError, MediaRows, audio, image};
+use nagaya_family_lfm3::media::{self, MediaError, MediaRows, audio, image};
 use safetensors::SafeTensors;
 use serde_json::Value;
 use sha2::{Digest, Sha256};

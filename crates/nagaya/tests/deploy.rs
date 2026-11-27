@@ -529,11 +529,11 @@ fn check_served_names(profile: &PlacementProfile, admitted: &[nagaya::admission:
         }
         assert_eq!(engine.served, Some(vec![engine.name.clone()]), "{}", engine.name);
         let dir = PathBuf::from(placement.family["model_dir"].as_str().unwrap());
-        let family = nagaya_text_lfm3::Lfm3Family::from_dir(&dir).unwrap();
+        let family = nagaya_family_lfm3::Lfm3Family::from_dir(&dir).unwrap();
         let mut identity = nagaya_abi::fake::FakeAlways::new().with_family("lfm3").identity();
         identity.model = match family.kind() {
-            nagaya_text_lfm3::Kind::Text => "lfm3",
-            nagaya_text_lfm3::Kind::Omni => "lfm3-omni",
+            nagaya_family_lfm3::Kind::Text => "lfm3",
+            nagaya_family_lfm3::Kind::Omni => "lfm3-omni",
         }
         .to_owned();
         identity.tokenizer_hash = family.tokenizer_hash().to_owned();

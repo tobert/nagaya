@@ -4,7 +4,7 @@ mod common;
 
 use common::model::{absent_any, family, fixture};
 use common::{ids, json_of};
-use nagaya_text_lfm3::chat::Options;
+use nagaya_family_lfm3::chat::Options;
 
 /// The case whose client text spells markers.
 const ESCAPED: &str = "thinking in the content";

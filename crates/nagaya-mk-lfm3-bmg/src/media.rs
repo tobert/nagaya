@@ -40,10 +40,10 @@ pub const FRAME_CODES: usize = 12;
 pub const CODEBOOK_CODES: u32 = 2017;
 
 /// The values of one patch row of an image: 3 channels, 2 copies in time, 16 by 16 pixels
-/// (`image_processing_lfm3_vl.py:186`, `nagaya-text-lfm3` `media::image::ROW`).
+/// (`image_processing_lfm3_vl.py:186`, `nagaya-family-lfm3` `media::image::ROW`).
 pub const PATCH_ROW: usize = 1536;
 
-/// The values of one mel row of a clip (`nagaya-text-lfm3` `media::audio::BINS`).
+/// The values of one mel row of a clip (`nagaya-family-lfm3` `media::audio::BINS`).
 pub const MEL_ROW: usize = 128;
 
 /// The positions of the largest image: 2,097,152 pixels over patches of 16 and a merge of 2 by 2 (spec 11.11).

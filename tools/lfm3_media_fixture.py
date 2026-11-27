@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Make the media fixture of the LFM3 family library (spec 11.11, "The media of a request").
 
-The tool writes these files into crates/nagaya-text-lfm3/tests/fixtures:
+The tool writes these files into crates/nagaya-family-lfm3/tests/fixtures:
 
 - media.json: the results of the reference processors of LFM3-Omni-2B on fixed inputs.
   - images: for each size, the processor's resized size, grid and position count, and the SHA-256 of the resized
@@ -39,7 +39,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_OUT = ROOT / "crates/nagaya-text-lfm3/tests/fixtures"
+DEFAULT_OUT = ROOT / "crates/nagaya-family-lfm3/tests/fixtures"
 
 # The 9 sizes of the resize table of the oracle (facts.json), and one small size with odd sides.
 SIZES = [(96, 160), (300, 420), (256, 256), (64, 64), (480, 640), (1080, 1920), (3000, 4000), (100, 5000),

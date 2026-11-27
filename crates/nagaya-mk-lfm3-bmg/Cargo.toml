@@ -12,7 +12,7 @@ nagaya-abi = { version = "0.1.0", path = "../nagaya-abi" }
 # The interpreter of the B70 megakernels, which this engine shares with the other B70 engines.
 nagaya-mk-bmg = { version = "0.1.0", path = "../nagaya-mk-bmg" }
 # The identity holds the template of the family library and its tokenizer hash (spec 11.3, 12.1).
-nagaya-text-lfm3 = { version = "0.1.0", path = "../nagaya-text-lfm3" }
+nagaya-family-lfm3 = { version = "0.1.0", path = "../nagaya-family-lfm3" }
 blake3 = "1.8.7"
 serde_json = { version = "1.0.154", features = ["float_roundtrip", "preserve_order"] }
 

@@ -200,7 +200,7 @@ pub fn open_family_with(
 /// The Inkling 2 family reads the objects of the process as the LFM3 family does: one reader serves both.
 impl nagaya_text_inkling2::Objects for StoreObjects {
     fn bytes(&self, id: &str) -> Option<Vec<u8>> {
-        nagaya_text_lfm3::Objects::bytes(self, id)
+        nagaya_family_lfm3::Objects::bytes(self, id)
     }
 }
 

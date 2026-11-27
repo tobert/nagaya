@@ -611,7 +611,7 @@ This is the text of `AGENTS.md` for these milestones, as it was on 2026-11-11. M
       The chat templates differ: only Omni's has audio parts. Both embedding tables have 128,000 rows.
 
     The model name in the crate names is `lfm3`. The engine is `nagaya-mk-lfm3-bmg`, and the family is
-    `nagaya-text-lfm3`. Do the steps in this order:
+    `nagaya-family-lfm3`. Do the steps in this order:
     1. **Spec.** Write the LFM3 rules into the docs. They are the served models, the family, the state parts and
        the image and audio inputs. They also include the interleaved reply and the sampler of the audio codes. Amy
        decides each Proposed note.
@@ -622,7 +622,7 @@ This is the text of `AGENTS.md` for these milestones, as it was on 2026-11-11. M
        vague captions and the full captions. Write only the counts. The photos and the captions stay on b70host.
        Amy runs it later (2026-11-06: "no photos on this machine yet, I'll test that later. you can generate some
        test images with kaibo as needed"). Thus the other steps do not wait for it.
-    4. **Family.** Write `nagaya-text-lfm3`: both tokenizers, both templates, the XML tool calls, and the reply
+    4. **Family.** Write `nagaya-family-lfm3`: both tokenizers, both templates, the XML tool calls, and the reply
        parser. Also write the image patches and the mel features on the CPU.
     5. **Ops.** Add the gated short convolution, the sliding attention and the partial rotation to the shared
        interpreter. Give each op a test.

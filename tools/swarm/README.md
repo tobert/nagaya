@@ -71,7 +71,7 @@ as `Idea:`. The council closes the thinking at a `content` member (gogi "Continu
 
 - `ReplyStart::of` (`crates/nagaya-council/src/family.rs`) starts the reply in the reasoning only when the open
   message has no `content` member.
-- `run_open` (`crates/nagaya-text-lfm3/src/council/mod.rs`) renders `<think>`, the open reasoning, `</think>`, then
+- `run_open` (`crates/nagaya-family-lfm3/src/council/mod.rs`) renders `<think>`, the open reasoning, `</think>`, then
   the prefill.
 
 Thus a prefilled call with `thinking` true writes no reasoning. Its `content` is the prefill and the new text, as

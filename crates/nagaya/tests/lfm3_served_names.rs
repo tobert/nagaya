@@ -26,12 +26,12 @@ fn folder(variable: &str) -> Option<PathBuf> {
 /// The opened engine `name` on the folder `dir`, with the identity that the LFM3 engine reports: the `model` of its
 /// checkpoint and the tokenizer hash of its folder.
 fn opened(name: &str, dir: &std::path::Path) -> OpenedEngine {
-    let family = nagaya_text_lfm3::Lfm3Family::from_dir(dir).unwrap();
+    let family = nagaya_family_lfm3::Lfm3Family::from_dir(dir).unwrap();
     let fake = nagaya_abi::fake::FakeAlways::new().with_family("lfm3");
     let mut identity = fake.identity();
     identity.model = match family.kind() {
-        nagaya_text_lfm3::Kind::Text => "lfm3",
-        nagaya_text_lfm3::Kind::Omni => "lfm3-omni",
+        nagaya_family_lfm3::Kind::Text => "lfm3",
+        nagaya_family_lfm3::Kind::Omni => "lfm3-omni",
     }
     .to_owned();
     identity.tokenizer_hash = family.tokenizer_hash().to_owned();

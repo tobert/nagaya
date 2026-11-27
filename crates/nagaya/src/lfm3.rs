@@ -131,7 +131,7 @@ impl StoreObjects {
     }
 }
 
-impl nagaya_text_lfm3::Objects for StoreObjects {
+impl nagaya_family_lfm3::Objects for StoreObjects {
     /// The bytes of a held object. An object that the store does not hold, or whose file went, is none: the family
     /// then refuses the part, and the client puts it again (gogi "Objects and keeps").
     fn bytes(&self, id: &str) -> Option<Vec<u8>> {
@@ -170,14 +170,14 @@ pub fn open_family_with(
     objects: Option<&crate::serving::ObjectReader>,
 ) -> Result<OpenedFamily, String> {
     let dir = model_dir(table, "the table `[engines.family]`")?;
-    let mut family = nagaya_text_lfm3::Lfm3Family::from_dir(&dir)
+    let mut family = nagaya_family_lfm3::Lfm3Family::from_dir(&dir)
         .map_err(|error| format!("cannot build the LFM3 family from `{}`: {error}", dir.display()))?;
     if let Some(objects) = objects {
         family = family.with_objects(Arc::new(StoreObjects::new(Arc::clone(objects))));
     }
     let model = match family.kind() {
-        nagaya_text_lfm3::Kind::Text => spec::Model::Text,
-        nagaya_text_lfm3::Kind::Omni => spec::Model::Omni,
+        nagaya_family_lfm3::Kind::Text => spec::Model::Text,
+        nagaya_family_lfm3::Kind::Omni => spec::Model::Omni,
     };
     if model.name() != identity.model {
         return Err(format!(
@@ -202,7 +202,7 @@ pub fn open_family_with(
 
 /// The speech path of Omni (spec 11.11): the markers from the family, and the blocks of an interleaved reply from
 /// `config.json`. The ids of `config.json` must be the tokens of the family, or the folder is refused.
-fn speech_out(family: &nagaya_text_lfm3::Lfm3Family, dir: &std::path::Path) -> Result<SpeechOut, String> {
+fn speech_out(family: &nagaya_family_lfm3::Lfm3Family, dir: &std::path::Path) -> Result<SpeechOut, String> {
     let path = dir.join("config.json");
     let text = std::fs::read_to_string(&path).map_err(|error| format!("cannot read `{}`: {error}", path.display()))?;
     let config: serde_json::Value =

@@ -1207,6 +1207,7 @@ dependencies = [
  "nagaya-family-beatthis",
  "nagaya-family-embeddinggemma2",
  "nagaya-family-gemma4",
+ "nagaya-family-lfm3",
  "nagaya-family-qwen3tts",
  "nagaya-family-qwenimage21",
  "nagaya-family-sdxl",
@@ -1228,7 +1229,6 @@ dependencies = [
  "nagaya-store",
  "nagaya-telemetry",
  "nagaya-text-inkling2",
- "nagaya-text-lfm3",
  "nagaya-text-qwen38",
  "opentelemetry",
  "png",
@@ -1307,6 +1307,23 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokenizers",
+]
+
+[[package]]
+name = "nagaya-family-lfm3"
+version = "0.1.0"
+dependencies = [
+ "ffmpeg-next",
+ "gogi-proto",
+ "libc",
+ "nagaya-council",
+ "nagaya-jinja",
+ "png",
+ "safetensors",
+ "serde_json",
+ "sha2",
+ "tokenizers",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -1481,8 +1498,8 @@ dependencies = [
  "nagaya-abi",
  "nagaya-conformance",
  "nagaya-council",
+ "nagaya-family-lfm3",
  "nagaya-mk-bmg",
- "nagaya-text-lfm3",
  "serde_json",
  "tempfile",
 ]
@@ -1589,23 +1606,6 @@ name = "nagaya-text-inkling2"
 version = "0.1.0"
 dependencies = [
  "gogi-proto",
- "nagaya-council",
- "nagaya-jinja",
- "png",
- "safetensors",
- "serde_json",
- "sha2",
- "tokenizers",
- "zune-jpeg",
-]
-
-[[package]]
-name = "nagaya-text-lfm3"
-version = "0.1.0"
-dependencies = [
- "ffmpeg-next",
- "gogi-proto",
- "libc",
  "nagaya-council",
  "nagaya-jinja",
  "png",

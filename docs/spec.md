@@ -4530,7 +4530,7 @@ served name is unique (2.3), so the start exits with 3.
 - Other text kinds keep the rule of 11.1. Gemma 4 and the Qwen3.8 engine serve the `model` of their identity.
 - A served name in the config of the engine is not used. It adds a key, and the engine name is already unique.
 
-**The LFM3 family.** The crate `nagaya-text-lfm3` holds the family library
+**The LFM3 family.** The crate `nagaya-family-lfm3` holds the family library
 of both models (11.3).
 
 - The tokenizer is `tokenizer.json` of the model folder, and the template is `chat_template.jinja` of the same

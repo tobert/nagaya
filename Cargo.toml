@@ -23,7 +23,7 @@ members = [
     "crates/nagaya-family-sdxl",
     "crates/nagaya-family-embeddinggemma2",
     "crates/nagaya-family-qwenimage21",
-    "crates/nagaya-text-lfm3",
+    "crates/nagaya-family-lfm3",
     "crates/nagaya-text-inkling2",
     "crates/nagaya-family-beatthis",
     "crates/nagaya-mk-beatthis-cpu",

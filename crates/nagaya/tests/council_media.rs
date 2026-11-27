@@ -21,9 +21,9 @@ use nagaya::http::{Council, Served, router};
 use nagaya::lfm3::StoreObjects;
 use nagaya_abi::SegmentInputs;
 use nagaya_council::family::Family;
+use nagaya_family_lfm3::Lfm3Family;
 use nagaya_mk_lfm3_bmg::media::{LatentRule, MediaRules, Span, SpanKind, check_spans, decode};
 use nagaya_store::objects::ObjectStore;
-use nagaya_text_lfm3::Lfm3Family;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 

@@ -28,7 +28,7 @@ xe = [
 # The GB10 CUDA engines (`sm_121`). The config parse and plan build with no feature.
 cuda = ["nagaya-mk-inkling2-sm121/cuda"]
 # The video parts of Omni (spec 11.11, "The video of a request"). It needs ffmpeg's libraries and libclang to build.
-video = ["nagaya-text-lfm3/video"]
+video = ["nagaya-family-lfm3/video"]
 
 [dependencies]
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio", "matched-path"] }
@@ -57,7 +57,7 @@ nagaya-mk-beatthis-gfx1151 = { version = "0.1.0", path = "../nagaya-mk-beatthis-
 nagaya-mk-embeddinggemma2-bmg = { version = "0.1.0", path = "../nagaya-mk-embeddinggemma2-bmg" }
 nagaya-family-embeddinggemma2 = { version = "0.1.0", path = "../nagaya-family-embeddinggemma2" }
 nagaya-mk-lfm3-bmg = { version = "0.1.0", path = "../nagaya-mk-lfm3-bmg" }
-nagaya-text-lfm3 = { version = "0.1.0", path = "../nagaya-text-lfm3" }
+nagaya-family-lfm3 = { version = "0.1.0", path = "../nagaya-family-lfm3" }
 nagaya-mk-inkling2-bmg = { version = "0.1.0", path = "../nagaya-mk-inkling2-bmg" }
 nagaya-mk-inkling2-sm121 = { version = "0.1.0", path = "../nagaya-mk-inkling2-sm121" }
 nagaya-text-inkling2 = { version = "0.1.0", path = "../nagaya-text-inkling2" }

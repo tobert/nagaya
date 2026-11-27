@@ -12,8 +12,8 @@ use common::model::{
 };
 use gogi_proto::context::Context;
 use nagaya_council::family::{Family, FamilyError};
-use nagaya_text_lfm3::media::{MediaRows, audio, image};
-use nagaya_text_lfm3::{Lfm3Family, MediaKind, Objects};
+use nagaya_family_lfm3::media::{MediaRows, audio, image};
+use nagaya_family_lfm3::{Lfm3Family, MediaKind, Objects};
 use serde_json::{Value, json};
 
 const PHOTO: &str = "blake3:1111111111111111111111111111111111111111111111111111111111111111";
@@ -780,7 +780,7 @@ fn a_wav_at_another_rate_resamples_and_a_wav_of_16_khz_mono_keeps_its_rows() {
     let clip = omni().render(&part(CLIP), true).unwrap();
     let rows = omni().media_rows(&clip).unwrap();
     assert_eq!(rows[0].span.mime, "audio/wav");
-    let want = nagaya_text_lfm3::media::audio::prepare(&objects().0[CLIP]).unwrap();
+    let want = nagaya_family_lfm3::media::audio::prepare(&objects().0[CLIP]).unwrap();
     let want: Vec<u8> = want.values.iter().flat_map(|v| v.to_le_bytes()).collect();
     assert_eq!(&rows[0].rows[..], &want[..]);
 }
