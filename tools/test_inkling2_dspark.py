@@ -1,13 +1,22 @@
-"""Tests of the pure parts of inkling2_dspark.py (tiny shapes, no weights). Run: python3 -m unittest test_inkling2_dspark
-(in tools/, with a venv that has torch: ~/venvs/nagaya-inkling2-ref)."""
+"""Tests of the pure parts of inkling2_dspark.py (tiny shapes, no weights). Run, from tools/, in a venv that has torch:
+
+  <reference venv>/bin/python -m unittest test_inkling2_dspark
+
+Without torch the tests skip."""
 import math
 import unittest
 
-import torch
+try:
+    import torch
 
-import inkling2_dspark as d
+    import inkling2_dspark as d
+except ImportError:
+    torch = d = None
+
+needs_torch = unittest.skipIf(torch is None, "the package torch is absent")
 
 
+@needs_torch
 class NormTest(unittest.TestCase):
     def test_rms_uses_a_plain_weight(self):
         x = torch.tensor([[3.0, 4.0]])
@@ -22,6 +31,7 @@ class NormTest(unittest.TestCase):
         self.assertTrue(torch.allclose(out, torch.tensor([[0.75 / s, 0.25 / s]]), atol=1e-2))
 
 
+@needs_torch
 class RopeTest(unittest.TestCase):
     def test_position_zero_is_the_identity_and_norm_is_kept(self):
         x = torch.randn(2, 3, 8).to(torch.bfloat16)
@@ -36,6 +46,7 @@ class RopeTest(unittest.TestCase):
         self.assertTrue(torch.allclose(y[0, 0], torch.tensor([math.cos(1), 0.0, math.sin(1), 0.0]), atol=1e-2))
 
 
+@needs_torch
 class WindowTest(unittest.TestCase):
     def test_local_reads_1024_before_the_block_full_reads_all(self):
         self.assertEqual(d.key_range(5000, True), (5000 - 1024, 5008))
@@ -43,6 +54,7 @@ class WindowTest(unittest.TestCase):
         self.assertEqual(d.key_range(10, True), (0, 18))
 
 
+@needs_torch
 class AttentionTest(unittest.TestCase):
     def test_a_query_head_reads_its_group_kv_head_and_the_block_is_not_masked(self):
         k = torch.zeros(4, 2, 4)  # equal scores: a plain mean over all 4 keys, even the last (future) ones
@@ -71,6 +83,7 @@ class AttentionTest(unittest.TestCase):
         self.assertTrue(torch.allclose(out, torch.ones(1, 4), atol=1e-3))
 
 
+@needs_torch
 class MarkovTest(unittest.TestCase):
     def test_zero_input_halves_the_state(self):
         raw = torch.zeros(12)
@@ -93,6 +106,7 @@ class MarkovTest(unittest.TestCase):
         self.assertTrue(torch.allclose(mid, torch.tensor([30 * math.tanh(1.0)]), atol=0.2))
 
 
+@needs_torch
 class SoftcapRoundingTest(unittest.TestCase):
     def test_one_rounding_at_the_end_as_vllm(self):
         # vLLM: x = bf16(a + b); then x / cap, tanh, * cap in fp32; one bf16 rounding of the result.
@@ -104,6 +118,7 @@ class SoftcapRoundingTest(unittest.TestCase):
         self.assertTrue(torch.equal(d.softcap(a, b), want))
 
 
+@needs_torch
 class GreedyTest(unittest.TestCase):
     def test_the_vocab_is_the_unpadded_size_of_the_config(self):
         self.assertEqual(d.VOCAB, 200058)
@@ -119,12 +134,23 @@ class GreedyTest(unittest.TestCase):
         self.assertEqual(d.greedy(logits, vocab=3), 1)
 
 
+@needs_torch
 class AcceptTest(unittest.TestCase):
     def test_longest_equal_prefix(self):
         self.assertEqual(d.accepted([1, 2, 3], [1, 2, 9]), 2)
         self.assertEqual(d.accepted([1, 2, 3], [1, 2, 3, 4]), 3)
         self.assertEqual(d.accepted([5], [1]), 0)
         self.assertEqual(d.accepted([1, 2, 3], [1]), 1)
+
+
+@needs_torch
+class SpeedTest(unittest.TestCase):
+    def test_a_block_costs_its_rows_plus_the_head(self):
+        import inkling2_dspark_run as run
+
+        pts = [(1, 1.0), (8, 1.8), (16, 2.5)]
+        # Two blocks of 7 drafts, 2 and 0 accepted: 4 tokens for 2 * (1.8 + 0.26) steps.
+        self.assertAlmostEqual(run.head_speed([2, 0], [7, 7], pts, 0.26), 4 / (2 * 2.06))
 
 
 if __name__ == "__main__":

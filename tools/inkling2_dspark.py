@@ -1,10 +1,14 @@
 # SPDX-License-Identifier: MIT
 """CPU oracle of the Inkling 2 DSpark draft head (docs/gb10-research.md, D1 step 2).
 
-The rules come from vLLM's `models/inkling2/nvidia/dspark.py` (Apache-2.0); this file is our own code. They are
-written down in the lane notes (head-rules.md) and the docstrings below. The head reads the trunk's features of each
-position (the inputs of layer visits 5, 23 and 41, and the final-norm output), mixes them, and drafts a block of 7 tokens
-after an anchor token (the bonus token that the target has sampled and not yet run).
+The rules come from vLLM's `models/inkling2/nvidia/dspark.py` (Apache-2.0); this file is our own code. The head reads
+the trunk's features of each position (the inputs of layer visits 5, 23 and 41, counting loop passes, and the final-norm
+output), mixes them with softmax(fuse_weight), and drafts a block of 7 tokens after an anchor token (the bonus token that
+the target has sampled and not yet run, at position p + 1; features are known up to p). The block is the anchor and 7
+mask rows, bidirectional over its own keys and over the context keys and values that `kv_proj_ctx` makes from the mixed
+features (RoPE on both; layers 0 and 2 read only the last 1,024 context positions). A recurrent Markov head turns the 7
+output rows into 7 greedy tokens over the shared LM head (vocab 200,058 of the 201,024 padded rows), each token
+conditioned on the one before it.
 
 The pure parts (norms, mix, RoPE, window, Markov step, acceptance) take tensors and are tested in
 test_inkling2_dspark.py with tiny shapes. `Head` loads the real weights.
@@ -54,6 +58,8 @@ def head_norm(x, weight, eps=EPS):
 
 
 def key_range(first_block_pos, local, window=WINDOW):
+    # vLLM's draft window is `sliding_window + block` keys counted back from the last key of the block
+    # (dspark.py: `self.window = sliding_window_size + block`), so a local layer reads [p + 1 - 1024, p + 9).
     """The positions that a block starting at `first_block_pos` (= p + 1) reads, as (lo, hi) with hi exclusive.
 
     A local layer reads the `window` positions before the block and the block (`window + BLOCK` keys); a full layer
@@ -94,7 +100,8 @@ def softcap(base, bias, cap=SOFTCAP):
 
 
 def greedy(logits, vocab=VOCAB):
-    """The argmax over the first `vocab` rows (the rest of the padded vocab is padding), NaN as -inf."""
+    """The argmax over the first `vocab` rows (the rest of the padded vocab is padding). NaN counts as -inf and ties go to
+    the first index, as vLLM's `greedy_argmax` does (v1/worker/gpu/sample/greedy_argmax.py): this is its rule, not a fallback."""
     return int(torch.nan_to_num(logits[:vocab].float(), nan=-math.inf).argmax())
 
 
