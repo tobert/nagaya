@@ -472,7 +472,7 @@ This is the text of `AGENTS.md` for these milestones, as it was on 2026-11-11. M
       for GEMMs but we let it ride with changes over time, ok with some change in behavior if upstream changes". The
       hipBLASLt version is a build fact of the identity (12.1). A new version gives a new identity.
     - **Ops:** the new crate `nagaya-mk-hip` holds the shared HIP ops of gfx1151, as `nagaya-mk-bmg` does for the B70
-      cards. The engine is `nagaya-mk-qwenimage21-gfx1151`, and the family is `nagaya-text-qwenimage21`. mk's Qwen3.8
+      cards. The engine is `nagaya-mk-qwenimage21-gfx1151`, and the family is `nagaya-family-qwenimage21`. mk's Qwen3.8
       code stays in its own crate.
     - **Memory:** Qwen3.8 and Qwen-Image are both loaded while gfx1151host only serves. Amy: "what if we make it possible
       to load both models when gfx1151host is just doing inference, and we can unload them and restart nagaya as we do
@@ -506,7 +506,7 @@ This is the text of `AGENTS.md` for these milestones, as it was on 2026-11-11. M
        Also write the sizes, the conditioning cache and hipBLASLt in the identity. Amy decides each Proposed note.
     2. **Oracle fixture.** Write the fixed inputs and outputs of diffusers once, on the CPU (8.3). Keep the image
        small. Keep the conditioning, the output of one step and the decoded pixels, so each stage has a gate.
-    3. **Family.** Write `nagaya-text-qwenimage21`: the tokenizer, the prompt template and the cut of the system
+    3. **Family.** Write `nagaya-family-qwenimage21`: the tokenizer, the prompt template and the cut of the system
        tokens.
     4. **Ops.** Write `nagaya-mk-hip`: its `build.rs`, the hipBLASLt binding and the ops of the three models. Give
        each op a test.

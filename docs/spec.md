@@ -4270,7 +4270,7 @@ step and needs no more memory than the base.
   bf16 rounding of each weight. The oracle tolerance holds this (8.3).
 - The LoRAs of a request (11.9a) stay a design for this engine, and the engine refuses them now.
 
-**The family of Qwen-Image 2.1.** The crate `nagaya-text-qwenimage21` holds
+**The family of Qwen-Image 2.1.** The crate `nagaya-family-qwenimage21` holds
 it (11.3). Reason: these rules give the ids of the processor that FUSAL trained with.
 
 - The tokenizer is the base folder's `processor/tokenizer.json`, not a file of the Heretic repository (FUSAL README).

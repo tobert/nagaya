@@ -2,7 +2,7 @@
 
 mod common;
 
-use nagaya_text_qwenimage21::{CUT, Error, MAX_TEMPLATE_IDS, TEMPLATE};
+use nagaya_family_qwenimage21::{CUT, Error, MAX_TEMPLATE_IDS, TEMPLATE};
 
 #[test]
 fn the_template_is_the_template_of_the_reference() {
