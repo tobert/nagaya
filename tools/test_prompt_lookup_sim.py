@@ -73,5 +73,31 @@ class CostTest(unittest.TestCase):
         self.assertAlmostEqual(s["accepted_per_drafted_block"], 7.0)
 
 
+class CostPointsTest(unittest.TestCase):
+    def test_a_measured_table_replaces_the_default(self):
+        pts = sim.parse_points("1:1.0,4:1.4,16:3.0")
+        self.assertAlmostEqual(sim.cost(4, pts), 1.4)
+        self.assertAlmostEqual(sim.cost(10, pts), 1.4 + 1.6 * 6 / 12)
+        self.assertAlmostEqual(sim.summarize([(7, 7)], pts)["speed"], 8 / sim.cost(8, pts))
+
+    def test_a_bad_table_says_what_to_write(self):
+        for bad in ("", "1:1.0", "1:1.0,1:2.0", "4:1.0,2:2.0", "a:b,c:d"):
+            with self.assertRaises(ValueError, msg=bad) as e:
+                sim.parse_points(bad)
+            self.assertIn("rows:steps", str(e.exception))
+
+
+class EmptyTest(unittest.TestCase):
+    def test_no_block_drafted_gives_none_not_zero(self):
+        s = sim.summarize([(0, 0)] * 3)
+        self.assertIsNone(s["accepted_per_drafted_block"])
+        self.assertEqual(s["draft_share"], 0.0)
+
+    def test_no_blocks_at_all_is_an_error_that_says_so(self):
+        with self.assertRaises(ValueError) as e:
+            sim.summarize([])
+        self.assertIn("no blocks", str(e.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

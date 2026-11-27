@@ -36,7 +36,7 @@ cargo test --workspace --tests --no-default-features
 
 Also lint GPU features (`--features hip|xe|cuda`); without `ocloc` or `nvcc`, prepend `tools/ocloc-stub` or `tools/nvcc-stub` to `PATH` (stub builds are for type-checking/linting only). Host tests requiring local weights skip when their env var is unset—set `NAGAYA_REQUIRE_MODELS=1` on hosts with weights before merging changes to those crates.
 
-Python tools (from `tools/`): `python3 -m unittest test_nagaya_web test_nagaya_web_page test_nagaya_image_batch test_oracle_fixture` and `python3 -m unittest discover -s swarm/tests -t .`. `test_nagaya_web` covers the `tailscale serve` login and its loopback-only bind; restart the live app with `systemctl --user restart nagaya-web.service`.
+Python tools (from `tools/`): `python3 -m unittest test_nagaya_web test_nagaya_web_page test_nagaya_image_batch test_oracle_fixture test_prompt_lookup_sim` and `python3 -m unittest discover -s swarm/tests -t .`. `test_nagaya_web` covers the `tailscale serve` login and its loopback-only bind; restart the live app with `systemctl --user restart nagaya-web.service`.
 
 - Commit small, single-idea steps; stage files by name (never `git add -A`/`.`). Never push, amend, rebase, reset, or force-push unless asked.
 - Commit format: `<crate>: <what changed>` (or `nagaya: ...`), *why* and mutations run in the body, `Co-Authored-By:` / `Reviewed-by:` trailers. Run kaibo review rounds with another model family near milestone completion (`docs/reviews.md`).
