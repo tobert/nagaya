@@ -625,8 +625,13 @@ impl<'d> Pass<'d> {
                 },
             };
             let tasks = run_tasks(plan, &shape, &env, &mut tables)?;
+            // A block of 33 rows or more adds the matmul task of OUT_MIX, which a plan does not list.
             debug_assert_eq!(
-                tasks.iter().map(|(k, _)| *k).collect::<Vec<TaskKind>>(),
+                tasks
+                    .iter()
+                    .map(|(k, _)| *k)
+                    .filter(|k| *k != TaskKind::OutMatmul)
+                    .collect::<Vec<TaskKind>>(),
                 plan.task_kinds()
             );
             for (kind, task) in tasks {
