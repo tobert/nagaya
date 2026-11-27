@@ -24,14 +24,15 @@ mod moe_support;
 
 use common::gpu::{GRIDS, download, open, run_with_watchdog, upload};
 use moe_support::expert::{
-    Bank, EXPERTS, Matrix, N, QuantRow, bank_pairs, bits, host_dot, quant_rows_bytes, quantize_row, upload_bank,
+    Bank, EXPERTS, Matrix, N, QuantRow, bank_pairs, bits, expert_index, host_dot, quant_rows_bytes, quantize_row,
+    uneven_pairs, upload_bank,
 };
 use moe_support::{Checkpoint, Rng, activation_row, model_dir};
 use nagaya_mk_cuda::driver::{CUdeviceptr, CudaDevice};
-use nagaya_mk_cuda::experts::{EXPERT_TABLE_QACT, ExpertFormat, QuantRowsLayout, pair_list_bytes};
+use nagaya_mk_cuda::experts::{EXPERT_TABLE_INDEX, EXPERT_TABLE_QACT, ExpertFormat, QuantRowsLayout, pair_list_bytes};
 use nagaya_mk_cuda::protocol::{
-    EXPERT_TABLE_AMAX, ExpertPair, FLAG_PAIRS, FLAG_UP, MkTaskDescriptor, MkTaskTable, OP_EXPERT_MXFP8,
-    OP_EXPERT_NVFP4, OP_PROBE_READ, PROBE_ITEM_BYTES, PROBE_READ_NC, PROFILE_WORDS,
+    EXPERT_TABLE_AMAX, ExpertPair, FLAG_BLOCK_FORM, FLAG_PAIRS, FLAG_UP, MkTaskDescriptor, MkTaskTable,
+    OP_EXPERT_MXFP8, OP_EXPERT_NVFP4, OP_PROBE_READ, PROBE_ITEM_BYTES, PROBE_READ_NC, PROFILE_WORDS,
 };
 use nagaya_mk_cuda::ring::{DEFAULT_BLOCK_THREADS, Ring, Task};
 use nagaya_mk_inkling2_bmg::host::ops;
@@ -133,6 +134,24 @@ fn run_up(
     repeat: usize,
     tpi: usize,
 ) -> UpRun {
+    run_up_form(dev, m, bank, rows, tokens, pairs, bound, grid, repeat, tpi, false)
+}
+
+/// Like `run_up`; with `block` the op is in the block form (`FLAG_BLOCK_FORM`, the expert index in the table).
+#[allow(clippy::too_many_arguments)]
+fn run_up_form(
+    dev: &CudaDevice,
+    m: &Matrix,
+    bank: &Bank,
+    rows: &[QuantRow],
+    tokens: usize,
+    pairs: &[ExpertPair],
+    bound: usize,
+    grid: u32,
+    repeat: usize,
+    tpi: usize,
+    block: bool,
+) -> UpRun {
     let x_layout = QuantRowsLayout::new(m.format, rows.len(), m.k).unwrap();
     let layout = QuantRowsLayout::new(m.format, 8 * tokens, INNER).unwrap();
     let x_bytes = quant_rows_bytes(&x_layout, rows);
@@ -144,9 +163,13 @@ fn run_up(
     let mut table = MkTaskTable::default();
     table.ptr[EXPERT_TABLE_AMAX] = bank.amax;
     table.ptr[EXPERT_TABLE_QACT] = qact;
+    let index = upload(dev, &expert_index(pairs));
+    if block {
+        table.ptr[EXPERT_TABLE_INDEX] = index;
+    }
     let table_ptr = upload(dev, &[table]);
     let mut ring = Ring::new(dev, 1, false).unwrap();
-    ring.set(&[Task::with_items(up_task(
+    let mut task = up_task(
         m,
         bank,
         x,
@@ -158,12 +181,17 @@ fn run_up(
         counters,
         bound,
         tpi,
-    ))
-    .reads(x, x_bytes.len())
-    .reads(bank.ptr, bank.bytes)
-    .writes(act, 8 * tokens * INNER * 4)
-    .writes(qact, layout.bytes())
-    .writes(counters, bound * 4)]);
+    );
+    if block {
+        task.flags |= FLAG_BLOCK_FORM;
+        task.items = (128 * N / 64 / tpi) as u32;
+    }
+    ring.set(&[Task::with_items(task)
+        .reads(x, x_bytes.len())
+        .reads(bank.ptr, bank.bytes)
+        .writes(act, 8 * tokens * INNER * 4)
+        .writes(qact, layout.bytes())
+        .writes(counters, bound * 4)]);
     for _ in 0..repeat {
         ring.zero_device().unwrap();
         run_with_watchdog(
@@ -180,7 +208,7 @@ fn run_up(
         counters: download(dev, counters, bound),
     };
     ring.free().unwrap();
-    for ptr in [x, pair_ptr, act, qact, counters, table_ptr] {
+    for ptr in [x, pair_ptr, act, qact, counters, table_ptr, index] {
         dev.free_device(ptr).unwrap();
     }
     out
@@ -625,3 +653,44 @@ fn speed_of_the_up_op_for_8_experts_with_1_row() {
 
 // The experts of the gate are the same as the wave A gate: the checkpoint experts at the start, the middle and the end.
 const _: [usize; 8] = EXPERTS;
+
+/// The route of the block tests: token `t` goes to expert `e` unless `(7 t + 13 e) % 5 == 0`, expert 3 takes no row, and
+/// expert 5 takes every row. Expert row counts are then uneven, so a block meets the ends of 8, 16 and 32 rows.
+fn uneven(tokens: usize) -> Vec<ExpertPair> {
+    uneven_pairs(tokens, |t, e| e != 3 && (e == 5 || (7 * t + 13 * e) % 5 != 0), weight)
+}
+
+#[test]
+fn the_block_form_gives_the_bits_of_the_decode_form() {
+    let Some(matrices) = matrices() else { return };
+    let dev = open();
+    for m in &matrices {
+        let bank = upload_bank(&dev, m, true);
+        for tokens in [17usize, 33, 64, 128, 512] {
+            let rows = input_rows(m, tokens);
+            for pairs in [standard_pairs(tokens), uneven(tokens)] {
+                let bound = nagaya_mk_cuda::protocol::expert_pair_bound(tokens).max(pairs.len());
+                let want = run_up(&dev, m, &bank, &rows, tokens, &pairs, bound, 48, 1, TPI);
+                for (grid, tpi) in [(48u32, 3usize), (24, 3), (7, 6), (1, 9), (48, 1)] {
+                    let got = run_up_form(&dev, m, &bank, &rows, tokens, &pairs, bound, grid, 2, tpi, true);
+                    assert!(
+                        got.counters.iter().all(|c| *c == 0),
+                        "{}: a counter was left at {tokens} rows",
+                        m.name
+                    );
+                    assert_eq!(
+                        bits(&got.act),
+                        bits(&want.act),
+                        "{}: act differs at {tokens} rows, grid {grid}, tpi {tpi}",
+                        m.name
+                    );
+                    assert!(
+                        got.quant == want.quant,
+                        "{}: the quantized rows differ at {tokens} rows, grid {grid}, tpi {tpi}",
+                        m.name
+                    );
+                }
+            }
+        }
+    }
+}

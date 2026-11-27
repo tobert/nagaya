@@ -298,7 +298,8 @@ constexpr uint32_t EXPERT_TABLE_RESIDUAL = 2;   // DOWN: the residual `r`, `kt` 
 constexpr uint32_t EXPERT_TABLE_CONV_WEIGHT = 3;  // DOWN: the weights of `mlp_conv`, `n` rows of 4 floats.
 constexpr uint32_t EXPERT_TABLE_CONV_STATE = 4;   // DOWN: the state of the convolution, 3 rows of `n` floats.
 constexpr uint32_t EXPERT_TABLE_OUT = 5;          // DOWN: the output `x`, `kt` rows of `n` floats.
-constexpr uint32_t EXPERT_TABLE_OUT_RF = 6;       // DOWN: the row factor of each row of `x`, `kt` floats.
+constexpr uint32_t EXPERT_TABLE_OUT_RF = 6;
+constexpr uint32_t EXPERT_TABLE_INDEX = 7;        // block form: the expert index of ROUTE (128 `u32`: `first_pair | pairs << 16`).       // DOWN: the row factor of each row of `x`, `kt` floats.
 
 // The epsilon of the row factor (`ops::EPS` of the host form; it is RW_EPS of ops_rows.cuh, which comes after this file).
 constexpr float EX_RF_EPS = 1e-6f;
@@ -721,12 +722,123 @@ __device__ __forceinline__ void op_expert_mode(const MkTaskDescriptor& task, con
     }
 }
 
+// The L2 prefetch of the tile `tile` of the expert `expert` for the warp: the same slices as `experts_prefetch_next`.
+template <typename F>
+__device__ __forceinline__ void experts_prefetch_tile(const MkTaskDescriptor& task, uint32_t expert, uint32_t tile) {
+    if ((worker_id() & 31) != 0) {
+        return;
+    }
+    const uint32_t tiles = task.n / MK_EXPERT_TILE_ROWS;
+    const uint32_t groups = task.k / MK_EXPERT_K_GROUP;
+    const uint64_t item_bytes = static_cast<uint64_t>(4) * groups * F::RECORD_BYTES;
+    const uint32_t warp = worker_id() >> 5;
+    const uint32_t mt = warp & 3;
+    const uint32_t half = warp >> 2;
+    const uint32_t split = (groups + 1) / 2;
+    const uint32_t first = half == 0 ? 0 : split;
+    const uint32_t last = half == 0 ? split : groups;
+    const uint8_t* at = reinterpret_cast<const uint8_t*>(task.b) + (static_cast<uint64_t>(expert) * tiles + tile) * item_bytes +
+                        (static_cast<uint64_t>(mt) * groups + first) * F::RECORD_BYTES;
+    bulk_prefetch_l2(at, (last - first) * F::RECORD_BYTES);
+}
+
+// The index entry of the expert of an item: `first_pair | pairs << 16`. Each use reads it again from the table, so that no
+// loop of the block form keeps it in a register across the MMAs (the interpreter has 168 registers and no room).
+__device__ __forceinline__ uint32_t block_entry(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
+    const uint32_t tpi = task.pos0 == 0 ? 1 : task.pos0;
+    const uint32_t item_tiles = (task.n / MK_EXPERT_TILE_ROWS) / tpi;
+    return __ldcg(reinterpret_cast<const uint32_t*>(table->ptr[EXPERT_TABLE_INDEX]) + item / item_tiles);
+}
+
+// The pass of the pair `p` of the expert of the item, for the tile `j` of the item.
+template <typename F, uint32_t MODE>
+__device__ __forceinline__ void block_pair(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item, uint32_t j, uint32_t p) {
+    const uint32_t tpi = task.pos0 == 0 ? 1 : task.pos0;
+    const uint32_t item_tiles = (task.n / MK_EXPERT_TILE_ROWS) / tpi;
+    const uint32_t tile = (item % item_tiles) * tpi + j;
+    {
+        const PairRef pair{pair_at(task, (block_entry(task, table, item) & 0xFFFFu) + p)};
+        if (pair.expert() != item / item_tiles || pair.count() == 0 || pair.count() > MK_EXPERT_MAX_ROWS) {
+            __trap();  // The pairs of an expert are contiguous, and the list is ascending by expert.
+        }
+        expert_pass<F, MODE>(task, table, tile, pair, 0);
+        if (pair.count() > 8) {
+            worker_sync();
+            expert_pass<F, MODE>(task, table, tile, pair, 8);
+        }
+    }
+}
+
+// The block form (FLAG_BLOCK_FORM, more than 16 rows). An item is `(expert, group of tiles)`: item `i` is the expert
+// `i / item_tiles` and the tiles `(i % item_tiles) * tpi` on. `items` is `128 * item_tiles`, and it does not depend on the
+// live pairs. The item takes the pairs of its expert from the expert index (`EXPERT_TABLE_INDEX`: `first | pairs << 16`),
+// and for each tile it runs `expert_pass` for each pair, one after the other, so the later pairs find the tile in L2 (and
+// in the prefetch of the next tile). The passes and the epilogues are those of the decode form, so the bits are the same.
+// The merge counters keep their meaning: the UP counter of a pair has `item_tiles` arrivals (the last quantizes the
+// pair), and the DOWN counter of a column tile has one arrival for each expert that has a pair (the header word `reserved[0]`).
+template <typename F, uint32_t MODE>
+__device__ __forceinline__ void op_expert_block(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
+    const uint32_t tpi = task.pos0 == 0 ? 1 : task.pos0;
+    const uint32_t item_tiles = (task.n / MK_EXPERT_TILE_ROWS) / tpi;
+    const uint32_t bound = (8 * task.kt) < (8 * task.kt / MK_EXPERT_MAX_ROWS + 128) ? (8 * task.kt) : (8 * task.kt / MK_EXPERT_MAX_ROWS + 128);
+    if ((task.e & 15) != 0 || (task.b & 15) != 0 || (task.n / MK_EXPERT_TILE_ROWS) % tpi != 0 || task.items != 128 * item_tiles ||
+        task.kt <= MK_EXPERT_MAX_ROWS || table->ptr[EXPERT_TABLE_INDEX] == 0 || (table->ptr[EXPERT_TABLE_INDEX] & 3) != 0 ||
+        live_pairs(task) > bound) {
+        __trap();
+    }
+    if (((block_entry(task, table, item) & 0xFFFFu) + (block_entry(task, table, item) >> 16)) > live_pairs(task)) {
+        __trap();  // The index names pairs that the list does not hold.
+    }
+    if ((block_entry(task, table, item) >> 16) == 0) {
+        return;  // The expert has no row in this block. Its items do nothing, and they count as done.
+    }
+#pragma unroll 1
+    for (uint32_t j = 0; j < tpi; ++j) {
+        if (j + 1 < tpi) {
+            experts_prefetch_tile<F>(task, item / item_tiles, (item % item_tiles) * tpi + j + 1);
+        } else {
+            const uint32_t next = mk_next_item();
+            if (next < task.items && (block_entry(task, table, next) >> 16) != 0) {
+                experts_prefetch_tile<F>(task, next / item_tiles, (next % item_tiles) * tpi);
+            }
+        }
+#pragma unroll 1
+        for (uint32_t p = 0; p < (block_entry(task, table, item) >> 16); ++p) {
+            if (j > 0 || p > 0) {
+                worker_sync();  // The pass before has read the partial sums of shared memory.
+            }
+            block_pair<F, MODE>(task, table, item, j, p);
+        }
+        if constexpr (MODE == EX_DOWN) {
+            // One arrival for each expert that has a pair (the header counts them), after all its pairs: the finisher of a
+            // tile waits for every row. A barrier comes before each call: the flag of an arrival is written again in
+            // this item.
+            worker_sync();
+            const uint32_t tile = (item % item_tiles) * tpi + j;
+            if (expert_arrive(reinterpret_cast<uint32_t*>(task.f) + tile,
+                              __ldcg(&reinterpret_cast<const ExpertPairHeader*>(task.e)->reserved[0]))) {
+                down_finish_tile(task, table, tile);
+            }
+        }
+    }
+    if constexpr (MODE == EX_UP) {
+#pragma unroll 1
+        for (uint32_t p = 0; p < (block_entry(task, table, item) >> 16); ++p) {
+            worker_sync();
+            const uint32_t pair_index = (block_entry(task, table, item) & 0xFFFFu) + p;
+            if (expert_arrive(reinterpret_cast<uint32_t*>(task.f) + pair_index, item_tiles)) {
+                up_finish_rows<F>(task, table, PairRef{pair_at(task, pair_index)});
+            }
+        }
+    }
+}
+
 template <typename F>
 __device__ __forceinline__ void op_expert(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
     const uint32_t mode_flags = task.flags & (FLAG_UP | FLAG_DOWN);
     if (worker_count() != MK_CONSUMER_THREADS || (task.n % MK_EXPERT_TILE_ROWS) != 0 || (task.k % MK_EXPERT_K_GROUP) != 0 ||
         dynamic_smem_bytes() < MK_EXPERT_SMEM_BYTES || task.item_bytes != 0 || (F::STEPS == 2 && table == nullptr) ||
-        (task.flags & ~(FLAG_PAIRS | FLAG_UP | FLAG_DOWN)) != 0 || mode_flags == (FLAG_UP | FLAG_DOWN)) {
+        (task.flags & ~(FLAG_PAIRS | FLAG_UP | FLAG_DOWN | FLAG_BLOCK_FORM)) != 0 || mode_flags == (FLAG_UP | FLAG_DOWN)) {
         __trap();  // The cut needs 8 warps, whole tiles and groups, and the shared memory of the partial sums.
     }
     if (mode_flags == FLAG_UP) {
@@ -736,7 +848,11 @@ __device__ __forceinline__ void op_expert(const MkTaskDescriptor& task, const Mk
             (task.c & 15) != 0 || dynamic_smem_bytes() < EX_FINISH_OFFSET) {
             __trap();
         }
-        op_expert_mode<F, EX_UP>(task, table, item);
+        if ((task.flags & FLAG_BLOCK_FORM) != 0) {
+            op_expert_block<F, EX_UP>(task, table, item);
+        } else {
+            op_expert_mode<F, EX_UP>(task, table, item);
+        }
     } else if (mode_flags == FLAG_DOWN) {
         if (table == nullptr || table->ptr[EXPERT_TABLE_RESIDUAL] == 0 || table->ptr[EXPERT_TABLE_CONV_WEIGHT] == 0 ||
             table->ptr[EXPERT_TABLE_CONV_STATE] == 0 || table->ptr[EXPERT_TABLE_OUT] == 0 ||
@@ -745,8 +861,15 @@ __device__ __forceinline__ void op_expert(const MkTaskDescriptor& task, const Mk
             dynamic_smem_bytes() < EX_FINISH_OFFSET + EX_DOWN_SMEM_BYTES) {
             __trap();
         }
-        op_expert_mode<F, EX_DOWN>(task, table, item);
+        if ((task.flags & FLAG_BLOCK_FORM) != 0) {
+            op_expert_block<F, EX_DOWN>(task, table, item);
+        } else {
+            op_expert_mode<F, EX_DOWN>(task, table, item);
+        }
     } else {
+        if ((task.flags & FLAG_BLOCK_FORM) != 0) {
+            __trap();  // The block form has the up and down modes only.
+        }
         op_expert_mode<F, EX_PLAIN>(task, table, item);
     }
 }

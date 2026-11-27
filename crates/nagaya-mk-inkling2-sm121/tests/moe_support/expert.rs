@@ -206,3 +206,40 @@ pub fn bank_pairs(tokens: usize, weight: impl Fn(usize, usize) -> f32) -> Vec<Ex
 pub fn bits(v: &[f32]) -> Vec<u32> {
     v.iter().map(|x| x.to_bits()).collect()
 }
+
+/// The expert index of a pair list (the words that ROUTE writes for the block form): for each of the 128 experts,
+/// `first_pair | pairs << 16`. The pairs of an expert must be contiguous, as ROUTE writes them.
+pub fn expert_index(pairs: &[ExpertPair]) -> Vec<u32> {
+    let mut index = vec![0u32; 128];
+    let mut e = 0;
+    while e < pairs.len() {
+        let expert = pairs[e].expert as usize;
+        let mut n = 0;
+        while e + n < pairs.len() && pairs[e + n].expert as usize == expert {
+            n += 1;
+        }
+        assert_eq!(index[expert], 0, "the pairs of expert {expert} are not contiguous");
+        index[expert] = e as u32 | (n as u32) << 16;
+        e += n;
+    }
+    index
+}
+
+/// Pairs of an uneven route: expert `e` takes the token `t` when `keep(t, e)`, in chunks of 16 like ROUTE. The slot of
+/// the row of token `t` is `t * 8 + e`.
+pub fn uneven_pairs(
+    tokens: usize,
+    keep: impl Fn(usize, usize) -> bool,
+    weight: impl Fn(usize, usize) -> f32,
+) -> Vec<ExpertPair> {
+    let mut pairs = Vec::new();
+    for e in 0..8 {
+        let rows: Vec<usize> = (0..tokens).filter(|t| keep(*t, e)).collect();
+        for chunk in rows.chunks(EXPERT_MAX_ROWS) {
+            let y: Vec<usize> = chunk.iter().map(|t| t * 8 + e).collect();
+            let w: Vec<f32> = chunk.iter().map(|t| weight(*t, e)).collect();
+            pairs.push(pair(e, chunk, &y, &w));
+        }
+    }
+    pairs
+}

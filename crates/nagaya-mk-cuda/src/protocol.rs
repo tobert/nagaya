@@ -244,7 +244,8 @@ pub const EXPERT_PAIR_HEADER_BYTES: usize = 16;
 ///
 /// `pairs` is the live count of pairs. The count of items of the task is a static bound, because the host does not
 /// know the live count when it builds the ring (a router writes the list on the device). Item `i` takes the pair
-/// `i / tiles`. A pair at or after `pairs` is not live: the op does nothing for its items, and they count as done for
+/// `i / tiles`. `reserved[0]` is the count of experts that have a pair: ROUTE writes it, and the block form of the down
+/// op (`FLAG_BLOCK_FORM`) counts one arrival for each such expert. A pair at or after `pairs` is not live: the op does nothing for its items, and they count as done for
 /// the signal, so the waits on the task stay exact. The list must have room for `items / tiles` pairs. The op traps
 /// when `pairs` is larger than that.
 #[repr(C)]

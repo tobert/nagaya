@@ -4,15 +4,17 @@
 //! The ops with a builder in `nagaya-mk-cuda` are `OP_PROJ` (`ProjLayout::descriptor`), `OP_ATTN`
 //! (`AttnShape::descriptor`, `attn::table`) and the matmul of the head (`MatmulShape::descriptor`, used by [`head`]).
 
-use nagaya_mk_cuda::experts::{EXPERT_TABLE_QACT, ExpertFormat, ROUTE_TABLE_BIAS, route_items};
+use nagaya_mk_cuda::experts::{
+    EXPERT_TABLE_INDEX, EXPERT_TABLE_QACT, ExpertFormat, ROUTE_TABLE_BIAS, ROUTE_TABLE_INDEX, route_items,
+};
 use nagaya_mk_cuda::proj::ProjLayout;
 use nagaya_mk_cuda::protocol::{
-    EXPERT_TABLE_AMAX, FLAG_DOWN, FLAG_NORM, FLAG_PAIRS, FLAG_SOFTCAP_30, FLAG_UP, MATMUL_TABLE_NORM_WEIGHT,
-    MkTaskDescriptor, MkTaskTable, OP_EMBED, OP_EXPERT_MXFP8, OP_EXPERT_NVFP4, OP_GATE_DOWN, OP_GATE_UP, OP_MIX,
-    OP_MIX_OUT, OP_QUANT_MXFP8, OP_QUANT_NVFP4, OP_ROUTE, PROJ_TABLE_K_CONV, PROJ_TABLE_K_OUT, PROJ_TABLE_K_STATE,
-    PROJ_TABLE_NORM_K, PROJ_TABLE_NORM_Q, PROJ_TABLE_NORM_V, PROJ_TABLE_Q_SCALE, PROJ_TABLE_REL_SCALE, PROJ_TABLE_RF_K,
-    PROJ_TABLE_RF_V, PROJ_TABLE_V_CONV, PROJ_TABLE_V_OUT, PROJ_TABLE_V_STATE, PROJ_TABLE_X_K, PROJ_TABLE_X_V,
-    expert_pair_bound,
+    EXPERT_TABLE_AMAX, FLAG_BLOCK_FORM, FLAG_DOWN, FLAG_NORM, FLAG_PAIRS, FLAG_SOFTCAP_30, FLAG_UP,
+    MATMUL_TABLE_NORM_WEIGHT, MkTaskDescriptor, MkTaskTable, OP_EMBED, OP_EXPERT_MXFP8, OP_EXPERT_NVFP4, OP_GATE_DOWN,
+    OP_GATE_UP, OP_MIX, OP_MIX_OUT, OP_QUANT_MXFP8, OP_QUANT_NVFP4, OP_ROUTE, PROJ_TABLE_K_CONV, PROJ_TABLE_K_OUT,
+    PROJ_TABLE_K_STATE, PROJ_TABLE_NORM_K, PROJ_TABLE_NORM_Q, PROJ_TABLE_NORM_V, PROJ_TABLE_Q_SCALE,
+    PROJ_TABLE_REL_SCALE, PROJ_TABLE_RF_K, PROJ_TABLE_RF_V, PROJ_TABLE_V_CONV, PROJ_TABLE_V_OUT, PROJ_TABLE_V_STATE,
+    PROJ_TABLE_X_K, PROJ_TABLE_X_V, expert_pair_bound,
 };
 use nagaya_mk_cuda::repack::MatmulShape;
 use nagaya_mk_cuda::rows::{GATE_DOWN_ITEMS, GATE_UP_ITEM_BYTES, GATE_UP_TILES, gate_down_shape};
@@ -53,6 +55,13 @@ pub fn up_tiles_per_item(_tokens: usize) -> usize {
 /// The tiles of an item of the down op of the experts for `tokens` tokens: 3 tiles, so a decode step has 96 items..
 pub fn down_tiles_per_item(_tokens: usize) -> usize {
     3
+}
+
+/// The tiles of an item in the block form of the expert ops (more than 16 rows). An item is an expert and its tiles, and it
+/// runs all the rows of the expert, so a hot expert (up to all the rows of the block) makes a long item: 1 tile keeps the
+/// longest item short. A host rule, not part of the identity.
+pub fn block_tiles_per_item(_tokens: usize) -> usize {
+    1
 }
 
 /// The width of the up and the down matrix of an expert in rows: gate and up of 1,152 columns, and the 2,304 outputs.
@@ -459,6 +468,42 @@ pub fn route_table(bias: u64) -> Result<MkTaskTable, String> {
     let mut table = MkTaskTable::default();
     table.ptr[ROUTE_TABLE_BIAS] = bias;
     Ok(table)
+}
+
+/// The table of `OP_ROUTE` with the expert index at `index` (128 `u32`, in the scratch of the route): ROUTE writes the
+/// first pair and the count of pairs of each expert there, for the block form of the expert ops.
+pub fn route_table_with_index(bias: u64, index: u64) -> Result<MkTaskTable, String> {
+    aligned("the expert index", index, 4)?;
+    nonzero("the expert index", index)?;
+    let mut table = route_table(bias)?;
+    table.ptr[ROUTE_TABLE_INDEX] = index;
+    Ok(table)
+}
+
+/// The table of an up or a down op with the expert index of the route at `index`, for the block form.
+pub fn with_expert_index(mut table: MkTaskTable, index: u64) -> Result<MkTaskTable, String> {
+    aligned("the expert index", index, 4)?;
+    nonzero("the expert index", index)?;
+    table.ptr[EXPERT_TABLE_INDEX] = index;
+    Ok(table)
+}
+
+/// The experts that an item of the block form of the expert ops covers by one expert: `items` is 128 experts times the
+/// item groups of a tile list (`pos0` tiles each).
+pub const EXPERT_COUNT: usize = 128;
+
+/// An up or a down op in the block form (`FLAG_BLOCK_FORM`, more than 16 rows): an item is an expert and `pos0` tiles of
+/// it, so `items` is `128 * 36 / pos0`. The bits are those of the decode form. The table needs the expert index
+/// ([`with_expert_index`]).
+pub fn expert_block_form(mut d: MkTaskDescriptor) -> Result<MkTaskDescriptor, String> {
+    let tiles = d.n as usize / 64;
+    let tpi = if d.pos0 == 0 { 1 } else { d.pos0 as usize };
+    if d.flags & (FLAG_UP | FLAG_DOWN) == 0 || !tiles.is_multiple_of(tpi) {
+        return Err("the block form of the experts needs an up or a down op with whole groups of tiles".to_owned());
+    }
+    d.flags |= FLAG_BLOCK_FORM;
+    d.items = count("count of items", EXPERT_COUNT * (tiles / tpi))?;
+    Ok(d)
 }
 
 fn expert_opcode(format: ExpertFormat) -> u16 {

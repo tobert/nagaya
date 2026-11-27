@@ -26,17 +26,18 @@ mod moe_support;
 
 use common::gpu::{GRIDS, download, open, run_with_watchdog, upload};
 use moe_support::expert::{
-    Bank, Matrix, N, QuantRow, bank_pairs, bits, host_dot, quant_rows_bytes, quantize_row, upload_bank,
+    Bank, Matrix, N, QuantRow, bank_pairs, bits, expert_index, host_dot, quant_rows_bytes, quantize_row, uneven_pairs,
+    upload_bank,
 };
 use moe_support::{Checkpoint, Rng, activation_row, model_dir};
 use nagaya_mk_cuda::driver::{CUdeviceptr, CudaDevice};
 use nagaya_mk_cuda::experts::{
-    EXPERT_TABLE_CONV_STATE, EXPERT_TABLE_CONV_WEIGHT, EXPERT_TABLE_OUT, EXPERT_TABLE_OUT_RF, EXPERT_TABLE_RESIDUAL,
-    ExpertFormat, QuantRowsLayout, down_scratch_words, pair_list_bytes,
+    EXPERT_TABLE_CONV_STATE, EXPERT_TABLE_CONV_WEIGHT, EXPERT_TABLE_INDEX, EXPERT_TABLE_OUT, EXPERT_TABLE_OUT_RF,
+    EXPERT_TABLE_RESIDUAL, ExpertFormat, QuantRowsLayout, down_scratch_words, pair_list_bytes,
 };
 use nagaya_mk_cuda::protocol::{
-    EXPERT_TABLE_AMAX, ExpertPair, FLAG_DOWN, FLAG_PAIRS, MkTaskDescriptor, MkTaskTable, OP_EXPERT_MXFP8,
-    OP_EXPERT_NVFP4, OP_PROBE_READ, PROBE_ITEM_BYTES, PROBE_READ_NC, PROFILE_WORDS,
+    EXPERT_TABLE_AMAX, ExpertPair, FLAG_BLOCK_FORM, FLAG_DOWN, FLAG_PAIRS, MkTaskDescriptor, MkTaskTable,
+    OP_EXPERT_MXFP8, OP_EXPERT_NVFP4, OP_PROBE_READ, PROBE_ITEM_BYTES, PROBE_READ_NC, PROFILE_WORDS,
 };
 use nagaya_mk_cuda::ring::{DEFAULT_BLOCK_THREADS, Ring, Task};
 use nagaya_mk_inkling2_bmg::host::ops;
@@ -68,12 +69,17 @@ struct Inputs {
 }
 
 fn inputs(m: &Matrix, tokens: usize) -> Inputs {
+    inputs_of(m, tokens, 40)
+}
+
+/// Like `inputs`, with the generator advanced for `total` tokens (at least `tokens`), for the blocks of up to 512 rows.
+fn inputs_of(m: &Matrix, tokens: usize, total: usize) -> Inputs {
     let mut rng = Rng(0xD0D0_0000 + m.k as u64);
     // Rows of a token: the generator is advanced for 40 tokens always, so that the prefix does not depend on the count.
-    let all_act: Vec<Vec<f32>> = (0..40 * 8)
+    let all_act: Vec<Vec<f32>> = (0..total * 8)
         .map(|i| activation_row(&mut rng, K, [0.5f32, 0.02, 8.0][i % 3]))
         .collect();
-    let residual: Vec<f32> = (0..40 * N).map(|_| rng.unit() * 3.0).collect();
+    let residual: Vec<f32> = (0..total * N).map(|_| rng.unit() * 3.0).collect();
     let conv_weight: Vec<f32> = (0..N * 4).map(|_| rng.unit() * 0.6).collect();
     let state: Vec<f32> = (0..3 * N).map(|_| rng.unit() * 2.0).collect();
     Inputs {
@@ -197,11 +203,33 @@ fn run_down(
     in_place: bool,
     tpi: usize,
 ) -> DownRun {
+    run_down_form(
+        dev, m, bank, inp, tokens, pairs, bound, grid, repeat, in_place, tpi, false, 0xFF,
+    )
+}
+
+/// Like `run_down`; with `block` the op is in the block form (`FLAG_BLOCK_FORM`, the expert index in the table).
+#[allow(clippy::too_many_arguments)]
+fn run_down_form(
+    dev: &CudaDevice,
+    m: &Matrix,
+    bank: &Bank,
+    inp: &Inputs,
+    tokens: usize,
+    pairs: &[ExpertPair],
+    bound: usize,
+    grid: u32,
+    repeat: usize,
+    in_place: bool,
+    tpi: usize,
+    block: bool,
+    slot_fill: u8,
+) -> DownRun {
     let layout = QuantRowsLayout::new(m.format, 8 * tokens, K).unwrap();
     let x_bytes = quant_rows_bytes(&layout, &inp.act);
     let x = upload(dev, &x_bytes);
     let pair_ptr = upload(dev, &pair_list_bytes(pairs, bound).unwrap());
-    let slots = upload(dev, &vec![0xFFu8; 8 * tokens * N * 4]);
+    let slots = upload(dev, &vec![slot_fill; 8 * tokens * N * 4]);
     let residual = upload(dev, &inp.residual);
     let out = if in_place {
         residual
@@ -219,18 +247,25 @@ fn run_down(
     table.ptr[EXPERT_TABLE_CONV_STATE] = state;
     table.ptr[EXPERT_TABLE_OUT] = out;
     table.ptr[EXPERT_TABLE_OUT_RF] = rf;
+    let index = upload(dev, &expert_index(pairs));
+    if block {
+        table.ptr[EXPERT_TABLE_INDEX] = index;
+    }
     let table_ptr = upload(dev, &[table]);
     let mut ring = Ring::new(dev, 1, false).unwrap();
-    ring.set(&[Task::with_items(down_task(
-        m, bank, x, tokens, slots, table_ptr, pair_ptr, counters, bound, tpi,
-    ))
-    .reads(x, x_bytes.len())
-    .reads(bank.ptr, bank.bytes)
-    .writes(slots, 8 * tokens * N * 4)
-    .writes(out, tokens * N * 4)
-    .writes(state, 3 * N * 4)
-    .writes(rf, tokens * 4)
-    .writes(counters, down_scratch_words(N, tokens) * 4)]);
+    let mut task = down_task(m, bank, x, tokens, slots, table_ptr, pair_ptr, counters, bound, tpi);
+    if block {
+        task.flags |= FLAG_BLOCK_FORM;
+        task.items = (128 * N / 64 / tpi) as u32;
+    }
+    ring.set(&[Task::with_items(task)
+        .reads(x, x_bytes.len())
+        .reads(bank.ptr, bank.bytes)
+        .writes(slots, 8 * tokens * N * 4)
+        .writes(out, tokens * N * 4)
+        .writes(state, 3 * N * 4)
+        .writes(rf, tokens * 4)
+        .writes(counters, down_scratch_words(N, tokens) * 4)]);
     for _ in 0..repeat {
         // Back to the start values.
         unsafe {
@@ -273,7 +308,9 @@ fn run_down(
         );
     }
     ring.free().unwrap();
-    let mut frees = vec![x, pair_ptr, slots, residual, weight, state, counters, rf, table_ptr];
+    let mut frees = vec![
+        x, pair_ptr, slots, residual, weight, state, counters, rf, table_ptr, index,
+    ];
     if !in_place {
         frees.push(out);
     }
@@ -758,4 +795,43 @@ fn speed_of_the_down_op_for_8_experts_with_1_and_16_rows() {
     }
     dev.free_device(flush).unwrap();
     dev.free_device(checks).unwrap();
+}
+
+/// An uneven route for the block form: the slots that no pair writes hold 0 (`slot_fill`), so they add nothing. Token `t`
+/// skips expert `e` when `(7 t + 13 e) % 5 == 0`, expert 3 takes no row, and expert 5 takes every row.
+fn uneven(tokens: usize) -> Vec<ExpertPair> {
+    uneven_pairs(
+        tokens,
+        |t, e| e != 3 && (e == 5 || (7 * t + 13 * e) % 5 != 0),
+        |_, _| 1.0,
+    )
+}
+
+#[test]
+fn the_block_form_gives_the_bits_of_the_decode_form() {
+    let Some(matrices) = matrices() else { return };
+    let dev = open();
+    for m in &matrices {
+        let bank = upload_bank(&dev, m, false);
+        for tokens in [17usize, 33, 64, 128, 512] {
+            let inp = inputs_of(m, tokens, 512);
+            for (pairs, fill) in [(pairs_of(tokens), 0xFFu8), (uneven(tokens), 0u8)] {
+                let bound = nagaya_mk_cuda::protocol::expert_pair_bound(tokens).max(pairs.len());
+                let want = run_down_form(
+                    &dev, m, &bank, &inp, tokens, &pairs, bound, 48, 1, false, TPI, false, fill,
+                );
+                for (grid, tpi) in [(48u32, 3usize), (24, 3), (7, 6), (1, 9), (48, 1)] {
+                    let got = run_down_form(
+                        &dev, m, &bank, &inp, tokens, &pairs, bound, grid, 2, false, tpi, true, fill,
+                    );
+                    let what = format!("{}: {tokens} rows, grid {grid}, tpi {tpi}", m.name);
+                    assert_eq!(bits(&got.slots), bits(&want.slots), "{what}: slot rows differ");
+                    assert_eq!(bits(&got.out), bits(&want.out), "{what}: output differs");
+                    assert_eq!(bits(&got.state), bits(&want.state), "{what}: conv state differs");
+                    assert_eq!(bits(&got.rf), bits(&want.rf), "{what}: row factors differ");
+                    assert!(got.counters.iter().all(|c| *c == 0), "{what}: a counter was left");
+                }
+            }
+        }
+    }
 }

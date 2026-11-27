@@ -735,6 +735,24 @@ impl<'d> Pass<'d> {
         Ok((built, list))
     }
 
+    /// The live pairs of the last call's final expert route, as `(expert, rows)` in list order. Each run rewrites the
+    /// list, so this is the route of the last run of the call (a measuring aid for the expert ops).
+    pub fn pairs_of_last_run(&self) -> Result<Vec<(u32, u32)>, String> {
+        let key = self
+            .loaded
+            .ok_or_else(|| "the pass has not run a call. Call Pass::run first".to_owned())?;
+        let arena = self.arena.view(key.rows, key.logit_span)?;
+        let size = std::mem::size_of::<nagaya_mk_cuda::protocol::ExpertPair>();
+        let bytes = nagaya_mk_cuda::experts::route_pair_list_bytes(key.rows);
+        let raw = self.arena.buffer.read(arena.layout.offset(Buf::Pairs), bytes)?;
+        let live = u32::from_le_bytes(raw[0..4].try_into().expect("4 bytes")) as usize;
+        let at = nagaya_mk_cuda::protocol::EXPERT_PAIR_HEADER_BYTES;
+        let word = |o: usize| u32::from_le_bytes(raw[o..o + 4].try_into().expect("4 bytes"));
+        Ok((0..live)
+            .map(|i| (word(at + i * size), word(at + i * size + 4)))
+            .collect())
+    }
+
     /// The times of each block of each task of the last profiled call. A block that had no item of the task is left out.
     pub fn block_times(&self) -> Result<Vec<TaskTimes>, String> {
         if !self.profiled {

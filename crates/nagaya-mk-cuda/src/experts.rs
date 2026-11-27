@@ -34,7 +34,16 @@ pub fn pair_list_bytes(pairs: &[ExpertPair], capacity: usize) -> Result<Vec<u8>,
     }
     let header = ExpertPairHeader {
         pairs: pairs.len() as u32,
-        reserved: [0; 3],
+        // The word 0 of `reserved` is the count of experts that have a pair (the arrivals of the block form of the down op).
+        reserved: [
+            pairs
+                .iter()
+                .map(|p| p.expert)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len() as u32,
+            0,
+            0,
+        ],
     };
     let mut out = Vec::with_capacity(EXPERT_PAIR_HEADER_BYTES + capacity * std::mem::size_of::<ExpertPair>());
     out.extend_from_slice(&header.pairs.to_le_bytes());
@@ -61,6 +70,14 @@ pub fn pair_list_bytes(pairs: &[ExpertPair], capacity: usize) -> Result<Vec<u8>,
 /// The slot of the pointer to the bias of the router (`f32`, 128 of them) in the task table of `OP_ROUTE`. The slots of
 /// the table are the same in `kernels/ops_moe.cuh`.
 pub const ROUTE_TABLE_BIAS: usize = 0;
+
+/// The slot of the pointer to the expert index in the table of `OP_ROUTE`: 128 `u32`, one for each expert, with
+/// `first_pair | pairs << 16`. A table with 0 here gets no index. The block form of the expert ops reads the same
+/// words through [`EXPERT_TABLE_INDEX`].
+pub const ROUTE_TABLE_INDEX: usize = 1;
+
+/// The slot of the expert index in the table of an up or a down op in the block form (`FLAG_BLOCK_FORM`).
+pub const EXPERT_TABLE_INDEX: usize = 7;
 
 /// The slot of the pointer to the buffer of quantized activation rows in the table of an up op (`FLAG_UP`). The slots of
 /// the table are the same in `kernels/experts.cuh`. The slot 0 is `EXPERT_TABLE_AMAX`.
@@ -105,9 +122,18 @@ pub fn route_items(rows: usize) -> usize {
 pub const ROUTE_COUNTER_WORDS: usize = (ROUTE_MAX_ROWS.div_ceil(ROUTE_ROW_TILE) * 9 + 1).next_multiple_of(4);
 
 /// The words of the scratch (`f`) of `OP_ROUTE` for `rows` rows: the counters (`ROUTE_COUNTER_WORDS`), then the logits
-/// (128 for each row), then the partials (256 for each item). The counters start at 0 and stay 0.
+/// (128 for each row), then the partials (256 for each item), then the expert index (128 words). The counters start at
+/// 0 and stay 0.
 pub fn route_scratch_words(rows: usize) -> usize {
-    ROUTE_COUNTER_WORDS + rows * 128 + route_items(rows) * ROUTE_ROW_TILE * 16
+    ROUTE_COUNTER_WORDS + rows * 128 + route_items(rows) * ROUTE_ROW_TILE * 16 + ROUTE_INDEX_WORDS
+}
+
+/// The words of the expert index at the end of the scratch of `OP_ROUTE` (one for each expert).
+pub const ROUTE_INDEX_WORDS: usize = 128;
+
+/// The word of the expert index in the scratch of `OP_ROUTE` for `rows` rows: the last [`ROUTE_INDEX_WORDS`] words.
+pub fn route_index_word(rows: usize) -> usize {
+    route_scratch_words(rows) - ROUTE_INDEX_WORDS
 }
 
 /// The bytes of the pair list of `OP_ROUTE` for `rows` rows: the header and room for the bound of pairs.
@@ -396,7 +422,9 @@ mod tests {
         let pair = std::mem::size_of::<ExpertPair>();
         assert_eq!(bytes.len(), EXPERT_PAIR_HEADER_BYTES + 3 * pair);
         assert_eq!(&bytes[..4], &1u32.to_le_bytes());
-        assert!(bytes[4..EXPERT_PAIR_HEADER_BYTES].iter().all(|b| *b == 0));
+        // The word 1 is the count of experts that have a pair (the block form of the down op); the rest is 0.
+        assert_eq!(&bytes[4..8], &1u32.to_le_bytes());
+        assert!(bytes[8..EXPERT_PAIR_HEADER_BYTES].iter().all(|b| *b == 0));
         let first = &bytes[EXPERT_PAIR_HEADER_BYTES..][..pair];
         assert_eq!(&first[..4], &7u32.to_le_bytes());
         assert_eq!(&first[4..8], &2u32.to_le_bytes());

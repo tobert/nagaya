@@ -127,6 +127,9 @@ fn add_writes(mut task: Task, spans: &[(u64, usize)]) -> Task {
 /// A block of more rows than this runs in the block form of PROJ (`FLAG_BLOCK_FORM`, for 17 to 512 rows).
 pub const BLOCK_FORM_ROWS_ABOVE: usize = 16;
 
+/// Whether the up and down ops of the experts take the block form above `BLOCK_FORM_ROWS_ABOVE` rows. Off: see `run_tasks`.
+pub const EXPERT_BLOCK_FORM: bool = false;
+
 /// The tasks of the run `plan`, in order, for a step of `shape`.
 pub fn run_tasks(
     plan: &RunPlan,
@@ -482,6 +485,10 @@ pub fn run_tasks(
             ));
         }
     }
+    // Measured 2026-11-27: the re-cut block form of the experts (no ring) is slower than the decode form at 512 rows
+    // (UP 5.1 ms against 3.6, DOWN 3.3 against 3.0), so it stays off until a form that streams the weights beats it.
+    let block_form = EXPERT_BLOCK_FORM && rows > BLOCK_FORM_ROWS_ABOVE;
+    let index_addr: u64;
     // QUANT of h_e, and ROUTE of h_e, in parallel: they read the same rows and write other buffers.
     let xq_layout = QuantRowsLayout::new(format, rows, HIDDEN)?;
     out.push((
@@ -501,7 +508,9 @@ pub fn run_tasks(
             nagaya_mk_cuda::experts::route_scratch_words(rows),
             region,
         )?;
-        let table = tables.add(desc::route_table(w.router_bias.ptr())?)?;
+        // The expert index sits at the end of the route scratch. The block form of the experts (more than 16 rows) reads it.
+        index_addr = scratch + 4 * nagaya_mk_cuda::experts::route_index_word(rows) as u64;
+        let table = tables.add(desc::route_table_with_index(w.router_bias.ptr(), index_addr)?)?;
         let d = desc::route(
             rows,
             &RouteAddrs {
@@ -531,15 +540,20 @@ pub fn run_tasks(
     let bank = &w.experts;
     {
         let (counters, region) = env.region(ScratchKind::Up);
-        let table = tables.add(desc::up_table(
-            bank.up_amax.as_ref().map(|d| d.ptr()),
-            a.addr(Buf::Actq),
-        )?)?;
+        let mut up_table = desc::up_table(bank.up_amax.as_ref().map(|d| d.ptr()), a.addr(Buf::Actq))?;
+        if block_form {
+            up_table = desc::with_expert_index(up_table, index_addr)?;
+        }
+        let table = tables.add(up_table)?;
         let d = desc::up(
             format,
             rows,
             rows,
-            desc::up_tiles_per_item(rows),
+            if block_form {
+                desc::block_tiles_per_item(rows)
+            } else {
+                desc::up_tiles_per_item(rows)
+            },
             &ExpertAddrs {
                 input: a.addr(Buf::Xq),
                 bank: bank.up.ptr(),
@@ -550,6 +564,7 @@ pub fn run_tasks(
             },
             bank.up_denominator,
         )?;
+        let d = if block_form { desc::expert_block_form(d)? } else { d };
         fits(ScratchKind::Up, expert_pair_bound(rows), region)?;
         out.push((
             TaskKind::Up,
@@ -573,14 +588,18 @@ pub fn run_tasks(
     // DOWN: the down matmul, the slot sum, the conv of the mlp and the residual.
     {
         let (counters, region) = env.region(ScratchKind::Down);
-        let table = tables.add(desc::down_table(
+        let mut down_table = desc::down_table(
             bank.down_amax.as_ref().map(|d| d.ptr()),
             a.addr(Buf::R),
             w.mlp_conv.ptr(),
             env.slot.conv_ptr(3),
             a.addr(plan.x_out),
             a.rf(plan.x_out),
-        )?)?;
+        )?;
+        if block_form {
+            down_table = desc::with_expert_index(down_table, index_addr)?;
+        }
+        let table = tables.add(down_table)?;
         fits(
             ScratchKind::Down,
             nagaya_mk_cuda::experts::down_scratch_words(HIDDEN, rows),
@@ -589,7 +608,11 @@ pub fn run_tasks(
         let d = desc::down(
             format,
             rows,
-            desc::down_tiles_per_item(rows),
+            if block_form {
+                desc::block_tiles_per_item(rows)
+            } else {
+                desc::down_tiles_per_item(rows)
+            },
             &ExpertAddrs {
                 input: a.addr(Buf::Actq),
                 bank: bank.down.ptr(),
@@ -600,6 +623,7 @@ pub fn run_tasks(
             },
             bank.down_denominator,
         )?;
+        let d = if block_form { desc::expert_block_form(d)? } else { d };
         out.push((
             TaskKind::Down,
             add_writes(

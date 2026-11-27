@@ -40,6 +40,9 @@
 #pragma once
 
 constexpr uint32_t ROUTE_TABLE_BIAS = 0;
+// Optional: the expert index (128 `u32`, `first_pair | pairs << 16` for each expert) that the block form of the expert ops reads.
+// A table with 0 here gets no index.
+constexpr uint32_t ROUTE_TABLE_INDEX = 1;
 
 constexpr uint32_t RT_EXPERTS = 128;
 constexpr uint32_t RT_K = 2304;
@@ -212,7 +215,7 @@ __device__ __forceinline__ void route_row(
 
 // The list of pairs from the picks of all rows. It runs in the last item of the task: all 256 consumers. Thread `e` of
 // the first 128 takes the expert `e`: its rows in ascending order, 16 rows for each pair.
-__device__ __forceinline__ void route_plan(const MkTaskDescriptor& task, const uint32_t* sel_expert, const float* sel_weight) {
+__device__ __forceinline__ void route_plan(const MkTaskDescriptor& task, const MkTaskTable* table, const uint32_t* sel_expert, const float* sel_weight) {
     const uint32_t rows = task.rows;
     uint32_t* bits = reinterpret_cast<uint32_t*>(mk_smem + RT_OFF_BITS);
     uint32_t* warp_sum = reinterpret_cast<uint32_t*>(mk_smem + RT_OFF_WSUM);
@@ -254,6 +257,11 @@ __device__ __forceinline__ void route_plan(const MkTaskDescriptor& task, const u
     for (uint32_t w = 0; w < (tid >> 5); ++w) {
         first += warp_sum[w];
     }
+    if (owner) {
+        // The expert index: the pairs of an expert are contiguous (`first`), and `pairs` of them hold its rows. It goes to
+        // shared memory here and to the table at the end, so that the pointer is not live across the fill of the pairs.
+        reinterpret_cast<uint32_t*>(mk_smem + RT_OFF_COUNTS)[tid] = first | (pairs << 16);
+    }
     uint32_t live = 0;
     for (uint32_t w = 0; w < RT_WARPS; ++w) {
         live += warp_sum[w];
@@ -289,6 +297,25 @@ __device__ __forceinline__ void route_plan(const MkTaskDescriptor& task, const u
             const uint32_t left = count - p * MK_EXPERT_MAX_ROWS;
             pair->count = left < MK_EXPERT_MAX_ROWS ? left : MK_EXPERT_MAX_ROWS;
         }
+    }
+    // The expert index goes to the table, and the count of experts that have a pair goes to the header (`reserved[0]`).
+    const bool has_pairs = tid < RT_EXPERTS && (reinterpret_cast<const uint32_t*>(mk_smem + RT_OFF_COUNTS)[tid] >> 16) != 0;
+    if (table->ptr[ROUTE_TABLE_INDEX] != 0 && tid < RT_EXPERTS) {
+        __stcg(reinterpret_cast<uint32_t*>(table->ptr[ROUTE_TABLE_INDEX]) + tid,
+               reinterpret_cast<const uint32_t*>(mk_smem + RT_OFF_COUNTS)[tid]);
+    }
+    if ((tid & 31) == 0) {
+        warp_sum[tid >> 5] = __popc(__ballot_sync(0xFFFFFFFFu, has_pairs));
+    } else {
+        __ballot_sync(0xFFFFFFFFu, has_pairs);
+    }
+    worker_sync();
+    if (tid == 0) {
+        uint32_t experts = 0;
+        for (uint32_t w = 0; w < RT_WARPS; ++w) {
+            experts += warp_sum[w];
+        }
+        reinterpret_cast<ExpertPairHeader*>(task.e)->reserved[0] = experts;
     }
 }
 
@@ -417,5 +444,5 @@ __device__ __forceinline__ void op_route(const MkTaskDescriptor& task, const MkT
     if (flags[2] == 0) {
         return;
     }
-    route_plan(task, sel_expert, sel_weight);
+    route_plan(task, table, sel_expert, sel_weight);
 }
