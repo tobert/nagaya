@@ -28,7 +28,7 @@ pub struct TextFacts {
 
 /// The text facts of the model folder `dir`, from the family library of its files.
 pub fn text_facts(dir: &Path) -> Result<TextFacts, String> {
-    let family = nagaya_text_inkling2::Inkling2Family::from_dir(dir)
+    let family = nagaya_family_inkling2::Inkling2Family::from_dir(dir)
         .map_err(|e| format!("cannot build the Inkling 2 family from {}: {e}", dir.display()))?;
     Ok(TextFacts {
         tokenizer_hash: family.tokenizer_hash().to_owned(),

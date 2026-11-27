@@ -35,11 +35,11 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use kv_quality_support::{accuracy, argmax, measure_window};
+use nagaya_family_inkling2::Tokenizer;
 use nagaya_mk_cuda::attn::CacheFormat;
 use nagaya_mk_inkling2_sm121::pass::step::{Pass, PassConfig};
 use nagaya_mk_inkling2_sm121::pass::weights::DeviceWeights;
 use nagaya_mk_inkling2_sm121::spec::{self, LOGITS};
-use nagaya_text_inkling2::Tokenizer;
 
 const MAX_ROWS: usize = 512;
 const CYCLES: usize = 3;

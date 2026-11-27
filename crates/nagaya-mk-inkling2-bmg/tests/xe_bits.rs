@@ -15,9 +15,9 @@ mod common;
 use common::Which;
 use common::card;
 use nagaya_abi::Engine;
+use nagaya_family_inkling2::tokenizer::sha256_of;
 use nagaya_mk_inkling2_bmg::Inkling2Engine;
 use nagaya_mk_inkling2_bmg::spec::{Config, DEFAULT_MAX_BLOCK};
-use nagaya_text_inkling2::tokenizer::sha256_of;
 
 /// The fixture: one line for each case, its name and the SHA-256 of the bits of its logits.
 const FIXTURE: &str = include_str!("fixtures/logit_bits.txt");

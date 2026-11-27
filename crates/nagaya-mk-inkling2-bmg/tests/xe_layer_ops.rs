@@ -200,7 +200,7 @@ fn same_in_blocks(what: &str, width: usize, blocks: &[usize], mut run: impl FnMu
 /// Check that the bits of `got` have the hash of the line `what` in `fixtures/layer_op_bits.txt`.
 fn keep_bits(what: &str, got: &[f32]) {
     let bytes: Vec<u8> = got.iter().flat_map(|v| v.to_bits().to_le_bytes()).collect();
-    let sha = nagaya_text_inkling2::tokenizer::sha256_of(&bytes);
+    let sha = nagaya_family_inkling2::tokenizer::sha256_of(&bytes);
     eprintln!("bits: {what}: {sha}");
     let want = OP_BITS
         .lines()

@@ -1207,6 +1207,7 @@ dependencies = [
  "nagaya-family-beatthis",
  "nagaya-family-embeddinggemma2",
  "nagaya-family-gemma4",
+ "nagaya-family-inkling2",
  "nagaya-family-lfm3",
  "nagaya-family-qwen38",
  "nagaya-family-qwen3tts",
@@ -1229,7 +1230,6 @@ dependencies = [
  "nagaya-sched",
  "nagaya-store",
  "nagaya-telemetry",
- "nagaya-text-inkling2",
  "opentelemetry",
  "png",
  "rayon",
@@ -1307,6 +1307,21 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokenizers",
+]
+
+[[package]]
+name = "nagaya-family-inkling2"
+version = "0.1.0"
+dependencies = [
+ "gogi-proto",
+ "nagaya-council",
+ "nagaya-jinja",
+ "png",
+ "safetensors",
+ "serde_json",
+ "sha2",
+ "tokenizers",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -1478,8 +1493,8 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "nagaya-abi",
+ "nagaya-family-inkling2",
  "nagaya-mk-bmg",
- "nagaya-text-inkling2",
  "rayon",
  "serde_json",
 ]
@@ -1492,11 +1507,11 @@ dependencies = [
  "nagaya-abi",
  "nagaya-conformance",
  "nagaya-council",
+ "nagaya-family-inkling2",
  "nagaya-jinja",
  "nagaya-mk-bmg",
  "nagaya-mk-cuda",
  "nagaya-mk-inkling2-bmg",
- "nagaya-text-inkling2",
  "serde_json",
  "tempfile",
 ]
@@ -1610,21 +1625,6 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "nagaya-text-inkling2"
-version = "0.1.0"
-dependencies = [
- "gogi-proto",
- "nagaya-council",
- "nagaya-jinja",
- "png",
- "safetensors",
- "serde_json",
- "sha2",
- "tokenizers",
- "zune-jpeg",
 ]
 
 [[package]]

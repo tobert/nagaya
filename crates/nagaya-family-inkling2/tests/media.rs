@@ -13,8 +13,8 @@ use std::sync::Arc;
 use common::model::{absent, golden_path, mini_dir};
 use gogi_proto::context::Context;
 use nagaya_council::family::{DecisionInput, Family, FamilyError};
-use nagaya_text_inkling2::media::{self, IMAGE_TOKEN, MediaError, PATCH_VALUES, vision};
-use nagaya_text_inkling2::{Inkling2Family, Objects};
+use nagaya_family_inkling2::media::{self, IMAGE_TOKEN, MediaError, PATCH_VALUES, vision};
+use nagaya_family_inkling2::{Inkling2Family, Objects};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 

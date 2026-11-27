@@ -24,7 +24,7 @@ members = [
     "crates/nagaya-family-embeddinggemma2",
     "crates/nagaya-family-qwenimage21",
     "crates/nagaya-family-lfm3",
-    "crates/nagaya-text-inkling2",
+    "crates/nagaya-family-inkling2",
     "crates/nagaya-family-beatthis",
     "crates/nagaya-mk-beatthis-cpu",
     "crates/nagaya-mk-beatthis-gfx1151",

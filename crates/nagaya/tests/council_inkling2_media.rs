@@ -17,10 +17,10 @@ use nagaya::council::{Schedule, ServiceConfig};
 use nagaya::lfm3::StoreObjects;
 use nagaya_abi::SegmentInputs;
 use nagaya_council::family::Family;
+use nagaya_family_inkling2::Inkling2Family;
+use nagaya_family_inkling2::media::Grid;
 use nagaya_mk_inkling2_bmg::media::{IMAGE_TOKEN, Span, check_spans, decode};
 use nagaya_store::objects::ObjectStore;
-use nagaya_text_inkling2::Inkling2Family;
-use nagaya_text_inkling2::media::Grid;
 use serde_json::json;
 
 fn folder() -> Option<PathBuf> {
@@ -140,7 +140,7 @@ fn a_chat_with_an_image_part_becomes_the_placeholders_the_record_and_the_rows_of
         90,
         "no placeholder outside the span"
     );
-    let want = nagaya_text_inkling2::media::prepare(&image, "image/png").unwrap();
+    let want = nagaya_family_inkling2::media::prepare(&image, "image/png").unwrap();
     assert_eq!(want.grid, Grid { rows: 9, columns: 10 });
 
     let built = chat

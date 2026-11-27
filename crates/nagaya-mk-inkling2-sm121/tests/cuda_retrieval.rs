@@ -52,9 +52,9 @@ use std::time::{Duration, Instant};
 
 use nagaya_abi::Engine;
 use nagaya_council::family::{Family, ReplyStart};
+use nagaya_family_inkling2::{Chat, Effort, Inkling2Family, Options, Tokenizer};
 use nagaya_jinja::Json;
 use nagaya_mk_cuda::attn::CacheFormat;
-use nagaya_text_inkling2::{Chat, Effort, Inkling2Family, Options, Tokenizer};
 
 use engine_support::{config, open, watchdog};
 use retrieval_support::gpu::{self, Mutation};

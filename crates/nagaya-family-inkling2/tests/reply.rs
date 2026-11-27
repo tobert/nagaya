@@ -3,7 +3,7 @@ mod common;
 use common::model::{absent, mini_dir};
 use gogi_proto::generation::Phase;
 use nagaya_council::family::{Family, ReplyCall, ReplyStart};
-use nagaya_text_inkling2::Inkling2Family;
+use nagaya_family_inkling2::Inkling2Family;
 use serde_json::Value;
 
 #[test]

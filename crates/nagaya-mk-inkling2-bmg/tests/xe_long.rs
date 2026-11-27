@@ -28,10 +28,10 @@ use std::collections::BTreeMap;
 use common::Which;
 use common::card;
 use nagaya_abi::{Engine, OutputsWanted, Segment, SegmentInputs, State};
+use nagaya_family_inkling2::media::{self, Rgb};
 use nagaya_mk_inkling2_bmg::host::forward::{Context, DEFAULT_CYCLES, Model};
 use nagaya_mk_inkling2_bmg::media::IMAGE_TOKEN;
 use nagaya_mk_inkling2_bmg::spec::{DEFAULT_MAX_BLOCK, MAX_QUANTUM_MS};
-use nagaya_text_inkling2::media::{self, Rgb};
 
 /// The positions of the slot. A slot of 164,352 positions is the largest whose buffers all stay in the memory of
 /// the card at 3 cycles (engine-abi "The cost of a slot"). This one leaves a margin.

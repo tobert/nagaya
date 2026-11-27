@@ -3,8 +3,8 @@ mod common;
 use std::sync::Arc;
 
 use common::model::{absent, mini_dir};
+use nagaya_family_inkling2::{Chat, Effort, Options, Tokenizer};
 use nagaya_jinja::Json;
-use nagaya_text_inkling2::{Chat, Effort, Options, Tokenizer};
 use serde_json::Value;
 
 fn json_of(value: &Value) -> Json {

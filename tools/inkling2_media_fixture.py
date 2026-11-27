@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Make the media fixture of the Inkling 2 family library (engine-abi "The images of Inkling 2").
 
-The tool writes these files into crates/nagaya-text-inkling2/tests/fixtures:
+The tool writes these files into crates/nagaya-family-inkling2/tests/fixtures:
 
 - media.json: for each small image file below, the grid of the reference processor, and the SHA-256 of the RGB
   bytes after its convert step and of its f32 pixel values, little-endian. A JPEG also has a PNG of Pillow's RGB,
@@ -33,7 +33,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_OUT = ROOT / "crates/nagaya-text-inkling2/tests/fixtures"
+DEFAULT_OUT = ROOT / "crates/nagaya-family-inkling2/tests/fixtures"
 WIDTH, HEIGHT = 83, 45
 
 

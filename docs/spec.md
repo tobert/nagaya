@@ -5112,7 +5112,7 @@ model (milestone 35, engine-abi "Inkling 2"). Each rule below is **Proposed**. R
 - The `model` of the identity stays `inkling2-mini` or `inkling2-varloop`, from `loop_config.is_varloop` of the folder.
 - The kind gives its served name before the open (`Factory::served_names`, 2.3, "The check of a name").
 - The example profile names the engine `inkling2-mini` (`deploy/b70-pair/profile.toml`).
-- **The family.** One library, `nagaya-text-inkling2`, serves both models, because the two folders share every file
+- **The family.** One library, `nagaya-family-inkling2`, serves both models, because the two folders share every file
   of the family. Its opener reads the key `model_dir` of `[engines.family]`. With no key, it reads
   `INKLING2_MODEL_DIR`. Thus an engine on demand, which has no family table (3.3a), still gets its family.
   - The family can read another folder than the engine. Thus the opener refuses a family whose chat template is not

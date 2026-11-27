@@ -721,7 +721,7 @@ fn image_segment(from: u64, tokens: &[u32], spans: &[crate::media::Span]) -> Seg
     let mut rows = 0;
     for span in spans {
         meta.extend(
-            nagaya_text_inkling2::media::ImageRows {
+            nagaya_family_inkling2::media::ImageRows {
                 grid: span.grid().unwrap(),
                 values: Vec::new(),
             }
@@ -742,7 +742,7 @@ fn image_segment(from: u64, tokens: &[u32], spans: &[crate::media::Span]) -> Seg
 #[test]
 fn a_pass_takes_the_rows_and_the_records_of_its_images() {
     use crate::media::{IMAGE_TOKEN as P, Span};
-    use nagaya_text_inkling2::media::Grid;
+    use nagaya_family_inkling2::media::Grid;
     let mut held = Held::new(&[4096], DEFAULT_EXTRA_RUNS);
     // An image of 2 by 3 tokens at positions 2 to 8, in blocks of 4 and 6.
     let image = Span::image(Grid { rows: 2, columns: 3 }, 2);

@@ -9,7 +9,7 @@
 //!
 //! As for LFM3, the family library prepares the rows of an image (spec 11.11), and the engine runs the tower inside
 //! the pass. The rules of the processor ([`grid`], [`pixel_values`] and [`patch_rows`]) are the family's
-//! (`nagaya_text_inkling2::processor`), and this module uses them. Thus the family and the oracle read one copy. The tower and the
+//! (`nagaya_family_inkling2::processor`), and this module uses them. Thus the family and the oracle read one copy. The tower and the
 //! projector ([`Vision::tower`]) are the oracle of the device ops.
 //!
 //! # The names of the checkpoint
@@ -32,7 +32,7 @@
 use super::ops::{self, HIDDEN};
 use super::weights::Checkpoint;
 // The rules of the processor are the family's (engine-abi "One copy of the rules"), so the oracle gates check them.
-pub use nagaya_text_inkling2::processor::{
+pub use nagaya_family_inkling2::processor::{
     Grid, IMAGE_TOKEN, MAX_PATCH_SIDE, MAX_SIDE, MAX_TOKENS, MERGE, MIN_SIDE, PAD_VALUE, PATCH_PX, PATCH_VALUES,
     TOKEN_PX, grid, patch_rows, pixel_values, rgba_to_rgb,
 };
