@@ -126,6 +126,15 @@ These floors are estimates from counts, with no attention and no epilogue. A fai
 - Gain: about 200 ms of 733 ms, if the ops reach 90% of the peak rate.
 - Bits: no change, if each chain keeps the order of the decode form. The block form of the dense matmul kept it.
 - First measure: the count of pairs and the bytes read in a block of 512 rows, against the bytes of the weights.
+- Measured (2026-11-27): at 512 rows about 305 pairs and 556 passes read the weights of a run about 4.4 times. The
+  route is skewed: 84 to 93 of 128 experts get rows, and the hottest gets 400 to 480 of 512 (on a text that repeats;
+  a PG-19 measure is to do). A first form that puts the passes of one expert next to each other, with no ring, gives
+  the bits of the decode form but is slower (a block of 830 ms against 733): the cost of a pass does not change
+  when its tile comes from L2, so the loss is the latency of one load in flight for each warp, not the bytes.
+- Next: a ring of weight stages in shared memory, with a hot-first order of the items from `ROUTE` (work on branch
+  `gb10-expblock`, not merged). The ring code spills 4 to 12 bytes at the bound of 168 registers when it shares a
+  cubin with the decode paths; each form alone fits.
+- P2b: the finisher of `DOWN` runs as a tail of about 0.43 ms a run (about 19 ms of a block).
 
 ### P3. `PROJ` in the block form
 
@@ -281,7 +290,17 @@ the GPU report `cuda_block_cost` of the engine crate.
   head cost at 3 drafts is about 0.48 steps.
 - So a design checks 2 to 3 drafts in a block of 3 to 4 rows, and runs the head once for each block.
 - Open: the head cost on the card, and the acceptance with the features of the engine (the taps of step 13). Both
-  can move the 1.25. The go or stop of step 3 is open for @tobert.
+  can move the 1.25.
+- Decided 2026-11-27: build the head (step 3: go), through every stage, whatever the first measures give.
+- Stage (a), measured (2026-11-27): the engine exports the four features (taps) with copy tasks, with no bit of the
+  logits or the slot moved. On the same 9 texts, the head on the engine's own taps accepts 1.31 drafts in a block of
+  7 (1.30 with the CPU features), so the CPU measure was not low. With 3 drafts: 2.13 tokens a block, and about
+  1.23 times at a head cost of 0.33 steps (chat 1.16, code 1.46, prose 1.15). The matmuls of the head read 1.73 GB
+  a block: 0.29 steps. The break-even head cost at 3 drafts is 0.67 steps.
+- The plan of the build (branch `gb10-mtp`): (b) the slot goes back after a refused draft (a ring of 8 rows for the
+  convolution states, and a save of at most 4 rows of the sliding rings); (c) the head as ops in a cubin of its own;
+  (d) the loop of the job, with the lookup first and the head when the lookup has no draft; (e) the draft cache in
+  the plan; (f) the speed gates.
 
 ### D2. Fewer bytes in the dense weights
 
