@@ -45,7 +45,7 @@ jobs:
           python-version: "3.13"
       - name: tests of the tools
         working-directory: tools
-        run: python3 -m unittest test_nagaya_web test_nagaya_web_page test_nagaya_image_batch test_oracle_fixture
+        run: python3 -m unittest test_nagaya_web test_nagaya_web_page test_nagaya_image_batch test_oracle_fixture test_prompt_lookup_sim
       - name: tests of the swarm driver
         working-directory: tools
         run: python3 -m unittest discover -s swarm/tests -t .
