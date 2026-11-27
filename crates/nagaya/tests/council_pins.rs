@@ -345,7 +345,7 @@ fn a_snapshot_evicted_during_a_read_is_not_found_not_a_panic() {
     };
     let service = nagaya::council::Service::attach_with_clock(
         ports.clone(),
-        Arc::new(nagaya_text_toy::ToyFamily::new()),
+        Arc::new(nagaya_family_toy::ToyFamily::new()),
         f.directory.path(),
         ServiceConfig::new("toy", ENGINE),
         evict_on_reading,

@@ -74,7 +74,7 @@ impl FamilyRegistry {
         #[cfg(feature = "fake")]
         registry.register("toy", |_, _| {
             Ok(OpenedFamily {
-                family: Arc::new(nagaya_text_toy::ToyFamily::new()),
+                family: Arc::new(nagaya_family_toy::ToyFamily::new()),
                 tokenizer_hash: None,
                 speech: None,
                 served: ServedName::Identity,

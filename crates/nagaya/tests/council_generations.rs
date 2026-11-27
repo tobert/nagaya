@@ -15,7 +15,7 @@ use nagaya::council::ServiceConfig;
 use nagaya::council::error::ServiceError;
 use nagaya_council::family::{Family, ReplyStart};
 use nagaya_council::sampler::{Settings, pick};
-use nagaya_text_toy::ToyFamily;
+use nagaya_family_toy::ToyFamily;
 use serde_json::{Value, json};
 
 fn ctx(thinking: bool, messages: Vec<Value>) -> Value {

@@ -21,8 +21,8 @@ use nagaya_council::family::{
     Boundary, DecisionInput, Family, FamilyError, ParsedReply, RawRead, ReadPlan, Rendering, ReplyParser, ReplyStart,
     ReplyStep,
 };
+use nagaya_family_toy::ToyFamily;
 use nagaya_store::{ContentId, EngineFacts, Put, Reason, RecipeId, Tier};
-use nagaya_text_toy::ToyFamily;
 use serde_json::{Value, json};
 
 fn context(messages: &[Value]) -> Context {

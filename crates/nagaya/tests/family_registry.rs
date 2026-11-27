@@ -7,7 +7,7 @@ use nagaya::serving::{FamilyRegistry, OpenedFamily, ServedName};
 use nagaya_abi::SlotLimit;
 use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{Engine, Identity};
-use nagaya_text_toy::ToyFamily;
+use nagaya_family_toy::ToyFamily;
 
 fn opened(family: &str, slots: Vec<SlotLimit>) -> OpenedEngine {
     let engine = FakeAlways::with_slots(slots).with_family(family);

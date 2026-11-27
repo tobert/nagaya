@@ -29,7 +29,7 @@ members = [
     "crates/nagaya-mk-beatthis-cpu",
     "crates/nagaya-mk-beatthis-gfx1151",
     "crates/nagaya-council",
-    "crates/nagaya-text-toy",
+    "crates/nagaya-family-toy",
     "crates/nagaya-telemetry",
     "crates/nagaya-conformance",
     "crates/nagaya",

@@ -15,8 +15,8 @@ use council_support::{ControlLog, ENGINE, Fixture, TermFactory};
 use feed_support::{FeedFactory, FeedFixture};
 use nagaya::council::{Service, ServiceConfig};
 use nagaya::http::{Council, Served, router};
+use nagaya_family_toy::ToyFamily;
 use nagaya_store::objects::ObjectStore;
-use nagaya_text_toy::ToyFamily;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 

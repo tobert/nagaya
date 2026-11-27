@@ -14,8 +14,8 @@ use gogi_proto::control::{ControlVector, MEDIA_TYPE};
 use nagaya::council::{Service, ServiceConfig};
 use nagaya::http::{Council, Served, router};
 use nagaya_council::family::Family;
+use nagaya_family_toy::ToyFamily;
 use nagaya_store::objects::ObjectStore;
-use nagaya_text_toy::ToyFamily;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 

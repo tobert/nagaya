@@ -3177,7 +3177,7 @@ reply does not change the id.
 
 **11.3b The toy family.** The fake engine has no real tokenizer. For tests, it serves the toy family of gogi's
 `gogi-toy` crate. Its tokens are the 256 byte values and 14 template markers, and its template is the template of
-`gogi-fake`. The family library `nagaya-text-toy` puts the nagaya's family interface on `gogi-toy`, and the fake
+`gogi-fake`. The family library `nagaya-family-toy` puts the nagaya's family interface on `gogi-toy`, and the fake
 engine gives logits over the toy vocabulary. Thus `gogi-conformance` runs against the process with the fake engine, and
 needs no GPU and no GGUF.
 
@@ -3470,7 +3470,7 @@ The numbers in the example show the shape only.
 - **The render call.** The route calls `Family::render(&context, generation_prompt)`
   (`crates/nagaya-council/src/family.rs`). The type `Context` is `gogi_proto::context::Context`, so the route
   decodes it as `POST /council/v2/contexts` does. The implementations are `Qwen38Family::render`
-  (`crates/nagaya-text-qwen38/src/council/mod.rs`) and `ToyFamily::render` (`crates/nagaya-text-toy/src/lib.rs`).
+  (`crates/nagaya-text-qwen38/src/council/mod.rs`) and `ToyFamily::render` (`crates/nagaya-family-toy/src/lib.rs`).
 - **The text.** `text` is `Family::detokenize(&rendering.tokens)`. For Qwen3.8 it equals `Rendered.text` of
   `Qwen38::render` (`crates/nagaya-text-qwen38/src/family.rs`). A test pins this equality. `Rendering` has no text
   member, so this needs no change to the trait.

@@ -9,8 +9,8 @@ use gogi_proto::generation::GenerationRequest;
 use nagaya::council::{Built, Schedule, ServiceConfig};
 use nagaya_council::build::{Step, plan_steps};
 use nagaya_council::family::Family;
+use nagaya_family_toy::ToyFamily;
 use nagaya_store::{Entry, Reason};
-use nagaya_text_toy::ToyFamily;
 use serde_json::{Value, json};
 
 /// The grain of the fake engine in these tests, in tokens. A pass of the fake holds at most 64 tokens.

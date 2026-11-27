@@ -1205,6 +1205,7 @@ dependencies = [
  "nagaya-abi",
  "nagaya-council",
  "nagaya-family-beatthis",
+ "nagaya-family-toy",
  "nagaya-ledger",
  "nagaya-mk-beatthis-cpu",
  "nagaya-mk-beatthis-gfx1151",
@@ -1229,7 +1230,6 @@ dependencies = [
  "nagaya-text-qwen3tts",
  "nagaya-text-qwenimage21",
  "nagaya-text-sdxl",
- "nagaya-text-toy",
  "opentelemetry",
  "png",
  "rayon",
@@ -1286,6 +1286,18 @@ dependencies = [
  "safetensors",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "nagaya-family-toy"
+version = "0.1.0"
+dependencies = [
+ "gogi-fake",
+ "gogi-proto",
+ "gogi-toy",
+ "nagaya-abi",
+ "nagaya-council",
+ "serde_json",
 ]
 
 [[package]]
@@ -1613,18 +1625,6 @@ dependencies = [
  "png",
  "serde_json",
  "tokenizers",
-]
-
-[[package]]
-name = "nagaya-text-toy"
-version = "0.1.0"
-dependencies = [
- "gogi-fake",
- "gogi-proto",
- "gogi-toy",
- "nagaya-abi",
- "nagaya-council",
- "serde_json",
 ]
 
 [[package]]

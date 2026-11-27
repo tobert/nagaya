@@ -59,7 +59,7 @@ The design came on 2026-10-17 from a conversation with Amy. The code began with 
        so it does not match mk's PCG64 bits. Match the filter order and the probabilities.
     3. **Family interface.** In `nagaya-council`, write the interface of a family library. It renders a context with its
        boundaries and a council read (11.3a), parses a reply, and gives the template id. Write
-       `nagaya-text-toy` on `gogi-toy`. Give the fake engine logits over the toy vocabulary.
+       `nagaya-family-toy` on `gogi-toy`. Give the fake engine logits over the toy vocabulary.
     4. **Qwen3.8 council.** In `nagaya-text-qwen38`, port mkviolet's council rendering (`src/template.rs` and its
        council code) to Qwen3.8 tokens, and the reply parser of mk's `service/chatfmt.py`. Test the parser against
        fixed outputs of mk's Python. Test the template id: a comment edit keeps it, and a token change changes it.

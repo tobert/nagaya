@@ -12,7 +12,7 @@ use council_support::{ENGINE, Fixture, Seen, TermFactory};
 use nagaya::council::{Service, ServiceConfig};
 use nagaya::http::{Council, Served, router};
 use nagaya_abi::CyclesLimit;
-use nagaya_text_toy::ToyFamily;
+use nagaya_family_toy::ToyFamily;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 

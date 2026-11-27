@@ -453,7 +453,7 @@ impl Factory for FakeFactory {
 pub const FAKE_TOY_KIND: &str = "fake-toy";
 
 /// The factory of the fake engine that speaks the toy family. Its logits cover the toy vocabulary with the speaking
-/// bias of `nagaya-text-toy`. It has four slots of 4096 tokens: the context limit of a served model.
+/// bias of `nagaya-family-toy`. It has four slots of 4096 tokens: the context limit of a served model.
 #[cfg(feature = "fake")]
 pub struct FakeToyFactory;
 
@@ -538,14 +538,14 @@ impl FakeToyFactory {
         FakeAlways::with_slots(slots)
             .with_family("toy")
             .with_vocab(gogi_toy_vocab())
-            .with_logit_bias(nagaya_text_toy::speaking_bias())
+            .with_logit_bias(nagaya_family_toy::speaking_bias())
     }
 }
 
 /// The size of the toy vocabulary.
 #[cfg(feature = "fake")]
 fn gogi_toy_vocab() -> usize {
-    nagaya_text_toy::speaking_bias().len()
+    nagaya_family_toy::speaking_bias().len()
 }
 
 #[cfg(feature = "fake")]

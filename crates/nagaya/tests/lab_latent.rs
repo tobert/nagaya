@@ -13,7 +13,7 @@ use council_support::{ControlLog, ENGINE, Fixture, Script, Seen, TermFactory};
 use nagaya::council::{Service, ServiceConfig};
 use nagaya::http::{Council, Served, router};
 use nagaya_abi::SegmentInputs;
-use nagaya_text_toy::{LATENT_TOKEN, ToyFamily};
+use nagaya_family_toy::{LATENT_TOKEN, ToyFamily};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 

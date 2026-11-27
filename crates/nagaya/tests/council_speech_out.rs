@@ -24,7 +24,7 @@ use nagaya_abi::{
     Capability, Coverage, Engine, FrameDraw, FrameOut, Identity, Limits, OutputsWanted, Parts, PassError,
     PassErrorKind, PassOut, Seal, Segment, SegmentInputs, SlotId, Slots, SpeechFrames, State, Tap,
 };
-use nagaya_text_toy::ToyFamily;
+use nagaya_family_toy::ToyFamily;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 

@@ -6,7 +6,7 @@ use gogi_fake::{Config, Server};
 use gogi_proto::generation::Phase;
 use gogi_toy::{self as toy, State, log_softmax};
 use nagaya_council::family::{Asked, Boundary, ControlHit, DecisionInput, Family, FamilyError, ReplyCall, ReplyStart};
-use nagaya_text_toy::ToyFamily;
+use nagaya_family_toy::ToyFamily;
 use serde_json::{Value, json};
 use support::{SEED, context, drive, post, spec};
 
@@ -835,7 +835,7 @@ fn a_reply_parser_says_when_the_reply_ended() {
 
 #[test]
 fn the_speaking_bias_keeps_only_tokens_that_a_reply_renders_back() {
-    let bias = nagaya_text_toy::speaking_bias();
+    let bias = nagaya_family_toy::speaking_bias();
     assert_eq!(bias.len(), toy::VOCAB);
     // The fake's values lie between -6 and 6. A kept token beats every other token by more than 12.
     let kept: Vec<u32> = (0..toy::VOCAB as u32).filter(|t| bias[*t as usize] > -12.0).collect();

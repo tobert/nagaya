@@ -155,7 +155,7 @@ fn a_read_past_the_token_limit_is_too_large_and_one_at_the_limit_runs() {
     use nagaya::council::ServiceConfig;
     use nagaya_council::family::Family;
     let value = ctx(other());
-    let end = nagaya_text_toy::ToyFamily::new()
+    let end = nagaya_family_toy::ToyFamily::new()
         .render(&context(&value), false)
         .unwrap()
         .end;

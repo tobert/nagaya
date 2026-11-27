@@ -15,8 +15,8 @@ use gogi_proto::context::Context;
 use nagaya::council::{Clock, Schedule, Service, ServiceConfig};
 use nagaya::exit::ExitCode;
 use nagaya::signal::SignalFlag;
+use nagaya_family_toy::ToyFamily;
 use nagaya_store::{ContentId, Store, Tier};
-use nagaya_text_toy::ToyFamily;
 use serde_json::{Value, json};
 
 fn context() -> Context {

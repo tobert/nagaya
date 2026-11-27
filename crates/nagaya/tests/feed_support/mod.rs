@@ -18,8 +18,8 @@ use nagaya_abi::{
     Stages, State, Tier,
 };
 use nagaya_council::family::{Boundary, Family};
+use nagaya_family_toy::ToyFamily;
 use nagaya_store::{ContentId, Snapshot, snapshot_from_engine};
-use nagaya_text_toy::ToyFamily;
 
 /// The name of the engine in the profile.
 pub const ENGINE: &str = "feed";
@@ -252,7 +252,7 @@ pub fn engine(stages: usize) -> FakeFeed {
     engine
         .with_family("toy")
         .with_vocab(gogi_toy::VOCAB)
-        .with_logit_bias(nagaya_text_toy::speaking_bias())
+        .with_logit_bias(nagaya_family_toy::speaking_bias())
 }
 
 impl Factory for FeedFactory {

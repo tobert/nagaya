@@ -15,7 +15,7 @@ use nagaya::http::{Council, Served, router};
 use nagaya::notify::EngineState;
 use nagaya::process::{Process, Start};
 use nagaya::profile::Residency;
-use nagaya_text_toy::ToyFamily;
+use nagaya_family_toy::ToyFamily;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 

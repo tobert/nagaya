@@ -17,8 +17,8 @@ use nagaya_abi::fake::FakeAlways;
 use nagaya_abi::{ControlItem, ControlOp, Engine, OutputsWanted, Segment, SegmentInputs, State, Tap};
 use nagaya_council::family::Family;
 use nagaya_council::trace::{Plan, Trace};
+use nagaya_family_toy::ToyFamily;
 use nagaya_store::objects::ObjectStore;
-use nagaya_text_toy::ToyFamily;
 use safetensors::SafeTensors;
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -259,7 +259,7 @@ struct Replayed {
 fn replay(prompt: &[u32], sampled: &[u32], items: &[(ControlOp, f32)]) -> Replayed {
     let mut engine = FakeAlways::with_slots(council_support::roomy_slots(1))
         .with_vocab(VOCAB)
-        .with_logit_bias(nagaya_text_toy::speaking_bias())
+        .with_logit_bias(nagaya_family_toy::speaking_bias())
         .with_control(4)
         .with_lens();
     let table: Vec<u8> = V0.iter().chain(&V1).flat_map(|v| v.to_le_bytes()).collect();

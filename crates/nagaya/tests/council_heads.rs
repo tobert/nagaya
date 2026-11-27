@@ -199,7 +199,7 @@ fn a_reply_to_an_unmarked_message_holds_a_head_on_an_engine_like_the_qwen38_engi
 fn a_dry_run_renders_its_context_once() {
     let renders = Arc::new(AtomicUsize::new(0));
     let family = Arc::new(Counting {
-        inner: Arc::new(nagaya_text_toy::ToyFamily::new()),
+        inner: Arc::new(nagaya_family_toy::ToyFamily::new()),
         renders: Arc::clone(&renders),
     });
     let (f, _) = fixture(family);
@@ -251,7 +251,7 @@ fn a_long_context_with_an_assistant_message_costs_what_one_without_it_costs() {
 /// unrelated entries of the same engine, at tokens inside the context, costs a build no more than an empty store.
 #[test]
 fn ten_thousand_unrelated_entries_do_not_slow_a_build() {
-    let (f, _) = fixture(Arc::new(nagaya_text_toy::ToyFamily::new()));
+    let (f, _) = fixture(Arc::new(nagaya_family_toy::ToyFamily::new()));
     let long = "Keep the build directory clean. ".repeat(250);
     let value = json!({"thinking": false, "messages": [
         {"role": "user", "content": long, "snap": true},

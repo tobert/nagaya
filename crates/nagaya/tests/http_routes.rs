@@ -13,7 +13,7 @@ use gogi_proto::decision::{ControlTextHit, Signals};
 use gogi_proto::identity::{Capability, ModelStatus, ServerIdentity};
 use nagaya::council::{Service, ServiceConfig};
 use nagaya::http::{Council, Served, Server, keep_gogi_places, router};
-use nagaya_text_toy::ToyFamily;
+use nagaya_family_toy::ToyFamily;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 

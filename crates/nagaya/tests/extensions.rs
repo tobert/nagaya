@@ -10,7 +10,7 @@ use council_support::Fixture;
 use gogi_proto::identity::ServerIdentity;
 use nagaya::http::{Council, Served, router};
 use nagaya_council::family::Family;
-use nagaya_text_toy::ToyFamily;
+use nagaya_family_toy::ToyFamily;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 

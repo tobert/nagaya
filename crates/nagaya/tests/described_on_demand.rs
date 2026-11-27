@@ -17,7 +17,7 @@ use nagaya_abi::{
     Capability, Coverage, Engine, Identity, Limits, Parts, PassError, PassOut, Seal, Segment, SlotLimit, Slots, Tap,
     Tier,
 };
-use nagaya_text_toy::ToyFamily;
+use nagaya_family_toy::ToyFamily;
 use serde_json::{Value, json};
 use tower::ServiceExt;
 

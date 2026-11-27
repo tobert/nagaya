@@ -13,8 +13,8 @@ use gogi_proto::context::{Context, Usage};
 use nagaya::council::error::ServiceError;
 use nagaya::council::{Built, Schedule, ServiceConfig};
 use nagaya_council::family::Family as _;
+use nagaya_family_toy::ToyFamily;
 use nagaya_store::{ContentId, Reason};
-use nagaya_text_toy::ToyFamily;
 use serde_json::{Value, json};
 
 type Fixture = council_support::Fixture;

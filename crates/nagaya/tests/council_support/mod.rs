@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use nagaya::council::{Clock, Service, ServiceConfig};
-use nagaya_text_toy::ToyFamily;
+use nagaya_family_toy::ToyFamily;
 
 use nagaya::admission::{Factory, GroupDevice, OpenError, PlanError, Registry};
 use nagaya::inventory::{Device, Inventory};
@@ -245,7 +245,7 @@ pub struct TermFactory {
     pub grain: Option<u64>,
     /// The cap on interval copies in the `[store]` table of the profile.
     pub interval_copies: u32,
-    /// True when the engine speaks the toy language: its logits get the speaking bias of `nagaya-text-toy`.
+    /// True when the engine speaks the toy language: its logits get the speaking bias of `nagaya-family-toy`.
     pub speaking: bool,
     /// False for an engine with no `seal` capability: a seal changes no bits.
     pub seal: bool,
@@ -304,7 +304,7 @@ impl TermFactory {
             inner = inner.with_vocab(vocab);
         }
         if self.speaking {
-            inner = inner.with_logit_bias(nagaya_text_toy::speaking_bias());
+            inner = inner.with_logit_bias(nagaya_family_toy::speaking_bias());
         }
         if let Some(tables) = self.control {
             inner = inner.with_control(tables);

@@ -11,7 +11,7 @@ use feed_support::{FeedFactory, FeedFixture};
 use gogi_conformance::{Opts, Status, run};
 use nagaya::council::{Service, ServiceConfig};
 use nagaya::http::{Council, Served, Server};
-use nagaya_text_toy::ToyFamily;
+use nagaya_family_toy::ToyFamily;
 
 /// The checks of the suite that read the decoded head of a reply. Each must run, not skip.
 const HEAD_CHECKS: [&str; 4] = [

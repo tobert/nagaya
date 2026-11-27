@@ -16,7 +16,7 @@ use nagaya::council::error::ServiceError;
 use nagaya_council::decision::{asked, case_text};
 use nagaya_council::family::{Advance, Continues, DecisionInput, Family};
 use nagaya_council::read::log_probs;
-use nagaya_text_toy::ToyFamily;
+use nagaya_family_toy::ToyFamily;
 use serde_json::{Value, json};
 
 fn spec_json() -> Value {

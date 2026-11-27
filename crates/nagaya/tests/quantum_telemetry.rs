@@ -10,8 +10,8 @@ use council_support::{ENGINE, Fixture, Script, TermFactory};
 use gogi_proto::context::Context;
 use gogi_proto::generation::GenerationRequest;
 use nagaya::council::ServiceConfig;
+use nagaya_family_toy::ToyFamily;
 use nagaya_telemetry::testing::{Capture, Point, SpanData};
-use nagaya_text_toy::ToyFamily;
 use serde_json::{Value, json};
 
 fn ctx(messages: Vec<Value>) -> Value {
