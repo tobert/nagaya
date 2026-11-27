@@ -18,8 +18,17 @@
 //   2. The convolution: row `t` takes the 3 rows before it from the raw sums, or from the state before the block. The
 //      sum is `w0 p3 + w1 p2 + w2 p1 + w3 o`, as in `ops::short_conv`. The result goes to `c` (`r` with FLAG_ACCUMULATE:
 //      `x + conv`). The state after the block is the last 3 raw rows. The state rows of the tile are not read again.
-//   3. The item arrives at the counter of the 144 tiles. The item that arrives last runs the finisher.
-// The finisher runs for each row of the task, in order, in the 256 workers of one block:
+//   3. The item arrives at the counter of the 144 tiles. With no finisher items (`items` = 576), the item that arrives last
+//      runs the finisher for every row, in order. With finisher items (below), it only arrives.
+// The finisher items. A task can have `ceil(rows / MK_OUT_MIX_FINISH_ROWS)` items after the 576 of the matmul. Item
+// `576 + j` runs the finisher for the rows `j * F` to `min((j + 1) * F, rows) - 1` (`F` = MK_OUT_MIX_FINISH_ROWS), so
+// all the blocks share the rows. A finisher item polls the counter of the tiles until it reads 144 (an acquire load, the
+// trap at MK_SPIN_LIMIT as for an event). It cannot deadlock: the interpreter gives out the items in order (item b to
+// block b, then the claims in rising order), so every item of the matmul is held by a block that runs it without a wait
+// before any block holds a finisher item. The finisher items arrive at a second counter (word 145), and the one that
+// arrives last sets both counters back to 0: every other finisher item has read the counter of the tiles by then.
+// The rows are independent, so each row has its sums in its order, whichever block runs it.
+// The finisher runs for each row, in the 256 workers of one block:
 //   a. The row factor of `r` (`1 / sqrt(mean(r^2) + eps)`), written to the table slot of the factors of `r`.
 //   b. `rw_mix_item` of lane R (read only): the softmax mix of the stack, `e`, and the row factor of `e`.
 //   c. With FLAG_NORM, `h_e = w * (e * rf)`, the order of `ops::rms_norm`.
@@ -31,8 +40,13 @@
 // kt = 768, group_items = 4, items = 576, item_bytes = 16 * kt * 2, rows = 1 to 512, layer = the depth of the stack
 // (the rows of the blocks, then `r`: 2 to 5), p0 = the scale of a score, 2304^-0.5, scale_bytes = the floats of the
 // scratch that the host gives (checked), flags = FLAG_ACCUMULATE and FLAG_NORM, in any mix.
-// The scratch, in floats: 144 counters of the tiles, one counter of the finisher, padding to 160, the partials
-// (`576 * rows * 16`), the raw sums (`2304 * rows`). The counters start at 0, and the merger sets each back to 0.
+// The scratch, in floats: 144 counters of the tiles, the counter of the tiles that are done (word 144, used with
+// finisher items) and the counter of the finisher items that are done (word 145), padding to 160, the partials
+// (`576 * rows * 16`), the raw sums (`2304 * rows`). The counters start at 0, and the merger sets each back to 0 (with
+// finisher items, the last finisher item sets word 144 back). A launch that failed leaves the counters dirty: the
+// ring zeroes only the scoreboard, so the host must zero the scratch again (`Ring::zero_device`). A stale word 144
+// would let a finisher item read rows before the tiles wrote them, with no error. In the profile build the words 146
+// to 148 hold the spin of the finisher items (sum of ns, count, longest) and are never set back.
 //
 // The table (`OUT_MIX_TABLE_*` in `src/protocol.rs`): slots 0 to 4 are the stack as `OP_MIX` has it: the planes B[0..],
 // then `r` at the slot `layer - 1`, and slots 5 to 9 are their row factors. The slot of the factors of `r` points to
@@ -47,6 +61,10 @@ constexpr uint32_t OM_TILES = 144;
 constexpr uint32_t OM_WIDTH = 2304;
 constexpr uint32_t OM_K = 3072;
 constexpr uint32_t OM_COUNTERS = 160;
+// The items of the matmul: 144 tiles of 4 slices.
+constexpr uint32_t OM_TILE_ITEMS = OM_TILES * 4;
+// The counter of the finisher items that are done: the word after the counter of the tiles.
+constexpr uint32_t OM_FINISHED = OM_TILES + 1;
 // The slots of the task table after the stack.
 constexpr uint32_t OM_RF_SLOT = 5;
 // The slot that must be 0: the matmul has no norm.
@@ -102,12 +120,14 @@ __device__ __forceinline__ void om_check(const MkTaskDescriptor& task, const MkT
     const bool norm = (task.flags & FLAG_NORM) != 0;
     const uint32_t rows = task.rows;
     if (worker_count() != MK_WORKERS || table == nullptr || rows == 0 || rows > MM_MAX_ROWS || task.n != OM_WIDTH ||
-        task.k != OM_K || task.kt != 768 || task.group_items != 4 || task.items != OM_TILES * 4 ||
+        task.k != OM_K || task.kt != 768 || task.group_items != 4 ||
+        (task.items != OM_TILE_ITEMS &&
+         task.items != OM_TILE_ITEMS + (rows + MK_OUT_MIX_FINISH_ROWS - 1) / MK_OUT_MIX_FINISH_ROWS) ||
         task.item_bytes != MM_TILE * 768 * 2 || dynamic_smem_bytes() < MM_SMEM_BYTES || task.layer < 2 ||
         task.layer > RW_MAX_STACK || (task.flags & ~(FLAG_ACCUMULATE | FLAG_NORM)) != 0 || (task.a & 7) != 0 ||
         (task.b & 15) != 0 || (task.c & 15) != 0 || (task.f & 15) != 0 || task.a == 0 || task.c == 0 || task.f == 0 ||
         accumulate != (task.e != 0) || (task.e & 15) != 0 || !(task.p0 > 0.0f) ||
-        om_scratch_floats(rows, task.items) > task.scale_bytes) {
+        om_scratch_floats(rows, OM_TILE_ITEMS) > task.scale_bytes) {
         __trap();
     }
     // The stack: every plane and its factors, and `r` in the last slot, which this task writes.
@@ -132,8 +152,9 @@ __device__ __forceinline__ void om_check(const MkTaskDescriptor& task, const MkT
     }
 }
 
-__device__ __forceinline__ void op_out_mix(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
-    om_check(task, table);
+// One item of the matmul and of the steps 1 to 3 for its tile. It returns true in every worker of the item that must run
+// the finisher for all rows: the item that arrives last over the tiles, when the task has no finisher items.
+__device__ __forceinline__ bool om_tile_item(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
 
     // The matmul has no norm: the slot 15 is 0. The code of `mm_item_partials` for a null norm that the compiler can see holds
     // more registers than the kernel has (28 bytes of spill). A null that it reads from the table gives the code that the
@@ -146,20 +167,21 @@ __device__ __forceinline__ void op_out_mix(const MkTaskDescriptor& task, const M
         __trap();
     }
     mm_item_partials(task, item, reinterpret_cast<const float*>(task.a), reinterpret_cast<const float*>(no_norm),
-                     reinterpret_cast<const uint16_t*>(no_norm), reinterpret_cast<float*>(task.f) + OM_COUNTERS);
+                     reinterpret_cast<const uint16_t*>(no_norm), reinterpret_cast<float*>(task.f) + OM_COUNTERS,
+                     OM_TILE_ITEMS);
     const uint32_t rows = task.rows;
     const uint32_t tile = item / 4;
     const uint64_t partial_floats = static_cast<uint64_t>(rows) * MM_TILE;
     uint32_t* counters = reinterpret_cast<uint32_t*>(task.f);
     float* partials = reinterpret_cast<float*>(task.f) + OM_COUNTERS;
-    float* raw = partials + static_cast<uint64_t>(task.items) * partial_floats;
+    float* raw = partials + static_cast<uint64_t>(OM_TILE_ITEMS) * partial_floats;
     uint32_t* flag = reinterpret_cast<uint32_t*>(mk_smem + MM_TREE_FLOATS * 4);
     if (worker_id() == 0) {
         *flag = merge_arrive(counters + tile, 4) ? 1u : 0u;
     }
     worker_sync();
     if (*flag == 0) {
-        return;
+        return false;
     }
 
     // 1. The merge of the 4 slices: the raw sums of the tile, `[row][16]`.
@@ -218,11 +240,70 @@ __device__ __forceinline__ void op_out_mix(const MkTaskDescriptor& task, const M
         }
     }
 
-    // 3. The finisher: the item that arrives last over the 144 tiles mixes every row.
-    if (!rw_finisher_arrive(counters + OM_TILES, OM_TILES, flag)) {
+    // 3. The arrival at the counter of the tiles.
+    if (task.items != OM_TILE_ITEMS) {
+        // The finisher items follow. The barrier orders the stores of all workers (`r` and the state) before the release add
+        // of worker 0, which publishes them to the finisher items.
+        worker_sync();
+        if (worker_id() == 0) {
+            atom_acq_rel_gpu_add_u32(counters + OM_TILES, 1u);
+        }
+        return false;
+    }
+    return rw_finisher_arrive(counters + OM_TILES, OM_TILES, flag);
+}
+
+// A finisher item: it waits for the 144 tiles, runs its rows and counts itself done.
+__device__ __forceinline__ void om_finisher_item(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t j) {
+    uint32_t* counters = reinterpret_cast<uint32_t*>(task.f);
+    if (worker_id() == 0) {
+        // The wait may depend only on items that never wait: the 576 items of the matmul. The proof that it cannot
+        // deadlock rests on this (see the header). A new wait in a matmul item, or a wait of one finisher item on
+        // another, breaks it.
+#ifdef MK_PROFILE
+        const uint64_t t0 = globaltimer_ns();
+#endif
+        uint64_t polls = 0;
+        while (ld_acquire_gpu_u32(counters + OM_TILES) < OM_TILES) {
+            if (++polls >= MK_SPIN_LIMIT) {
+                __trap();
+            }
+        }
+#ifdef MK_PROFILE
+        // The profile build adds the time of the spin: the sum of ns (word 146), the count of items (147) and the longest
+        // spin (148). They are never set back, so a test reads them after the run and the zero-counter test does not use
+        // the profile build.
+        const uint32_t spun = static_cast<uint32_t>(globaltimer_ns() - t0);
+        atomicAdd(counters + 146, spun);
+        atomicAdd(counters + 147, 1u);
+        atomicMax(counters + 148, spun);
+#endif
+    }
+    worker_sync();
+    const uint32_t first = j * MK_OUT_MIX_FINISH_ROWS;
+    const uint32_t end = first + MK_OUT_MIX_FINISH_ROWS < task.rows ? first + MK_OUT_MIX_FINISH_ROWS : task.rows;
+    for (uint32_t row = first; row < end; ++row) {
+        om_finish_row(task, table, row);
+    }
+    // The last finisher item sets the counter of the tiles back to 0. `merge_arrive` sets its own counter back. The
+    // store is a plain relaxed store, not a `merge_arrive`, and it is safe by the rule of `merge_arrive`: every other
+    // finisher item has read the counter already (it arrived after its wait), and this thread signals the task after
+    // the store (`run_items`), so the next task that reuses the counter waits on a signal that follows the reset.
+    if (worker_id() == 0 && merge_arrive(counters + OM_FINISHED, task.items - OM_TILE_ITEMS)) {
+        asm volatile("st.relaxed.gpu.global.u32 [%0], %1;" ::"l"(counters + OM_TILES), "r"(0u) : "memory");
+    }
+}
+
+__device__ __forceinline__ void op_out_mix(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
+    om_check(task, table);
+    if (item >= OM_TILE_ITEMS) {
+        om_finisher_item(task, table, item - OM_TILE_ITEMS);
         return;
     }
-    for (uint32_t row = 0; row < rows; ++row) {
+    if (!om_tile_item(task, table, item)) {
+        return;
+    }
+    for (uint32_t row = 0; row < task.rows; ++row) {
         om_finish_row(task, table, row);
     }
 }

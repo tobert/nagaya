@@ -26,6 +26,17 @@ pub const COUNTERS: usize = 160;
 pub const MAX_DEPTH: usize = 5;
 /// The most rows of one task.
 pub const MAX_ROWS: usize = 512;
+/// The rows that one finisher item runs.
+pub const FINISH_ROWS: usize = crate::protocol::OUT_MIX_FINISH_ROWS;
+/// Proposed: a task of fewer rows keeps the finisher in the item that arrives last over the tiles. At one row the
+/// serial finisher costs one row, and a finisher item would add the claim and the poll of one more item.
+pub const SPREAD_MIN_ROWS: usize = 2;
+
+/// The finisher items after the 576 items of the matmul, for a task of `rows` rows that spreads the finisher: item
+/// `576 + j` runs the rows `j * FINISH_ROWS` up to `(j + 1) * FINISH_ROWS`.
+pub fn finisher_items(rows: usize) -> usize {
+    rows.div_ceil(FINISH_ROWS)
+}
 
 /// The cut of `wo` into work items: 144 tiles with 4 K slices of 768.
 pub fn shape() -> MatmulShape {
@@ -76,6 +87,9 @@ pub struct OutMixShape {
     pub accumulate: bool,
     /// Write `h_e = mlp_norm * (e * rf)`. It is false when a message gate follows.
     pub norm: bool,
+    /// Run the finisher in items after the matmul, over all the blocks, and not in the one item that arrives last. The
+    /// bits are the same. `new` sets it for `SPREAD_MIN_ROWS` rows or more.
+    pub spread: bool,
 }
 
 impl OutMixShape {
@@ -97,7 +111,19 @@ impl OutMixShape {
             depth,
             accumulate,
             norm,
+            spread: rows >= SPREAD_MIN_ROWS,
         })
+    }
+
+    /// The same task with the finisher spread over the blocks or not (a test of the bits, a measure of the two forms).
+    pub fn with_spread(mut self, spread: bool) -> Self {
+        self.spread = spread;
+        self
+    }
+
+    /// The items of the task: the 576 of the matmul and, if the finisher spreads, its items.
+    pub fn items(&self) -> usize {
+        shape().items() + if self.spread { finisher_items(self.rows) } else { 0 }
     }
 
     /// The descriptor of the task. `scale` is the scale of a score, `2304^-0.5`.
@@ -109,6 +135,7 @@ impl OutMixShape {
         }
         let mut desc = shape().descriptor(self.rows, buffers.attn, buffers.packed, buffers.r, buffers.scratch)?;
         desc.opcode = OP_OUT_MIX;
+        desc.items = u32::try_from(self.items()).expect("the items of OP_OUT_MIX fit in 32 bits");
         desc.flags = if self.accumulate { FLAG_ACCUMULATE } else { 0 } | if self.norm { FLAG_NORM } else { 0 };
         desc.d = buffers.table;
         desc.e = buffers.x;
@@ -181,6 +208,45 @@ mod tests {
     }
 
     #[test]
+    fn the_finisher_items_cover_every_row_once() {
+        for rows in 1..=MAX_ROWS {
+            let n = finisher_items(rows);
+            let covered: usize = (0..n)
+                .map(|j| ((j + 1) * FINISH_ROWS).min(rows) - j * FINISH_ROWS)
+                .sum();
+            assert_eq!(covered, rows, "{rows} rows");
+            assert!(
+                n * FINISH_ROWS >= rows && (n - 1) * FINISH_ROWS < rows,
+                "{rows} rows: the last item is not empty"
+            );
+        }
+        assert_eq!(
+            (
+                finisher_items(1),
+                finisher_items(2),
+                finisher_items(3),
+                finisher_items(512)
+            ),
+            (1, 1, 2, 256)
+        );
+    }
+
+    #[test]
+    fn a_task_spreads_the_finisher_from_two_rows_and_keeps_the_scratch() {
+        let at = |rows: usize, depth: usize| OutMixShape::new(rows, depth, false, true).unwrap();
+        assert_eq!(at(1, 2).items(), 576);
+        assert_eq!(at(2, 2).items(), 577);
+        assert_eq!(at(16, 3).items(), 576 + 8);
+        assert_eq!(at(512, 5).items(), 576 + 256);
+        assert_eq!(at(512, 5).with_spread(false).items(), 576);
+        assert_eq!(at(1, 2).with_spread(true).items(), 577);
+        let d = at(512, 5).descriptor(&OutMixBuffers::default()).unwrap();
+        assert_eq!(d.items, 832);
+        // The partials and the raw sums are those of the 576 items of the matmul.
+        assert_eq!(d.scale_bytes as usize, scratch_floats(512));
+    }
+
+    #[test]
     fn the_scratch_holds_the_counters_the_partials_and_the_raw_sums() {
         assert_eq!(scratch_floats(1), 160 + 576 * 16 + 2304);
         assert_eq!(scratch_floats(16), 160 + 576 * 16 * 16 + 2304 * 16);
@@ -213,7 +279,7 @@ mod tests {
         let d = s.descriptor(&b).unwrap();
         assert_eq!(
             (d.opcode, d.items, d.n, d.k, d.kt, d.group_items, d.layer),
-            (OP_OUT_MIX, 576, 2304, 3072, 768, 4, 3)
+            (OP_OUT_MIX, 576 + 8, 2304, 3072, 768, 4, 3)
         );
         assert_eq!(d.flags, FLAG_ACCUMULATE | FLAG_NORM);
         assert_eq!(
