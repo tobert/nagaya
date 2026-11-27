@@ -8,7 +8,7 @@
 use std::io::ErrorKind;
 use std::path::PathBuf;
 
-use nagaya_text_qwenimage21::QwenImage21Family;
+use nagaya_family_qwenimage21::QwenImage21Family;
 
 pub const DIR_VARIABLE: &str = "QWENIMAGE21_MODEL_DIR";
 pub const REQUIRE_VARIABLE: &str = "NAGAYA_REQUIRE_MODELS";

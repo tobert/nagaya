@@ -8,8 +8,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use nagaya_abi::{ImageChunk, Limits};
+use nagaya_family_qwenimage21::{Error as FamilyError, QwenImage21Family};
 use nagaya_mk_qwenimage21_gfx1151::plan::{self, Config};
-use nagaya_text_qwenimage21::{Error as FamilyError, QwenImage21Family};
 
 use crate::admission::{GroupDevice, PlanError};
 use crate::image::{ImageConfig, ImageFamily, ImageForm, ImageService};
@@ -71,7 +71,7 @@ impl ImageFamily for Family {
             }
             other => other.to_string(),
         })?;
-        Ok((ids, nagaya_text_qwenimage21::CUT as u32))
+        Ok((ids, nagaya_family_qwenimage21::CUT as u32))
     }
 }
 
