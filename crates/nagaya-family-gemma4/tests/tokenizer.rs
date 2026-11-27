@@ -4,8 +4,8 @@ mod common;
 
 use common::model::{absent, family, model_dir};
 use common::{JsonExt, fixture};
-use nagaya_text_gemma4::Tokenizer;
-use nagaya_text_gemma4::tokenizer::sha256_of;
+use nagaya_family_gemma4::Tokenizer;
+use nagaya_family_gemma4::tokenizer::sha256_of;
 
 #[test]
 fn ids_match_python_with_markers_and_as_text() {

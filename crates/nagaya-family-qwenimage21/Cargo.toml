@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 sha2 = "0.10.9"
-# The same crate and features as nagaya-text-gemma4. The reference processor is a `tokenizers` tokenizer.
+# The same crate and features as nagaya-family-gemma4. The reference processor is a `tokenizers` tokenizer.
 tokenizers = { version = "0.23.1", default-features = false, features = ["onig"] }
 
 [dev-dependencies]

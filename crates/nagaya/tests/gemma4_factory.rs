@@ -111,7 +111,7 @@ fn the_family_opens_from_the_checkpoint_with_the_hash_of_its_tokenizer() {
     let bytes = std::fs::read(dir.join("tokenizer.json")).unwrap();
     assert_eq!(
         opened.tokenizer_hash.as_deref(),
-        Some(nagaya_text_gemma4::tokenizer::sha256_of(&bytes).as_str())
+        Some(nagaya_family_gemma4::tokenizer::sha256_of(&bytes).as_str())
     );
 }
 

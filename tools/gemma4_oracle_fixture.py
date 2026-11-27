@@ -32,7 +32,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parent.parent
 TOP = 64
 REFERENCE = ROOT / "tools/gemma4_reference.py"
-TEMPLATE = ROOT / "crates/nagaya-text-gemma4/assets/gemma4_chat_template.jinja"
+TEMPLATE = ROOT / "crates/nagaya-family-gemma4/assets/gemma4_chat_template.jinja"
 
 
 def qwen_prose():
