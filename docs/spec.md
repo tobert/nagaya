@@ -3701,7 +3701,7 @@ snapshots belong to the server, not to a served model. Thus one set of files ser
 50, `top_p` 1.0, and `repetition_penalty` 1.05 for codebook 0. A generation can set `temperature` and `top_k` (11.8a).
 
 **The speech family.** The
-crate `nagaya-text-qwen3tts` holds the family library of Qwen3-TTS (11.3):
+crate `nagaya-family-qwen3tts` holds the family library of Qwen3-TTS (11.3):
 
 - the tokenizer of the text vocabulary, from `vocab.json` and `merges.txt` of the checkpoint;
 - the prompt of a request, as pairs of a text id and a codec id (engine-abi "Speech"), with the template of the
@@ -3744,7 +3744,7 @@ its escapes; the speech route has none in v0.
 
 1. The voice design: `<|im_start|>user\n{system}<|im_end|>\n`, text positions only.
 2. For each line: the assistant role, the codec prefill of its language, its text with the codec pad, `tts_eos`, and
-   `tts_pad` with the codec bos. These are the positions of one request today (`nagaya-text-qwen3tts`).
+   `tts_pad` with the codec bos. These are the positions of one request today (`nagaya-family-qwen3tts`).
 3. After a line with audio: one frame position for each frame of the audio. A frame position is the 16 codes of the
    frame and the trailing text `tts_pad`, as the engine feeds a frame that it made.
 4. Before a line that follows audio: one text position of `tts_pad` with the codec end. Reason: the head after a line

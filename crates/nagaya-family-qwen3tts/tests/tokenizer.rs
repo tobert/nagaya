@@ -85,7 +85,7 @@ fn a_config_id_that_is_not_its_token_is_refused() {
         return;
     }
     let dir = changed_copy("config", "config.json", |v| v["tts_pad_token_id"] = 151670.into());
-    match nagaya_text_qwen3tts::Qwen3TtsFamily::from_dir(&dir) {
+    match nagaya_family_qwen3tts::Qwen3TtsFamily::from_dir(&dir) {
         Err(e) => assert!(e.to_string().contains("tts_pad_token_id"), "{e}"),
         Ok(_) => panic!("a wrong tts_pad_token_id built a family"),
     }
@@ -101,7 +101,7 @@ fn an_added_token_with_another_id_is_refused() {
         let entry = decoder.remove("151675").expect("the last added token");
         decoder.insert("151680".into(), entry);
     });
-    match nagaya_text_qwen3tts::Qwen3TtsFamily::from_dir(&dir) {
+    match nagaya_family_qwen3tts::Qwen3TtsFamily::from_dir(&dir) {
         Err(e) => assert!(e.to_string().contains("151680"), "{e}"),
         Ok(_) => panic!("an added token with a wrong id built a family"),
     }

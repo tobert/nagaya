@@ -7,9 +7,9 @@ mod common;
 use std::sync::{Mutex, OnceLock};
 
 use nagaya_abi::{Engine, PassErrorKind, PromptPair, Speech, SpeechOut, SpeechSampler};
+use nagaya_family_qwen3tts::Qwen3TtsFamily;
 use nagaya_mk_qwen3tts_bmg::spec::{CODEBOOKS, CODEC_EOS, SAMPLES_PER_FRAME};
 use nagaya_mk_qwen3tts_bmg::{Config, Qwen3TtsEngine};
-use nagaya_text_qwen3tts::Qwen3TtsFamily;
 
 /// The old `speech_begin`: a feed of text and codec pairs into an empty slot.
 fn begin(

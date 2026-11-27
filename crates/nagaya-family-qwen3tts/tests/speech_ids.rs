@@ -3,7 +3,7 @@
 mod common;
 
 use common::SMALL_CONFIG;
-use nagaya_text_qwen3tts::{Error, SpeechIds};
+use nagaya_family_qwen3tts::{Error, SpeechIds};
 
 fn changed(edit: impl FnOnce(&mut serde_json::Value)) -> String {
     let mut v: serde_json::Value = serde_json::from_str(SMALL_CONFIG).expect("the small config");

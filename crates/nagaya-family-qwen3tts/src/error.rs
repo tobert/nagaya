@@ -28,7 +28,7 @@ impl fmt::Display for Error {
                 "the language {given:?} is not known. Use one of these: {}.",
                 known.join(", ")
             ),
-            Error::Prompt(m) => write!(f, "{m}. Report this defect of nagaya-text-qwen3tts."),
+            Error::Prompt(m) => write!(f, "{m}. Report this defect of nagaya-family-qwen3tts."),
             Error::Context { item, message } => write!(f, "item {item} of the speech context: {message}"),
         }
     }

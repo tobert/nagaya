@@ -9,7 +9,7 @@ use nagaya::admission::{GroupDevice, Registry};
 use nagaya::qwen3tts::{Family, KIND, config, plan};
 use nagaya::speech::{ContextItem, SpeechError, SpeechFamily};
 use nagaya_abi::{Capability, Tier};
-use nagaya_text_qwen3tts::Qwen3TtsFamily;
+use nagaya_family_qwen3tts::Qwen3TtsFamily;
 
 fn checkpoint() -> Option<PathBuf> {
     match std::env::var_os("QWEN3TTS_MODEL_DIR") {

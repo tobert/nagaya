@@ -8,7 +8,7 @@
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use nagaya_text_qwen3tts::Qwen3TtsFamily;
+use nagaya_family_qwen3tts::Qwen3TtsFamily;
 
 pub const DIR_VARIABLE: &str = "QWEN3TTS_MODEL_DIR";
 pub const REQUIRE_VARIABLE: &str = "NAGAYA_REQUIRE_MODELS";

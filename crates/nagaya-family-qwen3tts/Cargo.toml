@@ -1,5 +1,5 @@
 [package]
-name = "nagaya-text-qwen3tts"
+name = "nagaya-family-qwen3tts"
 version = "0.1.0"
 edition = "2024"
 

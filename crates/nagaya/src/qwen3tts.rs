@@ -8,9 +8,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use nagaya_abi::{Limits, PromptPair, SpeechPosition};
+use nagaya_family_qwen3tts::{Error as FamilyError, Qwen3TtsFamily, SpeechItem, SpeechPosition as TextPosition};
 use nagaya_mk_qwen3tts_bmg::Config;
 use nagaya_mk_qwen3tts_bmg::spec::{KIND as ENGINE_KIND, MODEL};
-use nagaya_text_qwen3tts::{Error as FamilyError, Qwen3TtsFamily, SpeechItem, SpeechPosition as TextPosition};
 
 use crate::admission::{GroupDevice, PlanError};
 use crate::process::Ports;

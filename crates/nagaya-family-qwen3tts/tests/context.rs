@@ -4,7 +4,7 @@
 mod common;
 
 use common::SMALL_CONFIG;
-use nagaya_text_qwen3tts::{Error, PromptPosition, SpeechIds, SpeechItem, SpeechPosition};
+use nagaya_family_qwen3tts::{Error, PromptPosition, SpeechIds, SpeechItem, SpeechPosition};
 
 const IM_START: u32 = 151644;
 const IM_END: u32 = 151645;

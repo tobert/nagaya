@@ -273,7 +273,7 @@ This is the text of `AGENTS.md` for these milestones, as it was on 2026-11-11. M
     1. **Spec.** Write the speech rules into the docs. They are the route, the outputs of the engine, the sampler of
        the audio codes, and the passes on separate cards (engine-abi D1). Amy decides each Proposed note.
     2. **Oracle fixture.** Write the fixed inputs and outputs from the Python reference once, on the CPU (8.3).
-    3. **Family.** Write `nagaya-text-qwen3tts`: the tokenizer and the template of a speech request.
+    3. **Family.** Write `nagaya-family-qwen3tts`: the tokenizer and the template of a speech request.
     4. **Shared interpreter.** Move the interpreter of the Gemma 4 engine into a shared module. The Gemma 4 gates must
        give the same bits.
     5. **Ops.** Add the ops of the talker, the code predictor, the sampler and the codec decoder, each with a test.
