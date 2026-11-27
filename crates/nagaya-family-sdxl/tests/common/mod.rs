@@ -8,7 +8,7 @@
 use std::io::ErrorKind;
 use std::path::PathBuf;
 
-use nagaya_text_sdxl::SdxlFamily;
+use nagaya_family_sdxl::SdxlFamily;
 
 pub const DIR_VARIABLE: &str = "SDXL_MODEL_DIR";
 pub const REQUIRE_VARIABLE: &str = "NAGAYA_REQUIRE_MODELS";

@@ -14,11 +14,11 @@ use std::time::Instant;
 
 use common::{golden, rel};
 use nagaya_abi::{Image, ImageInit, ImageJob, ImagePrompt, ImageSampler, ImageSpacing};
+use nagaya_family_sdxl::inputs::{binary, unit};
 use nagaya_mk_sdxl_bmg::host::{empty_chunk, image_latent};
 use nagaya_mk_sdxl_bmg::noise::{Purpose, normal};
 use nagaya_mk_sdxl_bmg::spec::*;
 use nagaya_mk_sdxl_bmg::{Config, SdxlEngine};
-use nagaya_text_sdxl::inputs::{binary, unit};
 
 /// The size of the oracle's image (`tools/sdxl_inpaint_golden.sh`).
 const WIDTH: usize = 256;

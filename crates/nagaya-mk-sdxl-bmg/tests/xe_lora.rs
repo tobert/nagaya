@@ -13,11 +13,11 @@ use std::sync::Arc;
 
 use common::{golden_in, rel};
 use nagaya_abi::{Image, ImageChunk, ImageJob, ImagePrompt, ImageSampler, ImageSpacing, LoraInput};
+use nagaya_family_sdxl::SdxlFamily;
 use nagaya_mk_sdxl_bmg::host;
 use nagaya_mk_sdxl_bmg::model::UnetSize;
 use nagaya_mk_sdxl_bmg::spec::*;
 use nagaya_mk_sdxl_bmg::{Config, SdxlEngine};
-use nagaya_text_sdxl::SdxlFamily;
 
 const PROMPT: &str = "a red fox in a snowy forest, watercolor";
 const NEGATIVE: &str = "blurry, low quality";

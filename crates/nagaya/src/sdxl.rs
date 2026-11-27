@@ -7,9 +7,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use nagaya_abi::{ImageChunk, Limits};
+use nagaya_family_sdxl::SdxlFamily;
 use nagaya_mk_sdxl_bmg::Config;
 use nagaya_mk_sdxl_bmg::spec::KIND as ENGINE_KIND;
-use nagaya_text_sdxl::SdxlFamily;
 
 use crate::admission::{GroupDevice, PlanError};
 use crate::image::{ImageConfig, ImageFamily, ImageService};

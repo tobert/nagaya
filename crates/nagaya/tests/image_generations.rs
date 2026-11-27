@@ -1533,7 +1533,7 @@ fn an_image_and_a_mask_make_an_inpainting_job_and_the_route_pastes_the_kept_pixe
         assert_eq!(status, StatusCode::OK, "{done}");
         let job = fixture.take_jobs().remove(0);
         let init = job.init.as_ref().expect("a job with an image");
-        let blurred = nagaya_text_sdxl::inputs::blur(&gray, 512, 512, blur);
+        let blurred = nagaya_family_sdxl::inputs::blur(&gray, 512, 512, blur);
         assert_eq!(init.mask.as_deref(), Some(&blurred), "{options}");
         let strength = options["strength"].as_f64().unwrap_or(0.99);
         assert_eq!(init.strength, strength);
@@ -1544,7 +1544,7 @@ fn an_image_and_a_mask_make_an_inpainting_job_and_the_route_pastes_the_kept_pixe
         let decoded = vec![9; 512 * 512 * 3];
         assert_eq!(
             rgb_of(&png),
-            nagaya_text_sdxl::inputs::paste(&decoded, &pixels, &blurred),
+            nagaya_family_sdxl::inputs::paste(&decoded, &pixels, &blurred),
             "{options}"
         );
         let text = read_png(&png).3.unwrap();

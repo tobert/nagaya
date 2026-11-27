@@ -334,7 +334,7 @@ This is the text of `AGENTS.md` for these milestones, as it was on 2026-11-11. M
        in engine-abi. Amy decides each Proposed note.
     5. **Oracle fixture.** Write the fixed inputs and outputs of SDXL base from diffusers once, on the CPU (8.3).
        Keep the image small.
-    6. **Family.** Write `nagaya-text-sdxl`: the CLIP tokenizer and the prompt of an image request.
+    6. **Family.** Write `nagaya-family-sdxl`: the CLIP tokenizer and the prompt of an image request.
     7. **Ops.** Add the 2D convolution, GroupNorm, attention, and the up and down samplers to the shared interpreter.
        Give each op a test.
     8. **Engine.** Write `nagaya-mk-sdxl-bmg`: the text encoders, the UNet steps and the VAE decode. Run the
@@ -353,7 +353,7 @@ This is the text of `AGENTS.md` for these milestones, as it was on 2026-11-11. M
       `5a80b25`, deployed at 10:54 on 2026-10-28;
     - step 4, the image rules: `362f3fc`, `00f2682` and Amy's decisions `db5f5f6`;
     - step 5, the oracle of SDXL base from diffusers: `15b94b6`. `tools/sdxl_golden.sh` writes it.
-    - step 6, the family `nagaya-text-sdxl`: `a9c1ce7`, and Amy's decision on the ids `061efed`;
+    - step 6, the family `nagaya-family-sdxl`: `a9c1ce7`, and Amy's decision on the ids `061efed`;
     - step 7, the image ops on the shared interpreter: `8dc7277`. The card tests are in
       `crates/nagaya-mk-bmg/tests/xe_sdxl_ops.rs`.
     - step 8, the engine: `38ae84c`, `fab01eb`, `a7d0b09`, `cae1560`, and the matrix units `c13d5a6`. A step of a

@@ -1,7 +1,7 @@
 //! The A1111 prompt syntax (spec 11.9a, "The family of SDXL"): weights, escapes and `BREAK`. These cases follow the
 //! syntax as A1111 documents it; the parser is not a port of A1111's code.
 
-use nagaya_text_sdxl::{Piece, parse};
+use nagaya_family_sdxl::{Piece, parse};
 
 /// The runs of a prompt, with each weight rounded to 4 places.
 fn runs(prompt: &str) -> Vec<(String, f32)> {

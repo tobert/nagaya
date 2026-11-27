@@ -480,7 +480,7 @@ impl SdxlEngine {
     }
 
     /// The VAE encoder and `quant_conv` on one image of `h` by `w` pixels: the input values of
-    /// `nagaya_text_sdxl::inputs::unit`, pixel-major. It gives the 8 moments of each latent pixel, pixel-major: the mean of 4
+    /// `nagaya_family_sdxl::inputs::unit`, pixel-major. It gives the 8 moments of each latent pixel, pixel-major: the mean of 4
     /// channels, then their log variance (spec 11.9b).
     pub fn encode_image(&mut self, values: &[f32], h: usize, w: usize) -> Vec<f32> {
         assert_eq!(values.len(), 3 * h * w, "the encoder takes 3 values for each pixel");
@@ -539,7 +539,7 @@ impl SdxlEngine {
                 .map(|start| start.iter().map(|v| v * sigma).collect())
                 .collect();
         } else {
-            let moments = self.encode_image(&nagaya_text_sdxl::inputs::unit(&init.pixels), h, w);
+            let moments = self.encode_image(&nagaya_family_sdxl::inputs::unit(&init.pixels), h, w);
             let latents = Self::draw_latents(&moments, seed, images, Purpose::Encode);
             job.latents = latents
                 .iter()
@@ -553,7 +553,7 @@ impl SdxlEngine {
                 .mask
                 .as_ref()
                 .expect("job_problem refused a 9-channel job without a mask");
-            let values = nagaya_text_sdxl::inputs::masked(&init.pixels, &nagaya_text_sdxl::inputs::binary(blurred));
+            let values = nagaya_family_sdxl::inputs::masked(&init.pixels, &nagaya_family_sdxl::inputs::binary(blurred));
             let moments = self.encode_image(&values, h, w);
             job.masked_latents = Some(Self::draw_latents(&moments, seed, images, Purpose::EncodeMasked));
         } else if inpaint {
@@ -620,7 +620,7 @@ impl Image for SdxlEngine {
             .collect();
         let schedule = Schedule::new(job.sampler, job.spacing, job.steps as usize);
         let mask = job.init.as_ref().and_then(|init| init.mask.as_ref()).map(|blurred| {
-            nagaya_text_sdxl::inputs::latent_mask(&nagaya_text_sdxl::inputs::binary(blurred), job.width, job.height)
+            nagaya_family_sdxl::inputs::latent_mask(&nagaya_family_sdxl::inputs::binary(blurred), job.width, job.height)
         });
         // A job with an image gets its start latents from the encode quantum, its first step.
         let (begin, latents) = match &job.init {

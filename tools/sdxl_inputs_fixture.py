@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Make the input fixture of the SDXL family library (spec 11.9b; milestone 20).
 
-The tool writes crates/nagaya-text-sdxl/tests/fixtures/inputs.json. It holds small PNG files and what Pillow makes
+The tool writes crates/nagaya-family-sdxl/tests/fixtures/inputs.json. It holds small PNG files and what Pillow makes
 of them:
 
 - `pngs`: each PNG of a kind that the nagaya reads, with its pixels after `convert("RGB")` and after `convert("L")`.
@@ -37,7 +37,7 @@ from diffusers.image_processor import VaeImageProcessor  # noqa: E402
 from PIL import Image, ImageDraw, ImageFilter  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_OUT = ROOT / "crates/nagaya-text-sdxl/tests/fixtures"
+DEFAULT_OUT = ROOT / "crates/nagaya-family-sdxl/tests/fixtures"
 
 RADII = [0, 1, 2, 3, 4, 5, 8, 16, 33, 64]
 

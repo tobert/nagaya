@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Make the tokenizer fixture of the SDXL family library (spec 11.9a; milestone 18 step 6).
 
-The tool writes crates/nagaya-text-sdxl/tests/fixtures/ids.json. For each fixed string it holds the ids of both
+The tool writes crates/nagaya-family-sdxl/tests/fixtures/ids.json. For each fixed string it holds the ids of both
 tokenizers of the checkpoint, with no start, end or pad token. It also holds one string padded to 77 ids by each
 tokenizer. The reference is the `CLIPTokenizer` that diffusers loads for the pipeline (transformers 5.21, backed by
 `tokenizers`). The two tokenizers have one vocabulary, but `tokenizer_2` has the pad token `!`, so it reads a `!` in
@@ -20,7 +20,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_OUT = ROOT / "crates/nagaya-text-sdxl/tests/fixtures"
+DEFAULT_OUT = ROOT / "crates/nagaya-family-sdxl/tests/fixtures"
 
 STRINGS = [
     "",

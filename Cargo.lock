@@ -1205,6 +1205,7 @@ dependencies = [
  "nagaya-abi",
  "nagaya-council",
  "nagaya-family-beatthis",
+ "nagaya-family-sdxl",
  "nagaya-family-toy",
  "nagaya-ledger",
  "nagaya-mk-beatthis-cpu",
@@ -1229,7 +1230,6 @@ dependencies = [
  "nagaya-text-qwen38",
  "nagaya-text-qwen3tts",
  "nagaya-text-qwenimage21",
- "nagaya-text-sdxl",
  "opentelemetry",
  "png",
  "rayon",
@@ -1286,6 +1286,15 @@ dependencies = [
  "safetensors",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "nagaya-family-sdxl"
+version = "0.1.0"
+dependencies = [
+ "png",
+ "serde_json",
+ "tokenizers",
 ]
 
 [[package]]
@@ -1491,8 +1500,8 @@ dependencies = [
  "blake3",
  "nagaya-abi",
  "nagaya-conformance",
+ "nagaya-family-sdxl",
  "nagaya-mk-bmg",
- "nagaya-text-sdxl",
  "serde_json",
  "tempfile",
 ]
@@ -1615,15 +1624,6 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "sha2",
- "tokenizers",
-]
-
-[[package]]
-name = "nagaya-text-sdxl"
-version = "0.1.0"
-dependencies = [
- "png",
- "serde_json",
  "tokenizers",
 ]
 

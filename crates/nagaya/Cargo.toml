@@ -48,7 +48,7 @@ nagaya-text-gemma4 = { version = "0.1.0", path = "../nagaya-text-gemma4" }
 nagaya-mk-qwen3tts-bmg = { version = "0.1.0", path = "../nagaya-mk-qwen3tts-bmg" }
 nagaya-text-qwen3tts = { version = "0.1.0", path = "../nagaya-text-qwen3tts" }
 nagaya-mk-sdxl-bmg = { version = "0.1.0", path = "../nagaya-mk-sdxl-bmg" }
-nagaya-text-sdxl = { version = "0.1.0", path = "../nagaya-text-sdxl" }
+nagaya-family-sdxl = { version = "0.1.0", path = "../nagaya-family-sdxl" }
 nagaya-mk-qwenimage21-gfx1151 = { version = "0.1.0", path = "../nagaya-mk-qwenimage21-gfx1151" }
 nagaya-text-qwenimage21 = { version = "0.1.0", path = "../nagaya-text-qwenimage21" }
 nagaya-family-beatthis = { version = "0.1.0", path = "../nagaya-family-beatthis" }

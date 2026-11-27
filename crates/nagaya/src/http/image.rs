@@ -20,7 +20,7 @@ use gogi_proto::objects::{Named, ObjectRef, check_reads, objects_of};
 use nagaya_abi::{
     DecodedImage, ImageInit, ImageJob, ImagePrompt, ImageSampler, ImageSpacing, LoraInput, steps_that_run,
 };
-use nagaya_text_sdxl::inputs::{self, Png};
+use nagaya_family_sdxl::inputs::{self, Png};
 use serde_json::Value;
 use tokio::sync::mpsc;
 

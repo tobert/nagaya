@@ -17,14 +17,14 @@ use std::time::Instant;
 
 use common::{Tensors, golden, rel};
 use nagaya_abi::{DecodedImage, Image, ImageChunk, ImageInit, ImageJob, ImagePrompt, ImageSampler, ImageSpacing};
+use nagaya_family_sdxl::SdxlFamily;
+use nagaya_family_sdxl::inputs::{binary, latent_mask, masked, unit};
 use nagaya_mk_sdxl_bmg::host;
 use nagaya_mk_sdxl_bmg::model::UnetSize;
 use nagaya_mk_sdxl_bmg::noise::{Purpose, normal};
 use nagaya_mk_sdxl_bmg::sampler::{History, Schedule, begin_index, step};
 use nagaya_mk_sdxl_bmg::spec::*;
 use nagaya_mk_sdxl_bmg::{Config, SdxlEngine};
-use nagaya_text_sdxl::SdxlFamily;
-use nagaya_text_sdxl::inputs::{binary, latent_mask, masked, unit};
 
 /// The request of the reference (`tools/sdxl_inpaint_golden.sh`).
 const PROMPT: &str = "a red fox in a snowy forest, watercolor";

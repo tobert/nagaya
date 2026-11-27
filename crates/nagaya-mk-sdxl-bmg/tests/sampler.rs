@@ -5,8 +5,8 @@ mod common;
 
 use common::{golden, rel};
 use nagaya_abi::{ImageSampler, ImageSpacing, steps_that_run};
+use nagaya_family_sdxl::inputs::{binary, latent_mask};
 use nagaya_mk_sdxl_bmg::sampler::{History, Schedule, begin_index, blend, image_start, step};
-use nagaya_text_sdxl::inputs::{binary, latent_mask};
 
 const SAMPLERS: [(&str, ImageSampler); 4] = [
     ("euler", ImageSampler::Euler),

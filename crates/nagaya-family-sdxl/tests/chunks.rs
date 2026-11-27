@@ -1,6 +1,6 @@
 //! The chunks of a prompt (spec 11.9a, "The family of SDXL"): 75 tokens with a start and an end token, at most 3.
 
-use nagaya_text_sdxl::{BOS, CHUNK_TOKENS, EOS, Error, MAX_CHUNKS, PAD2, Piece, chunks};
+use nagaya_family_sdxl::{BOS, CHUNK_TOKENS, EOS, Error, MAX_CHUNKS, PAD2, Piece, chunks};
 
 /// A tokenizer for the tests: each character is one token, with the id of its code point.
 fn chars(text: &str) -> Result<Vec<u32>, Error> {

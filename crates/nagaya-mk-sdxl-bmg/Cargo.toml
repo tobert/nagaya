@@ -12,7 +12,7 @@ nagaya-abi = { version = "0.1.0", path = "../nagaya-abi" }
 # The interpreter of the B70 megakernels, which this engine shares with the Gemma 4 and speech engines.
 nagaya-mk-bmg = { version = "0.1.0", path = "../nagaya-mk-bmg" }
 # The rules of the inputs of an image job (spec 11.9b): the map of the pixels and the binary mask.
-nagaya-text-sdxl = { version = "0.1.0", path = "../nagaya-text-sdxl" }
+nagaya-family-sdxl = { version = "0.1.0", path = "../nagaya-family-sdxl" }
 blake3 = "1.8.2"
 serde_json = "1.0.154"
 

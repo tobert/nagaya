@@ -3,7 +3,7 @@
 //! `tests/fixtures/inputs.json` holds what Pillow 13.0.0, numpy and torch make of small inputs. `tools/sdxl_inputs_fixture.py`
 //! writes it once, with no GPU.
 
-use nagaya_text_sdxl::inputs::{self, InputError, Png};
+use nagaya_family_sdxl::inputs::{self, InputError, Png};
 use serde_json::Value;
 
 fn fixture() -> Value {

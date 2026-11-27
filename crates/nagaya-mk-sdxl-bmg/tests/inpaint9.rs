@@ -6,10 +6,10 @@ mod common;
 
 use common::golden;
 use nagaya_abi::{ImageSampler, ImageSpacing};
+use nagaya_family_sdxl::inputs::{binary, masked};
 use nagaya_mk_sdxl_bmg::host::inpaint_input;
 use nagaya_mk_sdxl_bmg::sampler::{Schedule, begin_index};
 use nagaya_mk_sdxl_bmg::spec::*;
-use nagaya_text_sdxl::inputs::{binary, masked};
 
 const WIDTH: usize = 256;
 const HEIGHT: usize = 320;

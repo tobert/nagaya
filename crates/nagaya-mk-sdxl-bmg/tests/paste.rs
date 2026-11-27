@@ -1,12 +1,12 @@
 //! The paste after the decode against the oracle (`tools/sdxl_inpaint_golden.sh`, spec 11.9b, "The paste after the
-//! decode"). The route pastes with `nagaya_text_sdxl::inputs::paste`. This test gives it the decode of each inpainting
+//! decode"). The route pastes with `nagaya_family_sdxl::inputs::paste`. This test gives it the decode of each inpainting
 //! run of the reference, with the blend and with the 9-channel UNet, and the input image. It compares the bytes with
 //! the reference's paste.
 
 mod common;
 
 use common::golden;
-use nagaya_text_sdxl::inputs::paste;
+use nagaya_family_sdxl::inputs::paste;
 
 /// The runs of `inpaint.safetensors`: the sampler and the strength in percent.
 const RUNS: [&str; 6] = [
