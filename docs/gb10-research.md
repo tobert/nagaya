@@ -186,6 +186,25 @@ These floors are estimates from counts, with no attention and no epilogue. A fai
 - Gain: a stored prefix costs seconds, not minutes.
 - Bits: no change. A restore gives the bits of the prefill.
 
+### P9. A prefill in chunks that run apart
+
+- Fact: the trunk uses no RoPE, so a key does not hold its position. A key of a chunk that ran from position 0 can
+  go to another position with no change.
+- Fact: 40 of the 48 runs read only the 1,024 positions before a row. Only the 8 full runs and the convolution
+  states read further back.
+- Idea: prefill each chunk of a document alone, from an empty slot, on any card or node and at any time. Then splice
+  the chunks: put the keys and values of the full runs of each chunk into one slot, at the chunk's positions. Two
+  forms:
+  - (a) no repair;
+  - (b) a repair: run the first 1,024 positions of each chunk again with the true context before them, so that its
+    sliding rings and convolution states are right.
+- Gain: a prefill that is parallel across nodes and runs as text arrives. A stored chunk loads with no prefill (P8).
+  A document that many contexts share is prefilled once.
+- Bits: they move against a straight prefill. The chunks are part of the recipe (spec 6), so the same chunks give
+  the same bits: a spliced context is a new recipe with its own identity, not a fallback.
+- First measure: a PG-19 text of 32K positions, straight and in chunks of 4K and 8K, forms (a) and (b). Compare the
+  top token and the KL of the next 256 tokens against the straight prefill, and the needles of L4.
+
 ## The decode step at short context
 
 The step is at 27.3 ms against a floor of 21.8 ms. The items below are in the order of their gain.
@@ -296,7 +315,9 @@ At depth the cache sets the speed. A step at 409,600 positions takes 88 ms with 
   stage can pick the chunks, and the second stage reads only those.
 - Gain: not known. It can be large, because the step is bound by the bytes of the cache.
 - Bits: they move, and retrieval can break. This item is an experiment for the gate of retrieval.
-- First measure: for each head of the full runs, the share of the chunks that hold 99.9% of the softmax weight.
+- First measure: for each head of the full runs, the share of the chunks that hold 99% and 99.9% of the softmax
+  weight. Restore a snapshot of about 409,000 positions (no prefill), and run some decode steps on a variant cubin
+  that writes the weight of each chunk of keys.
 
 ### L3. A format for the keys and another for the values
 
@@ -312,6 +333,16 @@ At depth the cache sets the speed. A step at 409,600 positions takes 88 ms with 
 - Idea: one context can hold many more needles for the cost of one prefill. Ask each question from the same
   snapshot.
 - Gain: a rate with an error bar, so that L2 and L3 have a gate.
+
+### L5. A cache in tiers
+
+- Fact: a decode step at 409,600 positions reads 6.7 GB of keys and values (L1). The bytes grow with the position.
+- Idea: if L2 shows a peaked attention, keep a small summary of the keys of each chunk on the card (a few bits), and
+  keep the chunks themselves in a compact format, part of them on NVMe. A step scores the summaries, then reads only
+  the chunks it picks, in a finer format.
+- Gain: a cache that is not bound by the RAM of the card, and fewer bytes for each step. Not known before L2.
+- Bits: they move. It needs the gates of coherence and retrieval (L4).
+- First measure: the measure of L2. Then the read rate of NVMe for chunks of 64 to 1,024 positions.
 
 ## Memory
 
@@ -377,6 +408,8 @@ These items change what the model can do, not how fast a step runs.
 5. P3 to P6 and D3 to D5: small gains, in any order.
 6. I1 and L4: measures that need GPU time and no kernel work. They can run between the lanes.
 7. D2, L2 and L3 last: they move bits, and they need the wider gates of L4.
+8. Later: P9 and L5. They change how a context is made and kept, not how a step runs. The first measure of L2 tells
+   whether L5 can pay. P8 comes first, because P9 loads its chunks by restore.
 
 ## The tools
 
