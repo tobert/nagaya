@@ -40,8 +40,13 @@
 // kt = 768, group_items = 4, items = 576, item_bytes = 16 * kt * 2, rows = 1 to 512, layer = the depth of the stack
 // (the rows of the blocks, then `r`: 2 to 5), p0 = the scale of a score, 2304^-0.5, scale_bytes = the floats of the
 // scratch that the host gives (checked), flags = FLAG_ACCUMULATE and FLAG_NORM, in any mix.
-// The scratch, in floats: 144 counters of the tiles, one counter of the finisher, padding to 160, the partials
-// (`576 * rows * 16`), the raw sums (`2304 * rows`). The counters start at 0, and the merger sets each back to 0.
+// The scratch, in floats: 144 counters of the tiles, the counter of the tiles that are done (word 144, used with
+// finisher items) and the counter of the finisher items that are done (word 145), padding to 160, the partials
+// (`576 * rows * 16`), the raw sums (`2304 * rows`). The counters start at 0, and the merger sets each back to 0 (with
+// finisher items, the last finisher item sets word 144 back). A launch that failed leaves the counters dirty: the
+// ring zeroes only the scoreboard, so the host must zero the scratch again (`Ring::zero_device`). A stale word 144
+// would let a finisher item read rows before the tiles wrote them, with no error. In the profile build the words 146
+// to 148 hold the spin of the finisher items (sum of ns, count, longest) and are never set back.
 //
 // The table (`OUT_MIX_TABLE_*` in `src/protocol.rs`): slots 0 to 4 are the stack as `OP_MIX` has it: the planes B[0..],
 // then `r` at the slot `layer - 1`, and slots 5 to 9 are their row factors. The slot of the factors of `r` points to
@@ -237,7 +242,9 @@ __device__ __forceinline__ bool om_tile_item(const MkTaskDescriptor& task, const
 
     // 3. The arrival at the counter of the tiles.
     if (task.items != OM_TILE_ITEMS) {
-        // The finisher items follow. The release add publishes `r` and the state, as the merge does.
+        // The finisher items follow. The barrier orders the stores of all workers (`r` and the state) before the release add
+        // of worker 0, which publishes them to the finisher items.
+        worker_sync();
         if (worker_id() == 0) {
             atom_acq_rel_gpu_add_u32(counters + OM_TILES, 1u);
         }
@@ -250,12 +257,27 @@ __device__ __forceinline__ bool om_tile_item(const MkTaskDescriptor& task, const
 __device__ __forceinline__ void om_finisher_item(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t j) {
     uint32_t* counters = reinterpret_cast<uint32_t*>(task.f);
     if (worker_id() == 0) {
+        // The wait may depend only on items that never wait: the 576 items of the matmul. The proof that it cannot
+        // deadlock rests on this (see the header). A new wait in a matmul item, or a wait of one finisher item on
+        // another, breaks it.
+#ifdef MK_PROFILE
+        const uint64_t t0 = globaltimer_ns();
+#endif
         uint64_t polls = 0;
         while (ld_acquire_gpu_u32(counters + OM_TILES) < OM_TILES) {
             if (++polls >= MK_SPIN_LIMIT) {
                 __trap();
             }
         }
+#ifdef MK_PROFILE
+        // The profile build adds the time of the spin: the sum of ns (word 146), the count of items (147) and the longest
+        // spin (148). They are never set back, so a test reads them after the run and the zero-counter test does not use
+        // the profile build.
+        const uint32_t spun = static_cast<uint32_t>(globaltimer_ns() - t0);
+        atomicAdd(counters + 146, spun);
+        atomicAdd(counters + 147, 1u);
+        atomicMax(counters + 148, spun);
+#endif
     }
     worker_sync();
     const uint32_t first = j * MK_OUT_MIX_FINISH_ROWS;
@@ -263,7 +285,10 @@ __device__ __forceinline__ void om_finisher_item(const MkTaskDescriptor& task, c
     for (uint32_t row = first; row < end; ++row) {
         om_finish_row(task, table, row);
     }
-    // The last finisher item sets the counter of the tiles back to 0. `merge_arrive` sets its own counter back.
+    // The last finisher item sets the counter of the tiles back to 0. `merge_arrive` sets its own counter back. The
+    // store is a plain relaxed store, not a `merge_arrive`, and it is safe by the rule of `merge_arrive`: every other
+    // finisher item has read the counter already (it arrived after its wait), and this thread signals the task after
+    // the store (`run_items`), so the next task that reuses the counter waits on a signal that follows the reset.
     if (worker_id() == 0 && merge_arrive(counters + OM_FINISHED, task.items - OM_TILE_ITEMS)) {
         asm volatile("st.relaxed.gpu.global.u32 [%0], %1;" ::"l"(counters + OM_TILES), "r"(0u) : "memory");
     }

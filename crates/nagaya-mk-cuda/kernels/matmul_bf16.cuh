@@ -113,10 +113,10 @@ __device__ __forceinline__ float2 mm_load_normed(const float* row, bool valid, f
 // factors (null with no norm), `norm_w` the norm weight (null with none), and `partials` the place of the partials of the
 // task: item `i` writes `rows * 16` floats at `partials + i * rows * 16`, in the order row, column of the tile. Every
 // consumer calls this function. It ends with a barrier of the consumers. The prefetch of the next item stops at
-// `prefetch_items`: a task that has items after the matmul (OP_OUT_MIX) gives the count of the items of the weight.
+// `weight_items`: a task that has items after the matmul (OP_OUT_MIX) gives the count of the items of the weight.
 __device__ __forceinline__ void mm_item_partials(const MkTaskDescriptor& task, uint32_t item, const float* x,
                                                  const float* factors, const uint16_t* norm_w, float* partials,
-                                                 uint32_t prefetch_items = 0xFFFFFFFFu) {
+                                                 uint32_t weight_items = 0xFFFFFFFFu) {
     const uint32_t rows = task.rows;
     const uint32_t kt = task.kt;
     const uint32_t slices = task.group_items;
@@ -132,7 +132,7 @@ __device__ __forceinline__ void mm_item_partials(const MkTaskDescriptor& task, u
     const uint8_t* weights = reinterpret_cast<const uint8_t*>(task.b);
     // The next item of this block: its first bytes are on the way to L2 while this item runs.
     const uint64_t next = mk_next_item();
-    if (worker_id() == 0 && next < task.items && next < prefetch_items) {
+    if (worker_id() == 0 && next < task.items && next < weight_items) {
         bulk_prefetch_l2(weights + next * task.item_bytes, task.item_bytes);
     }
 
