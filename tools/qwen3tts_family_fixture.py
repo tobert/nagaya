@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Make the fixtures of the Qwen3-TTS family library (spec 11.3, 11.8; milestone 17 step 3).
 
-The tool writes two files into crates/nagaya-text-qwen3tts/tests/fixtures:
+The tool writes two files into crates/nagaya-family-qwen3tts/tests/fixtures:
 
 - ids.json: for each fixed string, the token ids of the reference processor. The processor is the one that
   `Qwen3TTSModel.from_pretrained` loads, with `fix_mistral_regex=True`. Each entry also says if the Qwen2 split
@@ -26,7 +26,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_OUT = ROOT / "crates/nagaya-text-qwen3tts/tests/fixtures"
+DEFAULT_OUT = ROOT / "crates/nagaya-family-qwen3tts/tests/fixtures"
 
 # The split pattern of the Qwen2 tokenizer, before transformers replaces it.
 QWEN2_PATTERN = (

@@ -17,4 +17,4 @@ sha2 = "0.10.9"
 
 [dev-dependencies]
 nagaya-conformance = { version = "0.1.0", path = "../nagaya-conformance" }
-nagaya-text-qwen3tts = { version = "0.1.0", path = "../nagaya-text-qwen3tts" }
+nagaya-family-qwen3tts = { version = "0.1.0", path = "../nagaya-family-qwen3tts" }

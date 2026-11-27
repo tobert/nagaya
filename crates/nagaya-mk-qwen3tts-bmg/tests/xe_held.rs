@@ -8,9 +8,9 @@ mod common;
 use std::sync::{Mutex, OnceLock};
 
 use nagaya_abi::{Engine, PromptPair, SpeechPosition, SpeechSampler, State, WriteResult};
+use nagaya_family_qwen3tts::Qwen3TtsFamily;
 use nagaya_mk_qwen3tts_bmg::spec::{CODEBOOKS, CODEC_EOS, TTS_PAD};
 use nagaya_mk_qwen3tts_bmg::{Config, KV_ROW_BYTES, Qwen3TtsEngine};
-use nagaya_text_qwen3tts::Qwen3TtsFamily;
 
 const MAX_FRAMES: u32 = 96;
 const VOICE: &str = "The calm onboard AI of a starship. Female, clear and soft, slightly processed, unhurried.";

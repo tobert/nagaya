@@ -6,7 +6,7 @@
 mod common;
 
 use common::{SMALL_CONFIG, absent, family, fixture, id, ids};
-use nagaya_text_qwen3tts::{Error, PromptPosition, SpeechIds};
+use nagaya_family_qwen3tts::{Error, PromptPosition, SpeechIds};
 
 fn pos(text: Option<u32>, codec: Option<u32>) -> PromptPosition {
     PromptPosition { text, codec }
