@@ -197,27 +197,38 @@ impl<'d> Rig<'d> {
 
     /// The task with the finisher in the item that arrives last (`spread` false) or in items after the matmul.
     fn task_spread(&self, rows: usize, spread: bool) -> Task {
+        self.task_from(rows, spread, 0)
+    }
+
+    /// `task_spread` that reads the attention output and `x` from the row `row0` of their buffers, so that its inputs
+    /// are not a prefix of another task's. The stack planes stay at row 0 (the table), so only `r` and the conv sums
+    /// change, which is enough to tell a finisher that read `r` before the tiles wrote it.
+    fn task_from(&self, rows: usize, spread: bool, row0: usize) -> Task {
         let shape = OutMixShape::new(rows, self.case.planes + 1, self.case.accumulate, true)
             .unwrap()
             .with_spread(spread);
         let desc = shape
             .descriptor(&OutMixBuffers {
-                attn: self.attn,
+                attn: self.attn + (row0 * K * 4) as u64,
                 packed: self.packed,
                 r: self.r,
-                x: if self.case.accumulate { self.x } else { 0 },
+                x: if self.case.accumulate {
+                    self.x + (row0 * WIDTH * 4) as u64
+                } else {
+                    0
+                },
                 scratch: self.ring.scratch(),
                 table: self.table,
             })
             .unwrap();
         let mut task = Task::with_items(desc)
-            .reads(self.attn, rows * K * 4)
+            .reads(self.attn + (row0 * K * 4) as u64, rows * K * 4)
             .reads(self.packed, outmix::shape().packed_bytes())
             .writes(self.r, rows * WIDTH * 4)
             .writes(self.out, out_floats(rows) * 4)
             .writes(self.ring.scratch(), scratch_floats(rows) * 4);
         if self.case.accumulate {
-            task = task.reads(self.x, rows * WIDTH * 4);
+            task = task.reads(self.x + (row0 * WIDTH * 4) as u64, rows * WIDTH * 4);
         }
         task
     }
@@ -569,7 +580,8 @@ fn a_task_that_follows_another_reuses_the_counters_and_keeps_the_bits() {
     let dev = open();
     let case = CASES[1];
     let layer = load_layer(ck, case.layer);
-    let (first, second) = (512usize, 17usize);
+    // The second task reads the rows 100 to 116 of the buffers: not a prefix of the first task's rows.
+    let (first, second, row0) = (512usize, 17usize, 100usize);
     let inputs = make_inputs(&case, first, 900);
     let mut rig = Rig::new(&dev, &layer, case, &inputs, first, false);
     for grid in GRIDS {
@@ -579,13 +591,13 @@ fn a_task_that_follows_another_reuses_the_counters_and_keeps_the_bits() {
         rig.ring.set(&[rig.task(first)]);
         run_with_watchdog(&rig.ring, grid, 288, rig.shared);
         rig.ring.zero_device().unwrap();
-        rig.ring.set(&[rig.task(second)]);
+        rig.ring.set(&[rig.task_from(second, true, row0)]);
         run_with_watchdog(&rig.ring, grid, 288, rig.shared);
         let alone = rig.collect(second);
         // Together: one ring of two tasks.
         rig.prepare(&inputs, first);
         rig.ring.zero_device().unwrap();
-        let list = [rig.task(first), rig.task(second)];
+        let list = [rig.task(first), rig.task_from(second, true, row0)];
         rig.ring.set(&list);
         run_with_watchdog(&rig.ring, grid, 288, rig.shared);
         assert!(rig.ring.read_scoreboard().is_ok());
@@ -714,6 +726,72 @@ fn task_ns(profile: &[u64], blocks: usize, task: usize) -> u64 {
     end - begin
 }
 
+/// Report: the phases of a tile item at 1, 16 and 512 rows, from the clocks of the profile build (words 150 to 159 of the
+/// scratch, `kernels/ops_out_mix.cuh`). One task for each launch, the scratch zeroed before it, the median of 5 launches.
+/// A phase is shown as the sum of its ns over the items, divided by the blocks: the time that each block spends in it.
+#[test]
+fn the_tile_phase_split() {
+    let Some(ck) = checkpoint("cuda_out_mix") else { return };
+    let dev = open_profile();
+    let blocks = dev.sm_count() as usize;
+    let case = CASES[1];
+    let layer = load_layer(ck, case.layer);
+    for rows in [1usize, 16, 512] {
+        let inputs = make_inputs(&case, rows, 400);
+        let mut rig = Rig::new(&dev, &layer, case, &inputs, rows, true);
+        rig.prepare(&inputs, rows);
+        let mut runs: Vec<[f64; 9]> = Vec::new();
+        for _ in 0..5 {
+            rig.ring.zero_device().unwrap();
+            rig.ring.set(&[rig.task(rows)]);
+            run_with_watchdog(&rig.ring, blocks as u32, 288, rig.shared);
+            let profile = rig.ring.read_profile().unwrap();
+            let slots = &profile[rig.ring.ring_index(0) * blocks * PROFILE_WORDS..][..blocks * PROFILE_WORDS];
+            let begin = slots.chunks(PROFILE_WORDS).map(|s| s[1]).min().unwrap();
+            let end = slots.chunks(PROFILE_WORDS).map(|s| s[2]).max().unwrap();
+            let w: Vec<u32> = download(&dev, rig.ring.scratch() + 146 * 4, 14);
+            let big = |lo: usize| u64::from(w[lo]) | (u64::from(w[lo + 1]) << 32);
+            // The words 156/157 hold the complement of the first start, and 158/159 the last end, of a tile item.
+            let (first_start, last_end) = (!big(156 - 146), big(158 - 146));
+            let per_block = |ns: u32| f64::from(ns) / blocks as f64 / 1e3;
+            runs.push([
+                (end - begin) as f64 / 1e3,                // 0 the op, from the first wait that ended
+                (last_end - first_start) as f64 / 1e3,     // 1 the tile phase, first start to last end
+                end.saturating_sub(last_end) as f64 / 1e3, // 2 the tail after the last tile item
+                per_block(w[150 - 146]),                   // 3 matmul partials
+                per_block(w[152 - 146]),                   // 4 arrival and merge of the slices
+                per_block(w[153 - 146]),                   // 5 convolution and residual
+                per_block(w[154 - 146]),                   // 6 state
+                per_block(w[146 - 146]),                   // 7 spin of the finisher items
+                f64::from(w[151 - 146]),                   // 8 items counted
+            ]);
+        }
+        let med = |i: usize| {
+            let mut v: Vec<f64> = runs.iter().map(|r| r[i]).collect();
+            v.sort_by(f64::total_cmp);
+            v[v.len() / 2]
+        };
+        let wo = outmix::shape().packed_bytes() as f64;
+        let partial_bytes = (outmix::shape().items() * rows * 16 * 4) as f64;
+        eprintln!(
+            "cuda_out_mix tile: {rows:>3} rows: op {:>8.1} us = tile phase {:>8.1} + tail {:>7.1}; per block: partials {:>8.1} us ({:.1} GB/s of wo {:.1} MB), merge {:>7.1} us ({:.1} MB of partials in and out), conv+residual {:>7.1} us, state {:>5.1} us; finisher spin {:>7.1} us per block; {} tile items",
+            med(0),
+            med(1),
+            med(2),
+            med(3),
+            wo / (med(3) * 1e3),
+            wo / 1e6,
+            med(4),
+            partial_bytes / 1e6,
+            med(5),
+            med(6),
+            med(7),
+            med(8)
+        );
+        rig.free();
+    }
+}
+
 #[test]
 fn the_speed_of_the_task() {
     let Some(ck) = checkpoint("cuda_out_mix") else { return };
@@ -748,6 +826,11 @@ fn the_speed_of_the_task() {
                     // The profile build counts the spin of the finisher items in the words 146 to 148 of the scratch:
                     // the sum of ns, the count of items and the longest spin, over the 6 tasks.
                     let spin: Vec<u32> = download(&dev, rig.ring.scratch() + 146 * 4, 3);
+                    assert_eq!(
+                        u64::from(spin[1]),
+                        tasks as u64 * outmix::finisher_items(rows) as u64,
+                        "{rows} rows: every finisher item of every task must have counted its spin"
+                    );
                     let items = u64::from(spin[1]).max(1);
                     eprintln!(
                         "cuda_out_mix spin: layer {} {rows:>3} rows, finisher rows {}: {} finisher items in 6 tasks, mean spin {:.1} us, longest {:.1} us",
