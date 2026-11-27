@@ -7,8 +7,8 @@ mod common;
 
 use common::model::{absent, family};
 use common::{JsonExt, fixture};
+use nagaya_family_gemma4::chat::Chat;
 use nagaya_jinja::Json;
-use nagaya_text_gemma4::chat::Chat;
 use std::sync::Arc;
 
 fn float(j: &Json) -> f64 {
@@ -50,7 +50,7 @@ fn the_ids_of_the_fixture_are_the_ids_of_this_library() {
         let ids = p.get("ids").ids();
         if name == "chat" {
             let chat = Chat::new(Arc::new(
-                nagaya_text_gemma4::Tokenizer::from_file(&common::model::model_dir().join("tokenizer.json")).unwrap(),
+                nagaya_family_gemma4::Tokenizer::from_file(&common::model::model_dir().join("tokenizer.json")).unwrap(),
             ))
             .unwrap();
             let user = Json::parse(r#"{"role": "user", "content": "Name three colors."}"#).unwrap();

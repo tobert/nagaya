@@ -203,7 +203,7 @@ This is the text of `AGENTS.md` for these milestones, as it was on 2026-11-11. M
     2. **Host code.** Build the engine registry (11.3) and the devices with PCI addresses in `Factory` (engine-abi
        "The factory gets its devices"). Build the CPU sets for each card (3.2b) and the feed rule (6.14). Build the
        stage scheduling in `nagaya-sched` and its threads, tested with a fake engine of two stages (engine-abi D1).
-    3. **Gemma 4 family.** Write `nagaya-text-gemma4` (11.3) and its oracle fixture (8.3).
+    3. **Gemma 4 family.** Write `nagaya-family-gemma4` (11.3) and its oracle fixture (8.3).
     4. **Copy the engine.** Copy mkviolet's engine into `nagaya-mk-gemma4-bmg`, with no change in behavior. Copy
        branch blocks, prompt-lookup drafts and the long slots (65,536 positions, and the 262,144 work in mkviolet
        `docs/07-long-context.md`). Do not copy the VNNI packer, the memfd stub, or other parts that nothing calls.

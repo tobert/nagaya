@@ -1,6 +1,6 @@
 //! The body of a Gemma 4 tool call.
 
-use nagaya_text_gemma4::call::parse_tool_call;
+use nagaya_family_gemma4::call::parse_tool_call;
 use serde_json::{Value, json};
 
 #[test]

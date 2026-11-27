@@ -35,7 +35,7 @@ The owner decided these on 2026-11-17, by interview.
 |---|---|---|---|---|
 | `mkviolet` | 54 | 337 | docs 199, the Gemma 4 crates 75, the Qwen3.8 text crate 15, tools 10, deploy 9 | 2, 3 |
 | `gmk` | 7 | 13 | docs 7, `tools/lfm3_jlens_fit.py` 3, `AGENTS.md`, `README.md` | 2, 3 |
-| `mk_api` | 5 | 12 | the spec 8, engine-abi 1, `nagaya-text-gemma4` 3 | 2, 3 |
+| `mk_api` | 5 | 12 | the spec 8, engine-abi 1, `nagaya-family-gemma4` 3 | 2, 3 |
 | the old Qwen3.8 repository path | 10 | 73 | the build fixtures of the Qwen3.8 crate 60, tools 9 | 2, 5 |
 | `mkengine` | 2 | 13 | the build fixture of the Qwen3.8 crate 12 | 2, 5 |
 | `megakernel.service`, `mkviolet.service` | 9 | 17 | deploy, `tools/op_mutate.py`, a Qwen3.8 test, docs | 2 |
@@ -79,7 +79,7 @@ Step 2 does each row. A row changes no bits unless its last column says so.
 | `// mkviolet: per-card task interpreter` | `megakernel.cl:1` | "The task interpreter of a B70 card" | none: no binary holds it |
 | `MKVSNAP1`, `KvSnapshot::write_to`, `read_from` | `nagaya-mk-gemma4-bmg/src/gemma4.rs` | remove: only a test calls them | none |
 | `a_fit_follows_the_join_of_mkviolet` | `nagaya-mk-gemma4-bmg/src/spec.rs` | `a_fit_follows_the_join_of_the_held_rows` | none |
-| `a_plain_read_has_the_layout_of_mkviolet` | `nagaya-text-gemma4/tests/council.rs` | `a_plain_read_has_the_council_layout` | none |
+| `a_plain_read_has_the_layout_of_mkviolet` | `nagaya-family-gemma4/tests/council.rs` | `a_plain_read_has_the_council_layout` | none |
 | `a_plain_read_has_the_tokens_of_the_layout_of_mkviolet` | `nagaya-text-qwen38/tests/council.rs` | `a_plain_read_has_the_tokens_of_the_council_layout` | none |
 | `the_b70host_config_binds_mkviolets_address_and_ignores_the_igpu` | `crates/nagaya/tests/deploy.rs` | `the_b70_config_binds_its_address_and_ignores_the_igpu` | none |
 | `--mkviolet`, `DEFAULT_MKVIOLET` | `tools/gemma4_oracle_fixture.py` | remove: the tool reads `tools/gemma4_reference.py` | none |

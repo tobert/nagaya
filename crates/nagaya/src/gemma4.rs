@@ -122,7 +122,7 @@ pub fn arena_parts(devices: &[GroupDevice]) -> Result<Vec<ArenaPart>, PlanError>
 pub fn open_family(identity: &Identity, table: &toml::Table) -> Result<OpenedFamily, String> {
     let _ = identity;
     let dir = model_dir(table, "the table `[engines.family]`")?;
-    let family = nagaya_text_gemma4::Gemma4Family::from_dir(&dir)
+    let family = nagaya_family_gemma4::Gemma4Family::from_dir(&dir)
         .map_err(|error| format!("cannot build the Gemma 4 family from `{}`: {error}", dir.display()))?;
     let hash = family.tokenizer_hash().to_owned();
     Ok(OpenedFamily {

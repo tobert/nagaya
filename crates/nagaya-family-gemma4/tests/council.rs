@@ -10,7 +10,7 @@ use nagaya_council::family::{
     Advance, Asked, Boundary, Continues, DecisionInput, Family, FamilyError, ReadPlan, ReadStep, ReplyCall, ReplyStart,
 };
 use nagaya_council::template_id::hash16;
-use nagaya_text_gemma4::CHAT_TEMPLATE;
+use nagaya_family_gemma4::CHAT_TEMPLATE;
 use serde_json::{Value, json};
 
 fn context(v: Value) -> Context {
@@ -593,7 +593,7 @@ fn the_template_id_has_the_council_hash_and_the_hash_of_the_template() {
         council.starts_with("nagaya-council:") && council.len() == "nagaya-council:".len() + 16,
         "{id}"
     );
-    let again = nagaya_text_gemma4::Gemma4Family::from_dir(&common::model::model_dir()).unwrap();
+    let again = nagaya_family_gemma4::Gemma4Family::from_dir(&common::model::model_dir()).unwrap();
     assert_eq!(again.template_id(), id, "the id is the same for each build");
     assert_eq!(family().vocab_size(), 262_144);
 }

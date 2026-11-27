@@ -6,8 +6,8 @@
 mod common;
 
 use common::{JsonExt, fixture};
+use nagaya_family_gemma4::CHAT_TEMPLATE;
 use nagaya_jinja::{Json, Template};
-use nagaya_text_gemma4::CHAT_TEMPLATE;
 
 #[test]
 fn the_template_renders_what_transformers_renders() {

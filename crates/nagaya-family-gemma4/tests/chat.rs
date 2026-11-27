@@ -5,9 +5,9 @@ mod common;
 
 use common::model::{absent, family};
 use common::{JsonExt, fixture};
+use nagaya_family_gemma4::chat::{Chat, THOUGHT_OPEN};
+use nagaya_family_gemma4::{Error, Tokenizer};
 use nagaya_jinja::Json;
-use nagaya_text_gemma4::chat::{Chat, THOUGHT_OPEN};
-use nagaya_text_gemma4::{Error, Tokenizer};
 use std::sync::Arc;
 
 fn chat() -> Chat {

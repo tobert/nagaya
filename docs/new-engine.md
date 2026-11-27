@@ -75,10 +75,10 @@ and `vocab_size`. The vocabulary size is here, not in `limits()` (engine-abi "Lo
   character and its offset in the error (spec 11.3, "The Gemma 4 choices").
 - **Reply parser.** Write it from the rules of spec 11.3 ("The finish", "The reply parser"), with the parsers in
   this tree as the pattern: `crates/nagaya-text-qwen38/src/reply.rs` and
-  `crates/nagaya-text-gemma4/src/council/reply.rs`. Name its stop tokens, its phases and the finish map. Test it
+  `crates/nagaya-family-gemma4/src/council/reply.rs`. Name its stop tokens, its phases and the finish map. Test it
   against a fixture of the reference implementation (`tools/reply_fixture.py`).
 - **Council rendering.** Follow spec 11.3a with the family's tokens. The code is in this tree:
-  `crates/nagaya-text-qwen38/src/council/` and `crates/nagaya-text-gemma4/src/council/`. Keep one form across
+  `crates/nagaya-text-qwen38/src/council/` and `crates/nagaya-family-gemma4/src/council/`. Keep one form across
   families. A failed tool result renders as `Error: ` and the content, unless the model's template has its own form
   (spec 11.3, "One form in every family").
 - **Template id.** `nagaya-council:<hash>+<family>-chat:<hash>` (`crates/nagaya-council/src/template_id.rs`). The
@@ -98,9 +98,9 @@ reference's own Python, with no service and no GPU job (`tools/oracle_fixture.py
   (`crates/nagaya-text-qwen38/tests/fixtures.rs`).
 - A crate's fixtures stay under 1 MB in total. This is a convention of the two family crates, not a rule of the
   spec. Each crate has a test for it (`crates/nagaya-text-qwen38/tests/fixtures.rs:24`,
-  `crates/nagaya-text-gemma4/tests/model_skip.rs:40`).
+  `crates/nagaya-family-gemma4/tests/model_skip.rs:40`).
 - A fixture lives in the family crate when each engine of the family reads it. The oracle fixture is one
-  (`crates/nagaya-text-gemma4/tests/fixtures/oracle.json`).
+  (`crates/nagaya-family-gemma4/tests/fixtures/oracle.json`).
 
 **The oracle.** Each family has one reference that runs on the CPU (spec 8.3, "One oracle for each family"). Its
 fixture holds five prompts with the top-64 logits and the logsumexp of the last position, in the format of
@@ -110,7 +110,7 @@ fixture holds five prompts with the top-64 logits and the logsumexp of the last 
   The Qwen3.8 gap is 1e-3 on the exact path. The Gemma 4 gap is 1e-2 (spec 8.3).
 - Keep the prompts under the length where the gap is explained. Past about 640 tokens, the Qwen3.8 engine and its
   reference differ by 0.29, and the cause is not known (spec 15 item 8). The fixtures stop at 596 and 586 tokens.
-- Test that the ids of the fixture are the ids of the library (`crates/nagaya-text-gemma4/tests/oracle.rs`). Then a
+- Test that the ids of the fixture are the ids of the library (`crates/nagaya-family-gemma4/tests/oracle.rs`). Then a
   tokenizer change shows in the fixture test, not in the engine gate.
 - The engine's bench compares the engine with the fixture and exits 1 when a gate breaks
   (`crates/nagaya-mk-qwen38-gfx1151/benches/oracle.rs`).
@@ -118,7 +118,7 @@ fixture holds five prompts with the top-64 logits and the logsumexp of the last 
 **Model files.** A host test that needs a model file skips when the file is absent, and prints one line to stderr.
 Only absence skips. A path that exists but does not read fails the test (`AGENTS.md`, "Tests that need a model
 file"). The helpers are `crates/nagaya-text-qwen38/tests/common/model.rs`,
-`crates/nagaya-text-gemma4/tests/common/model.rs` and `crates/nagaya-mk-gemma4-bmg/tests/common/mod.rs`. Each test
+`crates/nagaya-family-gemma4/tests/common/model.rs` and `crates/nagaya-mk-gemma4-bmg/tests/common/mod.rs`. Each test
 calls `absent()` first.
 
 The variable is one for each family: `NAGAYA_QWEN38_GGUF` and `GEMMA4_MODEL_DIR` have no default.
@@ -368,7 +368,7 @@ choose.
 
 - **Open:** spec 8.3, "The Gemma 4 oracle", says that a bench reports the Gemma 4 oracle numbers.
   No test or bench in `crates/nagaya-mk-gemma4-bmg` reads `oracle.json`. Only
-  `crates/nagaya-text-gemma4/tests/oracle.rs` reads it.
+  `crates/nagaya-family-gemma4/tests/oracle.rs` reads it.
 - **Open:** spec 6.14 makes drafts a setting of the served model. A test on the B70 cards must still show
   that drafts change no bit of Gemma 4.
 - **Open:** three copies of the model-file helper exist (section 3). `AGENTS.md`, "Tests that need a model file", names

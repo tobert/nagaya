@@ -468,8 +468,8 @@ fn the_identity_names_the_family_and_the_binary() {
     let identity = engine.identity();
     assert_eq!(identity.family, "gemma4");
     assert_eq!(identity.model, spec::MODEL);
-    assert_eq!(identity.template, nagaya_text_gemma4::CHAT_TEMPLATE);
-    let family = nagaya_text_gemma4::Gemma4Family::from_dir(&common::model_dir()).expect("the family library");
+    assert_eq!(identity.template, nagaya_family_gemma4::CHAT_TEMPLATE);
+    let family = nagaya_family_gemma4::Gemma4Family::from_dir(&common::model_dir()).expect("the family library");
     assert_eq!(identity.tokenizer_hash, family.tokenizer_hash());
     assert!(
         identity.checkpoint_digest.starts_with("blake3:"),

@@ -8,7 +8,7 @@
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use nagaya_text_gemma4::Gemma4Family;
+use nagaya_family_gemma4::Gemma4Family;
 
 pub const DIR_VARIABLE: &str = "GEMMA4_MODEL_DIR";
 pub const REQUIRE_VARIABLE: &str = "NAGAYA_REQUIRE_MODELS";

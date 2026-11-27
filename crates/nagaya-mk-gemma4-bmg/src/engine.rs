@@ -116,7 +116,7 @@ impl Loaded {
             ))
         })?;
         // The family library hashes the file in the same way (spec 12.3).
-        let tokenizer_hash = nagaya_text_gemma4::tokenizer::sha256_of(&bytes);
+        let tokenizer_hash = nagaya_family_gemma4::tokenizer::sha256_of(&bytes);
         // Only the two cards of the group: a card of another engine, or of a card test, gets no context from this load.
         let cluster = L0Cluster::init_at(MEGAKERNEL_BIN, MEGAKERNEL_ENTRY, pci).map_err(other)?;
         let found = cluster.cards_at(pci).map_err(other)?;
@@ -220,7 +220,7 @@ fn identity_of(checkpoint_digest: &str, tokenizer_hash: &str, lineage: &Lineage,
         checkpoint_digest: checkpoint_digest.to_owned(),
         family: spec::FAMILY.to_owned(),
         tokenizer_hash: tokenizer_hash.to_owned(),
-        template: nagaya_text_gemma4::CHAT_TEMPLATE.to_owned(),
+        template: nagaya_family_gemma4::CHAT_TEMPLATE.to_owned(),
         numbers: lineage.numbers(max_block),
         plan_table: lineage.plan_table(),
         // D11 rule 3: the block is a bit setting that defines the reference bits.
@@ -237,7 +237,7 @@ fn identity_of(checkpoint_digest: &str, tokenizer_hash: &str, lineage: &Lineage,
 /// The lineage of a build on the cards at `pci`, in stage order, with this Level Zero driver (spec 12.1).
 fn lineage(pci: &[String], driver: u32) -> Result<Lineage, String> {
     Ok(Lineage {
-        kernel_sha256: nagaya_text_gemma4::tokenizer::sha256_of(MEGAKERNEL_BIN),
+        kernel_sha256: nagaya_family_gemma4::tokenizer::sha256_of(MEGAKERNEL_BIN),
         ocloc: nagaya_mk_bmg::OCLOC_VERSION.to_owned(),
         igc: nagaya_mk_bmg::IGC_REVISION.to_owned(),
         driver,
@@ -263,7 +263,7 @@ pub fn describe(config: &Config, pci: &[String]) -> Result<(Identity, Limits), S
             tokenizer.display()
         )
     })?;
-    let tokenizer_hash = nagaya_text_gemma4::tokenizer::sha256_of(&bytes);
+    let tokenizer_hash = nagaya_family_gemma4::tokenizer::sha256_of(&bytes);
     let checkpoint_digest = checkpoint_digest(&config.model_dir, &ckpt)?;
     let lineage = lineage(pci, crate::level_zero::first_driver_version())?;
     Ok((

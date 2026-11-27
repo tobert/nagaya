@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Make the text fixtures of the Gemma 4 family library (spec 11.3, milestone 15s step 3).
 
-The tool writes two files into crates/nagaya-text-gemma4/tests/fixtures:
+The tool writes two files into crates/nagaya-family-gemma4/tests/fixtures:
 
 - ids.json: for each fixed string, the token ids of Hugging Face `tokenizers` with the checkpoint's tokenizer.json,
   with special tokens matched and with special tokens as text, and the text that `decode` gives back.
@@ -27,8 +27,8 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_TEMPLATE = ROOT / "crates/nagaya-text-gemma4/assets/gemma4_chat_template.jinja"
-DEFAULT_OUT = ROOT / "crates/nagaya-text-gemma4/tests/fixtures"
+DEFAULT_TEMPLATE = ROOT / "crates/nagaya-family-gemma4/assets/gemma4_chat_template.jinja"
+DEFAULT_OUT = ROOT / "crates/nagaya-family-gemma4/tests/fixtures"
 
 # Strings for the tokenizer. They cover spaces, new lines, the markers, byte fallback and scripts other than Latin.
 STRINGS = [

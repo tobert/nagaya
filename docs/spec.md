@@ -2016,7 +2016,7 @@ oracle below.
 (copied from the first Gemma 4 engine). `tools/gemma4_oracle_fixture.py` makes the fixture with it, as
 `tools/oracle_fixture.py` makes the Qwen3.8 fixture. The reference Python runs in a venv of its own.
 
-The fixture is `crates/nagaya-text-gemma4/tests/fixtures/oracle.json`, and `crates/nagaya-text-gemma4/tests/oracle.rs`
+The fixture is `crates/nagaya-family-gemma4/tests/fixtures/oracle.json`, and `crates/nagaya-family-gemma4/tests/oracle.rs`
 reads it. It holds five prompts of 6 to 586 tokens, in the format of the Qwen3.8 fixture. The fixture belongs to the
 family, so each engine of Gemma 4 reads the same file.
 
@@ -3024,14 +3024,14 @@ one set of conformance tests. The first Qwen3.8 engine's C ABI does not need a t
 - One token can release text in two phases, but a gogi `token` event has one phase. This is rare, because each
   Qwen3.8 marker is one token. 11.3a has the rule for the step of such a token.
 
-**The Gemma 4 library.** The crate `nagaya-text-gemma4` holds the Gemma 4 family. It ports the text code of the first
+**The Gemma 4 library.** The crate `nagaya-family-gemma4` holds the Gemma 4 family. It ports the text code of the first
 Gemma 4 engine, which served council v2.
 
 - **Tokenizer.** The library reads the `tokenizer.json` of the checkpoint with the `tokenizers` crate, as the first
   Gemma 4 engine did. The tokenizer hash is of that file (12.3).
 - **Template.** The library runs Google's chat template with the nagaya's own Jinja interpreter, with `trim_blocks` and
   `lstrip_blocks`, as the first Gemma 4 engine did. The template is the crate's own copy,
-  `crates/nagaya-text-gemma4/assets/gemma4_chat_template.jinja`, copied from the first Gemma 4 engine. Not
+  `crates/nagaya-family-gemma4/assets/gemma4_chat_template.jinja`, copied from the first Gemma 4 engine. Not
   `minijinja`. The identity's `template` is the text of that file. The variables that the library sets, such as
   `PRESERVE_THINKING`, are code, so the test renders of 11.3a cover them.
 - **Escapes.** Client text that spells a marker is content. Before the render, the first Gemma 4 engine swaps each
@@ -3068,7 +3068,7 @@ rules above leave a choice open:
   piece. A read hashes the whole text that it was conditioned on (gogi), as the Qwen3.8 library does. The first Gemma 4
   engine hashes the id of the head.
 - **Detokenize.** Every family library refuses tokens whose bytes end inside a character. The error names `tokens`
-  (11.4d). No library puts U+FFFD in their place (`crates/nagaya-text-gemma4/src/council/mod.rs`,
+  (11.4d). No library puts U+FFFD in their place (`crates/nagaya-family-gemma4/src/council/mod.rs`,
   `decode_whole`). A piece of one token is not a detokenize, so `pieces` keeps U+FFFD (`Family::pieces`).
 - **Host tests** read the checkpoint directory from `GEMMA4_MODEL_DIR`, with no default path. With the variable unset,
   a test skips. With `NAGAYA_REQUIRE_MODELS=1`, it fails.
