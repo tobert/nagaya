@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use nagaya_abi::Limits;
+use nagaya_family_embeddinggemma2::EmbeddingGemma2Family;
 use nagaya_mk_embeddinggemma2_bmg::Config;
-use nagaya_text_embeddinggemma2::EmbeddingGemma2Family;
 
 use crate::admission::{GroupDevice, PlanError};
 use crate::embedding::{EmbedFamily, EmbeddingConfig, EmbeddingService};

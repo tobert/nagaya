@@ -2,7 +2,7 @@
 
 mod common;
 
-use nagaya_text_embeddinggemma2::{EmbeddingGemma2Family, Error, TASKS};
+use nagaya_family_embeddinggemma2::{EmbeddingGemma2Family, Error, TASKS};
 
 /// The gogi task of a name in the model's prompts.
 fn task_of(prompt_name: &str) -> &'static str {

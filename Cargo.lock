@@ -1205,6 +1205,7 @@ dependencies = [
  "nagaya-abi",
  "nagaya-council",
  "nagaya-family-beatthis",
+ "nagaya-family-embeddinggemma2",
  "nagaya-family-qwenimage21",
  "nagaya-family-sdxl",
  "nagaya-family-toy",
@@ -1224,7 +1225,6 @@ dependencies = [
  "nagaya-sched",
  "nagaya-store",
  "nagaya-telemetry",
- "nagaya-text-embeddinggemma2",
  "nagaya-text-gemma4",
  "nagaya-text-inkling2",
  "nagaya-text-lfm3",
@@ -1286,6 +1286,15 @@ dependencies = [
  "safetensors",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "nagaya-family-embeddinggemma2"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "sha2",
+ "tokenizers",
 ]
 
 [[package]]
@@ -1385,8 +1394,8 @@ dependencies = [
  "blake3",
  "nagaya-abi",
  "nagaya-conformance",
+ "nagaya-family-embeddinggemma2",
  "nagaya-mk-bmg",
- "nagaya-text-embeddinggemma2",
  "serde_json",
  "sha2",
 ]
@@ -1553,15 +1562,6 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "nagaya-text-embeddinggemma2"
-version = "0.1.0"
-dependencies = [
- "serde_json",
- "sha2",
- "tokenizers",
 ]
 
 [[package]]

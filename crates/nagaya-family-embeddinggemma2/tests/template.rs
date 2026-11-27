@@ -2,7 +2,7 @@
 
 mod common;
 
-use nagaya_text_embeddinggemma2::TASKS;
+use nagaya_family_embeddinggemma2::TASKS;
 
 /// The task text of spec 11.10, written out from its table.
 const TASK_TEXT: &str = "query\ttask: search result | query: \n\
