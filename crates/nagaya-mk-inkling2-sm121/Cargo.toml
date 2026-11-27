@@ -12,7 +12,7 @@ cuda = ["nagaya-mk-cuda/cuda"]
 blake3 = "1.8.7"
 nagaya-abi = { version = "0.1.0", path = "../nagaya-abi" }
 nagaya-mk-cuda = { version = "0.1.0", path = "../nagaya-mk-cuda" }
-nagaya-text-inkling2 = { version = "0.1.0", path = "../nagaya-text-inkling2" }
+nagaya-family-inkling2 = { version = "0.1.0", path = "../nagaya-family-inkling2" }
 serde_json = { version = "1.0.154", features = ["float_roundtrip", "preserve_order"] }
 
 [dev-dependencies]

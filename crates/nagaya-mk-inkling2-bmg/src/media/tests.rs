@@ -1,5 +1,5 @@
 use super::*;
-use nagaya_text_inkling2::media::ImageRows;
+use nagaya_family_inkling2::media::ImageRows;
 
 const P: u32 = IMAGE_TOKEN;
 

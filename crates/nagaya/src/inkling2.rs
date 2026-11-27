@@ -170,7 +170,7 @@ pub fn open_family_with(
     objects: Option<&crate::serving::ObjectReader>,
 ) -> Result<OpenedFamily, String> {
     let dir = family_dir(table)?;
-    let files = nagaya_text_inkling2::Files::read(&dir)
+    let files = nagaya_family_inkling2::Files::read(&dir)
         .map_err(|error| format!("cannot read the Inkling 2 family from `{}`: {error}", dir.display()))?;
     // The family can read another folder than the engine, so its template must be the template of the identity
     // (spec 11.3). The text is compared before the build renders it, so another template gives this error first.
@@ -183,7 +183,7 @@ pub fn open_family_with(
             identity.model
         ));
     }
-    let mut family = nagaya_text_inkling2::Inkling2Family::from_files(files)
+    let mut family = nagaya_family_inkling2::Inkling2Family::from_files(files)
         .map_err(|error| format!("cannot build the Inkling 2 family from `{}`: {error}", dir.display()))?;
     if let Some(objects) = objects {
         family = family.with_objects(Arc::new(StoreObjects::new(Arc::clone(objects))));
@@ -198,7 +198,7 @@ pub fn open_family_with(
 }
 
 /// The Inkling 2 family reads the objects of the process as the LFM3 family does: one reader serves both.
-impl nagaya_text_inkling2::Objects for StoreObjects {
+impl nagaya_family_inkling2::Objects for StoreObjects {
     fn bytes(&self, id: &str) -> Option<Vec<u8>> {
         nagaya_family_lfm3::Objects::bytes(self, id)
     }

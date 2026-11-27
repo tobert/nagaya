@@ -200,7 +200,7 @@ fn the_family_of_either_folder_passes_the_check_of_the_registry() {
     let bytes = std::fs::read(mini.join("tokenizer.json")).unwrap();
     assert_eq!(
         opened.tokenizer_hash.as_deref(),
-        Some(nagaya_text_inkling2::tokenizer::sha256_of(&bytes).as_str())
+        Some(nagaya_family_inkling2::tokenizer::sha256_of(&bytes).as_str())
     );
 }
 

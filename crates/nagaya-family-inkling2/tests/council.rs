@@ -4,7 +4,7 @@ use common::model::{absent, mini_dir};
 use gogi_proto::context::Context;
 use gogi_proto::spec::{SpecRules, parse_spec};
 use nagaya_council::family::{Advance, Asked, DecisionInput, Family};
-use nagaya_text_inkling2::{Files, Inkling2Family};
+use nagaya_family_inkling2::{Files, Inkling2Family};
 use serde_json::json;
 
 #[test]

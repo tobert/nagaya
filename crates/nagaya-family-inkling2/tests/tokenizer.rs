@@ -1,8 +1,8 @@
 mod common;
 
 use common::model::{absent, absent_varloop, mini_dir, varloop_dir};
-use nagaya_text_inkling2::Tokenizer;
-use nagaya_text_inkling2::tokenizer::check_text;
+use nagaya_family_inkling2::Tokenizer;
+use nagaya_family_inkling2::tokenizer::check_text;
 use serde_json::Value;
 
 #[test]
@@ -69,8 +69,8 @@ fn varloop_tokenizer_and_template_hashes_match_mini() {
         "chat_template.jinja",
         "generation_config.json",
     ] {
-        let a = nagaya_text_inkling2::tokenizer::sha256_of(&std::fs::read(mini.join(file)).unwrap());
-        let b = nagaya_text_inkling2::tokenizer::sha256_of(&std::fs::read(varloop.join(file)).unwrap());
+        let a = nagaya_family_inkling2::tokenizer::sha256_of(&std::fs::read(mini.join(file)).unwrap());
+        let b = nagaya_family_inkling2::tokenizer::sha256_of(&std::fs::read(varloop.join(file)).unwrap());
         assert_eq!(a, b, "hash mismatch for {file}");
     }
 }

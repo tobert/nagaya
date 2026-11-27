@@ -19,10 +19,10 @@ mod common;
 use common::Which;
 use common::card::{self, Gaps};
 use nagaya_abi::{Engine, OutputsWanted, Segment, SegmentInputs, State};
+use nagaya_family_inkling2::media::{self, ImageRows};
 use nagaya_mk_inkling2_bmg::Inkling2Engine;
 use nagaya_mk_inkling2_bmg::media::IMAGE_TOKEN;
 use nagaya_mk_inkling2_bmg::spec::{DEFAULT_MAX_BLOCK, SLOT_TOKENS};
-use nagaya_text_inkling2::media::{self, ImageRows};
 
 const ORACLE: &str = "inkling2-mini.vision.json";
 const TENSORS: &str = "inkling2-mini.vision.safetensors";

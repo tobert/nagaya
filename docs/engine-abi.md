@@ -1792,7 +1792,7 @@ family library. It is the oracle of the family and of the device ops.
 
 **The choices of the family.** The rules above leave these choices open. Each one is **Proposed**.
 
-- **One copy of the rules.** The rules of the processor are in `nagaya-text-inkling2` (`processor`), and the host
+- **One copy of the rules.** The rules of the processor are in `nagaya-family-inkling2` (`processor`), and the host
   form of the engine uses them. Reason: the engine crate depends on the family crate for its identity, so the rules
   cannot live in the engine crate. The oracle of the host form still checks the one copy.
 - **The decode.** The family decodes a PNG or a JPEG as the LFM3 family does (spec 11.11, "The media of a
@@ -2102,7 +2102,7 @@ Each rule is **Proposed**.
   - The host form sums its attention in `f64`. Sums of `f32` in key order drift with the count of keys. From one
     state at 130,048 positions, they moved the logits by up to 1.6e-2.
 - **The identity.** The engine names `inkling2-mini` or `inkling2-varloop`. The tokenizer hash and the template
-  come from `nagaya-text-inkling2` (`spec::text_facts`). Thus the hash is `sha256:` of the whole `tokenizer.json`,
+  come from `nagaya-family-inkling2` (`spec::text_facts`). Thus the hash is `sha256:` of the whole `tokenizer.json`,
   and the check of the registry at the start compares like with like (spec 11.3).
 - **The numbers of the config.** The identity names `max_block` and `extra_runs` (`spec::identity_numbers`).
   `max_block` sets the bits, and `extra_runs` sets the parts of a state. Thus two reserves never share a recipe.

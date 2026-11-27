@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Make the fixtures of the Inkling 2 family library (spec 11.3, milestone 35 step 3).
 
-The tool writes these files into crates/nagaya-text-inkling2/tests/fixtures:
+The tool writes these files into crates/nagaya-family-inkling2/tests/fixtures:
 
 - ids.json: for each fixed string, the token ids of Hugging Face `tokenizers` with the model's tokenizer.json. It
   holds the ids with the added tokens matched, the ids with no added token (client text, spec 11.3 "Escapes"), and
@@ -29,7 +29,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_OUT = ROOT / "crates/nagaya-text-inkling2/tests/fixtures"
+DEFAULT_OUT = ROOT / "crates/nagaya-family-inkling2/tests/fixtures"
 TRANSFORMERS_COMMIT = "046bdb8cc2"
 
 STRINGS = [

@@ -315,7 +315,7 @@ The cost on a card: the weights stay in the formats of the checkpoint, about 19.
 experts alone take 49 GB. The keys and values are `f32`, so a slot of 32,768 positions takes about 2.9 GiB
 (`docs/engine-abi.md`, "Inkling 2"). Thus a card of 32 GiB holds the weights and about 3 such slots.
 
-The names are `nagaya-mk-inkling2-bmg` and `nagaya-text-inkling2`. The family is `inkling2`. Each model is an engine
+The names are `nagaya-mk-inkling2-bmg` and `nagaya-family-inkling2`. The family is `inkling2`. Each model is an engine
 of its own with an identity of its own.
 
 The ontology defines "Pass" as one run of an engine. Thus this plan writes "cycle" for one walk through layers 6

@@ -4,10 +4,10 @@
 mod common;
 
 use common::Which;
+use nagaya_family_inkling2::Inkling2Family;
+use nagaya_family_inkling2::tokenizer::sha256_of;
 use nagaya_mk_bmg::safetensors::{Dtype, MappedSafeTensors};
 use nagaya_mk_inkling2_bmg::spec::{self, Config, Model};
-use nagaya_text_inkling2::Inkling2Family;
-use nagaya_text_inkling2::tokenizer::sha256_of;
 use std::path::PathBuf;
 
 fn folder(which: Which) -> PathBuf {

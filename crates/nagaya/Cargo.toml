@@ -60,7 +60,7 @@ nagaya-mk-lfm3-bmg = { version = "0.1.0", path = "../nagaya-mk-lfm3-bmg" }
 nagaya-family-lfm3 = { version = "0.1.0", path = "../nagaya-family-lfm3" }
 nagaya-mk-inkling2-bmg = { version = "0.1.0", path = "../nagaya-mk-inkling2-bmg" }
 nagaya-mk-inkling2-sm121 = { version = "0.1.0", path = "../nagaya-mk-inkling2-sm121" }
-nagaya-text-inkling2 = { version = "0.1.0", path = "../nagaya-text-inkling2" }
+nagaya-family-inkling2 = { version = "0.1.0", path = "../nagaya-family-inkling2" }
 nagaya-mk-qwen38-gfx1151 = { version = "0.1.0", path = "../nagaya-mk-qwen38-gfx1151", optional = true }
 nagaya-family-qwen38 = { version = "0.1.0", path = "../nagaya-family-qwen38", optional = true }
 nagaya-family-toy = { version = "0.1.0", path = "../nagaya-family-toy", optional = true }

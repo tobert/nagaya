@@ -2,7 +2,7 @@
 //! and the rows of a segment (engine-abi "The images of Inkling 2", "The choices of the pass", "The lab of Inkling 2").
 //! None of this needs a card.
 //!
-//! The family writes each record (`nagaya_text_inkling2::media::ImageRows::record`), and this module reads it. A
+//! The family writes each record (`nagaya_family_inkling2::media::ImageRows::record`), and this module reads it. A
 //! record is little-endian: the kind (`u32`), the count of positions (`u32`), the first position (`u64`), then
 //! `grid_t`, `grid_h`, `grid_w` and 0, in patches. A latent record has the kind 5, then the width of a row and three
 //! 0. The rows of a segment are the rows of each span whole, in `f32`, in the order of the records: the patch rows of
@@ -10,8 +10,8 @@
 
 use std::ops::Range;
 
-pub use nagaya_text_inkling2::media::{Grid, IMAGE_KIND, IMAGE_TOKEN, PATCH_VALUES, RECORD_BYTES};
-use nagaya_text_inkling2::processor::{MAX_PATCH_SIDE, MERGE};
+pub use nagaya_family_inkling2::media::{Grid, IMAGE_KIND, IMAGE_TOKEN, PATCH_VALUES, RECORD_BYTES};
+use nagaya_family_inkling2::processor::{MAX_PATCH_SIDE, MERGE};
 
 use crate::host::ops::HIDDEN;
 
