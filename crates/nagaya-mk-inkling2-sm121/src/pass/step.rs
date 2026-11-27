@@ -99,6 +99,18 @@ fn weight_bytes(kind: TaskKind, plan: &RunPlan) -> usize {
     }
 }
 
+/// An `OP_COPY` task: `items` items of `n` floats from `from` to `to`.
+fn copy_desc(to: u64, from: u64, items: usize, n: usize) -> nagaya_mk_cuda::protocol::MkTaskDescriptor {
+    nagaya_mk_cuda::protocol::MkTaskDescriptor {
+        opcode: nagaya_mk_cuda::protocol::OP_COPY,
+        items: items as u32,
+        a: to,
+        b: from,
+        n: n as u32,
+        ..Default::default()
+    }
+}
+
 /// The lists that the pass keeps. A list holds a few hundred tasks, so the bound costs little host memory. A call that
 /// needs a list that the bound dropped builds it again.
 pub const MAX_BUILT: usize = 64;
@@ -115,6 +127,8 @@ struct ShapeKey {
     logit_span: usize,
     /// The block form of PROJ (more than `BLOCK_FORM_ROWS_ABOVE` rows) has other descriptors and other scratch.
     block: bool,
+    /// The list holds the copy tasks of the taps (`Pass::enable_taps`, 3 cycles only).
+    taps: bool,
 }
 
 /// The first row and the count of rows of the span that holds `logit_rows`, a list of rows below `rows`.
@@ -222,6 +236,39 @@ pub struct Pass<'d> {
     clock: u64,
     /// The host time of the last call.
     pub host: HostTime,
+    /// The region of the taps (`TapLayout`), once `enable_taps` made it.
+    taps: Option<Dev<'d>>,
+}
+
+/// The runs whose input row is a tap at 3 cycles: the visits 5, 23 and 41 of the model (the inputs of the layers 5, 11 and
+/// 17 of the passes 0, 1 and 2). The tap is the working row that the run before it wrote.
+pub const TAP_VISITS: [usize; 3] = [5, 23, 41];
+
+/// The cycles that the taps serve: the visits above are those of a model that runs 3 passes.
+pub const TAP_CYCLES: usize = 3;
+
+/// The rows that a pass exports as taps for the draft head (`docs/gb10-research.md`, D1; `Pass::enable_taps`). A row `r`
+/// of a block gives the features of its position: the inputs of the visits 5, 23 and 41, and the output of the last mix.
+#[derive(Clone, Debug)]
+pub struct TapRows {
+    pub rows: usize,
+    /// `[3][rows][HIDDEN]`: the working rows entering the visits of `TAP_VISITS`, in `f32`.
+    pub visits: Vec<f32>,
+    /// `[rows][HIDDEN]`: the row `F` before the final norm, and its row factors `[rows]`.
+    pub last: Vec<f32>,
+    pub last_rf: Vec<f32>,
+}
+
+impl TapRows {
+    /// The features of row `r` as 4 rows of `HIDDEN` values: the three visit rows, then the final-norm output
+    /// `w[k] * (F[k] * rf)` (the order of `ops::rms_norm`) with the weight `norm` of the final norm.
+    pub fn features(&self, r: usize, norm: &[f32]) -> [Vec<f32>; 4] {
+        let row =
+            |plane: usize| self.visits[(plane * self.rows + r) * HIDDEN..(plane * self.rows + r + 1) * HIDDEN].to_vec();
+        let f = &self.last[r * HIDDEN..(r + 1) * HIDDEN];
+        let last = f.iter().zip(norm).map(|(v, w)| w * (v * self.last_rf[r])).collect();
+        [row(0), row(1), row(2), last]
+    }
 }
 
 impl<'d> Pass<'d> {
@@ -336,6 +383,7 @@ impl<'d> Pass<'d> {
             loaded: None,
             clock: 0,
             host: HostTime::default(),
+            taps: None,
         })
     }
 
@@ -481,6 +529,7 @@ impl<'d> Pass<'d> {
             logit_first,
             logit_span,
             block: rows > BLOCK_FORM_ROWS_ABOVE,
+            taps: self.taps.is_some() && cycles == TAP_CYCLES,
         };
         let started = Instant::now();
         if self.loaded == Some(key) {
@@ -627,6 +676,10 @@ impl<'d> Pass<'d> {
                 tasks.iter().map(|(k, _)| *k).collect::<Vec<TaskKind>>(),
                 plan.task_kinds()
             );
+            let tap_after = key
+                .taps
+                .then(|| TAP_VISITS.iter().position(|v| *v == plan.run + 1))
+                .flatten();
             for (kind, task) in tasks {
                 if matches!(kind, TaskKind::Proj | TaskKind::Attn) {
                     patches.push(Patch {
@@ -643,9 +696,29 @@ impl<'d> Pass<'d> {
                 });
                 list.push(task);
             }
+            if let Some(plane) = tap_after {
+                // The input row of the next run is the tap. The copy reads `Xw` after the DOWN that wrote it, and the
+                // run after it waits for the copy, because the builder orders the ranges that the tasks declare.
+                let next = &plans[plan.run + 1];
+                debug_assert_eq!(next.x_in, Buf::Xw, "the tap run reads the working row");
+                let at = self.tap_addr(plane, rows);
+                let from = arena.addr(Buf::Xw);
+                list.push(
+                    Task::with_items(copy_desc(at.0, from, rows, HIDDEN))
+                        .reads(from, rows * HIDDEN * 4)
+                        .writes(at.0, rows * HIDDEN * 4),
+                );
+                tags.push(OpTag {
+                    name: "TAP",
+                    run: Some(plan.run),
+                    layer: Some(plan.layer),
+                    weight_bytes: 0,
+                });
+            }
         }
-        // The output residual and the head. A call that asks for no logits ends after the last run.
-        if key.logit_span > 0 {
+        // The output residual and the head. A call that asks for no logits ends after the last run, unless the taps need
+        // the output row.
+        if key.logit_span > 0 || key.taps {
             let last = plans.last().expect("a pass has runs");
             let r0 = key.logit_first;
             let logit_rows = key.logit_span;
@@ -682,30 +755,54 @@ impl<'d> Pass<'d> {
                 layer: None,
                 weight_bytes: 0,
             });
-            let head_table = tables.add(desc::head_table(w.norm_bf16.ptr())?)?;
-            let scratch = self.ring.scratch() + self.scratch_layout.offset(ScratchKind::Head) as u64;
-            let mut head_desc = desc::head(
-                logit_rows,
-                f + (r0 * HIDDEN * 4) as u64,
-                f_rf + (r0 * 4) as u64,
-                w.head.ptr(),
-                arena.addr(Buf::Logits),
-                scratch,
-            )?;
-            head_desc.d = head_table;
-            list.push(
-                Task::with_items(head_desc)
-                    .reads(f + (r0 * HIDDEN * 4) as u64, logit_rows * HIDDEN * 4)
-                    .reads(f_rf + (r0 * 4) as u64, logit_rows * 4)
-                    .writes(arena.addr(Buf::Logits), logit_rows * LOGIT_COLUMNS * 4)
-                    .writes(scratch, self.scratch_layout.bytes(ScratchKind::Head)),
-            );
-            tags.push(OpTag {
-                name: "HEAD",
-                run: None,
-                layer: None,
-                weight_bytes: LOGIT_COLUMNS * HIDDEN * 2,
-            });
+            if key.taps {
+                // The output row and its row factors: the final norm applies in the consumer, from `w[k] * (F[k] * rf)`.
+                let (to, to_rf) = self.tap_addr(3, rows);
+                list.push(
+                    Task::with_items(copy_desc(to, f, rows, HIDDEN))
+                        .reads(f, rows * HIDDEN * 4)
+                        .writes(to, rows * HIDDEN * 4),
+                );
+                list.push(
+                    Task::with_items(copy_desc(to_rf, f_rf, 1, rows))
+                        .reads(f_rf, rows * 4)
+                        .writes(to_rf, rows * 4),
+                );
+                for _ in 0..2 {
+                    tags.push(OpTag {
+                        name: "TAP",
+                        run: None,
+                        layer: None,
+                        weight_bytes: 0,
+                    });
+                }
+            }
+            if key.logit_span > 0 {
+                let head_table = tables.add(desc::head_table(w.norm_bf16.ptr())?)?;
+                let scratch = self.ring.scratch() + self.scratch_layout.offset(ScratchKind::Head) as u64;
+                let mut head_desc = desc::head(
+                    logit_rows,
+                    f + (r0 * HIDDEN * 4) as u64,
+                    f_rf + (r0 * 4) as u64,
+                    w.head.ptr(),
+                    arena.addr(Buf::Logits),
+                    scratch,
+                )?;
+                head_desc.d = head_table;
+                list.push(
+                    Task::with_items(head_desc)
+                        .reads(f + (r0 * HIDDEN * 4) as u64, logit_rows * HIDDEN * 4)
+                        .reads(f_rf + (r0 * 4) as u64, logit_rows * 4)
+                        .writes(arena.addr(Buf::Logits), logit_rows * LOGIT_COLUMNS * 4)
+                        .writes(scratch, self.scratch_layout.bytes(ScratchKind::Head)),
+                );
+                tags.push(OpTag {
+                    name: "HEAD",
+                    run: None,
+                    layer: None,
+                    weight_bytes: LOGIT_COLUMNS * HIDDEN * 2,
+                });
+            }
         }
         let proj_block_form = list
             .iter()
@@ -733,6 +830,68 @@ impl<'d> Pass<'d> {
             used: 0,
         };
         Ok((built, list))
+    }
+
+    /// Make the region of the taps. A pass at 3 cycles then copies, for each block, the rows that the draft head reads
+    /// (`TapRows`) into it: the lists that the pass built are dropped, so the next call builds them with the copies. The
+    /// taps only move rows; no value of the pass changes.
+    pub fn enable_taps(&mut self) -> Result<(), String> {
+        if self.taps.is_none() {
+            self.taps = Some(Dev::alloc(self.dev, Self::tap_bytes(self.max_rows))?);
+            self.forget_rings();
+        }
+        Ok(())
+    }
+
+    /// The bytes of the region of the taps for blocks of `max_rows` rows: 4 planes of rows, then the row factors.
+    fn tap_bytes(max_rows: usize) -> usize {
+        4 * max_rows * HIDDEN * 4 + max_rows * 4
+    }
+
+    /// The device address of the tap `plane` (0 to 2 the visits, 3 the output row) of a block of `rows` rows, and of the
+    /// row factors of the output row. A plane holds `max_rows` rows, so an address does not depend on the shape.
+    fn tap_addr(&self, plane: usize, _rows: usize) -> (u64, u64) {
+        let base = self.taps.as_ref().expect("the taps are enabled").ptr();
+        (
+            base + (plane * self.max_rows * HIDDEN * 4) as u64,
+            base + (4 * self.max_rows * HIDDEN * 4) as u64,
+        )
+    }
+
+    /// The taps of the last call of `rows` rows, which must have run at 3 cycles with the taps enabled.
+    pub fn tap_rows(&self, rows: usize) -> Result<TapRows, String> {
+        let region = self
+            .taps
+            .as_ref()
+            .ok_or("the taps are not enabled. Call enable_taps before the pass")?;
+        if rows == 0 || rows > self.max_rows {
+            return Err(format!(
+                "the taps hold 1 to {} rows, and the call names {rows}",
+                self.max_rows
+            ));
+        }
+        let floats = |plane: usize, count: usize| -> Result<Vec<f32>, String> {
+            let bytes = region.read(plane * self.max_rows * HIDDEN * 4, count * 4)?;
+            Ok(bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|b| f32::from_le_bytes(*b))
+                .collect())
+        };
+        let mut visits = Vec::with_capacity(3 * rows * HIDDEN);
+        for plane in 0..3 {
+            visits.extend(floats(plane, rows * HIDDEN)?);
+        }
+        let last = floats(3, rows * HIDDEN)?;
+        let rf = region.read(4 * self.max_rows * HIDDEN * 4, rows * 4)?;
+        let last_rf = rf.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
+        Ok(TapRows {
+            rows,
+            visits,
+            last,
+            last_rf,
+        })
     }
 
     /// The times of each block of each task of the last profiled call. A block that had no item of the task is left out.

@@ -21,20 +21,25 @@ import inkling2_dspark as dspark
 import prompt_lookup_sim as lookup
 
 
-def run_text(head, ids, start, feats):
-    """List of (drafted, accepted, seconds) per block over ids[start:]."""
+def run_text(head, ids, start, feats, ks=(dspark.BLOCK - 1,)):
+    """For each K in `ks`, the list of (drafted, accepted, seconds) per block over ids[start:], where the block keeps the first
+    K drafts of the head (the drafts of a Markov chain do not depend on the later ones, so these are the first K of 7) and the
+    next anchor follows the accepted ones. The head runs once for each block."""
     n = len(ids)
     kv = head.context_kv(feats, torch.arange(n))
-    blocks, a = [], start
-    while a + 1 < n:
-        t = time.time()
-        p = a - 1
-        drafts = head.block(ids[a], a, kv, feats[p:p + 1])
-        truth = ids[a + 1:a + 1 + len(drafts)]
-        k = dspark.accepted(drafts, truth)
-        blocks.append((len(truth), k, time.time() - t))
-        a += k + 1
-    return blocks
+    out = {}
+    for cap in ks:
+        blocks, a = [], start
+        while a + 1 < n:
+            t = time.time()
+            p = a - 1
+            drafts = head.block(ids[a], a, kv, feats[p:p + 1])[:cap]
+            truth = ids[a + 1:a + 1 + len(drafts)]
+            k = dspark.accepted(drafts, truth)
+            blocks.append((len(truth), k, time.time() - t))
+            a += k + 1
+        out[cap] = blocks
+    return out
 
 
 def head_speed(acc, drafted, pts, head_cost):
@@ -53,6 +58,7 @@ def main():
     ap.add_argument("feats_dir", help="folder of NAME.safetensors files with the trunk features 'feat' [T, 4, 2304]")
     ap.add_argument("names", nargs="+", help="names of texts in TEXTS_JSON")
     ap.add_argument("--cost", default=None, help="cost table rows:steps,... (default: the doc's estimate 1:1.0,8:1.8,16:2.5)")
+    ap.add_argument("--k", default="7", help="the drafts kept of each block of 7, a list such as 2,3,7 (default 7)")
     ap.add_argument("--head-cost", type=float, default=0.26,
                     help="steps that the head adds to a block (default 0.26: the doc's estimate of 7 ms over a 27 ms step)")
     args = ap.parse_args()
@@ -67,22 +73,25 @@ def main():
     label = "measured" if args.cost else "estimated"
     head = dspark.Head(args.model_dir)
     rows = []
+    ks = [int(k) for k in args.k.split(",")]
     for name in args.names:
         t = texts[name]
         feats = load_file(f"{args.feats_dir}/{name}.safetensors")["feat"]
-        blocks = run_text(head, t["ids"], t["start"], feats)
-        if not blocks:
-            print(f"{name} {t['kind']}: no blocks (no generated tokens after start)", flush=True)
-            continue
-        acc = [b[1] for b in blocks]
+        by_k = run_text(head, t["ids"], t["start"], feats, ks)
         look = lookup.run(t["ids"], t["start"] + 1, 7, 1, 4)
         ls = lookup.summarize(look, pts)
-        print(f"{name} {t['kind']}: {len(blocks)} blocks of 7 drafts; head accepted/block {sum(acc) / len(acc):.2f} "
-              f"(hist {[acc.count(i) for i in range(8)]}), speed {head_speed(acc, [b[0] for b in blocks], pts, args.head_cost):.2f} "
-              f"({label} cost, head {args.head_cost}); lookup K=7 accepted/block {ls['accepted_per_block']:.2f}, "
-              f"speed {ls['speed']:.2f}; host CPU time {sum(b[2] for b in blocks) / len(blocks):.2f} s/block "
-              f"(oracle cost, not a GPU time)", flush=True)
-        rows.append({"name": name, "kind": t["kind"], "head": acc, "lookup": [a for _, a in look]})
+        for cap, blocks in by_k.items():
+            if not blocks:
+                print(f"{name} {t['kind']}: no blocks (no generated tokens after start)", flush=True)
+                continue
+            acc = [b[1] for b in blocks]
+            print(f"{name} {t['kind']} K={cap}: {len(blocks)} blocks; head accepted/block {sum(acc) / len(acc):.2f} "
+                  f"(hist {[acc.count(i) for i in range(cap + 1)]}), speed {head_speed(acc, [b[0] for b in blocks], pts, args.head_cost):.2f} "
+                  f"({label} cost, head {args.head_cost}); lookup K=7 accepted/block {ls['accepted_per_block']:.2f}, "
+                  f"speed {ls['speed']:.2f}; host CPU time {sum(b[2] for b in blocks) / len(blocks):.2f} s/block "
+                  f"(oracle cost, not a GPU time)", flush=True)
+            rows.append({"name": name, "kind": t["kind"], "k": cap, "head": acc, "drafted": [b[0] for b in blocks],
+                         "lookup": [a for _, a in look]})
     json.dump(rows, open(f"{args.feats_dir}/head-results.json", "w"))
 
 
