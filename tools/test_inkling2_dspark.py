@@ -93,6 +93,32 @@ class MarkovTest(unittest.TestCase):
         self.assertTrue(torch.allclose(mid, torch.tensor([30 * math.tanh(1.0)]), atol=0.2))
 
 
+class SoftcapRoundingTest(unittest.TestCase):
+    def test_one_rounding_at_the_end_as_vllm(self):
+        # vLLM: x = bf16(a + b); then x / cap, tanh, * cap in fp32; one bf16 rounding of the result.
+        g = torch.Generator().manual_seed(3)
+        a = (torch.randn(20000, generator=g) * 20).to(torch.bfloat16)
+        b = (torch.randn(20000, generator=g) * 5).to(torch.bfloat16)
+        x = (a.float() + b.float()).to(torch.bfloat16).float()
+        want = (torch.tanh(x / 30.0) * 30.0).to(torch.bfloat16)
+        self.assertTrue(torch.equal(d.softcap(a, b), want))
+
+
+class GreedyTest(unittest.TestCase):
+    def test_the_vocab_is_the_unpadded_size_of_the_config(self):
+        self.assertEqual(d.VOCAB, 200058)
+
+    def test_the_padding_rows_of_the_vocab_never_win(self):
+        logits = torch.zeros(10)
+        logits[8] = 5.0  # a padding row (>= vocab 6)
+        logits[2] = 1.0
+        self.assertEqual(d.greedy(logits, vocab=6), 2)
+
+    def test_nan_counts_as_minus_infinity(self):
+        logits = torch.tensor([float("nan"), 1.0, 0.5])
+        self.assertEqual(d.greedy(logits, vocab=3), 1)
+
+
 class AcceptTest(unittest.TestCase):
     def test_longest_equal_prefix(self):
         self.assertEqual(d.accepted([1, 2, 3], [1, 2, 9]), 2)

@@ -23,6 +23,7 @@ EPS = 1e-6
 THETA = 1_000_000.0
 LOCAL = (True, False, True)
 SOFTCAP = 30.0
+VOCAB = 200058  # text_config.unpadded_vocab_size; the unembed has 201,024 rows
 
 
 def rms(x, weight, eps=EPS):
@@ -86,11 +87,15 @@ def markov_gate(raw, state):
 
 
 def softcap(base, bias, cap=SOFTCAP):
-    """`cap * tanh(bf16(base + bias) / cap)` in bf16 steps, as the draft's logits."""
+    """`cap * tanh(bf16(base + bias) / cap)`: the sum rounds to bf16, the rest runs in fp32 and rounds once (vLLM
+    `add_softcap`)."""
     x = (base.float() + bias.float()).to(torch.bfloat16).float()
-    x = (x / cap).to(torch.bfloat16).float()
-    x = torch.tanh(x).to(torch.bfloat16).float()
-    return (x * cap).to(torch.bfloat16)
+    return (torch.tanh(x / cap) * cap).to(torch.bfloat16)
+
+
+def greedy(logits, vocab=VOCAB):
+    """The argmax over the first `vocab` rows (the rest of the padded vocab is padding), NaN as -inf."""
+    return int(torch.nan_to_num(logits[:vocab].float(), nan=-math.inf).argmax())
 
 
 def accepted(draft, truth):
@@ -206,6 +211,6 @@ class Head:
             state, latent = markov_gate(raw, state)
             bias = (latent @ self.fold_w.T + self.fold_b).to(torch.bfloat16)
             logits = softcap(base[i], bias)
-            prev = int(torch.nan_to_num(logits.float(), nan=-math.inf).argmax())
+            prev = greedy(logits)
             drafts.append(prev)
         return drafts
