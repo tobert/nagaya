@@ -55,7 +55,7 @@ nagaya-family-beatthis = { version = "0.1.0", path = "../nagaya-family-beatthis"
 nagaya-mk-beatthis-cpu = { version = "0.1.0", path = "../nagaya-mk-beatthis-cpu" }
 nagaya-mk-beatthis-gfx1151 = { version = "0.1.0", path = "../nagaya-mk-beatthis-gfx1151" }
 nagaya-mk-embeddinggemma2-bmg = { version = "0.1.0", path = "../nagaya-mk-embeddinggemma2-bmg" }
-nagaya-text-embeddinggemma2 = { version = "0.1.0", path = "../nagaya-text-embeddinggemma2" }
+nagaya-family-embeddinggemma2 = { version = "0.1.0", path = "../nagaya-family-embeddinggemma2" }
 nagaya-mk-lfm3-bmg = { version = "0.1.0", path = "../nagaya-mk-lfm3-bmg" }
 nagaya-text-lfm3 = { version = "0.1.0", path = "../nagaya-text-lfm3" }
 nagaya-mk-inkling2-bmg = { version = "0.1.0", path = "../nagaya-mk-inkling2-bmg" }

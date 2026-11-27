@@ -4449,7 +4449,7 @@ these prompts too.
 | `fact_checking` | `FactChecking` | `task: fact checking \| query: ` |
 
 **The family of EmbeddingGemma 2.**
-The crate `nagaya-text-embeddinggemma2` holds it (11.3). Reason: these rules give the ids of sentence-transformers
+The crate `nagaya-family-embeddinggemma2` holds it (11.3). Reason: these rules give the ids of sentence-transformers
 6.1.0, which the oracle recorded.
 
 - The tokenizer is the checkpoint's `tokenizer.json`. Its `tokenizer_hash` is `sha256:` and the hex digits of the

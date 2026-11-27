@@ -398,7 +398,7 @@ This is the text of `AGENTS.md` for these milestones, as it was on 2026-11-11. M
     2. **Spec.** The route, the family, the embedding capability of the engine ABI and the batch quanta. Amy decides
        each Proposed note.
     3. **Oracle fixture.** Write the fixed inputs and outputs of sentence-transformers once, on the CPU (8.3).
-    4. **Family.** Write `nagaya-text-embeddinggemma2`: the tokenizer and the task prompts.
+    4. **Family.** Write `nagaya-family-embeddinggemma2`: the tokenizer and the task prompts.
     5. **Engine.** Write `nagaya-mk-embeddinggemma2-bmg` on the shared interpreter. Run the oracle on the card.
     6. **Route and deploy.** Serve the route, and add the engine to the profile of b70host as resident.
 

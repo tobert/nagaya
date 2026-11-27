@@ -8,7 +8,7 @@
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use nagaya_text_embeddinggemma2::EmbeddingGemma2Family;
+use nagaya_family_embeddinggemma2::EmbeddingGemma2Family;
 
 pub const DIR_VARIABLE: &str = "EMBEDDINGGEMMA2_MODEL_DIR";
 pub const GOLDEN_VARIABLE: &str = "EMBEDDINGGEMMA2_GOLDEN_DIR";
