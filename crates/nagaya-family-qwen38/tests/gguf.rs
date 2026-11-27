@@ -3,8 +3,8 @@
 mod common;
 
 use common::{JsonExt, fixture, gguf_path};
-use nagaya_text_qwen38::Error;
-use nagaya_text_qwen38::gguf::{Metadata, Value};
+use nagaya_family_qwen38::Error;
+use nagaya_family_qwen38::gguf::{Metadata, Value};
 
 fn string(s: &str) -> Vec<u8> {
     let mut out = (s.len() as u64).to_le_bytes().to_vec();

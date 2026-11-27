@@ -5,7 +5,7 @@ mod common;
 use common::{absent, gguf_path, tokenizer};
 use gogi_proto::context::Context;
 use nagaya_council::family::{Boundary, Family, FamilyError};
-use nagaya_text_qwen38::Qwen38Family;
+use nagaya_family_qwen38::Qwen38Family;
 use serde_json::{Value, json};
 use std::sync::OnceLock;
 

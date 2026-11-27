@@ -10,7 +10,7 @@ use common::{absent, gguf_path, tokenizer};
 use gogi_proto::context::Tool;
 use gogi_proto::generation::Phase;
 use nagaya_council::family::{Family, FamilyError, ParsedReply, ReplyCall, ReplyParser, ReplyStart, ReplyStep};
-use nagaya_text_qwen38::Qwen38Family;
+use nagaya_family_qwen38::Qwen38Family;
 use serde_json::{Value, json};
 use std::sync::OnceLock;
 
@@ -277,7 +277,7 @@ fn the_pieces_of_a_part_join_to_the_part() {
     if common::absent() {
         return;
     }
-    use nagaya_text_qwen38::pystr::strip;
+    use nagaya_family_qwen38::pystr::strip;
     for case in cases() {
         let name = &case["name"];
         let (steps, reply) = run(case);

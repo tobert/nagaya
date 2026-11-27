@@ -74,11 +74,11 @@ and `vocab_size`. The vocabulary size is here, not in `limits()` (engine-abi "Lo
 - **Escapes.** Client text that spells a marker is content. Refuse all 66 Unicode noncharacters, and name the
   character and its offset in the error (spec 11.3, "The Gemma 4 choices").
 - **Reply parser.** Write it from the rules of spec 11.3 ("The finish", "The reply parser"), with the parsers in
-  this tree as the pattern: `crates/nagaya-text-qwen38/src/reply.rs` and
+  this tree as the pattern: `crates/nagaya-family-qwen38/src/reply.rs` and
   `crates/nagaya-family-gemma4/src/council/reply.rs`. Name its stop tokens, its phases and the finish map. Test it
   against a fixture of the reference implementation (`tools/reply_fixture.py`).
 - **Council rendering.** Follow spec 11.3a with the family's tokens. The code is in this tree:
-  `crates/nagaya-text-qwen38/src/council/` and `crates/nagaya-family-gemma4/src/council/`. Keep one form across
+  `crates/nagaya-family-qwen38/src/council/` and `crates/nagaya-family-gemma4/src/council/`. Keep one form across
   families. A failed tool result renders as `Error: ` and the content, unless the model's template has its own form
   (spec 11.3, "One form in every family").
 - **Template id.** `nagaya-council:<hash>+<family>-chat:<hash>` (`crates/nagaya-council/src/template_id.rs`). The
@@ -95,9 +95,9 @@ reference's own Python, with no service and no GPU job (`tools/oracle_fixture.py
 - Run the tool with `PYTHONDONTWRITEBYTECODE=1 nice -n 19 ionice -c3 <venv python> -I`. The tool reads the reference
   repository and never writes into it.
 - The fixture records its source: the revision of the reference and the files it read
-  (`crates/nagaya-text-qwen38/tests/fixtures.rs`).
+  (`crates/nagaya-family-qwen38/tests/fixtures.rs`).
 - A crate's fixtures stay under 1 MB in total. This is a convention of the two family crates, not a rule of the
-  spec. Each crate has a test for it (`crates/nagaya-text-qwen38/tests/fixtures.rs:24`,
+  spec. Each crate has a test for it (`crates/nagaya-family-qwen38/tests/fixtures.rs:24`,
   `crates/nagaya-family-gemma4/tests/model_skip.rs:40`).
 - A fixture lives in the family crate when each engine of the family reads it. The oracle fixture is one
   (`crates/nagaya-family-gemma4/tests/fixtures/oracle.json`).
@@ -117,7 +117,7 @@ fixture holds five prompts with the top-64 logits and the logsumexp of the last 
 
 **Model files.** A host test that needs a model file skips when the file is absent, and prints one line to stderr.
 Only absence skips. A path that exists but does not read fails the test (`AGENTS.md`, "Tests that need a model
-file"). The helpers are `crates/nagaya-text-qwen38/tests/common/model.rs`,
+file"). The helpers are `crates/nagaya-family-qwen38/tests/common/model.rs`,
 `crates/nagaya-family-gemma4/tests/common/model.rs` and `crates/nagaya-mk-gemma4-bmg/tests/common/mod.rs`. Each test
 calls `absent()` first.
 

@@ -3,7 +3,7 @@
 mod common;
 
 use common::{JsonExt, fixture};
-use nagaya_text_qwen38::pystr;
+use nagaya_family_qwen38::pystr;
 use sha2::{Digest, Sha256};
 
 fn put(h: &mut Sha256, text: &str) {

@@ -80,7 +80,7 @@ Step 2 does each row. A row changes no bits unless its last column says so.
 | `MKVSNAP1`, `KvSnapshot::write_to`, `read_from` | `nagaya-mk-gemma4-bmg/src/gemma4.rs` | remove: only a test calls them | none |
 | `a_fit_follows_the_join_of_mkviolet` | `nagaya-mk-gemma4-bmg/src/spec.rs` | `a_fit_follows_the_join_of_the_held_rows` | none |
 | `a_plain_read_has_the_layout_of_mkviolet` | `nagaya-family-gemma4/tests/council.rs` | `a_plain_read_has_the_council_layout` | none |
-| `a_plain_read_has_the_tokens_of_the_layout_of_mkviolet` | `nagaya-text-qwen38/tests/council.rs` | `a_plain_read_has_the_tokens_of_the_council_layout` | none |
+| `a_plain_read_has_the_tokens_of_the_layout_of_mkviolet` | `nagaya-family-qwen38/tests/council.rs` | `a_plain_read_has_the_tokens_of_the_council_layout` | none |
 | `the_b70host_config_binds_mkviolets_address_and_ignores_the_igpu` | `crates/nagaya/tests/deploy.rs` | `the_b70_config_binds_its_address_and_ignores_the_igpu` | none |
 | `--mkviolet`, `DEFAULT_MKVIOLET` | `tools/gemma4_oracle_fixture.py` | remove: the tool reads `tools/gemma4_reference.py` | none |
 | `QWEN38_REFERENCE_REPO` and its default | `tools/oracle_fixture.py` | the reference in `tools/`; the variable goes | none |

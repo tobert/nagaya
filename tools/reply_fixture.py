@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write the reply-parser fixture of nagaya-text-qwen38 from the reference's Python.
+"""Write the reply-parser fixture of nagaya-family-qwen38 from the reference's Python.
 
 The fixture holds replies as token ids. For each reply it holds what the token loop of the first Qwen3.8 server gives
 for each token (the piece of text and the phase) and what `ReplyTracker.finish()` gives at the end. The tool runs no
@@ -24,7 +24,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 
 TOOLS = Path(__file__).resolve().parent
-DEFAULT_OUT = Path(__file__).resolve().parent.parent / "crates/nagaya-text-qwen38/tests/fixtures/reply.json"
+DEFAULT_OUT = Path(__file__).resolve().parent.parent / "crates/nagaya-family-qwen38/tests/fixtures/reply.json"
 
 # The tool sets. "reference" is the set of the tests of the first Qwen3.8 server: one tool with every
 # type, a tool with no parameters, and a tool with a required parameter.

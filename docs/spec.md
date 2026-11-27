@@ -3075,7 +3075,7 @@ rules above leave a choice open:
 
 Reason for `tokenizers`: the port copies code that its Python fixtures already check.
 
-The Jinja interpreter moves out of `nagaya-text-qwen38` into a crate
+The Jinja interpreter moves out of `nagaya-family-qwen38` into a crate
 `nagaya-jinja`, which both family libraries use. The move changes no behavior, and the Qwen3.8 fixtures stay green
 through it. A feature that Gemma 4's template needs and the interpreter lacks is a step with a test that fails first.
 Reason: one template engine for every family, with no second copy of it.
@@ -3280,11 +3280,11 @@ these ways. Each served model declares the capability `continuation` (`crates/na
   `<think>\n`, the trimmed reasoning, `\n</think>\n\n`, the trimmed content and `<|im_end|>\n`.
   `Qwen38Family::run_open` renders the message closed with stand-in text in its open field, and cuts at the
   stand-in. Then it adds the open field as sent. Thus the text before the field is the template's own, and the field
-  keeps its white space (`crates/nagaya-text-qwen38/src/council/mod.rs`).
+  keeps its white space (`crates/nagaya-family-qwen38/src/council/mod.rs`).
 - **The prefix.** The tokens of a Qwen3.8 open rendering begin the tokens of its closed rendering, unless the open
   field ends with white space. The template trims that white space. The tokenizer keeps a newline apart from the text
   before it, so the newline before `</think>` merges with no last token
-  (`crates/nagaya-text-qwen38/tests/continuation.rs`).
+  (`crates/nagaya-family-qwen38/tests/continuation.rs`).
 - **The Gemma 4 rendering.** Google's template renders a closed
   assistant message in a form that differs from its generation prompt. With thinking off, the prompt ends with an
   empty thought channel, `<|channel>thought\n<channel|>`, and a closed message has none. With thinking on, a closed
@@ -3303,7 +3303,7 @@ these ways. Each served model declares the capability `continuation` (`crates/na
 - **The parse.** The reply parser starts in the phase that the open message sets (`ReplyStart::of`). It reads only
   the sampled tokens. After an open message, the Qwen3.8 parser keeps the white space at the start of its first part.
   At `max_tokens`, it keeps the white space at the end of its last part (`Keep` in
-  `crates/nagaya-text-qwen38/src/reply.rs`). The toy parser and the Gemma 4 parser trim nothing.
+  `crates/nagaya-family-qwen38/src/reply.rs`). The toy parser and the Gemma 4 parser trim nothing.
 - **The reply.** `done` joins the open text as sent and the new text. `usage.prompt` counts the open text. `n` and
   `usage.completion` count only the sampled tokens (`GenerateThen::finish`, `crates/nagaya/src/council/generations.rs`).
 - The build plan: a continuation builds the context before its open message (`Service::open_plan`,
@@ -3470,9 +3470,9 @@ The numbers in the example show the shape only.
 - **The render call.** The route calls `Family::render(&context, generation_prompt)`
   (`crates/nagaya-council/src/family.rs`). The type `Context` is `gogi_proto::context::Context`, so the route
   decodes it as `POST /council/v2/contexts` does. The implementations are `Qwen38Family::render`
-  (`crates/nagaya-text-qwen38/src/council/mod.rs`) and `ToyFamily::render` (`crates/nagaya-family-toy/src/lib.rs`).
+  (`crates/nagaya-family-qwen38/src/council/mod.rs`) and `ToyFamily::render` (`crates/nagaya-family-toy/src/lib.rs`).
 - **The text.** `text` is `Family::detokenize(&rendering.tokens)`. For Qwen3.8 it equals `Rendered.text` of
-  `Qwen38::render` (`crates/nagaya-text-qwen38/src/family.rs`). A test pins this equality. `Rendering` has no text
+  `Qwen38::render` (`crates/nagaya-family-qwen38/src/family.rs`). A test pins this equality. `Rendering` has no text
   member, so this needs no change to the trait.
 - **The tokens and the boundaries.** `tokens`, `end`, `boundaries` and `signals` come from the `Rendering` as they
   are. The response never reports a boundary that a build would not keep.
@@ -3495,7 +3495,7 @@ Each of these three rules chooses one of two options.
   `/council/v2/contexts`. The other option was the first Qwen3.8 engine's flat body, with `messages`, `tools` and
   `thinking` at the top. It saves one level, and a client copies less.
 - **No reasoning effort.** The route has no `reasoning_effort`. gogi's context has none, and the Qwen3.8 library
-  fixes it to `medium` (`EFFORT` in `crates/nagaya-text-qwen38/src/council/mod.rs`). A body with it is a 400.
+  fixes it to `medium` (`EFFORT` in `crates/nagaya-family-qwen38/src/council/mod.rs`). A body with it is a 400.
 
 A message that the template refuses, a context that fails `Context::check`, and a Unicode noncharacter in a string
 are each a 400 `invalid_request`. The message names the fault, as the first Qwen3.8 engine does. The `param` is
@@ -3560,7 +3560,7 @@ Two small additions to the `Family` trait (`crates/nagaya-council/src/family.rs`
   calls `Tokenizer::encode`. This is the rule of a raw-read suffix (gogi "Raw reads"), where a marker is one token.
 - **`pieces`.** `Family::pieces(&self, tokens: &[u32]) -> Result<Vec<String>, FamilyError>`. Qwen3.8 calls
   `Tokenizer::token_piece(id, true)` for each id, then converts with lossy UTF-8
-  (`crates/nagaya-text-qwen38/src/council/mod.rs`). `ToyFamily` and the test family `Holding`
+  (`crates/nagaya-family-qwen38/src/council/mod.rs`). `ToyFamily` and the test family `Holding`
   (`crates/nagaya/tests/council_generations.rs`) implement both. Both methods are required, not defaults, so a family
   that does not implement them does not compile.
 - **The other option** was to build the first set with neither `special` nor `pieces`. `tokenize` then needs no

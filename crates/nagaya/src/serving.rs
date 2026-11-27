@@ -193,10 +193,10 @@ fn open_qwen38(identity: &Identity, table: &toml::Table) -> Result<OpenedFamily,
             .ok_or_else(|| "QWEN38_SHARDS names no shard; give the three GGUF shards of the model".to_owned())?,
     };
     let _ = identity;
-    let metadata = nagaya_text_qwen38::gguf::Metadata::open(&shard)
+    let metadata = nagaya_family_qwen38::gguf::Metadata::open(&shard)
         .map_err(|error| format!("cannot read the GGUF metadata of `{}`: {error}", shard.display()))?;
-    let hash = nagaya_text_qwen38::tokenizer_hash(&metadata).map_err(|error| error.to_string())?;
-    let family = nagaya_text_qwen38::Qwen38Family::from_metadata(&metadata)
+    let hash = nagaya_family_qwen38::tokenizer_hash(&metadata).map_err(|error| error.to_string())?;
+    let family = nagaya_family_qwen38::Qwen38Family::from_metadata(&metadata)
         .map_err(|error| format!("cannot build the Qwen3.8 family from `{}`: {error}", shard.display()))?;
     Ok(OpenedFamily {
         family: Arc::new(family),

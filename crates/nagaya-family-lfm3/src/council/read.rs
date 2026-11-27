@@ -1,6 +1,6 @@
 //! The council reads of the LFM3 family: the plans of a plain read and of a queue read, and the raw read.
 //!
-//! This is the read code of the Qwen3.8 library (`nagaya-text-qwen38`, `council/read.rs`), a port of the template of
+//! This is the read code of the Qwen3.8 library (`nagaya-family-qwen38`, `council/read.rs`), a port of the template of
 //! the first Gemma 4 engine, with the tokens of LFM3. Where gogi's contract and that engine disagree, gogi wins. Each
 //! place has a comment with the word "gogi".
 

@@ -4,8 +4,8 @@
 mod common;
 
 use common::{JsonExt, fixture, tokenizer};
-use nagaya_text_qwen38::detok::{Utf8Stream, piece_text};
-use nagaya_text_qwen38::json::Json;
+use nagaya_family_qwen38::detok::{Utf8Stream, piece_text};
+use nagaya_family_qwen38::json::Json;
 
 fn unhex(s: &str) -> Vec<u8> {
     (0..s.len())

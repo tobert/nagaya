@@ -17,7 +17,7 @@ members = [
     "crates/nagaya-mk-cuda",
     "crates/nagaya-mk-inkling2-sm121",
     "crates/nagaya-jinja",
-    "crates/nagaya-text-qwen38",
+    "crates/nagaya-family-qwen38",
     "crates/nagaya-family-gemma4",
     "crates/nagaya-family-qwen3tts",
     "crates/nagaya-family-sdxl",

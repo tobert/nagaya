@@ -1208,6 +1208,7 @@ dependencies = [
  "nagaya-family-embeddinggemma2",
  "nagaya-family-gemma4",
  "nagaya-family-lfm3",
+ "nagaya-family-qwen38",
  "nagaya-family-qwen3tts",
  "nagaya-family-qwenimage21",
  "nagaya-family-sdxl",
@@ -1229,7 +1230,6 @@ dependencies = [
  "nagaya-store",
  "nagaya-telemetry",
  "nagaya-text-inkling2",
- "nagaya-text-qwen38",
  "opentelemetry",
  "png",
  "rayon",
@@ -1324,6 +1324,17 @@ dependencies = [
  "sha2",
  "tokenizers",
  "zune-jpeg",
+]
+
+[[package]]
+name = "nagaya-family-qwen38"
+version = "0.1.0"
+dependencies = [
+ "gogi-proto",
+ "nagaya-council",
+ "nagaya-jinja",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -1512,9 +1523,9 @@ dependencies = [
  "libloading",
  "nagaya-abi",
  "nagaya-conformance",
+ "nagaya-family-qwen38",
  "nagaya-sched",
  "nagaya-store",
- "nagaya-text-qwen38",
  "serde_json",
  "sha2",
  "tempfile",
@@ -1614,17 +1625,6 @@ dependencies = [
  "sha2",
  "tokenizers",
  "zune-jpeg",
-]
-
-[[package]]
-name = "nagaya-text-qwen38"
-version = "0.1.0"
-dependencies = [
- "gogi-proto",
- "nagaya-council",
- "nagaya-jinja",
- "serde_json",
- "sha2",
 ]
 
 [[package]]

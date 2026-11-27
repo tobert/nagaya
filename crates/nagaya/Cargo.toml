@@ -11,7 +11,7 @@ fake = ["nagaya-abi/fake", "dep:nagaya-family-toy"]
 hip = [
     "dep:nagaya-mk-qwen38-gfx1151",
     "nagaya-mk-qwen38-gfx1151/hip",
-    "dep:nagaya-text-qwen38",
+    "dep:nagaya-family-qwen38",
     "nagaya-mk-qwenimage21-gfx1151/hip",
     "nagaya-mk-beatthis-gfx1151/hip",
 ]
@@ -62,7 +62,7 @@ nagaya-mk-inkling2-bmg = { version = "0.1.0", path = "../nagaya-mk-inkling2-bmg"
 nagaya-mk-inkling2-sm121 = { version = "0.1.0", path = "../nagaya-mk-inkling2-sm121" }
 nagaya-text-inkling2 = { version = "0.1.0", path = "../nagaya-text-inkling2" }
 nagaya-mk-qwen38-gfx1151 = { version = "0.1.0", path = "../nagaya-mk-qwen38-gfx1151", optional = true }
-nagaya-text-qwen38 = { version = "0.1.0", path = "../nagaya-text-qwen38", optional = true }
+nagaya-family-qwen38 = { version = "0.1.0", path = "../nagaya-family-qwen38", optional = true }
 nagaya-family-toy = { version = "0.1.0", path = "../nagaya-family-toy", optional = true }
 nagaya-sched = { version = "0.1.0", path = "../nagaya-sched" }
 nagaya-store = { version = "0.1.0", path = "../nagaya-store" }
@@ -86,7 +86,7 @@ gogi-fake.workspace = true
 gogi-toy.workspace = true
 nagaya-family-toy = { path = "../nagaya-family-toy" }
 # The Qwen3.8 tests of the text routes and of the job path read the tokenizer and the template of the GGUF file.
-nagaya-text-qwen38 = { path = "../nagaya-text-qwen38" }
+nagaya-family-qwen38 = { path = "../nagaya-family-qwen38" }
 # The tests turn on the `fake` feature of this crate. A dev-dependency on the crate itself does this.
 nagaya = { path = ".", features = ["fake"] }
 tempfile = "3"

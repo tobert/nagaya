@@ -60,7 +60,7 @@ The design came on 2026-10-17 from a conversation with Amy. The code began with 
     3. **Family interface.** In `nagaya-council`, write the interface of a family library. It renders a context with its
        boundaries and a council read (11.3a), parses a reply, and gives the template id. Write
        `nagaya-family-toy` on `gogi-toy`. Give the fake engine logits over the toy vocabulary.
-    4. **Qwen3.8 council.** In `nagaya-text-qwen38`, port mkviolet's council rendering (`src/template.rs` and its
+    4. **Qwen3.8 council.** In `nagaya-family-qwen38`, port mkviolet's council rendering (`src/template.rs` and its
        council code) to Qwen3.8 tokens, and the reply parser of mk's `service/chatfmt.py`. Test the parser against
        fixed outputs of mk's Python. Test the template id: a comment edit keeps it, and a token change changes it.
     5. **Job path.** In `nagaya`, take a request to an engine through `nagaya-sched`. Build a context: look up the

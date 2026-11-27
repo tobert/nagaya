@@ -3,7 +3,7 @@
 mod common;
 
 use common::fixture;
-use nagaya_text_qwen38::json::Json;
+use nagaya_family_qwen38::json::Json;
 
 fn p(text: &str) -> Json {
     Json::parse(text).unwrap_or_else(|e| panic!("{text:?} should parse: {e}"))

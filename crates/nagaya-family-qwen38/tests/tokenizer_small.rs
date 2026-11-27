@@ -4,7 +4,7 @@
 mod common;
 
 use common::{small_metadata, small_metadata_with_types};
-use nagaya_text_qwen38::{Error, Tokenizer};
+use nagaya_family_qwen38::{Error, Tokenizer};
 
 const NORMAL: i32 = 1;
 const CONTROL: i32 = 3;
@@ -26,7 +26,7 @@ fn build(extra: &[(&str, i32)], merges: &[&str]) -> Tokenizer {
     Tokenizer::from_metadata(&small_metadata("qwen35", "gpt2", &tokens, None, merges)).expect("a usable vocabulary")
 }
 
-fn refused(metadata: nagaya_text_qwen38::gguf::Metadata, needle: &str) {
+fn refused(metadata: nagaya_family_qwen38::gguf::Metadata, needle: &str) {
     match Tokenizer::from_metadata(&metadata) {
         Err(e) => assert!(e.to_string().contains(needle), "{e} should name {needle:?}"),
         Ok(_) => panic!("the vocabulary should be refused for {needle:?}"),
@@ -155,7 +155,7 @@ fn refuses_more_special_tokens_than_noncharacters() {
 
 #[test]
 fn refuses_metadata_without_a_key() {
-    let empty = nagaya_text_qwen38::gguf::Metadata::default();
+    let empty = nagaya_family_qwen38::gguf::Metadata::default();
     match Tokenizer::from_metadata(&empty) {
         Err(Error::Metadata(m)) => assert!(m.contains("tokenizer.ggml.pre"), "{m}"),
         other => panic!("{other:?}"),

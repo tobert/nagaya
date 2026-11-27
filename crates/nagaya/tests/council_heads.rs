@@ -2,7 +2,7 @@
 //! from the GGUF, on the fake engine. The engine is scripted, so a test knows the reply. No GPU runs.
 
 mod council_support;
-#[path = "../../nagaya-text-qwen38/tests/common/model.rs"]
+#[path = "../../nagaya-family-qwen38/tests/common/model.rs"]
 mod qwen_model;
 
 use std::sync::Arc;
@@ -17,7 +17,7 @@ use nagaya_abi::SlotLimit;
 use nagaya_council::family::{
     DecisionInput, Family, FamilyError, RawRead, ReadPlan, Rendering, ReplyParser, ReplyStart,
 };
-use nagaya_text_qwen38::Qwen38Family;
+use nagaya_family_qwen38::Qwen38Family;
 use serde_json::{Value, json};
 
 /// The Qwen3.8 family. A test that calls it has called `qwen_model::absent` before (AGENTS.md, "Tests that need a
