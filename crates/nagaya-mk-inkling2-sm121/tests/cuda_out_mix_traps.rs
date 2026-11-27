@@ -113,10 +113,10 @@ fn child(variant: &str) {
     match variant {
         "scratch" => desc.scale_bytes -= 1,
         "rows" => desc.rows = 513,
-        // 16 rows spread the finisher over 4 items after the 576 of the matmul: only 576 and 580 are tasks.
+        // 16 rows spread the finisher over 8 items after the 576 of the matmul: only 576 and 584 are tasks.
         "serial_finisher" => desc.items = 576,
-        "items_short" => desc.items = 579,
-        "items_long" => desc.items = 581,
+        "items_short" => desc.items = 583,
+        "items_long" => desc.items = 585,
         "depth_low" => desc.layer = 1,
         "depth_high" => desc.layer = 6,
         "flag" => desc.flags |= FLAG_SOFTCAP_30,

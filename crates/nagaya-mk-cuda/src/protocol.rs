@@ -383,7 +383,7 @@ pub const OUT_MIX_TABLE_OUT: usize = 13;
 /// The query of the mix of the MLP input (`f32`, 2304).
 pub const OUT_MIX_TABLE_QUERY: usize = 14;
 /// The rows that one finisher item of `OP_OUT_MIX` runs (the items after the 576 of the matmul).
-pub const OUT_MIX_FINISH_ROWS: usize = 4;
+pub const OUT_MIX_FINISH_ROWS: usize = 2;
 
 define_u16_table! {
     FLAGS;

@@ -223,11 +223,11 @@ mod tests {
         assert_eq!(
             (
                 finisher_items(1),
-                finisher_items(4),
-                finisher_items(5),
+                finisher_items(2),
+                finisher_items(3),
                 finisher_items(512)
             ),
-            (1, 1, 2, 128)
+            (1, 1, 2, 256)
         );
     }
 
@@ -236,12 +236,12 @@ mod tests {
         let at = |rows: usize, depth: usize| OutMixShape::new(rows, depth, false, true).unwrap();
         assert_eq!(at(1, 2).items(), 576);
         assert_eq!(at(2, 2).items(), 577);
-        assert_eq!(at(16, 3).items(), 576 + 4);
-        assert_eq!(at(512, 5).items(), 576 + 128);
+        assert_eq!(at(16, 3).items(), 576 + 8);
+        assert_eq!(at(512, 5).items(), 576 + 256);
         assert_eq!(at(512, 5).with_spread(false).items(), 576);
         assert_eq!(at(1, 2).with_spread(true).items(), 577);
         let d = at(512, 5).descriptor(&OutMixBuffers::default()).unwrap();
-        assert_eq!(d.items, 704);
+        assert_eq!(d.items, 832);
         // The partials and the raw sums are those of the 576 items of the matmul.
         assert_eq!(d.scale_bytes as usize, scratch_floats(512));
     }
@@ -279,7 +279,7 @@ mod tests {
         let d = s.descriptor(&b).unwrap();
         assert_eq!(
             (d.opcode, d.items, d.n, d.k, d.kt, d.group_items, d.layer),
-            (OP_OUT_MIX, 576 + 4, 2304, 3072, 768, 4, 3)
+            (OP_OUT_MIX, 576 + 8, 2304, 3072, 768, 4, 3)
         );
         assert_eq!(d.flags, FLAG_ACCUMULATE | FLAG_NORM);
         assert_eq!(
