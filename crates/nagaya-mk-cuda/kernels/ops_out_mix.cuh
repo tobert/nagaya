@@ -71,8 +71,8 @@ constexpr uint32_t OM_RF_SLOT = 5;
 constexpr uint32_t OM_NO_NORM = 15;
 
 // The scratch floats that a task of `rows` rows needs (the number that `OutMixLayout::scratch_floats` gives).
-__device__ __forceinline__ uint64_t om_scratch_floats(uint32_t rows, uint32_t items) {
-    return OM_COUNTERS + static_cast<uint64_t>(items) * rows * MM_TILE + static_cast<uint64_t>(OM_WIDTH) * rows;
+__device__ __forceinline__ uint64_t om_scratch_floats(uint32_t rows) {
+    return OM_COUNTERS + static_cast<uint64_t>(OM_TILE_ITEMS) * rows * MM_TILE + static_cast<uint64_t>(OM_WIDTH) * rows;
 }
 
 __device__ __forceinline__ float om_bf16(const uint16_t* p, uint32_t i) {
@@ -127,7 +127,7 @@ __device__ __forceinline__ void om_check(const MkTaskDescriptor& task, const MkT
         task.layer > RW_MAX_STACK || (task.flags & ~(FLAG_ACCUMULATE | FLAG_NORM)) != 0 || (task.a & 7) != 0 ||
         (task.b & 15) != 0 || (task.c & 15) != 0 || (task.f & 15) != 0 || task.a == 0 || task.c == 0 || task.f == 0 ||
         accumulate != (task.e != 0) || (task.e & 15) != 0 || !(task.p0 > 0.0f) ||
-        om_scratch_floats(rows, OM_TILE_ITEMS) > task.scale_bytes) {
+        om_scratch_floats(rows) > task.scale_bytes) {
         __trap();
     }
     // The stack: every plane and its factors, and `r` in the last slot, which this task writes.
@@ -154,6 +154,32 @@ __device__ __forceinline__ void om_check(const MkTaskDescriptor& task, const MkT
 
 // One item of the matmul and of the steps 1 to 3 for its tile. It returns true in every worker of the item that must run
 // the finisher for all rows: the item that arrives last over the tiles, when the task has no finisher items.
+// The profile build times the phases of a tile item (the test `the_tile_phase_split` reads them). The stamps are in shared
+// memory so that they take no register. Worker 0 adds the ns of each phase to scratch words that nothing sets back:
+// 150 the matmul partials of an item, 151 the count of items, 152 the arrival and the merge of the 4 slices, 153 the
+// convolution and the residual, 154 the state (the words 152 to 154 are for the 144 items that merge), and the words
+// 156/157 and 158/159 hold, as u64, the complement of the first start and the last end of a tile item.
+#ifdef MK_PROFILE
+__shared__ uint64_t om_stamp[5];
+#define OM_STAMP(i)                         \
+    if (worker_id() == 0) {                 \
+        om_stamp[i] = globaltimer_ns();     \
+    }
+__device__ __forceinline__ void om_prof_add(uint32_t* counters, uint32_t word, uint32_t from, uint32_t to) {
+    if (worker_id() == 0) {
+        atomicAdd(counters + word, static_cast<uint32_t>(om_stamp[to] - om_stamp[from]));
+    }
+}
+__device__ __forceinline__ void om_prof_edges(uint32_t* counters, uint32_t last) {
+    if (worker_id() == 0) {
+        atomicMax(reinterpret_cast<unsigned long long*>(counters + 156), ~static_cast<unsigned long long>(om_stamp[0]));
+        atomicMax(reinterpret_cast<unsigned long long*>(counters + 158), static_cast<unsigned long long>(om_stamp[last]));
+    }
+}
+#else
+#define OM_STAMP(i)
+#endif
+
 __device__ __forceinline__ bool om_tile_item(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
 
     // The matmul has no norm: the slot 15 is 0. The code of `mm_item_partials` for a null norm that the compiler can see holds
@@ -166,9 +192,11 @@ __device__ __forceinline__ bool om_tile_item(const MkTaskDescriptor& task, const
     if (seen != 0) {
         __trap();
     }
+    OM_STAMP(0);
     mm_item_partials(task, item, reinterpret_cast<const float*>(task.a), reinterpret_cast<const float*>(no_norm),
                      reinterpret_cast<const uint16_t*>(no_norm), reinterpret_cast<float*>(task.f) + OM_COUNTERS,
                      OM_TILE_ITEMS);
+    OM_STAMP(1);
     const uint32_t rows = task.rows;
     const uint32_t tile = item / 4;
     const uint64_t partial_floats = static_cast<uint64_t>(rows) * MM_TILE;
@@ -181,6 +209,14 @@ __device__ __forceinline__ bool om_tile_item(const MkTaskDescriptor& task, const
     }
     worker_sync();
     if (*flag == 0) {
+#ifdef MK_PROFILE
+        om_prof_add(counters, 150, 0, 1);
+        if (worker_id() == 0) {
+            atomicAdd(counters + 151, 1u);
+        }
+        OM_STAMP(2);
+        om_prof_edges(counters, 2);
+#endif
         return false;
     }
 
@@ -190,6 +226,7 @@ __device__ __forceinline__ bool om_tile_item(const MkTaskDescriptor& task, const
         __stcg(tile_raw + i, mm_merged_sum(partials, tile, 4, partial_floats, i));
     }
     worker_sync();
+    OM_STAMP(2);
 
     // 2. The convolution, the residual and the conv state.
     const uint16_t* conv_w = reinterpret_cast<const uint16_t*>(table->ptr[MK_OUT_MIX_TABLE_CONV]);
@@ -221,6 +258,7 @@ __device__ __forceinline__ bool om_tile_item(const MkTaskDescriptor& task, const
         __stcg(r_out + static_cast<uint64_t>(t) * OM_WIDTH + channel, value);
     }
     worker_sync();
+    OM_STAMP(3);
     // The state after the block: the last 3 of the three old rows and the raw rows. Only this item reads these channels.
     // A worker holds its new value in a register until every worker has read, because the new rows replace the old rows.
     {
@@ -240,6 +278,17 @@ __device__ __forceinline__ bool om_tile_item(const MkTaskDescriptor& task, const
         }
     }
 
+    OM_STAMP(4);
+#ifdef MK_PROFILE
+    om_prof_add(counters, 150, 0, 1);
+    if (worker_id() == 0) {
+        atomicAdd(counters + 151, 1u);
+    }
+    om_prof_add(counters, 152, 1, 2);
+    om_prof_add(counters, 153, 2, 3);
+    om_prof_add(counters, 154, 3, 4);
+    om_prof_edges(counters, 4);
+#endif
     // 3. The arrival at the counter of the tiles.
     if (task.items != OM_TILE_ITEMS) {
         // The finisher items follow. The barrier orders the stores of all workers (`r` and the state) before the release add
