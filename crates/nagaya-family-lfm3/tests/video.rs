@@ -5,8 +5,8 @@
 mod common;
 
 use common::model::golden_path;
-use nagaya_text_lfm3::media::image::Rgb;
-use nagaya_text_lfm3::media::video;
+use nagaya_family_lfm3::media::image::Rgb;
+use nagaya_family_lfm3::media::video;
 use safetensors::SafeTensors;
 
 struct Oracle {
@@ -154,7 +154,7 @@ fn each_pair_writes_its_mean_time_and_the_sound_splits_at_the_first_frame_of_eac
 #[cfg(feature = "video")]
 #[test]
 fn the_decode_gives_the_bits_of_the_frames_and_the_sound_of_the_reference() {
-    use nagaya_text_lfm3::media::decode;
+    use nagaya_family_lfm3::media::decode;
     let Some(o) = oracle() else { return };
     for name in NAMES {
         let bytes = std::fs::read(golden_path(&format!("video_{name}.mp4")).unwrap()).unwrap();

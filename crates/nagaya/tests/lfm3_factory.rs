@@ -125,7 +125,7 @@ fn the_family_opens_from_the_folder_of_its_model() {
     let bytes = std::fs::read(text.join("tokenizer.json")).unwrap();
     assert_eq!(
         opened.tokenizer_hash.as_deref(),
-        Some(nagaya_text_lfm3::tokenizer::sha256_of(&bytes).as_str())
+        Some(nagaya_family_lfm3::tokenizer::sha256_of(&bytes).as_str())
     );
     let Err(other) = open_family(&identity, &table(&format!("model_dir = \"{}\"", omni.display()))) else {
         panic!("the folder of Omni opens a family for an engine of lfm3");

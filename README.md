@@ -47,7 +47,7 @@ nagaya implements the [council v2](https://github.com/tobert/gogi) contract and 
 | `bmg` | Intel Arc Pro B70 (Level Zero + OpenCL C interpreter) | **Gemma 4** (2-card pipeline), **LFM3 / LFM3-Omni** (text, vision, audio, video, speech, steering, layer loops), **Inkling 2** (recurrent-cycle reasoning, vision), **SDXL** (images, inpainting, LoRA), **Qwen3-TTS** (speech), **EmbeddingGemma 2** (embeddings) |
 | `sm121` | NVIDIA DGX Spark / GB10 (128 GB unified, CUDA / PTX interpreter) | **Inkling 2** (native NVFP4/MXFP8, FP8 `e4m3` KV cache, 4×128K slots) |
 
-Crate names follow `nagaya-<kind>-<model>-<target>`: `nagaya-mk-lfm3-bmg` is the B70 megakernel engine for LFM3, while `nagaya-text-lfm3` is its GPU-free family library (tokenizer, Jinja chat template, reply and tool-call parsers).
+Crate names follow `nagaya-<kind>-<model>-<target>`: `nagaya-mk-lfm3-bmg` is the B70 megakernel engine for LFM3, while `nagaya-family-lfm3` is its GPU-free family library (tokenizer, Jinja chat template, reply and tool-call parsers).
 
 ## Building & running
 

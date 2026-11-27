@@ -14,13 +14,13 @@ use nagaya_abi::{
     Output, PartError, PartId, Parts, PassError, PassErrorKind, PassOut, PassStatus, Segment, SlotId, Slots,
     SpeechFrames, State, Tap, WriteResult,
 };
+use nagaya_family_lfm3::{Kind as FamilyKind, Lfm3Family};
 use nagaya_mk_bmg::level_zero::{B70Card, L0Cluster};
 use nagaya_mk_bmg::protocol::MkTaskDescriptor;
 use nagaya_mk_bmg::ring::Ring;
 use nagaya_mk_bmg::safetensors::{MappedSafeTensors, SafeTensorsView};
 use nagaya_mk_bmg::tasks;
 use nagaya_mk_bmg::{IGC_REVISION, KERNEL_ENTRY, LFM3_KERNEL, OCLOC_VERSION};
-use nagaya_text_lfm3::{Kind as FamilyKind, Lfm3Family};
 
 use crate::audio::{self, AudioBufs, AudioWeights, Clip, MAX_CLIP_POSITIONS, Stage};
 use crate::device::{Device, OnCard};

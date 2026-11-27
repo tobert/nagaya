@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Make the fixtures of the LFM3 family library (spec 11.3, 11.11, milestone 24 step 4).
 
-The tool writes these files into crates/nagaya-text-lfm3/tests/fixtures:
+The tool writes these files into crates/nagaya-family-lfm3/tests/fixtures:
 
 - ids.json: for each model and each fixed string, the token ids of Hugging Face `tokenizers` with the model's
   tokenizer.json. It holds the ids with the added tokens matched, the ids with no added token (client text, spec
@@ -30,7 +30,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_OUT = ROOT / "crates/nagaya-text-lfm3/tests/fixtures"
+DEFAULT_OUT = ROOT / "crates/nagaya-family-lfm3/tests/fixtures"
 BOS = "<|startoftext|>"
 
 # Strings for the tokenizer: spaces, new lines, markers, bytes of more than one character, and scripts other than

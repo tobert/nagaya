@@ -48,7 +48,7 @@ fn each_stage_of_the_cpu_form_follows_transformers() {
 #[test]
 fn the_mel_rows_of_the_family_give_the_rows_of_transformers() {
     let Some((mut encoder, golden)) = setup() else { return };
-    let rows = nagaya_text_lfm3::media::audio::mel(&golden["samples"].f32());
+    let rows = nagaya_family_lfm3::media::audio::mel(&golden["samples"].f32());
     let reference = mel_rows(&golden["mel"]);
     assert_eq!(rows.values.len(), reference.len());
     println!(

@@ -9,7 +9,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use nagaya_text_lfm3::Lfm3Family;
+use nagaya_family_lfm3::Lfm3Family;
 
 pub const OMNI_VARIABLE: &str = "LFM3_OMNI_MODEL_DIR";
 pub const TEXT_VARIABLE: &str = "LFM3_MODEL_DIR";

@@ -218,7 +218,7 @@ context can take a small bias from other players, as a performer does. A weak ef
 **The grid is the audio row.** LFM3 Omni has one grid of time in both directions:
 
 - Audio in is 16 kHz with a hop of 160 samples, and one position is 8 mel frames. Thus one audio row is 80 ms
-  (`crates/nagaya-text-lfm3/src/media/audio.rs`).
+  (`crates/nagaya-family-lfm3/src/media/audio.rs`).
 - Audio out is 1,920 samples at 24 kHz for each frame. Thus one frame is 80 ms too (`docs/engine-abi.md`, "The speech
   calls of LFM3").
 

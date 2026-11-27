@@ -8,7 +8,7 @@ use common::model::{OMNI_VARIABLE, absent_any, absent_omni, dir, family, fixture
 use gogi_proto::context::Context;
 use gogi_proto::spec::{SpecRules, parse_spec};
 use nagaya_council::family::{Advance, Asked, Continues, DecisionInput, Family};
-use nagaya_text_lfm3::{Files, Kind, Lfm3Family, MediaKind, Mode};
+use nagaya_family_lfm3::{Files, Kind, Lfm3Family, MediaKind, Mode};
 use serde_json::{Value, json};
 
 fn context(v: Value) -> Context {
