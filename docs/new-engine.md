@@ -27,10 +27,9 @@ no edit in another repository.
   (`crates/nagaya/src/qwen38.rs:12`, `crates/nagaya-mk-gemma4-bmg/src/spec.rs:24`). The engine name in the profile is
   short: `qwen38`, `gemma`.
 - A family library is `nagaya-family-<family>`. Its name in the identity is the family: `qwen38`, `gemma4`, `toy`
-  (`crates/nagaya-mk-gemma4-bmg/src/spec.rs:30`). The older family libraries still have the prefix `nagaya-text-`,
-  from the first ones, which held only text logic. A rename moves them to `nagaya-family-` later. A new family uses
-  `nagaya-family-` now. Reason: a family library holds all the logic of a model that needs no card, and some of it is
-  not text, such as the beat times of `nagaya-family-beatthis`.
+  (`crates/nagaya-mk-gemma4-bmg/src/spec.rs:30`). The first family libraries held only text logic and had the prefix
+  `nagaya-text-`; on 2026-11-27 each one moved to `nagaya-family-`. Reason: a family library holds all the logic of a
+  model that needs no card, and some of it is not text, such as the beat times of `nagaya-family-beatthis`.
 - One engine crate for each vendor and device (spec 8.3).
 
 A port adds these things:

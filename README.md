@@ -90,7 +90,7 @@ See [`docs/deploy.md`](docs/deploy.md) for systemd user unit installation, boots
 | Path | Contents |
 |---|---|
 | `crates/nagaya-abi`, `nagaya-ledger`, `nagaya-sched`, `nagaya-store`, `nagaya-telemetry`, `nagaya-conformance` | Pure-Rust exokernel core, memory ledger, scheduler, content-addressed store, OpenTelemetry export, and engine conformance suite |
-| `crates/nagaya-council`, `nagaya-jinja`, `nagaya-family-*` (older ones still `nagaya-text-*`) | Council v2 request logic, Jinja2-compatible template engine, and GPU-free model family libraries |
+| `crates/nagaya-council`, `nagaya-jinja`, `nagaya-family-*` | Council v2 request logic, Jinja2-compatible template engine, and GPU-free model family libraries |
 | `crates/nagaya-mk-hip`, `nagaya-mk-bmg`, `nagaya-mk-cuda`, `crates/nagaya-mk-*-*` | Shared GPU interpreters and model-specific megakernel engines (HIP, OpenCL C, CUDA C++/PTX) |
 | `crates/nagaya` | Main daemon: hardware inventory probe, device threads, HTTP server, gossip, systemd lifecycle |
 | `deploy/` | Example configs, placement profiles, and systemd user units for Strix Halo, B70 pair, and DGX Spark |
