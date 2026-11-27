@@ -40,6 +40,7 @@ fn real_checkpoint_plans_512k_slot_without_reading_weights() {
         slots: vec![524_288],
         max_block: DEFAULT_MAX_BLOCK,
         extra_runs: DEFAULT_EXTRA_RUNS,
+        taps: false,
         cache: DEFAULT_CACHE,
     };
     let lim = spec::plan(&cfg).unwrap();

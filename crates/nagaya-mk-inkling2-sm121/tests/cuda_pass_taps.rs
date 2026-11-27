@@ -1,4 +1,4 @@
-//! GPU gate of the taps of the draft head (`docs/gb10-research.md`, D1; `Pass::enable_taps`): the inputs of the layer
+//! GPU gate of the taps of the draft head (`docs/gb10-research.md`, D1; `Pass::open_with_taps`): the inputs of the layer
 //! visits 5, 23 and 41 and the output of the final norm, for each row of a block.
 //!
 //! - `taps_move_no_bit_and_do_not_depend_on_the_split`: a pass with taps gives the logits and the slot of a pass without
@@ -20,7 +20,7 @@ mod common;
 
 use std::path::PathBuf;
 
-use nagaya_mk_inkling2_sm121::pass::step::{Pass, TapRows};
+use nagaya_mk_inkling2_sm121::pass::step::{Pass, PassConfig, TapRows};
 use nagaya_mk_inkling2_sm121::pass::weights::DeviceWeights;
 use nagaya_mk_inkling2_sm121::spec::{self, HIDDEN};
 
@@ -59,6 +59,17 @@ fn chat_ids() -> Vec<u32> {
         .iter()
         .map(|v| v.as_u64().unwrap() as u32)
         .collect()
+}
+
+fn open_taps<'d>(dev: &'d nagaya_mk_cuda::driver::CudaDevice, weights: &'d DeviceWeights<'d>, seq: usize) -> Pass<'d> {
+    let config = PassConfig {
+        seqs: vec![seq],
+        max_rows: 512,
+        max_cycles: 3,
+        profile: false,
+        format: nagaya_mk_cuda::attn::CacheFormat::F32,
+    };
+    Pass::open_with_taps(dev, weights, &config).unwrap_or_else(|e| panic!("{e}"))
 }
 
 fn bf16_to_f32(bytes: &[u8]) -> Vec<f32> {
@@ -114,14 +125,15 @@ fn taps_move_no_bit_and_do_not_depend_on_the_split() {
     let dev = common::gpu::open();
     let weights = DeviceWeights::load(&dev, &dir, |_| {}).unwrap_or_else(|e| panic!("{e}"));
     let norm = final_norm(&weights);
-    let mut pass = Pass::new(&dev, &weights, 1024, 512, 3).unwrap_or_else(|e| panic!("{e}"));
+    let mut pass = open_taps(&dev, &weights, 1024);
+    pass.use_taps(false).unwrap();
     let ids = chat_ids();
     assert_eq!(ids.len(), 17);
     // A pass with no taps: the logits and the slot hashes that the taps must not move.
     pass.slots[0].zero().unwrap();
     let plain: Vec<u32> = pass.run(&ids, 1).unwrap().iter().map(|v| v.to_bits()).collect();
     let plain_slot = slot_hashes(&pass);
-    pass.enable_taps().unwrap();
+    pass.use_taps(true).unwrap();
     let (reference, logits) = features(&mut pass, &norm, &ids, &[17]);
     assert_eq!(
         logits, plain,
@@ -209,8 +221,7 @@ fn taps_follow_the_cpu_reference() {
     let dev = common::gpu::open();
     let weights = DeviceWeights::load(&dev, &dir, |_| {}).unwrap_or_else(|e| panic!("{e}"));
     let norm = final_norm(&weights);
-    let mut pass = Pass::new(&dev, &weights, SEQ, 512, 3).unwrap();
-    pass.enable_taps().unwrap();
+    let mut pass = open_taps(&dev, &weights, SEQ);
     let text = texts()
         .into_iter()
         .find(|t| t["name"] == name.as_str())
@@ -274,8 +285,7 @@ fn export_taps() {
     let dev = common::gpu::open();
     let weights = DeviceWeights::load(&dev, &dir, |_| {}).unwrap_or_else(|e| panic!("{e}"));
     let norm = final_norm(&weights);
-    let mut pass = Pass::new(&dev, &weights, SEQ, 512, 3).unwrap();
-    pass.enable_taps().unwrap();
+    let mut pass = open_taps(&dev, &weights, SEQ);
     let all = texts();
     for name in names.split(',') {
         let text = all

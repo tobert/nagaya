@@ -70,6 +70,14 @@ impl Owner {
         Ok(())
     }
 
+    fn open_pass_with_taps(&mut self, config: &PassConfig) -> Result<(), String> {
+        // SAFETY: as in `open_pass`.
+        let (device, weights): (&'static CudaDevice, &'static DeviceWeights<'static>) =
+            unsafe { (&*self.device, self.weights.as_ref().expect("the weights are loaded")) };
+        self.pass = Some(Pass::open_with_taps(device, weights, config)?);
+        Ok(())
+    }
+
     fn open_pass(&mut self, config: &PassConfig) -> Result<(), String> {
         // SAFETY: as in `load_weights`: the device and the weights live until `release` drops the pass first.
         let (device, weights): (&'static CudaDevice, &'static DeviceWeights<'static>) =
@@ -238,13 +246,18 @@ impl Inkling2Sm121Engine {
             return Err(message);
         }
         let extra_cycles = 1 + config.extra_runs / spec::CYCLE_LAYERS;
-        owner.open_pass(&PassConfig {
+        let pass_config = PassConfig {
             seqs: config.seqs(),
             max_rows: config.max_block,
             max_cycles: extra_cycles,
             profile: false,
             format: config.cache,
-        })?;
+        };
+        if config.taps {
+            owner.open_pass_with_taps(&pass_config)?;
+        } else {
+            owner.open_pass(&pass_config)?;
+        }
         // The pre-check counted the planned bytes against the free bytes. After the allocations the GPU must still hold
         // a floor of free memory, because the free bytes of a unified memory are the memory of the machine.
         let counted = owner.weights_bytes() + owner.pass().slots.iter().map(|slot| slot.bytes() as u64).sum::<u64>();

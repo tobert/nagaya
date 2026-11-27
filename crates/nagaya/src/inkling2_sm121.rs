@@ -15,7 +15,7 @@ use crate::admission::{GroupDevice, PlanError};
 pub const KIND: &str = spec::KIND;
 
 /// Allowed keys of the engine config table.
-const KEYS: [&str; 5] = ["model_dir", "slots", "max_block", "extra_runs", "cache"];
+const KEYS: [&str; 6] = ["model_dir", "slots", "max_block", "extra_runs", "cache", "taps"];
 
 /// Read `model_dir` from `table` and verify that it names an existing directory.
 pub fn model_dir(table: &toml::Table, what: &str) -> Result<PathBuf, String> {
@@ -43,7 +43,7 @@ pub fn config(table: &toml::Table) -> Result<Config, PlanError> {
     if let Some(key) = table.keys().find(|key| !KEYS.contains(&key.as_str())) {
         return Err(fail(format!(
             "{what} has the key `{key}`, which the engine does not know; the keys are `model_dir`, `slots`, \
-             `max_block`, `extra_runs` and `cache`"
+             `max_block`, `extra_runs`, `cache` and `taps`"
         )));
     }
     let model_dir = model_dir(table, &what).map_err(fail)?;
@@ -91,12 +91,20 @@ pub fn config(table: &toml::Table) -> Result<Config, PlanError> {
             )));
         }
     };
+    let taps = match table.get("taps") {
+        None => false,
+        Some(toml::Value::Boolean(on)) => *on,
+        Some(value) => {
+            return Err(fail(format!("`taps` in {what} is {value}; write `true` or `false`")));
+        }
+    };
     let config = Config {
         model_dir,
         slots,
         max_block,
         extra_runs,
         cache,
+        taps,
     };
     config.check().map_err(|message| fail(format!("{what}: {message}")))?;
     Ok(config)

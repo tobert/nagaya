@@ -255,6 +255,15 @@ pub struct Config {
     pub extra_runs: usize,
     /// The format of the values in the cache. It defines the reference bits, and it selects the cubin.
     pub cache: CacheFormat,
+    /// Export the taps of the draft head: the pass copies 4 feature rows for each position at 3 cycles, and the plan counts
+    /// their region in the `work` term (`tap_bytes`). It moves no bit of a row, so it is not in the identity.
+    pub taps: bool,
+}
+
+/// The bytes of the region of the taps for blocks of `max_rows` rows: 4 planes of rows of `f32`, then the row factors of
+/// the output row.
+pub const fn tap_bytes(max_rows: usize) -> usize {
+    4 * max_rows * HIDDEN * 4 + max_rows * 4
 }
 
 impl Config {
@@ -433,7 +442,12 @@ pub fn cycles_limit(extra_runs: usize) -> CyclesLimit {
 pub fn limits(config: &Config, llm_weights: u64) -> Limits {
     let ring_bytes = (NUM_SCOREBOARD_EVENTS * 4 + RING_DEV_BYTES) as u64;
     let block_work = (config.max_block * BLOCK_WORK_FLOATS_PER_TOKEN * 4) as u64;
-    let work = block_work + attn_scratch_bytes(config.max_seq(), config.max_block) + ring_bytes;
+    let taps = if config.taps {
+        tap_bytes(config.max_block) as u64
+    } else {
+        0
+    };
+    let work = block_work + attn_scratch_bytes(config.max_seq(), config.max_block) + ring_bytes + taps;
     let pinned = (RING_DEV_BYTES + 256 * 24 + STAGING_BYTES) as u64;
     Limits {
         capabilities: vec![
@@ -555,6 +569,7 @@ mod tests {
             slots: vec![SLOT_TOKENS],
             max_block: DEFAULT_MAX_BLOCK,
             extra_runs: DEFAULT_EXTRA_RUNS,
+            taps: false,
             cache: DEFAULT_CACHE,
         };
         assert!(base.check().is_ok());
@@ -601,6 +616,7 @@ mod tests {
         assert!(
             Config {
                 extra_runs: 12,
+                taps: false,
                 ..base.clone()
             }
             .check()
@@ -609,6 +625,7 @@ mod tests {
         assert!(
             Config {
                 extra_runs: 36,
+                taps: false,
                 ..base.clone()
             }
             .check()
@@ -745,6 +762,7 @@ mod tests {
             slots: vec![524_288],
             max_block: 512,
             extra_runs: 24,
+            taps: false,
             cache: DEFAULT_CACHE,
         };
         // The sums of the Inkling 2 Mini header, with each tensor rounded up to 64 bytes.
@@ -804,6 +822,7 @@ mod tests {
             slots: vec![SLOT_TOKENS],
             max_block: 256,
             extra_runs: 36,
+            taps: false,
             cache: DEFAULT_CACHE,
         };
         let nums = identity_numbers(&cfg);
@@ -835,6 +854,7 @@ mod tests {
             slots: vec![SLOT_TOKENS, 409_600],
             max_block: 256,
             extra_runs: 24,
+            taps: false,
             cache,
         }
     }

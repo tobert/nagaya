@@ -60,6 +60,7 @@ fn config(dir: &Path, slots: Vec<usize>) -> Config {
         slots,
         max_block: DEFAULT_MAX_BLOCK,
         extra_runs: DEFAULT_EXTRA_RUNS,
+        taps: false,
         cache: DEFAULT_CACHE,
     }
 }

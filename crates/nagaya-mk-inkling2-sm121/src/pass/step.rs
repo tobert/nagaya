@@ -22,7 +22,7 @@ use super::layout::{Buf, LOGIT_COLUMNS, MAX_CYCLES, RunPlan, ScratchKind, Scratc
 use super::run::{BLOCK_FORM_ROWS_ABOVE, RunEnv, StepShape, TableSet, run_tasks};
 use super::slot::Slot;
 use super::weights::DeviceWeights;
-use crate::spec::{CYCLE_LAYERS, CYCLE_START, HIDDEN, LOGITS, MAX_LOGIT_ROWS};
+use crate::spec::{CYCLE_LAYERS, CYCLE_START, HIDDEN, LOGITS, MAX_LOGIT_ROWS, tap_bytes};
 
 /// The tables that a pass can hold: the embedding, 12 for each run of 5 cycles at most, and the output residual and head.
 const TABLES: usize = 1024;
@@ -127,7 +127,7 @@ struct ShapeKey {
     logit_span: usize,
     /// The block form of PROJ (more than `BLOCK_FORM_ROWS_ABOVE` rows) has other descriptors and other scratch.
     block: bool,
-    /// The list holds the copy tasks of the taps (`Pass::enable_taps`, 3 cycles only).
+    /// The list holds the copy tasks of the taps (`Pass::open_with_taps`, 3 cycles only).
     taps: bool,
 }
 
@@ -236,8 +236,9 @@ pub struct Pass<'d> {
     clock: u64,
     /// The host time of the last call.
     pub host: HostTime,
-    /// The region of the taps (`TapLayout`), once `enable_taps` made it.
+    /// The region of the taps (`TapLayout`), from `open_with_taps`.
     taps: Option<Dev<'d>>,
+    taps_on: bool,
 }
 
 /// The runs whose input row is a tap at 3 cycles: the visits 5, 23 and 41 of the model (the inputs of the layers 5, 11 and
@@ -247,7 +248,7 @@ pub const TAP_VISITS: [usize; 3] = [5, 23, 41];
 /// The cycles that the taps serve: the visits above are those of a model that runs 3 passes.
 pub const TAP_CYCLES: usize = 3;
 
-/// The rows that a pass exports as taps for the draft head (`docs/gb10-research.md`, D1; `Pass::enable_taps`). A row `r`
+/// The rows that a pass exports as taps for the draft head (`docs/gb10-research.md`, D1; `Pass::open_with_taps`). A row `r`
 /// of a block gives the features of its position: the inputs of the visits 5, 23 and 41, and the output of the last mix.
 #[derive(Clone, Debug)]
 pub struct TapRows {
@@ -384,6 +385,7 @@ impl<'d> Pass<'d> {
             clock: 0,
             host: HostTime::default(),
             taps: None,
+            taps_on: false,
         })
     }
 
@@ -529,7 +531,7 @@ impl<'d> Pass<'d> {
             logit_first,
             logit_span,
             block: rows > BLOCK_FORM_ROWS_ABOVE,
-            taps: self.taps.is_some() && cycles == TAP_CYCLES,
+            taps: self.taps_on && cycles == TAP_CYCLES,
         };
         let started = Instant::now();
         if self.loaded == Some(key) {
@@ -832,20 +834,28 @@ impl<'d> Pass<'d> {
         Ok((built, list))
     }
 
-    /// Make the region of the taps. A pass at 3 cycles then copies, for each block, the rows that the draft head reads
-    /// (`TapRows`) into it: the lists that the pass built are dropped, so the next call builds them with the copies. The
-    /// taps only move rows; no value of the pass changes.
-    pub fn enable_taps(&mut self) -> Result<(), String> {
-        if self.taps.is_none() {
-            self.taps = Some(Dev::alloc(self.dev, Self::tap_bytes(self.max_rows))?);
-            self.forget_rings();
-        }
-        Ok(())
+    /// Open a pass with the region of the taps, so that no call allocates (engine-abi, the pass allocates nothing in a call).
+    /// A pass at 3 cycles then copies, for each block, the rows that the draft head reads (`TapRows`) into the region. The
+    /// taps only move rows; no value of the pass changes. `use_taps` turns the copies off and on.
+    pub fn open_with_taps(
+        dev: &'d CudaDevice,
+        weights: &'d DeviceWeights<'d>,
+        config: &PassConfig,
+    ) -> Result<Self, String> {
+        let mut pass = Self::open(dev, weights, config)?;
+        pass.taps = Some(Dev::alloc(dev, tap_bytes(pass.max_rows))?);
+        pass.taps_on = true;
+        Ok(pass)
     }
 
-    /// The bytes of the region of the taps for blocks of `max_rows` rows: 4 planes of rows, then the row factors.
-    fn tap_bytes(max_rows: usize) -> usize {
-        4 * max_rows * HIDDEN * 4 + max_rows * 4
+    /// Turn the copies of the taps off or on. It needs the region of `open_with_taps`. The lists of the other setting stay
+    /// built, because the setting is part of the shape of a list.
+    pub fn use_taps(&mut self, on: bool) -> Result<(), String> {
+        if on && self.taps.is_none() {
+            return Err("the pass has no region for taps. Open it with Pass::open_with_taps".to_owned());
+        }
+        self.taps_on = on;
+        Ok(())
     }
 
     /// The device address of the tap `plane` (0 to 2 the visits, 3 the output row) of a block of `rows` rows, and of the
@@ -863,7 +873,7 @@ impl<'d> Pass<'d> {
         let region = self
             .taps
             .as_ref()
-            .ok_or("the taps are not enabled. Call enable_taps before the pass")?;
+            .ok_or("the taps are not enabled. Open the pass with Pass::open_with_taps")?;
         if rows == 0 || rows > self.max_rows {
             return Err(format!(
                 "the taps hold 1 to {} rows, and the call names {rows}",

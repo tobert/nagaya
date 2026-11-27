@@ -34,6 +34,7 @@ pub fn config(dir: &Path, slots: &[usize], cache: CacheFormat) -> Config {
         slots: slots.to_vec(),
         max_block: spec::DEFAULT_MAX_BLOCK,
         extra_runs: spec::DEFAULT_EXTRA_RUNS,
+        taps: false,
         cache,
     }
 }
