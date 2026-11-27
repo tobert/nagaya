@@ -2924,14 +2924,21 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
         3, and the engine identity holds the cache format.
     - **`OP_OUT_MIX`** (45, `kernels/ops_out_mix.cuh`, `src/outmix.rs`). It is the output matmul `wo`
       (K of 3,072, 2,304 columns), its short convolution, the residual and the mix of the MLP input.
-      - Items: 576, which are 144 tiles of 16 columns times 4 K slices of 768. The item that merges a tile runs the
-        epilogue of its 16 channels over all rows: the convolution `attn_conv` with its state, then the residual.
+      - Items: 576, which are 144 tiles of 16 columns times 4 K slices of 768. From 2 rows up, `ceil(rows / 2)`
+        finisher items follow them (`OUT_MIX_FINISH_ROWS`): 584 items at 16 rows, 832 at 512. Any other count traps.
+        The item that merges a tile runs the epilogue of its 16 channels over all rows: the convolution `attn_conv`
+        with its state, then the residual.
       - The residual: `r = x + conv` with `FLAG_ACCUMULATE`. On the first layer of a block, `r = conv`, and `x` is a
         plane of the stack.
       - The convolution: taps `[c][4]` with tap 3 on the current row, and the divisor `sqrt(5)`. The state after the
         block holds the last 3 raw rows.
-      - The finisher: the last of the 144 tiles runs it for each row, in one block. It writes `rf(r)`, the mix `e`
-        with `mlp_query`, and `rf(e)`. With `FLAG_NORM` it also writes `h_e = w * (e * rf)`, the order of
+      - The finisher (Proposed, 2026-11-27): at 1 row, the last of the 144 tiles runs it. From 2 rows up, finisher
+        item `576 + j` runs rows `2j` and `2j + 1`, after it reads 144 in the tile counter (word 144 of the scratch;
+        an acquire poll that traps at the spin limit). Each tile item adds 1 to word 144 after a barrier; each
+        finisher item adds 1 to word 145, and the last one sets word 144 back to 0. The wait depends only on the 576
+        matmul items, which never wait, and items are claimed in rising order, so it cannot deadlock. A failed launch
+        leaves words 144 and 145 dirty: zero the scratch again before the next launch. The finisher writes `rf(r)`,
+        the mix `e` with `mlp_query`, and `rf(e)`. With `FLAG_NORM` it also writes `h_e = w * (e * rf)`, the order of
         `ops::rms_norm`. The op does not quantize `h_e`. A quantizer task follows it in the pass.
       - The descriptor: `a` the attention output, `b` the repacked `wo`, `c` the row `r`, `d` the task table. `e` is
         the row `x` (0 with no `FLAG_ACCUMULATE`), and `f` the scratch. The field `layer` holds the depth of the
@@ -2939,14 +2946,18 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
       - The table: slots 0 to 4 hold the stack, with `r` at the slot `depth - 1`. Slots 5 to 9 hold their row
         factors. Slot 10 is the convolution weight, and slot 11 its state. Slot 12 is the norm weight, slot 13 the
         outputs `e`, `h_e` and `rf(e)`, slot 14 the query. Slot 15 must be 0.
-      - The scratch, in floats: 160 counters, then the partials (`576 * rows * 16`), then the raw sums
-        (`2304 * rows`).
+      - The scratch, in floats: 160 counters (144 tiles, then words 144 and 145 of the finisher, and in the profile
+        build only, the spin of the finisher in words 146 to 148), then the partials (`576 * rows * 16`), then the
+        raw sums (`2304 * rows`).
       - Accuracy, on real weights of layers 0, 5, 6, 11 and 18: the matmul is within 3.7e-8 of the sum of the
         absolute terms. The bound is 1e-7. At 1 row, `r` and `h_e` equal the host forms of the device sums bit for bit.
       - Bits: equal at 1, 7, 16, 17, 100 and 512 rows and at G of 48, 24, 7 and 1. Two blocks that carry the state
-        give the bits of one block.
-      - Speed: 57.9 us at 1 row, 97% of 252 GB/s, against the budget of 61 us. 16 rows take 151 us, and 512 rows take
-        4.3 ms, because the finisher runs the rows one after another in one block.
+        give the bits of one block. The finisher items give the bits of the serial finisher at rows 1 to 512 and at
+        each G; they move no bits.
+      - Speed: 57.9 us at 1 row, 97% of 252 GB/s, against the budget of 61 us. In the pass (release, profile cubin):
+        70 us at 1 row, 87 us at 16 rows (146 with the serial finisher), and 1.53 ms at 512 rows (4.01 ms). A block
+        of 512 rows takes 615 ms (735). Finisher items of 2, 4 and 8 rows give 1.52, 1.52 and 1.54 ms at 512 rows,
+        and 75, 85 and 105 us at 16 rows. The rest at 512 rows is the tile phase (about 1.4 ms, an estimate).
     - **The engine identity** gains these members:
       - the cut of the router and the rules of its plan, and the cut of `OP_PROJ`;
       - the repack of `w13`, with the epilogue and the finisher of the up op;
@@ -3060,7 +3071,7 @@ The engine kind `mk-inkling2-sm121` serves Inkling 2 Mini and the variable-loop 
       | `GATE_UP` (73) | forget, gain, tanh, blend | 108 | 1.77 | 7.4 |
       | `PROJ` (44) | norm, q, rel, sink, gate, k, v | 1,614 | 39.7 | 165 |
       | `ATTN` (80, wave C) | attention, sink, bias, merge | heads x chunks | cache | cache |
-      | `OUT_MIX` (45) | wo, conv, `r`, MLP mix | 576 | 14.16 | 61 |
+      | `OUT_MIX` (45) | wo, conv, `r`, MLP mix | 576, + `ceil(rows / 2)` | 14.16 | 61 |
       | 4th gate (72, 73) | gate, `h_e` and its quantization | 24, 36 | 1.18 | 5 |
       | `ROUTE` (55) | router, sigmoid, top 8, plan, pairs | 24 | 0.59 | 3.5 |
       | `UP` (53, 54) | `w13`, SiLU, softcaps, route weight | 288 | 23.9, 43.8 | 100, 182 |

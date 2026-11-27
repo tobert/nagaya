@@ -1142,8 +1142,8 @@ tuning pass takes it.
 - **The digest at each open.** The digest of the checkpoint takes 15.9 s.
 - **The tail of 8% in the head.**
 - **The floor of 80% for the NVFP4 `UP` op.** The op runs at 82 to 88%, so the gate can flake.
-- **The finisher of `OP_OUT_MIX` at many rows.** One block runs the rows one after another: 151 us at 16 rows and
-  4.3 ms at 512 rows.
+- **The tile phase of `OP_OUT_MIX` at many rows.** Since the finisher items (2026-11-27), `OP_OUT_MIX` takes 1.53 ms
+  at 512 rows (was 4.0); about 1.4 ms of it is the matmul, the merge of the 4 slices and the convolution.
 - **The block form of the matmul.** `OP_PROJ` takes 3.03 ms at 512 rows, against the design's 0.7 ms.
   - The copies and the MMAs do not overlap well. The causes: one sync for each stage, and the split and the A loads
     in the chain of each warp.

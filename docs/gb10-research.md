@@ -110,6 +110,10 @@ These floors are estimates from counts, with no attention and no epilogue. A fai
 - Gain: about 185 ms of 733 ms.
 - Bits: no change. Each row keeps its sums.
 - First measure: the time of the finisher alone at 512 rows, from the profile clocks of its block.
+- Done (2026-11-27): finisher items of 2 rows each, after the 576 matmul items. `OUT_MIX` at 512 rows takes 1.53 ms
+  (was 4.01), and a block of 512 rows takes 615 ms (was 735): 832 tokens each second. 1 row is unchanged; no bits
+  moved. The tile phase (about 1.4 ms at 512 rows) is the next part: the matmul, the merge of the 4 slices and the
+  convolution.
 
 ### P2. The experts of a block read each weight tile many times
 
