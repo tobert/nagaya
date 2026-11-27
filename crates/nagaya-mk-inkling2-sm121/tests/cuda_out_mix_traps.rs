@@ -24,7 +24,7 @@ const VARIABLE: &str = "NAGAYA_OUT_MIX_VARIANT";
 const TEST: &str = "a_task_that_the_op_cannot_run_traps_and_a_good_task_runs";
 
 /// The variants: a name, and what it is expected to do.
-const VARIANTS: [(&str, bool); 12] = [
+const VARIANTS: [(&str, bool); 15] = [
     ("none", true),
     ("scratch", false),
     ("rows", false),
@@ -37,6 +37,9 @@ const VARIANTS: [(&str, bool); 12] = [
     ("no_query", false),
     ("no_norm_weight", false),
     ("align", false),
+    ("serial_finisher", true),
+    ("items_short", false),
+    ("items_long", false),
 ];
 
 /// The child: launch one task, and exit with 0 when the launch did what the variant expects.
@@ -110,6 +113,10 @@ fn child(variant: &str) {
     match variant {
         "scratch" => desc.scale_bytes -= 1,
         "rows" => desc.rows = 513,
+        // 16 rows spread the finisher over 4 items after the 576 of the matmul: only 576 and 580 are tasks.
+        "serial_finisher" => desc.items = 576,
+        "items_short" => desc.items = 579,
+        "items_long" => desc.items = 581,
         "depth_low" => desc.layer = 1,
         "depth_high" => desc.layer = 6,
         "flag" => desc.flags |= FLAG_SOFTCAP_30,

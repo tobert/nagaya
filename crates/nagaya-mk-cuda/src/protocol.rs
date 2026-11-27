@@ -335,6 +335,7 @@ pub const DENSE_CONSTANTS: &[(&str, usize)] = &[
     ("OUT_MIX_TABLE_NORM", OUT_MIX_TABLE_NORM),
     ("OUT_MIX_TABLE_OUT", OUT_MIX_TABLE_OUT),
     ("OUT_MIX_TABLE_QUERY", OUT_MIX_TABLE_QUERY),
+    ("OUT_MIX_FINISH_ROWS", OUT_MIX_FINISH_ROWS),
 ];
 
 /// The most rows of one `OP_MATMUL_BF16` task. The op loops over tiles of 16 rows.
@@ -381,6 +382,8 @@ pub const OUT_MIX_TABLE_NORM: usize = 12;
 pub const OUT_MIX_TABLE_OUT: usize = 13;
 /// The query of the mix of the MLP input (`f32`, 2304).
 pub const OUT_MIX_TABLE_QUERY: usize = 14;
+/// The rows that one finisher item of `OP_OUT_MIX` runs (the items after the 576 of the matmul).
+pub const OUT_MIX_FINISH_ROWS: usize = 4;
 
 define_u16_table! {
     FLAGS;

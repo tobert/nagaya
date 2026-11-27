@@ -192,7 +192,14 @@ impl<'d> Rig<'d> {
     }
 
     fn task(&self, rows: usize) -> Task {
-        let shape = OutMixShape::new(rows, self.case.planes + 1, self.case.accumulate, true).unwrap();
+        self.task_spread(rows, rows >= outmix::SPREAD_MIN_ROWS)
+    }
+
+    /// The task with the finisher in the item that arrives last (`spread` false) or in items after the matmul.
+    fn task_spread(&self, rows: usize, spread: bool) -> Task {
+        let shape = OutMixShape::new(rows, self.case.planes + 1, self.case.accumulate, true)
+            .unwrap()
+            .with_spread(spread);
         let desc = shape
             .descriptor(&OutMixBuffers {
                 attn: self.attn,
@@ -217,6 +224,12 @@ impl<'d> Rig<'d> {
 
     /// One launch of a block of `rows` rows, with the state and the rows of `inputs`.
     fn run(&mut self, inputs: &Inputs, rows: usize, grid: u32) -> Out {
+        let spread = rows >= outmix::SPREAD_MIN_ROWS;
+        self.run_spread(inputs, rows, grid, spread)
+    }
+
+    /// `run` with the choice of the form of the finisher.
+    fn run_spread(&mut self, inputs: &Inputs, rows: usize, grid: u32, spread: bool) -> Out {
         let dev = self.dev;
         unsafe {
             dev.copy_htod(self.state, inputs.state.as_ptr().cast(), inputs.state.len() * 4)
@@ -228,7 +241,7 @@ impl<'d> Rig<'d> {
         }
         dev.memset_zero(self.r, self.max_rows * WIDTH * 4).unwrap();
         dev.memset_zero(self.out, out_floats(self.max_rows) * 4).unwrap();
-        let task = self.task(rows);
+        let task = self.task_spread(rows, spread);
         self.ring.set(&[task]);
         run_with_watchdog(&self.ring, grid, 288, self.shared);
         assert!(self.ring.read_scoreboard().is_ok());
@@ -498,6 +511,69 @@ fn the_bits_do_not_depend_on_the_rows_or_the_grid() {
     }
 }
 
+#[test]
+fn the_spread_finisher_has_the_bits_of_the_serial_finisher() {
+    let Some(ck) = checkpoint("cuda_out_mix") else { return };
+    let dev = open();
+    for case in CASES {
+        let layer = load_layer(ck, case.layer);
+        let max = 512;
+        let inputs = make_inputs(&case, max, 700 + case.layer as u64);
+        let mut rig = Rig::new(&dev, &layer, case, &inputs, max, false);
+        for rows in [1usize, 2, 3, 4, 5, 7, 16, 17, 100, 512] {
+            // The serial form is the finisher of the code before the spread: the item that arrives last runs each row.
+            let serial = rig.run_spread(&inputs, rows, 48, false);
+            for grid in GRIDS {
+                let spread = rig.run_spread(&inputs, rows, grid, true);
+                let label = format!("layer {}, {rows} rows, grid {grid}", case.layer);
+                assert_eq!(bits(&spread.r), bits(&serial.r), "{label}: r");
+                assert_eq!(bits(&spread.e), bits(&serial.e), "{label}: e");
+                assert_eq!(bits(&spread.h), bits(&serial.h), "{label}: h_e");
+                assert_eq!(bits(&spread.rf), bits(&serial.rf), "{label}: rf");
+                assert_eq!(bits(&spread.state), bits(&serial.state), "{label}: state");
+            }
+        }
+        eprintln!(
+            "cuda_out_mix layer {}: the spread finisher equals the serial one, bit for bit, at 10 row counts and grids {GRIDS:?}",
+            case.layer
+        );
+        rig.free();
+    }
+}
+
+#[test]
+fn a_task_that_runs_twice_leaves_its_counters_at_zero() {
+    // The counters of the tiles and of the finisher items start at 0 and the op sets them back. Two tasks in one ring
+    // reuse them: the second would trap or hang if the first left a count.
+    let Some(ck) = checkpoint("cuda_out_mix") else { return };
+    let dev = open();
+    let case = CASES[1];
+    let layer = load_layer(ck, case.layer);
+    let rows = 37;
+    let inputs = make_inputs(&case, rows, 900);
+    let mut rig = Rig::new(&dev, &layer, case, &inputs, rows, false);
+    let once = rig.run(&inputs, rows, 48);
+    let list = [rig.task(rows), rig.task(rows)];
+    unsafe {
+        dev.copy_htod(rig.state, inputs.state.as_ptr().cast(), inputs.state.len() * 4)
+            .unwrap();
+    }
+    rig.ring.set(&list);
+    run_with_watchdog(&rig.ring, 48, 288, rig.shared);
+    assert!(rig.ring.read_scoreboard().is_ok());
+    let counters: Vec<u32> = download(&dev, rig.ring.scratch(), outmix::COUNTERS);
+    assert!(
+        counters.iter().all(|c| *c == 0),
+        "a counter of the task is not 0 after two runs: {counters:?}"
+    );
+    // The second task reads the state that the first left, so its rows differ from the first run's. The check is the
+    // counters, and that both tasks ended with finite rows.
+    let out: Vec<f32> = download(&dev, rig.out, out_floats(rows));
+    assert!(out.iter().all(|v| v.is_finite()));
+    assert!(once.r.iter().all(|v| v.is_finite()));
+    rig.free();
+}
+
 /// The rows `from..to` of a block, with the conv state `state`.
 fn slice_inputs(all: &Inputs, from: usize, to: usize, state: Vec<f32>) -> Inputs {
     let cut = |v: &[f32], width: usize| v[from * width..to * width].to_vec();
@@ -593,6 +669,22 @@ fn the_speed_of_the_task() {
             let inputs = make_inputs(&case, rows, 400);
             let mut rig = Rig::new(&dev, &layer, case, &inputs, rows, true);
             let tasks = 6;
+            // The serial finisher (the form before the spread) for the comparison, then the form that `task` gives.
+            if rows >= 2 {
+                let list: Vec<Task> = (0..tasks).map(|_| rig.task_spread(rows, false)).collect();
+                rig.ring.set(&list);
+                run_with_watchdog(&rig.ring, blocks as u32, 288, rig.shared);
+                let profile = rig.ring.read_profile().unwrap();
+                let spans: Vec<u64> = (1..tasks)
+                    .map(|t| task_ns(&profile, blocks, rig.ring.ring_index(t)))
+                    .collect();
+                eprintln!(
+                    "cuda_out_mix speed: layer {} {rows:>3} rows, serial finisher: {:>8.1} us (best {:>8.1} us)",
+                    case.layer,
+                    median(spans.clone()) as f64 / 1e3,
+                    *spans.iter().min().unwrap() as f64 / 1e3
+                );
+            }
             let list: Vec<Task> = (0..tasks).map(|_| rig.task(rows)).collect();
             rig.ring.set(&list);
             run_with_watchdog(&rig.ring, blocks as u32, 288, rig.shared);
