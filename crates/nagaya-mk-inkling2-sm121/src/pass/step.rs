@@ -79,7 +79,7 @@ fn kind_name(kind: TaskKind) -> &'static str {
 }
 
 /// The bytes of weights that a task reads for a call of 1 row (8 experts, each read once).
-fn weight_bytes(kind: TaskKind, plan: &RunPlan) -> usize {
+fn weight_bytes(kind: TaskKind, plan: &RunPlan, rows: usize) -> usize {
     let nvfp4 = super::weights::expert_format(plan.layer) == nagaya_mk_cuda::experts::ExpertFormat::Nvfp4;
     // The bytes of one expert of 2,304 rows and `k` values: the codes and the scales.
     let expert = |k: usize| {
@@ -94,6 +94,8 @@ fn weight_bytes(kind: TaskKind, plan: &RunPlan) -> usize {
         TaskKind::GateDownE => 64 * 2 * HIDDEN * 2,
         TaskKind::GateUpE => 2 * HIDDEN * 64 * 2,
         TaskKind::Proj => super::desc::proj_layout(plan.full).rows() * HIDDEN * 2,
+        // The split form of a big block has its matmul in `OutMatmul`: this task reads no weights.
+        TaskKind::OutMix if rows >= nagaya_mk_cuda::outmix::SPLIT_MIN_ROWS => 0,
         TaskKind::OutMix => HIDDEN * 3072 * 2,
         TaskKind::Route => 128 * HIDDEN * 2,
         TaskKind::Up => 8 * expert(HIDDEN),
@@ -625,15 +627,16 @@ impl<'d> Pass<'d> {
                 },
             };
             let tasks = run_tasks(plan, &shape, &env, &mut tables)?;
-            // A block of 33 rows or more adds the matmul task of OUT_MIX, which a plan does not list.
-            debug_assert_eq!(
-                tasks
-                    .iter()
-                    .map(|(k, _)| *k)
-                    .filter(|k| *k != TaskKind::OutMatmul)
-                    .collect::<Vec<TaskKind>>(),
-                plan.task_kinds()
-            );
+            // The order of the list orders the tasks (a task waits on the tasks before it), so a list that differs from the
+            // plan's, in the place of the matmul task of OUT_MIX too, is an error and not a wrong result.
+            let kinds = tasks.iter().map(|(k, _)| *k).collect::<Vec<TaskKind>>();
+            if kinds != plan.task_kinds_for(rows) {
+                return Err(format!(
+                    "the tasks built for run {} ({rows} rows) are {kinds:?}, and the plan lists {:?}. Fix `run_tasks`",
+                    plan.run,
+                    plan.task_kinds_for(rows)
+                ));
+            }
             for (kind, task) in tasks {
                 if matches!(kind, TaskKind::Proj | TaskKind::Attn) {
                     patches.push(Patch {
@@ -646,7 +649,7 @@ impl<'d> Pass<'d> {
                     name: kind_name(kind),
                     run: Some(plan.run),
                     layer: Some(plan.layer),
-                    weight_bytes: weight_bytes(kind, plan),
+                    weight_bytes: weight_bytes(kind, plan, rows),
                 });
                 list.push(task);
             }

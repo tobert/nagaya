@@ -35,9 +35,10 @@ pub const SPREAD_MIN_ROWS: usize = 2;
 /// The finisher items after the 576 items of the matmul, for a task of `rows` rows that spreads the finisher: item
 /// `576 + j` runs the rows `j * FINISH_ROWS` up to `(j + 1) * FINISH_ROWS`.
 /// Proposed: a task of this many rows or more runs its matmul in an earlier block-form task (`FLAG_BLOCK_FORM` on both
-/// tasks, see `OutMixShape::split`). Measured on the GB10 (layer 5, release-equivalent cubins): the split form takes 106 us
-/// at 33 rows against 143 us for the fused op, and 103 us at 16 rows against 80 us. Fewer rows keep the fused op.
-pub const SPLIT_MIN_ROWS: usize = 33;
+/// tasks, see `OutMixShape::split`). Measured on the GB10 (layers 0 and 5, release): the split form takes 105 us from 17 to
+/// 32 rows. The fused op takes 101 to 104 us at 17 to 24 rows (it wins by 1 to 3 us), 120 us at 28 and 32 rows, 143 us at 33
+/// rows, and 79 us at 16 rows. 25 to 27 rows were not measured. Fewer rows keep the fused op.
+pub const SPLIT_MIN_ROWS: usize = 28;
 
 /// The floats from the start of the scratch to the raw sums `[row][2304]` that the split form shares between its two
 /// tasks (the place of the raw sums in the fused op): the counters and the partials of the 576 items.

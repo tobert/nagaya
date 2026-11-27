@@ -371,7 +371,7 @@ pub fn run_tasks(
     {
         let (scratch, region) = env.region(ScratchKind::OutMix);
         let depth = plan.depth_mlp();
-        // A block of 33 rows or more splits the matmul of `wo` into its own task in the block form: the raw sums keep the
+        // A block of `outmix::SPLIT_MIN_ROWS` rows or more splits the matmul of `wo` into its own task in the block form: the raw sums keep the
         // bits of the fused op, and the block form reads `x` once for 8 tiles (`outmix::SPLIT_MIN_ROWS`).
         let om = OutMixShape::new(rows, depth, !plan.first_of_block, !plan.messages)?
             .with_split(rows >= outmix::SPLIT_MIN_ROWS);
@@ -406,14 +406,14 @@ pub fn run_tasks(
         // The raw sums of the split form sit in the scratch of this op, `[row][2304]`. The matmul task writes them and the
         // task of the convolution reads them. Both name the range, and the task of the convolution also writes the whole
         // region, so a later run that reuses the region waits for both.
-        let raw = (scratch + 4 * outmix::raw_offset_floats(rows) as u64, rows * HIDDEN * 4);
-        let mut reads = vec![if om.split { raw } else { env.buf(Buf::AttnOut) }];
+        // The range is the output of the matmul descriptor: one source for the address and the size.
+        let mut reads = vec![env.buf(Buf::AttnOut)];
         if om.split {
-            let matmul = add_reads(
-                Task::with_items(om.matmul_descriptor(&buffers)?),
-                &[env.buf(Buf::AttnOut)],
-            );
+            let m = om.matmul_descriptor(&buffers)?;
+            let raw = (m.c, rows * m.n as usize * 4);
+            let matmul = add_reads(Task::with_items(m), &[env.buf(Buf::AttnOut)]);
             out.push((TaskKind::OutMatmul, add_writes(matmul, &[raw])));
+            reads = vec![raw];
         }
         for b in &plan.stack_mlp[..depth - 1] {
             reads.push(env.buf(*b));
@@ -637,13 +637,5 @@ pub fn run_tasks(
             ),
         ));
     }
-    // The matmul task of a big block's OUT_MIX is not in the list of the plan (a plan does not know its rows).
-    debug_assert_eq!(
-        out.iter()
-            .map(|(k, _)| *k)
-            .filter(|k| *k != TaskKind::OutMatmul)
-            .collect::<Vec<_>>(),
-        plan.task_kinds()
-    );
     Ok(out)
 }

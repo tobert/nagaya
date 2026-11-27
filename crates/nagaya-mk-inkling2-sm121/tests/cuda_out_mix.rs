@@ -684,6 +684,69 @@ fn a_task_that_follows_another_reuses_the_counters_and_keeps_the_bits() {
 }
 
 #[test]
+fn the_split_form_of_a_task_that_follows_another_reuses_the_counters_and_keeps_the_bits() {
+    // The split form has the counters of the finisher items (words 144 and 145) and the raw sums of its matmul task.
+    // A ring of two split tasks of 512 and 37 rows, with no zeroing between them, must give the second task the bits of
+    // the same task launched alone after a zeroed scratch, with the conv state that the first left. The second task reads
+    // the rows 100 to 136 of the buffers, which are not a prefix of the first's, so a task that read stale raw sums or
+    // counters would show. The counters are 0 after, at every grid.
+    let Some(ck) = checkpoint("cuda_out_mix") else { return };
+    let dev = open();
+    let case = CASES[1];
+    let layer = load_layer(ck, case.layer);
+    let (first, second, row0) = (512usize, 37usize, 100usize);
+    let inputs = make_inputs(&case, first, 1500);
+    let mut rig = Rig::new(&dev, &layer, case, &inputs, first, false);
+    // The second task of the split form reads `attn` and `x` from the row `row0`.
+    let second_tasks = |rig: &Rig| -> [Task; 2] {
+        let mut tasks = rig.tasks_split(second);
+        let shift = |t: &mut Task, bytes_attn: u64, bytes_x: u64, matmul: bool| {
+            if matmul {
+                t.desc.a += bytes_attn;
+            } else if t.desc.e != 0 {
+                t.desc.e += bytes_x;
+            }
+        };
+        let (a, b) = tasks.split_at_mut(1);
+        shift(&mut a[0], (row0 * K * 4) as u64, 0, true);
+        shift(&mut b[0], 0, (row0 * WIDTH * 4) as u64, false);
+        tasks
+    };
+    for grid in GRIDS {
+        // Alone: two launches of one split task each, the scratch zeroed before each.
+        rig.prepare(&inputs, first);
+        rig.ring.zero_device().unwrap();
+        rig.ring.set(&rig.tasks_split(first));
+        run_with_watchdog(&rig.ring, grid, 288, rig.shared);
+        rig.ring.zero_device().unwrap();
+        rig.ring.set(&second_tasks(&rig));
+        run_with_watchdog(&rig.ring, grid, 288, rig.shared);
+        let alone = rig.collect(second);
+        // Together: one ring of four tasks.
+        rig.prepare(&inputs, first);
+        rig.ring.zero_device().unwrap();
+        let [m1, r1] = rig.tasks_split(first);
+        let [m2, r2] = second_tasks(&rig);
+        rig.ring.set(&[m1, r1, m2, r2]);
+        run_with_watchdog(&rig.ring, grid, 288, rig.shared);
+        assert!(rig.ring.read_scoreboard().is_ok());
+        let together = rig.collect(second);
+        assert_same(
+            &format!("split {first} then {second} rows, grid {grid}"),
+            &together,
+            &alone,
+        );
+        let counters: Vec<u32> = download(&dev, rig.ring.scratch(), outmix::COUNTERS);
+        assert!(
+            counters.iter().all(|c| *c == 0),
+            "grid {grid}: a counter is not 0 after the split tasks: {counters:?}"
+        );
+    }
+    eprintln!("cuda_out_mix: the second split task of a ring equals the task alone at grids {GRIDS:?}");
+    rig.free();
+}
+
+#[test]
 fn finisher_items_that_spin_while_other_tasks_run_keep_the_bits() {
     // One ring of two independent OUT_MIX tasks of two layers (their own buffers and scratch). A block that ends the
     // matmul items of the first task goes on to the second while other blocks run or spin on the finisher items of the
@@ -871,7 +934,7 @@ fn the_speed_of_the_task() {
     for case in [CASES[0], CASES[1]] {
         let layer = load_layer(ck, case.layer);
         let bytes = outmix::shape().packed_bytes();
-        for rows in [1usize, 2, 4, 8, 16, 33, 64, 65, 129, 512] {
+        for rows in [1usize, 8, 16, 17, 20, 24, 28, 32, 33, 64, 512] {
             let inputs = make_inputs(&case, rows, 400);
             let mut rig = Rig::new(&dev, &layer, case, &inputs, rows, true);
             let tasks = 6;

@@ -141,7 +141,7 @@ pub enum TaskKind {
     GateUp3,
     Proj,
     Attn,
-    /// The block-form matmul of `wo` before `OutMix`, in a block of 33 rows or more only (`run.rs`).
+    /// The block-form matmul of `wo` before `OutMix`, in a block of `outmix::SPLIT_MIN_ROWS` rows or more only (`run.rs`).
     OutMatmul,
     OutMix,
     GateDownE,
@@ -206,6 +206,20 @@ impl RunPlan {
             kinds.extend([GateDownE, GateUpE]);
         }
         kinds.extend([Quant, Route, Up, Down]);
+        kinds
+    }
+
+    /// The tasks of the run for a block of `rows` rows: `task_kinds` with the matmul task of `OP_OUT_MIX` before each
+    /// `OutMix` when the block splits it (`outmix::SPLIT_MIN_ROWS`). The order is what makes the matmul run first: the
+    /// graph orders a task after the tasks before it, so `run_tasks` must build exactly this list.
+    pub fn task_kinds_for(&self, rows: usize) -> Vec<TaskKind> {
+        let mut kinds = Vec::new();
+        for kind in self.task_kinds() {
+            if kind == TaskKind::OutMix && rows >= nagaya_mk_cuda::outmix::SPLIT_MIN_ROWS {
+                kinds.push(TaskKind::OutMatmul);
+            }
+            kinds.push(kind);
+        }
         kinds
     }
 
@@ -651,6 +665,24 @@ mod tests {
         assert_eq!(task_count(5), 770);
         let message_run = runs(2).into_iter().find(|r| r.messages).unwrap();
         assert_eq!(message_run.task_kinds().len(), 12);
+    }
+
+    #[test]
+    fn a_block_that_splits_out_mix_lists_its_matmul_task_just_before_it() {
+        use nagaya_mk_cuda::outmix::SPLIT_MIN_ROWS;
+        for plan in runs(2) {
+            let small = plan.task_kinds_for(SPLIT_MIN_ROWS - 1);
+            assert_eq!(small, plan.task_kinds());
+            let big = plan.task_kinds_for(SPLIT_MIN_ROWS);
+            assert_eq!(big.len(), small.len() + 1);
+            let at = big.iter().position(|k| *k == TaskKind::OutMix).unwrap();
+            assert_eq!(
+                big[at - 1],
+                TaskKind::OutMatmul,
+                "the matmul task is the one before OUT_MIX"
+            );
+            assert_eq!(big.iter().filter(|k| **k == TaskKind::OutMatmul).count(), 1);
+        }
     }
 
     #[test]

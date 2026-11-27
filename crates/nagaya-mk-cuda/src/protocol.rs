@@ -404,7 +404,9 @@ define_u16_table! {
     FLAG_FULL_LAYER = 1 << 9;
     // `OP_MATMUL_BF16` and `OP_PROJ` in the block form, for a prefill (`kernels/matmul_block.cuh`): an item is up to 128
     // columns and 32 rows with all of K. The bits of each row equal those of the decode form. `items` is the count
-    // of groups of tiles times the count of blocks of 32 rows.
+    // of groups of tiles times the count of blocks of 32 rows. On `OP_OUT_MIX` the flag marks the split form instead:
+    // the matmul of `wo` ran in an earlier block-form task, and this task has the convolution and the finisher items
+    // (`kernels/ops_out_mix.cuh`).
     FLAG_BLOCK_FORM = 1 << 10;
     // The cache of the attention holds bf16 values (2 bytes each), rounded to nearest even from the f32 value, with a unit
     // scale. A cache with `FLAG_F32` holds f32 values, and a cache with neither flag holds e4m3 values.

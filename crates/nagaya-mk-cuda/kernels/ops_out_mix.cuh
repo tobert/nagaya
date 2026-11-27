@@ -40,6 +40,11 @@
 // kt = 768, group_items = 4, items = 576, item_bytes = 16 * kt * 2, rows = 1 to 512, layer = the depth of the stack
 // (the rows of the blocks, then `r`: 2 to 5), p0 = the scale of a score, 2304^-0.5, scale_bytes = the floats of the
 // scratch that the host gives (checked), flags = FLAG_ACCUMULATE and FLAG_NORM, in any mix.
+// The split form (FLAG_BLOCK_FORM, a block of 28 rows or more): an earlier block-form OP_MATMUL_BF16 task wrote the raw
+// sums `[row][2304]` to the scratch, at `f + 4 * (160 + 576 * rows * 16)` bytes. This task then has no matmul: a = that
+// address (checked), b = 0, item_bytes = 0, items = 144 + ceil(rows / MK_OUT_MIX_FINISH_ROWS). Item `j` below 144
+// does the convolution, the residual and the state of the tile `j`, and the finisher items follow as above. The
+// task has no weights to prefetch, and the other fields are those of the fused form.
 // The scratch, in floats: 144 counters of the tiles, the counter of the tiles that are done (word 144, used with
 // finisher items) and the counter of the finisher items that are done (word 145), padding to 160, the partials
 // (`576 * rows * 16`), the raw sums (`2304 * rows`). The counters start at 0, and the merger sets each back to 0 (with
