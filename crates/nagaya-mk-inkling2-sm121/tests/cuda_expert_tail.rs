@@ -86,23 +86,7 @@ fn where_the_time_of_a_block_of_512_rows_goes() {
         skew.push(pass.pairs_of_last_run().unwrap());
     }
     for (i, pairs) in skew.iter().enumerate() {
-        let mut rows = [0u32; 128];
-        for (e, c) in pairs {
-            rows[*e as usize] += c;
-        }
-        let mut sorted = rows.to_vec();
-        sorted.sort_unstable_by(|a, b| b.cmp(a));
-        let pc = pairs.len();
-        let passes: u32 = pairs.iter().map(|(_, c)| c.div_ceil(8)).sum();
-        let b32: u32 = rows.iter().map(|c| c.div_ceil(32)).sum();
-        let b64: u32 = rows.iter().map(|c| c.div_ceil(64)).sum();
-        eprintln!(
-            "  route {i}: experts {}, pairs {pc}, passes {passes}, blocks32 {b32}, blocks64 {b64}, rows of the 10 largest {:?}, smallest nonzero {:?}, rows histogram (sorted) {:?}",
-            rows.iter().filter(|c| **c > 0).count(),
-            &sorted[..10],
-            sorted.iter().rev().find(|c| **c > 0),
-            sorted
-        );
+        print_route(i, pairs);
     }
 
     // The mean busy time of each block over the tasks of one kind: is a slow block the same block each time?
@@ -211,4 +195,58 @@ fn where_the_time_of_a_block_of_512_rows_goes() {
         wall
     );
     assert!(t_span > 0.0);
+}
+
+fn print_route(i: usize, pairs: &[(u32, u32)]) {
+    let mut rows = [0u32; 128];
+    for (e, c) in pairs {
+        rows[*e as usize] += c;
+    }
+    let mut sorted = rows.to_vec();
+    sorted.sort_unstable_by(|a, b| b.cmp(a));
+    let passes: u32 = pairs.iter().map(|(_, c)| c.div_ceil(8)).sum();
+    let b32: u32 = rows.iter().map(|c| c.div_ceil(32)).sum();
+    let b64: u32 = rows.iter().map(|c| c.div_ceil(64)).sum();
+    let live = rows.iter().filter(|c| **c > 0).count();
+    let top: u32 = sorted[..8].iter().sum();
+    eprintln!(
+        "  route {i}: experts {live}, pairs {}, passes {passes}, blocks32 {b32}, blocks64 {b64}, largest 10 {:?}, rows of the 8 largest {top} of {}, median of live {}",
+        pairs.len(),
+        &sorted[..10],
+        rows.iter().sum::<u32>(),
+        sorted[live / 2]
+    );
+}
+
+/// The skew of the route on text that does not repeat: 4,096 tokens of a PG-19 book in 8 blocks of 512 rows. The route
+/// printed is that of the last run of each block (a layer of the last cycle). `NAGAYA_HAYSTACK_DIR` is the folder of
+/// the `NNN.txt` files.
+#[test]
+fn the_skew_of_the_route_on_pg19_text() {
+    let Some(dir) = std::env::var_os("INKLING2_MODEL_DIR").map(PathBuf::from) else {
+        eprintln!("cuda_expert_tail: skipped, no INKLING2_MODEL_DIR");
+        return;
+    };
+    let Some(books) = std::env::var_os("NAGAYA_HAYSTACK_DIR").map(PathBuf::from) else {
+        eprintln!("cuda_expert_tail: skipped, no NAGAYA_HAYSTACK_DIR");
+        return;
+    };
+    let tok = nagaya_text_inkling2::Tokenizer::from_file(&dir.join("tokenizer.json")).unwrap_or_else(|e| panic!("{e}"));
+    let dev = common::gpu::open_profile();
+    let weights = DeviceWeights::load(&dev, &dir, |_| {}).unwrap_or_else(|e| panic!("{e}"));
+    let mut pass = Pass::with_profile(&dev, &weights, 4608, 512, 3, true).unwrap_or_else(|e| panic!("{e}"));
+    for book in ["000.txt", "001.txt"] {
+        let text = std::fs::read_to_string(books.join(book)).unwrap_or_else(|e| panic!("{book}: {e}"));
+        let ids = tok
+            .encode(&text.chars().skip(text.len() / 3).take(60_000).collect::<String>())
+            .unwrap_or_else(|e| panic!("{e}"));
+        assert!(ids.len() >= 4096, "{book}: only {} tokens", ids.len());
+        pass.slots[0].zero().unwrap();
+        for b in 0..8 {
+            pass.run(&ids[b * 512..(b + 1) * 512], 1)
+                .unwrap_or_else(|e| panic!("{e}"));
+            print_route(b, &pass.pairs_of_last_run().unwrap());
+        }
+        eprintln!("  (book {book}: above)");
+    }
 }

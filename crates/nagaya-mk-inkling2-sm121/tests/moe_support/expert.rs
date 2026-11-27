@@ -208,19 +208,27 @@ pub fn bits(v: &[f32]) -> Vec<u32> {
 }
 
 /// The expert index of a pair list (the words that ROUTE writes for the block form): for each of the 128 experts,
-/// `first_pair | pairs << 16`. The pairs of an expert must be contiguous, as ROUTE writes them.
+/// `first_pair | pairs << 16`; then the 128 experts in the order of their rows, the most rows first and the lower id first
+/// among equal counts. The pairs of an expert must be contiguous, as ROUTE writes them.
 pub fn expert_index(pairs: &[ExpertPair]) -> Vec<u32> {
-    let mut index = vec![0u32; 128];
+    let mut index = vec![0u32; 256];
+    let mut rows = [0u32; 128];
     let mut e = 0;
     while e < pairs.len() {
         let expert = pairs[e].expert as usize;
         let mut n = 0;
         while e + n < pairs.len() && pairs[e + n].expert as usize == expert {
+            rows[expert] += pairs[e + n].count;
             n += 1;
         }
         assert_eq!(index[expert], 0, "the pairs of expert {expert} are not contiguous");
         index[expert] = e as u32 | (n as u32) << 16;
         e += n;
+    }
+    let mut order: Vec<usize> = (0..128).collect();
+    order.sort_by_key(|e| (std::cmp::Reverse(rows[*e]), *e));
+    for (rank, e) in order.iter().enumerate() {
+        index[128 + rank] = *e as u32;
     }
     index
 }

@@ -66,7 +66,8 @@ constexpr uint32_t RT_OFF_TREE = RT_OFF_REGION;
 constexpr uint32_t RT_OFF_BITS = RT_OFF_REGION;
 constexpr uint32_t RT_OFF_COUNTS = RT_OFF_BITS + RT_MAX_TOKENS * 16;
 constexpr uint32_t RT_OFF_WSUM = RT_OFF_COUNTS + RT_EXPERTS * 4;
-constexpr uint32_t RT_SMEM_BYTES = RT_OFF_WSUM + RT_WARPS * 4;
+constexpr uint32_t RT_OFF_ROWS = RT_OFF_WSUM + 32;  // the rows of each expert, for the order of the experts
+constexpr uint32_t RT_SMEM_BYTES = RT_OFF_ROWS + RT_EXPERTS * 4;
 static_assert(RT_OFF_TREE + RT_WARPS * 2 * 32 * 4 * 4 <= RT_SMEM_BYTES, "the tree of the MMAs must fit the region");
 
 // The words of the scratch, as `route_scratch_words` in src/experts.rs has them. The counters come first: a counter for
@@ -261,6 +262,7 @@ __device__ __forceinline__ void route_plan(const MkTaskDescriptor& task, const M
         // The expert index: the pairs of an expert are contiguous (`first`), and `pairs` of them hold its rows. It goes to
         // shared memory here and to the table at the end, so that the pointer is not live across the fill of the pairs.
         reinterpret_cast<uint32_t*>(mk_smem + RT_OFF_COUNTS)[tid] = first | (pairs << 16);
+        reinterpret_cast<uint32_t*>(mk_smem + RT_OFF_ROWS)[tid] = count;
     }
     uint32_t live = 0;
     for (uint32_t w = 0; w < RT_WARPS; ++w) {
@@ -310,6 +312,18 @@ __device__ __forceinline__ void route_plan(const MkTaskDescriptor& task, const M
         __ballot_sync(0xFFFFFFFFu, has_pairs);
     }
     worker_sync();
+    // The order of the experts: the most rows first, and the lower id first among equal counts. It is the order of the items
+    // of the block form of the expert ops (the long items start first). The words 128 to 255 of the index.
+    if (table->ptr[ROUTE_TABLE_INDEX] != 0 && tid < RT_EXPERTS) {
+        const uint32_t* rows_of = reinterpret_cast<const uint32_t*>(mk_smem + RT_OFF_ROWS);
+        const uint32_t mine = rows_of[tid];
+        uint32_t rank = 0;
+        for (uint32_t f = 0; f < RT_EXPERTS; ++f) {
+            const uint32_t other = rows_of[f];
+            rank += (other > mine || (other == mine && f < tid)) ? 1u : 0u;
+        }
+        __stcg(reinterpret_cast<uint32_t*>(table->ptr[ROUTE_TABLE_INDEX]) + RT_EXPERTS + rank, tid);
+    }
     if (tid == 0) {
         uint32_t experts = 0;
         for (uint32_t w = 0; w < RT_WARPS; ++w) {

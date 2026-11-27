@@ -72,7 +72,8 @@ pub fn pair_list_bytes(pairs: &[ExpertPair], capacity: usize) -> Result<Vec<u8>,
 pub const ROUTE_TABLE_BIAS: usize = 0;
 
 /// The slot of the pointer to the expert index in the table of `OP_ROUTE`: 128 `u32`, one for each expert, with
-/// `first_pair | pairs << 16`. A table with 0 here gets no index. The block form of the expert ops reads the same
+/// `first_pair | pairs << 16`, then 128 expert ids in the order of their rows (see `ROUTE_INDEX_WORDS`). A table with 0 here
+/// gets no index. The block form of the expert ops reads the same
 /// words through [`EXPERT_TABLE_INDEX`].
 pub const ROUTE_TABLE_INDEX: usize = 1;
 
@@ -128,8 +129,10 @@ pub fn route_scratch_words(rows: usize) -> usize {
     ROUTE_COUNTER_WORDS + rows * 128 + route_items(rows) * ROUTE_ROW_TILE * 16 + ROUTE_INDEX_WORDS
 }
 
-/// The words of the expert index at the end of the scratch of `OP_ROUTE` (one for each expert).
-pub const ROUTE_INDEX_WORDS: usize = 128;
+/// The words of the expert index at the end of the scratch of `OP_ROUTE`: one entry for each expert (`first_pair | pairs << 16`),
+/// then the experts in the order of their rows, the most rows first (ties: the lower id first). The block form of the expert
+/// ops gives its items in that order.
+pub const ROUTE_INDEX_WORDS: usize = 256;
 
 /// The word of the expert index in the scratch of `OP_ROUTE` for `rows` rows: the last [`ROUTE_INDEX_WORDS`] words.
 pub fn route_index_word(rows: usize) -> usize {

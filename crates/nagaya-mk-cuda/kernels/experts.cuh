@@ -722,116 +722,371 @@ __device__ __forceinline__ void op_expert_mode(const MkTaskDescriptor& task, con
     }
 }
 
-// The L2 prefetch of the tile `tile` of the expert `expert` for the warp: the same slices as `experts_prefetch_next`.
-template <typename F>
-__device__ __forceinline__ void experts_prefetch_tile(const MkTaskDescriptor& task, uint32_t expert, uint32_t tile) {
-    if ((worker_id() & 31) != 0) {
-        return;
+#if defined(MK_EXPERT_RING) || defined(MK_EXPERT_BOTH)
+// ---------------------------------------------------------------------------------------------------------------
+// The block form with a ring of stages (FLAG_BLOCK_FORM, more than 16 rows).
+//
+// An item is `(rank, tile)`: its expert is `order[rank]`, where ROUTE sorts the experts by their rows, the most rows
+// first (the long items start first, so the last ones are short). An item takes one tile of 64 weight rows and all the
+// rows of its expert, in row blocks of `EB_ROWS` = 32 rows (4 chunks of 8: 4 independent chains for each warp). For each
+// block the weights of the tile stream once through a ring of stages in shared memory (`cp.async` pieces and an mbarrier,
+// as in `matmul_block.cuh`), and the 8 warps run the MMAs from shared memory. The rows of x (operand B) come from L2
+// into registers in the compute phase of a stage. An expert of more than 32 rows streams its tile again for each block
+// (from L2).
+//
+// The bits are those of the decode form. A column of the MMA is independent of the others, and each output keeps its
+// chain: the groups of its half in ascending order, then the first half plus the second half (see `expert_pass`).
+//
+// The shared memory: `part` (the second half of K for 4 tiles of 16 rows and `EB_NC` chunks; the flag of `expert_arrive`
+// sits in it at 4,096 and is used while `part` is dead), the barriers, the table of the 32 rows of the block, then the
+// stages. A stage is the record of one group for each of the 8 warps: the half 0 has the group `s` and the half 1 has the
+// group `split + s`, which does not exist in the last stage when the groups are odd (that half copies nothing and its
+// threads still arrive at the barrier, which counts threads). The finisher of the down op overlays all this after the item.
+//
+// The index table (`EXPERT_TABLE_INDEX`): 128 entries `first_pair | pairs << 16`, then 128 expert ids by rank. The header
+// of the pair list counts the experts that have a pair (`reserved[0]`): the items of a rank at or after it do nothing.
+// UP: one arrival for each (pair, tile) at the counter of the pair, `tiles` in all, and the last one quantizes the pair.
+// DOWN: one arrival for each (expert with pairs, tile) after all its row blocks, `reserved[0]` in all.
+// ---------------------------------------------------------------------------------------------------------------
+
+// The ring op is a function with its own registers (a call, not inlined) when EB_CALL is `__noinline__`.
+#ifdef MK_EB_NOINLINE
+#define EB_CALL __noinline__
+#else
+#define EB_CALL __forceinline__
+#endif
+constexpr uint32_t EB_NC = 4;
+constexpr uint32_t EB_ROWS = EB_NC * 8;
+constexpr uint32_t EB_PART_AT = 0;
+constexpr uint32_t EB_META_AT = 4 * EB_NC * 32 * 16;
+constexpr uint32_t EB_BARRIERS = EB_META_AT;
+constexpr uint32_t EB_XROW_AT = EB_META_AT + 64;
+constexpr uint32_t EB_YROW_AT = EB_XROW_AT + EB_ROWS * 4;
+constexpr uint32_t EB_WEIGHT_AT = EB_YROW_AT + EB_ROWS * 4;
+constexpr uint32_t EB_RING_AT = (EB_WEIGHT_AT + EB_ROWS * 4 + 127) & ~127u;
+
+// The stages of the ring. NVFP4 takes 4 (36,864 bytes); MXFP8 takes 3 for up and 4 for down (50,688 and 67,584 bytes).
+template <typename F, uint32_t MODE>
+struct EbRing {
+    static constexpr uint32_t STAGES = F::STEPS == 2 ? 4 : (MODE == EX_UP ? 3 : 4);
+    static constexpr uint32_t STAGE_BYTES = 8 * F::RECORD_BYTES;
+    static constexpr uint32_t SMEM_BYTES = EB_RING_AT + STAGES * STAGE_BYTES;
+};
+
+__device__ __forceinline__ uint32_t eb_ld_u32(uint32_t addr) {
+    uint32_t v;
+    asm volatile("ld.shared.u32 %0, [%1];" : "=r"(v) : "r"(addr) : "memory");
+    return v;
+}
+
+__device__ __forceinline__ uint32_t eb_smem() { return static_cast<uint32_t>(__cvta_generic_to_shared(mk_smem)); }
+
+// The expert of an item and its index entry. Each use reads them again, so that no loop keeps them in registers.
+__device__ __forceinline__ const uint32_t* eb_index(const MkTaskTable* table) {
+    return reinterpret_cast<const uint32_t*>(table->ptr[EXPERT_TABLE_INDEX]);
+}
+__device__ __forceinline__ uint32_t eb_expert(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
+    return __ldcg(eb_index(table) + 128 + item / (task.n / MK_EXPERT_TILE_ROWS));
+}
+__device__ __forceinline__ uint32_t eb_entry(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
+    return __ldcg(eb_index(table) + eb_expert(task, table, item));
+}
+// The rows of an expert: 16 for each pair, and the count of the last.
+__device__ __forceinline__ uint32_t eb_rows_of(const MkTaskDescriptor& task, uint32_t entry) {
+    const uint32_t pairs = entry >> 16;
+    return MK_EXPERT_MAX_ROWS * (pairs - 1) + PairRef{pair_at(task, (entry & 0xFFFFu) + pairs - 1)}.count();
+}
+
+// The table of the rows `rb0` to `rb0 + 31` of the expert: the row of x for the column, the slot, and the route weight.
+// It ends with a barrier.
+template <uint32_t MODE>
+__device__ __forceinline__ void eb_fill_rows(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item, uint32_t rb0) {
+    const uint32_t tid = worker_id();
+    if (tid < EB_ROWS) {
+        const uint32_t entry = eb_entry(task, table, item);
+        const uint32_t v = rb0 + tid;
+        uint32_t x = 0, y = 0;
+        float w = 0.0f;
+        if (v < eb_rows_of(task, entry)) {
+            const PairRef pair{pair_at(task, (entry & 0xFFFFu) + v / MK_EXPERT_MAX_ROWS)};
+            const uint32_t i = v % MK_EXPERT_MAX_ROWS;
+            if (pair.expert() != eb_expert(task, table, item) || i >= pair.count()) {
+                __trap();  // The pairs of an expert are contiguous, and a pair has 16 rows but the last.
+            }
+            x = MODE == EX_DOWN ? pair.y_row(i) : pair.x_row(i);
+            y = pair.y_row(i);
+            w = pair.weight(i);
+            if (x >= task.rows || y >= 8 * task.kt) {
+                __trap();  // The pair names a row that the buffer of quantized rows or the slots do not hold.
+            }
+        }
+        const uint32_t smem = eb_smem();
+        asm volatile("st.shared.u32 [%0], %1;" ::"r"(smem + EB_XROW_AT + tid * 4), "r"(x) : "memory");
+        asm volatile("st.shared.u32 [%0], %1;" ::"r"(smem + EB_YROW_AT + tid * 4), "r"(y) : "memory");
+        asm volatile("st.shared.f32 [%0], %1;" ::"r"(smem + EB_WEIGHT_AT + tid * 4), "f"(w) : "memory");
     }
+    worker_sync();
+}
+
+// The copy of the stage `stage_index` into its buffer: 8 records in pieces of 16 bytes. Every thread arrives at the barrier
+// of the buffer, also a thread that copied nothing.
+template <typename F, uint32_t MODE>
+__device__ __forceinline__ void eb_issue(uint32_t smem, const MkTaskDescriptor& task, const uint8_t* tile, uint32_t stage_index) {
+    constexpr uint32_t REC = F::RECORD_BYTES;
+    constexpr uint32_t PIECES = REC / 16;
+    const uint32_t groups = task.k / MK_EXPERT_K_GROUP;
+    const uint32_t split = (groups + 1) / 2;
+    const uint32_t buffer = stage_index % EbRing<F, MODE>::STAGES;
+    const uint32_t at = smem + EB_RING_AT + buffer * EbRing<F, MODE>::STAGE_BYTES;
+#pragma unroll 1
+    for (uint32_t p = worker_id(); p < 8 * PIECES; p += MK_CONSUMER_THREADS) {
+        const uint32_t rec = p / PIECES;  // the half and the tile of 16 rows: rec = half * 4 + mt
+        const uint32_t g = (rec >> 2) == 0 ? stage_index : split + stage_index;
+        if (g < groups) {
+            mb_copy16(at + p * 16, tile + (static_cast<uint64_t>(rec & 3) * groups + g) * REC + (p % PIECES) * 16);
+        }
+    }
+    mb_arrive_when_copied(smem + EB_BARRIERS + buffer * 8);
+}
+
+// The MMAs of one stage for this warp: its record in shared memory against the 4 chunks of the rows of the block.
+template <typename F, uint32_t MODE>
+__device__ __forceinline__ void eb_compute(
+    float (&acc)[EB_NC][4], uint32_t smem, const MkTaskDescriptor& task, uint32_t stage_index, uint32_t rows_in_block) {
+    constexpr uint32_t REC = F::RECORD_BYTES;
+    const uint32_t warp = worker_id() >> 5;
+    const uint32_t lane = worker_id() & 31;
+    const uint32_t t = lane & 3;
+    const uint32_t row = lane >> 2;
+    const uint32_t groups = task.k / MK_EXPERT_K_GROUP;
+    const uint32_t split = (groups + 1) / 2;
+    const uint32_t g = (warp >> 2) == 0 ? stage_index : split + stage_index;
+    if (g >= groups) {
+        return;  // The second half has one group less.
+    }
+    const uint32_t rec = smem + EB_RING_AT + (stage_index % EbRing<F, MODE>::STAGES) * EbRing<F, MODE>::STAGE_BYTES + warp * REC;
+    uint32_t scale_a[2] = {0, 0};
+    if (t < 2) {
+        const uint32_t at = rec + F::STEPS * 512 + (row * 2 + t) * (F::STEPS == 2 ? 8 : 4);
+        if constexpr (F::STEPS == 2) {
+            const uint2 s = mb_ld_v2(at);
+            scale_a[0] = s.x;
+            scale_a[1] = s.y;
+        } else {
+            scale_a[0] = eb_ld_u32(at);
+        }
+    }
+    const uint8_t* x_base = reinterpret_cast<const uint8_t*>(task.a);
+    const uint8_t* x_scale_base = x_base + static_cast<uint64_t>(task.rows) * F::code_bytes(task.k);
+    // The step `j` of the group is the outer loop and the chunk is the inner one: a chain (one chunk) still runs the steps
+    // in order, and only the A of one step is live (4 registers, not 16 for MXFP8). The scale and the codes of B are loaded
+    // again for each step, which L2 serves.
+#pragma unroll
+    for (uint32_t j = 0; j < F::STEPS; ++j) {
+        const uint4 a = mb_ld_v4(rec + j * 512 + lane * 16);
+#pragma unroll
+        for (uint32_t c = 0; c < EB_NC; ++c) {
+            const uint32_t column = c * 8 + row;
+            const bool valid = column < rows_in_block;
+            uint32_t b0 = 0, b1 = 0, scale_b = 0;
+            if (valid) {
+                const uint64_t x_row = eb_ld_u32(smem + EB_XROW_AT + column * 4);
+                const uint8_t* p = x_base + x_row * F::code_bytes(task.k) + (static_cast<uint64_t>(g) * F::STEPS + j) * 32 + 4 * t;
+                b0 = ld_cg_u32(p);
+                b1 = ld_cg_u32(p + 16);
+                if (t == 0) {
+                    const uint8_t* scales = x_scale_base + x_row * F::scale_bytes(task.k);
+                    if constexpr (F::STEPS == 2) {
+                        scale_b = ld_cg_u32(scales + static_cast<uint64_t>(g) * 8 + 4 * j);
+                    } else {
+                        scale_b = (ld_cg_u32(scales + static_cast<uint64_t>(g) * 4) >> (8 * j)) & 0xFFu;
+                    }
+                }
+            }
+            if constexpr (F::STEPS == 2) {
+                mma_nvfp4(acc[c], a, b0, b1, scale_a[j], scale_b);
+            } else {
+                mma_mxfp8(acc[c], a, b0, b1, (scale_a[0] >> (8 * j)) & 0xFFu, scale_b);
+            }
+        }
+    }
+}
+
+// The join of the two halves and the epilogue of the block: as the end of `expert_pass`, for each chunk.
+template <typename F, uint32_t MODE>
+__device__ __forceinline__ void eb_epilogue(
+    float (&acc)[EB_NC][4], uint32_t smem, const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t tile, uint32_t expert,
+    uint32_t rows_in_block) {
+    const uint32_t warp = worker_id() >> 5;
+    const uint32_t lane = worker_id() & 31;
+    const uint32_t mt = warp & 3;
+    float* part = reinterpret_cast<float*>(mk_smem + EB_PART_AT);
+    if ((warp >> 2) == 1) {
+#pragma unroll
+        for (uint32_t c = 0; c < EB_NC; ++c) {
+            *reinterpret_cast<float4*>(part + ((mt * EB_NC + c) * 32 + lane) * 4) = make_float4(acc[c][0], acc[c][1], acc[c][2], acc[c][3]);
+        }
+    }
+    worker_sync();
+    if ((warp >> 2) == 0) {
+        const uint32_t t = lane & 3;
+        const uint32_t col = tile * MK_EXPERT_TILE_ROWS + mt * 16 + (lane >> 2);
+        const float expert_scale = task.p0;
+        float* y = reinterpret_cast<float*>(task.c);
+        const uint8_t* x_base = reinterpret_cast<const uint8_t*>(task.a);
+        float w_amax = 0.0f;
+        float inverse_row_scale = 0.0f;
+        if constexpr (F::STEPS == 2) {
+            w_amax = reinterpret_cast<const float*>(table->ptr[MK_EXPERT_TABLE_AMAX])[expert];
+            inverse_row_scale = ex_reciprocal(1536.0f * task.p1);
+        }
+        // The value of a result for the column `token` of the block: the total, the expert scale, and for NVFP4 the row scale.
+        auto scaled = [&](float total, uint32_t token) {
+            float value = total * expert_scale;
+            if constexpr (F::STEPS == 2) {
+                const float x_amax = __ldcg(
+                    reinterpret_cast<const float*>(x_base + static_cast<uint64_t>(task.rows) * (F::code_bytes(task.k) + F::scale_bytes(task.k))) +
+                    eb_ld_u32(smem + EB_XROW_AT + token * 4));
+                value = value * ((x_amax * w_amax) * inverse_row_scale);
+            }
+            return value;
+        };
+        // The totals of the 4 chunks go back to `part` (the same words that held the second half: only this thread reads them),
+        // so that the 16 accumulators are dead before the SwiGLU. A float goes to shared memory and back with the same bits.
+#pragma unroll
+        for (uint32_t c = 0; c < EB_NC; ++c) {
+            float4* mine = reinterpret_cast<float4*>(part + ((mt * EB_NC + c) * 32 + lane) * 4);
+            const float4 second = *mine;
+            *mine = make_float4(acc[c][0] + second.x, acc[c][1] + second.y, acc[c][2] + second.z, acc[c][3] + second.w);
+        }
+#pragma unroll 1
+        for (uint32_t c = 0; c < EB_NC; ++c) {
+            const float4 sum = *reinterpret_cast<const float4*>(part + ((mt * EB_NC + c) * 32 + lane) * 4);
+            const float total[4] = {sum.x, sum.y, sum.z, sum.w};
+            if constexpr (MODE == EX_UP) {
+#pragma unroll
+                for (uint32_t e = 0; e < 2; ++e) {
+                    const uint32_t token = c * 8 + 2 * t + e;
+                    if (token < rows_in_block) {
+                        const float gate = scaled(total[e], token);
+                        const float up = scaled(total[2 + e], token);
+                        const uint64_t slot = eb_ld_u32(smem + EB_YROW_AT + token * 4);
+                        __stcg(y + slot * (task.n / 2) + tile * EXPERT_UP_TILE_COLUMNS + mt * 8 + (lane >> 2),
+                               ex_swiglu(gate, up) * __uint_as_float(eb_ld_u32(smem + EB_WEIGHT_AT + token * 4)));
+                    }
+                }
+            } else {
+#pragma unroll
+                for (uint32_t i = 0; i < 4; ++i) {
+                    const uint32_t token = c * 8 + 2 * t + (i & 1);
+                    if (token < rows_in_block) {
+                        const uint64_t slot = eb_ld_u32(smem + EB_YROW_AT + token * 4);
+                        y[slot * task.n + col + (i >> 1) * 8] = scaled(total[i], token);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// One row block of the item: the table of its rows, the ring over the stages of the tile, the join and the epilogue.
+template <typename F, uint32_t MODE>
+__device__ __forceinline__ void eb_block(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item, uint32_t rb0) {
+    using Ring = EbRing<F, MODE>;
+    const uint32_t smem = eb_smem();
     const uint32_t tiles = task.n / MK_EXPERT_TILE_ROWS;
     const uint32_t groups = task.k / MK_EXPERT_K_GROUP;
-    const uint64_t item_bytes = static_cast<uint64_t>(4) * groups * F::RECORD_BYTES;
-    const uint32_t warp = worker_id() >> 5;
-    const uint32_t mt = warp & 3;
-    const uint32_t half = warp >> 2;
-    const uint32_t split = (groups + 1) / 2;
-    const uint32_t first = half == 0 ? 0 : split;
-    const uint32_t last = half == 0 ? split : groups;
-    const uint8_t* at = reinterpret_cast<const uint8_t*>(task.b) + (static_cast<uint64_t>(expert) * tiles + tile) * item_bytes +
-                        (static_cast<uint64_t>(mt) * groups + first) * F::RECORD_BYTES;
-    bulk_prefetch_l2(at, (last - first) * F::RECORD_BYTES);
-}
-
-// The index entry of the expert of an item: `first_pair | pairs << 16`. Each use reads it again from the table, so that no
-// loop of the block form keeps it in a register across the MMAs (the interpreter has 168 registers and no room).
-__device__ __forceinline__ uint32_t block_entry(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
-    const uint32_t tpi = task.pos0 == 0 ? 1 : task.pos0;
-    const uint32_t item_tiles = (task.n / MK_EXPERT_TILE_ROWS) / tpi;
-    return __ldcg(reinterpret_cast<const uint32_t*>(table->ptr[EXPERT_TABLE_INDEX]) + item / item_tiles);
-}
-
-// The pass of the pair `p` of the expert of the item, for the tile `j` of the item.
-template <typename F, uint32_t MODE>
-__device__ __forceinline__ void block_pair(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item, uint32_t j, uint32_t p) {
-    const uint32_t tpi = task.pos0 == 0 ? 1 : task.pos0;
-    const uint32_t item_tiles = (task.n / MK_EXPERT_TILE_ROWS) / tpi;
-    const uint32_t tile = (item % item_tiles) * tpi + j;
-    {
-        const PairRef pair{pair_at(task, (block_entry(task, table, item) & 0xFFFFu) + p)};
-        if (pair.expert() != item / item_tiles || pair.count() == 0 || pair.count() > MK_EXPERT_MAX_ROWS) {
-            __trap();  // The pairs of an expert are contiguous, and the list is ascending by expert.
+    const uint32_t split = (groups + 1) / 2;  // the stages of the ring: one group of each half in a stage
+    const uint32_t rows_left = eb_rows_of(task, eb_entry(task, table, item)) - rb0;
+    const uint32_t rows_in_block = rows_left < EB_ROWS ? rows_left : EB_ROWS;
+    eb_fill_rows<MODE>(task, table, item, rb0);
+    if (worker_id() == 0) {
+#pragma unroll 1
+        for (uint32_t s = 0; s < Ring::STAGES; ++s) {
+            mbarrier_init(smem + EB_BARRIERS + s * 8, MK_WORKERS);
         }
-        expert_pass<F, MODE>(task, table, tile, pair, 0);
-        if (pair.count() > 8) {
-            worker_sync();
-            expert_pass<F, MODE>(task, table, tile, pair, 8);
+        fence_mbarrier_init();
+    }
+    worker_sync();
+    const uint8_t* tile = reinterpret_cast<const uint8_t*>(task.b) +
+                          (static_cast<uint64_t>(eb_expert(task, table, item)) * tiles + item % tiles) * (static_cast<uint64_t>(4) * groups * F::RECORD_BYTES);
+    float acc[EB_NC][4];
+#pragma unroll
+    for (uint32_t c = 0; c < EB_NC; ++c) {
+        acc[c][0] = acc[c][1] = acc[c][2] = acc[c][3] = 0.0f;
+    }
+    // The iteration `i` computes the stage `i - STAGES` (when there is one), and then it asks for the stage `i` into the
+    // buffer that the computed stage freed.
+#pragma unroll 1
+    for (uint32_t i = 0; i < split + Ring::STAGES; ++i) {
+        if (i >= Ring::STAGES) {
+            const uint32_t stage = i - Ring::STAGES;
+            mbarrier_wait_parity(smem + EB_BARRIERS + (stage % Ring::STAGES) * 8, (stage / Ring::STAGES) & 1);
+            eb_compute<F, MODE>(acc, smem, task, stage, rows_in_block);
+            worker_sync();  // Every consumer has finished the stage: its buffer takes the copy of a later stage.
+        }
+        if (i < split) {
+            eb_issue<F, MODE>(smem, task, tile, i);
         }
     }
+    if (worker_id() == 0) {
+#pragma unroll 1
+        for (uint32_t s = 0; s < Ring::STAGES; ++s) {
+            mbarrier_inval(smem + EB_BARRIERS + s * 8);
+        }
+    }
+    worker_sync();
+    eb_epilogue<F, MODE>(acc, smem, task, table, item % tiles, eb_expert(task, table, item), rows_in_block);
 }
 
-// The block form (FLAG_BLOCK_FORM, more than 16 rows). An item is `(expert, group of tiles)`: item `i` is the expert
-// `i / item_tiles` and the tiles `(i % item_tiles) * tpi` on. `items` is `128 * item_tiles`, and it does not depend on the
-// live pairs. The item takes the pairs of its expert from the expert index (`EXPERT_TABLE_INDEX`: `first | pairs << 16`),
-// and for each tile it runs `expert_pass` for each pair, one after the other, so the later pairs find the tile in L2 (and
-// in the prefetch of the next tile). The passes and the epilogues are those of the decode form, so the bits are the same.
-// The merge counters keep their meaning: the UP counter of a pair has `item_tiles` arrivals (the last quantizes the
-// pair), and the DOWN counter of a column tile has one arrival for each expert that has a pair (the header word `reserved[0]`).
 template <typename F, uint32_t MODE>
-__device__ __forceinline__ void op_expert_block(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
-    const uint32_t tpi = task.pos0 == 0 ? 1 : task.pos0;
-    const uint32_t item_tiles = (task.n / MK_EXPERT_TILE_ROWS) / tpi;
+__device__ EB_CALL void op_expert_block(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
+    const uint32_t tiles = task.n / MK_EXPERT_TILE_ROWS;
     const uint32_t bound = (8 * task.kt) < (8 * task.kt / MK_EXPERT_MAX_ROWS + 128) ? (8 * task.kt) : (8 * task.kt / MK_EXPERT_MAX_ROWS + 128);
-    if ((task.e & 15) != 0 || (task.b & 15) != 0 || (task.n / MK_EXPERT_TILE_ROWS) % tpi != 0 || task.items != 128 * item_tiles ||
-        task.kt <= MK_EXPERT_MAX_ROWS || table->ptr[EXPERT_TABLE_INDEX] == 0 || (table->ptr[EXPERT_TABLE_INDEX] & 3) != 0 ||
-        live_pairs(task) > bound) {
-        __trap();
+    if ((task.e & 15) != 0 || (task.b & 15) != 0 || task.pos0 > 1 || task.items != 128 * tiles || task.kt <= MK_EXPERT_MAX_ROWS ||
+        task.kt > 512 || table->ptr[EXPERT_TABLE_INDEX] == 0 || (table->ptr[EXPERT_TABLE_INDEX] & 3) != 0 ||
+        live_pairs(task) > bound || dynamic_smem_bytes() < EbRing<F, MODE>::SMEM_BYTES) {
+        __trap();  // A shape that the block form does not cover.
     }
-    if (((block_entry(task, table, item) & 0xFFFFu) + (block_entry(task, table, item) >> 16)) > live_pairs(task)) {
-        __trap();  // The index names pairs that the list does not hold.
+    const uint32_t experts = __ldcg(&reinterpret_cast<const ExpertPairHeader*>(task.e)->reserved[0]);
+    if (item / tiles >= experts) {
+        return;  // The ranks after the experts that have a pair have no row. Their items do nothing, and they count as done.
     }
-    if ((block_entry(task, table, item) >> 16) == 0) {
-        return;  // The expert has no row in this block. Its items do nothing, and they count as done.
+    {
+        const uint32_t entry = eb_entry(task, table, item);
+        if ((entry >> 16) == 0 || (entry & 0xFFFFu) + (entry >> 16) > live_pairs(task)) {
+            __trap();  // The index and the header disagree.
+        }
     }
 #pragma unroll 1
-    for (uint32_t j = 0; j < tpi; ++j) {
-        if (j + 1 < tpi) {
-            experts_prefetch_tile<F>(task, item / item_tiles, (item % item_tiles) * tpi + j + 1);
-        } else {
-            const uint32_t next = mk_next_item();
-            if (next < task.items && (block_entry(task, table, next) >> 16) != 0) {
-                experts_prefetch_tile<F>(task, next / item_tiles, (next % item_tiles) * tpi);
-            }
-        }
+    for (uint32_t rb0 = 0; rb0 < eb_rows_of(task, eb_entry(task, table, item)); rb0 += EB_ROWS) {
+        worker_sync();  // The block before has read the table of the rows and the partial sums.
+        eb_block<F, MODE>(task, table, item, rb0);
+        if constexpr (MODE == EX_UP) {
+            // The block has written its activation. One arrival for each pair of the block; the last of the tiles quantizes
+            // the pair. Only the loop state is live here (the ring is dead), so the call does not spill.
+            const uint32_t first = eb_entry(task, table, item) & 0xFFFFu;
+            const uint32_t rows = eb_rows_of(task, eb_entry(task, table, item));
+            const uint32_t end = rb0 + EB_ROWS < rows ? rb0 + EB_ROWS : rows;
 #pragma unroll 1
-        for (uint32_t p = 0; p < (block_entry(task, table, item) >> 16); ++p) {
-            if (j > 0 || p > 0) {
-                worker_sync();  // The pass before has read the partial sums of shared memory.
-            }
-            block_pair<F, MODE>(task, table, item, j, p);
-        }
-        if constexpr (MODE == EX_DOWN) {
-            // One arrival for each expert that has a pair (the header counts them), after all its pairs: the finisher of a
-            // tile waits for every row. A barrier comes before each call: the flag of an arrival is written again in
-            // this item.
-            worker_sync();
-            const uint32_t tile = (item % item_tiles) * tpi + j;
-            if (expert_arrive(reinterpret_cast<uint32_t*>(task.f) + tile,
-                              __ldcg(&reinterpret_cast<const ExpertPairHeader*>(task.e)->reserved[0]))) {
-                down_finish_tile(task, table, tile);
+            for (uint32_t p = rb0 / MK_EXPERT_MAX_ROWS; p <= (end - 1) / MK_EXPERT_MAX_ROWS; ++p) {
+                worker_sync();  // A barrier comes before each call: the flag of an arrival is written again.
+                if (expert_arrive(reinterpret_cast<uint32_t*>(task.f) + first + p, tiles)) {
+                    up_finish_rows<F>(task, table, PairRef{pair_at(task, first + p)});
+                }
             }
         }
     }
-    if constexpr (MODE == EX_UP) {
-#pragma unroll 1
-        for (uint32_t p = 0; p < (block_entry(task, table, item) >> 16); ++p) {
-            worker_sync();
-            const uint32_t pair_index = (block_entry(task, table, item) & 0xFFFFu) + p;
-            if (expert_arrive(reinterpret_cast<uint32_t*>(task.f) + pair_index, item_tiles)) {
-                up_finish_rows<F>(task, table, PairRef{pair_at(task, pair_index)});
-            }
+    if constexpr (MODE == EX_DOWN) {
+        // One arrival for each expert that has a pair, after all its row blocks: the finisher of a tile waits for every row.
+        worker_sync();
+        if (expert_arrive(reinterpret_cast<uint32_t*>(task.f) + item % tiles, experts)) {
+            down_finish_tile(task, table, item % tiles);
         }
     }
 }
+
+#endif  // the ring code
 
 template <typename F>
 __device__ __forceinline__ void op_expert(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
@@ -848,11 +1103,23 @@ __device__ __forceinline__ void op_expert(const MkTaskDescriptor& task, const Mk
             (task.c & 15) != 0 || dynamic_smem_bytes() < EX_FINISH_OFFSET) {
             __trap();
         }
+#if defined(MK_EXPERT_BOTH)
         if ((task.flags & FLAG_BLOCK_FORM) != 0) {
             op_expert_block<F, EX_UP>(task, table, item);
         } else {
             op_expert_mode<F, EX_UP>(task, table, item);
         }
+#elif defined(MK_EXPERT_RING)
+        if ((task.flags & FLAG_BLOCK_FORM) == 0) {
+            __trap();  // The ring cubin has the block form of the up and down ops only.
+        }
+        op_expert_block<F, EX_UP>(task, table, item);
+#else
+        if ((task.flags & FLAG_BLOCK_FORM) != 0) {
+            __trap();  // The block form is in the ring cubin (MK_EXPERT_RING).
+        }
+        op_expert_mode<F, EX_UP>(task, table, item);
+#endif
     } else if (mode_flags == FLAG_DOWN) {
         if (table == nullptr || table->ptr[EXPERT_TABLE_RESIDUAL] == 0 || table->ptr[EXPERT_TABLE_CONV_WEIGHT] == 0 ||
             table->ptr[EXPERT_TABLE_CONV_STATE] == 0 || table->ptr[EXPERT_TABLE_OUT] == 0 ||
@@ -861,16 +1128,32 @@ __device__ __forceinline__ void op_expert(const MkTaskDescriptor& task, const Mk
             dynamic_smem_bytes() < EX_FINISH_OFFSET + EX_DOWN_SMEM_BYTES) {
             __trap();
         }
+#if defined(MK_EXPERT_BOTH)
         if ((task.flags & FLAG_BLOCK_FORM) != 0) {
             op_expert_block<F, EX_DOWN>(task, table, item);
         } else {
             op_expert_mode<F, EX_DOWN>(task, table, item);
         }
+#elif defined(MK_EXPERT_RING)
+        if ((task.flags & FLAG_BLOCK_FORM) == 0) {
+            __trap();  // The ring cubin has the block form of the up and down ops only.
+        }
+        op_expert_block<F, EX_DOWN>(task, table, item);
+#else
+        if ((task.flags & FLAG_BLOCK_FORM) != 0) {
+            __trap();  // The block form is in the ring cubin (MK_EXPERT_RING).
+        }
+        op_expert_mode<F, EX_DOWN>(task, table, item);
+#endif
     } else {
+#if defined(MK_EXPERT_RING)
+        __trap();  // The ring cubin has the block form of the up and down ops only.
+#else
         if ((task.flags & FLAG_BLOCK_FORM) != 0) {
             __trap();  // The block form has the up and down modes only.
         }
         op_expert_mode<F, EX_PLAIN>(task, table, item);
+#endif
     }
 }
 
@@ -880,4 +1163,5 @@ __device__ __forceinline__ void op_expert_nvfp4(const MkTaskDescriptor& task, co
 
 __device__ __forceinline__ void op_expert_mxfp8(const MkTaskDescriptor& task, const MkTaskTable* table, uint32_t item) {
     op_expert<ExpertMxfp8>(task, table, item);
+
 }
