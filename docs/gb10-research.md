@@ -264,6 +264,25 @@ The steps of D1, in order:
 5. The head as ops of the megakernel. Its matmuls are the dense matmul that exists. Its attention with RoPE is new.
 6. The draft cache as a part of the slot, with its bytes in the plan and its place in a snapshot.
 
+Measured (2026-11-27), steps 1 and 2, on 38 greedy texts of the engine (20,679 tokens: chat, code, prose, summary,
+thinking). The tools: `tools/prompt_lookup_sim.py`, `tools/inkling2_dspark.py`, `tools/inkling2_dspark_run.py`, and
+the GPU report `cuda_block_cost` of the engine crate.
+
+- The cost of a block, measured (release, 3 cycles, short context, median of 9): 1, 2, 3, 4, 5, 8 and 16 rows cost
+  1.00, 1.17, 1.29, 1.40, 1.51, 1.77 and 2.50 decode steps with an `f32` cache, and the same within 2% with
+  `e4m3`. Each row past the first costs about 3 ms, so a block of 2 rows is not free.
+- The lookup accepts 0.25 to 0.31 drafts a block. Its best speed is about 1.10 times, at 2 drafts.
+- The head, by the CPU oracle on 9 texts (1,729 blocks): 1.30 accepted drafts in a block of 7. P(the first draft is
+  right) is 0.58, and each later draft is right about 0.55 times when the one before it was. vLLM's references for
+  other models are 3 to 4 accepted drafts on GSM8K. The oracle reads its features from the CPU reference, whose
+  argmax agrees with the engine's text on 88 to 96% of positions, so the measure is likely low.
+- The speed with the measured costs and a head cost of 0.26 steps (an estimate): with 3 drafts a block, 1.25 times
+  in all, 1.45 times on code, about 1.18 times on chat and prose. A block of 8 rows gives 1.13 times. The break-even
+  head cost at 3 drafts is about 0.48 steps.
+- So a design checks 2 to 3 drafts in a block of 3 to 4 rows, and runs the head once for each block.
+- Open: the head cost on the card, and the acceptance with the features of the engine (the taps of step 13). Both
+  can move the 1.25. The go or stop of step 3 is open for @tobert.
+
 ### D2. Fewer bytes in the dense weights
 
 - Fact: the dense weights are 2.79 GB of the 5.49 GB of a step, in `bf16`. The head is 0.92 GB.
