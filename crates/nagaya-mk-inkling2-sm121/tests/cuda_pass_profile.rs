@@ -1,4 +1,4 @@
-//! GPU report: the time of each op of the pass, and the tokens a second at 1 row and at 16 rows. It asserts nothing about speed. It prints, for a decode step of 1 row and for a block of 16 rows, one line for each
+//! GPU report: the time of each op of the pass, and the tokens a second at 1 row and at 16 rows. It asserts nothing about speed. It prints, for a decode step of 1 row and for blocks of 16 and of 512 rows, one line for each
 //! op: the count of tasks, the mean time of a task from its first wait that ended to the last end of its items, the bytes of
 //! weights that a task reads at 1 row, the rate against the 252 GB/s that the probe measured, and the time that the design
 //! gives. The wall of the call is the launch of the ring, and the rest of the call is the host (the tasks, the plan).
@@ -208,4 +208,27 @@ fn the_time_of_each_op_and_the_tokens_a_second_at_1_and_16_rows() {
         bytes as f64 / 252e9 * 1e3
     );
     assert!(last_spans.iter().all(|s| s.ns > 0));
+
+    // A block of 512 rows, the largest block of a prefill. The ids of `long` repeat to fill two blocks. The block at
+    // position 0 is a warm-up. The block at position 512 counts: each of its rows has a full sliding window behind it.
+    let block: Vec<u32> = ids.iter().copied().cycle().take(2 * 512).collect();
+    pass.slots[0].zero().unwrap();
+    pass.run(&block[..512], 1).unwrap_or_else(|e| panic!("{e}"));
+    let started = Instant::now();
+    pass.run(&block[512..], 1).unwrap_or_else(|e| panic!("{e}"));
+    let call = started.elapsed();
+    let wall = pass.launches[0].wall;
+    table(
+        "a block of 512 rows at position 512:",
+        &pass.spans().unwrap(),
+        wall,
+        false,
+    );
+    eprintln!(
+        "  512 rows: launch {:.3} ms ({:.0} tokens/s), call with the host {:.3} ms ({:.0} tokens/s)",
+        wall.as_secs_f64() * 1e3,
+        512.0 / wall.as_secs_f64(),
+        call.as_secs_f64() * 1e3,
+        512.0 / call.as_secs_f64()
+    );
 }
