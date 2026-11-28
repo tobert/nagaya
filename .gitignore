@@ -3,3 +3,4 @@ target/
 *.gguf
 *.mkctx
 __pycache__/
+tools/jlens/scripts/env.sh

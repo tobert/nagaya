@@ -1,0 +1,16 @@
+# Shared PersistentVolumeClaim for Hugging Face cache, shard checkpoints, and merged lenses.
+# Default uses ReadWriteMany (RWX) so IndexedJob shards can share one volume across nodes.
+# If your cluster only has ReadWriteOnce (RWO) storage and all pods fit on one 8-GPU node,
+# change accessModes to ReadWriteOnce and set podAffinity to co-locate pods on one node.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jlens-data
+  namespace: ${K8S_NAMESPACE}
+spec:
+  accessModes:
+    - ${PVC_ACCESS_MODE}
+  storageClassName: ${STORAGE_CLASS}
+  resources:
+    requests:
+      storage: ${PVC_SIZE}

@@ -1,0 +1,63 @@
+# IndexedJob for Qwen3.8-Flash-Next J-Lens fitting.
+# Qwen3.8-Flash-Next is ~250 GiB MoE (BF16) + ~102 GiB PLE n-gram table (pinned to CPU RAM).
+# Set QWEN38_GPUS_PER_SHARD and QWEN38_NUM_SHARDS to match your hardware (04-run-qwen38.sh sets
+# these from QWEN38_TOPOLOGY):
+#   8xh100 -> 2 shards x 4 GPUs (320 GiB VRAM/shard)
+#   8xb200 -> 4 shards x 2 GPUs (360 GiB VRAM/shard)
+#   8xb300 -> 4 shards x 2 GPUs (or 8 shards x 1 GPU if 288 GiB fits your headroom)
+#   4xh100 -> 1 shard  x 4 GPUs
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: jlens-qwen38
+  namespace: ${K8S_NAMESPACE}
+spec:
+  completionMode: Indexed
+  completions: ${QWEN38_NUM_SHARDS}
+  parallelism: ${QWEN38_NUM_SHARDS}
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app: jlens-qwen38
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: fit
+          image: ${IMAGE_QWEN38}
+          args:
+            - --model-kind=qwen38
+            - --weight-hash=${QWEN38_WEIGHT_HASH}
+            - --n=${PROMPTS_N}
+            - --shard-index=$(JOB_COMPLETION_INDEX)
+            - --num-shards=${QWEN38_NUM_SHARDS}
+            - --dim-batch=${DIM_BATCH}
+            - --max-seq-len=${MAX_SEQ_LEN}
+            - --checkpoint-every=5
+            - --out-dir=/data/runs/qwen38
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: token
+            - name: HF_HOME
+              value: /data/hf-cache
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: expandable_segments:True
+          resources:
+            requests:
+              nvidia.com/gpu: "${QWEN38_GPUS_PER_SHARD}"
+              memory: "${QWEN38_MEM_REQUEST}"
+              cpu: "16"
+            limits:
+              nvidia.com/gpu: "${QWEN38_GPUS_PER_SHARD}"
+              memory: "${QWEN38_MEM_LIMIT}"
+              cpu: "32"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: jlens-data
