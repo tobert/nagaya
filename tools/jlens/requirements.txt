@@ -1,0 +1,9 @@
+# Shared Python dependencies for tools/jlens (torch and transformers are installed per Dockerfile stage).
+accelerate>=1.4.0
+datasets>=3.3.0
+huggingface_hub>=0.29.0
+numpy>=2.0.0
+protobuf>=5.29.0
+safetensors>=0.5.0
+sentencepiece>=0.2.0
+tiktoken>=0.9.0

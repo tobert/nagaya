@@ -1,0 +1,66 @@
+# Post-processing Job: merges shard checkpoints into canonical D10 .jlens.safetensors,
+# validates structure/finiteness (and optionally runs model probes + uploads to Hugging Face).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: jlens-merge-${MERGE_MODEL_KIND}
+  namespace: ${K8S_NAMESPACE}
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app: jlens-merge-${MERGE_MODEL_KIND}
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: merge-validate
+          image: ${MERGE_IMAGE}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              mkdir -p /data/out
+              python3 -m tools.jlens.merge \
+                --shards-dir "/data/runs/${MERGE_MODEL_KIND}" \
+                --view "${MERGE_VIEW}" \
+                --expect-prompts "${PROMPTS_N}" \
+                --out "/data/out/${MERGE_OUT_NAME}"
+              VALIDATE_ARGS=(
+                --lens "/data/out/${MERGE_OUT_NAME}"
+                --weight-hash "${MERGE_WEIGHT_HASH}"
+                --report-out "/data/out/${MERGE_OUT_NAME}.validation.json"
+              )
+              if [ -n "${UPLOAD_REPO:-}" ]; then
+                VALIDATE_ARGS+=(--upload-repo "${UPLOAD_REPO}")
+                if [ "${UPLOAD_PRIVATE:-0}" = "1" ]; then
+                  VALIDATE_ARGS+=(--private)
+                fi
+              fi
+              python3 -m tools.jlens.validate "${VALIDATE_ARGS[@]}"
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: token
+            - name: HF_HOME
+              value: /data/hf-cache
+            - name: UPLOAD_REPO
+              value: "${UPLOAD_REPO}"
+            - name: UPLOAD_PRIVATE
+              value: "${UPLOAD_PRIVATE}"
+          resources:
+            requests:
+              memory: "${MERGE_MEM_REQUEST}"
+              cpu: "8"
+            limits:
+              memory: "${MERGE_MEM_LIMIT}"
+              cpu: "16"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: jlens-data

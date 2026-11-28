@@ -1,0 +1,59 @@
+# IndexedJob for Inkling-2-Mini J-Lens fitting.
+# Each shard uses 1 GPU (~37-40 GiB BF16) and processes N / NUM_SHARDS prompts independently.
+# On an 8x H100/B200/B300 node, default NUM_SHARDS=8 runs all 8 shards in parallel.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: jlens-inkling2
+  namespace: ${K8S_NAMESPACE}
+spec:
+  completionMode: Indexed
+  completions: ${INKLING2_NUM_SHARDS}
+  parallelism: ${INKLING2_NUM_SHARDS}
+  backoffLimit: 6
+  template:
+    metadata:
+      labels:
+        app: jlens-inkling2
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: fit
+          image: ${IMAGE_INKLING2}
+          args:
+            - --model-kind=inkling2
+            - --revision=ed40e7da625f594fc9c4990f5f66be24873c22d7
+            - --weight-hash=${INKLING2_WEIGHT_HASH}
+            - --n=${PROMPTS_N}
+            - --shard-index=$(JOB_COMPLETION_INDEX)
+            - --num-shards=${INKLING2_NUM_SHARDS}
+            - --dim-batch=${DIM_BATCH}
+            - --max-seq-len=${MAX_SEQ_LEN}
+            - --checkpoint-every=5
+            - --out-dir=/data/runs/inkling2
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token
+                  key: token
+            - name: HF_HOME
+              value: /data/hf-cache
+            - name: PYTORCH_CUDA_ALLOC_CONF
+              value: expandable_segments:True
+          resources:
+            requests:
+              nvidia.com/gpu: "1"
+              memory: "64Gi"
+              cpu: "8"
+            limits:
+              nvidia.com/gpu: "1"
+              memory: "96Gi"
+              cpu: "16"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: jlens-data
